@@ -8,6 +8,7 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | DPO | `training/recipes/dpo_loop.py` |
 | ORPO | `training/recipes/orpo_loop.py` |
 | **RL (primary)** — write a rollout function; recipe owns the loop. Async by default; strict on-policy scheduling via `max_head_offpolicy_versions=0` | `training/recipes/async_rl_loop.py` — see [`rl-async.md`](rl-async.md) |
+| Async RL on the shared serverless pool (experimental) | `training/recipes/experiment/async_rl_loop_serverless.py` — same rollout contract; serverless snapshot publication |
 | RL (simpler, synchronous GRPO scaffold) | `training/recipes/rl_loop.py` |
 | Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
 | Distillation / OPD / SDFT | `training/recipes/distillation_loop.py` — see [`sdk-distillation.md`](sdk-distillation.md) |

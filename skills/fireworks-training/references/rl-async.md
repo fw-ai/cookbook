@@ -11,6 +11,17 @@ chunks, publication, and durability. For multi-turn agents, tools, token
 ancestry, history mismatch, or session/cache architecture, read
 [`rl-agentic.md`](rl-agentic.md).
 
+## Infrastructure variants
+
+Use `training/recipes/async_rl_loop.py` for a dedicated trainer and inference
+deployment. Use the experimental
+`training/recipes/experiment/async_rl_loop_serverless.py` for the shared
+serverless pool. The serverless variant keeps the rollout, scheduling,
+evaluation, batching, and telemetry contracts described here, but replaces
+deployment hotload with session-scoped snapshots and snapshot-bound sampling
+clients. Keep serverless lifecycle code in that experiment rather than in a
+rollout adapter.
+
 ## Responsibility boundary
 
 Users provide:

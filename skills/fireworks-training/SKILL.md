@@ -258,10 +258,11 @@ This handoff is identical across Claude Code, Cursor, and Codex.
 | Training API ORPO | Not applicable | [`training/recipes/orpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/orpo_loop.py) | `references/sdk-recipes.md` |
 | Training API RL | Not applicable | [`training/recipes/rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/rl_loop.py) | `references/training-api.md`, `references/rl-loss-paths.md` |
 | Async RL scheduling and overlap | Not applicable | [`training/recipes/async_rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/async_rl_loop.py) | `references/rl-async.md` |
+| Async serverless RL (experimental) | Not applicable | [`training/recipes/experiment/async_rl_loop_serverless.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/experiment/async_rl_loop_serverless.py) | `references/rl-async.md`, then the live serverless docs for lifecycle and limits |
 | Agentic or tool-using RL | Not applicable | Use `async_rl_loop.py` with an agent/environment rollout adapter | `references/rl-agentic.md`, then `references/rl-async.md` for loop behavior |
 | IGPO | Not applicable | [`training/recipes/igpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/igpo_loop.py) | `references/sdk-recipes.md` |
 | Distillation | Not applicable | [`training/recipes/distillation_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/distillation_loop.py) | `references/sdk-distillation.md` |
-| Serverless RL example | Not applicable | [`training/examples/serverless_rl/`](https://github.com/fw-ai/cookbook/tree/main/training/examples/serverless_rl) | Live serverless docs |
+| Serverless RL quickstart | Not applicable | [`training/examples/serverless_rl/`](https://github.com/fw-ai/cookbook/tree/main/training/examples/serverless_rl) | Live serverless docs |
 | Custom RL loss or research algorithm | Not applicable | Fork the closest maintained RL recipe and replace its documented loss call | `references/rl-custom-loss.md` |
 | New or changed renderer | Not applicable | [`training/renderer/`](https://github.com/fw-ai/cookbook/tree/main/training/renderer) | `references/renderer.md`, `references/renderer-verification.md` |
 

@@ -207,6 +207,7 @@ For detailed guides, configuration reference, and examples, see the official doc
 
 ```
 recipes/                                Training loop scripts (fork these)
+recipes/experiment/                     Experimental recipe variants, including async serverless RL
 utils/                                  Shared config, data loading, loss functions, metrics
 examples/sft/                           Worked example: SFT getting started
 examples/embedding/                     Worked example: embedding (retrieval) fine-tuning

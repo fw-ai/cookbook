@@ -20,7 +20,7 @@ Use **managed training** for standard SFT/DPO/ORPO/RFT jobs. Reach for the **Tra
 
 | Path | Use when | Cookbook |
 |---|---|---|
-| **Serverless** | Supported-model LoRA SFT or RL, shared pool, per-token billing, no provisioning | `training/examples/serverless_rl/` |
+| **Serverless** | Supported-model LoRA SFT or RL, shared pool, per-token billing, no provisioning | `training/examples/serverless_rl/` for the synchronous quickstart; `training/recipes/experiment/async_rl_loop_serverless.py` for experimental async RL |
 | **Dedicated** | Full-parameter, DPO, broader model/method support, sustained runs, explicit trainer/deployment/checkpoint control | `training/recipes/` |
 
 Read the live [serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and [dedicated lifecycle](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) pages before choosing.
@@ -71,6 +71,7 @@ Whichever RFT route you use, the reward can come from three places:
 
 Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw-ai/cookbook`:
 - `training/recipes/` — loop scripts (e.g. `async_rl_loop`)
+- `training/recipes/experiment/` — experimental infrastructure variants, including async serverless RL
 - `training/examples/` — worked RL / SFT / DPO / ORPO
 - `training/utils/` — config, data loading, losses, metrics
 

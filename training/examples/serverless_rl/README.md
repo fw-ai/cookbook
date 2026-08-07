@@ -98,3 +98,7 @@ Metrics are written to `metrics.jsonl` and a `reward_curve.png` under a fresh
 For the dedicated (provisioned trainer + deployment) RL path and the full menu
 of losses (GRPO, DAPO, GSPO, CISPO, …), see [`recipes/rl_loop.py`](../../recipes/rl_loop.py)
 and [`recipes/async_rl_loop.py`](../../recipes/async_rl_loop.py).
+
+For the same rollout-function and async scheduling contract on the shared
+serverless pool, see the experimental
+[`recipes/experiment/async_rl_loop_serverless.py`](../../recipes/experiment/async_rl_loop_serverless.py).
