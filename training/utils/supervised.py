@@ -426,11 +426,10 @@ def build_renderer_from_resolved_name(
         and get_image_processor is not None
         and _renderer_uses_images(renderer_name)
     ):
-        _ensure_trust_remote_code_for_image_processor(tokenizer_model)
         return get_renderer(
             renderer_name,
             tokenizer,
-            image_processor=get_image_processor(tokenizer_model),
+            image_processor=_get_image_processor_with_remote_code_default(tokenizer_model),
         )
     return get_renderer(renderer_name, tokenizer)
 
@@ -521,28 +520,23 @@ def populate_render_worker_state(
     )
 
 
-# tinker_cookbook.image_processing_utils.get_image_processor has a hard-coded
-# trust_remote_code=True branch only for moonshotai/Kimi-K2.5. Other Kimi-family
-# checkpoints that ship a custom image processor (e.g. moonshotai/Kimi-K2.6)
-# also require trust_remote_code, otherwise AutoImageProcessor.from_pretrained
-# raises ValueError in non-interactive environments (CI, service mode). The
-# same module honors HF_TRUST_REMOTE_CODE as an opt-in hook, so set it for
-# those checkpoints before the first (cached) call.
-_MODELS_REQUIRING_TRUST_REMOTE_CODE_FOR_IMAGE_PROCESSOR: tuple[str, ...] = (
-    "kimi-k3",
-    "kimi_k3",
-    "moonshotai/kimi-k2.6",
-    "moonshotai/kimi-k2.7-code",
-)
+def _get_image_processor_with_remote_code_default(tokenizer_model: str) -> Any:
+    # Image processors follow the tokenizer loader's permissive-by-default
+    # remote-code policy. This is intentionally independent of model and
+    # renderer names: managed jobs stage tokenizer artifacts under opaque paths,
+    # and new image renderers should not require a second trust allowlist update.
+    # Preserve any explicit caller policy, including HF_TRUST_REMOTE_CODE=0.
+    if "HF_TRUST_REMOTE_CODE" in os.environ:
+        return get_image_processor(tokenizer_model)
 
-
-def _ensure_trust_remote_code_for_image_processor(tokenizer_model: str) -> None:
-    normalized = tokenizer_model.lower()
-    if any(
-        marker in normalized
-        for marker in _MODELS_REQUIRING_TRUST_REMOTE_CODE_FOR_IMAGE_PROCESSOR
-    ):
-        os.environ.setdefault("HF_TRUST_REMOTE_CODE", "1")
+    # tinker-cookbook reads the policy from the environment. Scope the default
+    # to this cached processor load and restore it even if Transformers raises,
+    # so unrelated work in the same process cannot inherit the opt-in.
+    os.environ["HF_TRUST_REMOTE_CODE"] = "1"
+    try:
+        return get_image_processor(tokenizer_model)
+    finally:
+        os.environ.pop("HF_TRUST_REMOTE_CODE", None)
 
 
 def _renderer_uses_images(renderer_name: str) -> bool:
