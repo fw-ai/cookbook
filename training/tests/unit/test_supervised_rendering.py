@@ -988,20 +988,20 @@ def test_build_renderer_from_resolved_name_can_skip_image_processor(monkeypatch)
     assert calls == [("qwen3_vl_instruct", None)]
 
 
-def test_build_renderer_opts_in_trust_remote_code_for_kimi_k2_6(monkeypatch):
-    """Kimi-K2.6 ships a custom image processor not covered by tinker_cookbook's
-    hardcoded trust_remote_code=True list; build_renderer must set the
-    HF_TRUST_REMOTE_CODE env var before calling get_image_processor so the
-    cached AutoImageProcessor load succeeds non-interactively in CI."""
+def test_build_renderer_uses_tokenizer_remote_code_default_for_image_processor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
 
     env_at_call: list[str | None] = []
 
-    def fake_get_image_processor(model_name):
+    def fake_get_image_processor(_model_name: str) -> str:
         env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
         return "image-processor"
 
-    def fake_get_renderer(name, tokenizer, image_processor=None):
+    def fake_get_renderer(
+        name: str, _tokenizer: object, image_processor: object | None = None
+    ) -> tuple[str, str, object | None]:
         return ("renderer", name, image_processor)
 
     monkeypatch.setattr(
@@ -1016,20 +1016,128 @@ def test_build_renderer_opts_in_trust_remote_code_for_kimi_k2_6(monkeypatch):
 
     assert env_at_call == ["1"]
     assert result == ("renderer", "kimi_k26_interleaved", "image-processor")
+    assert "HF_TRUST_REMOTE_CODE" not in os.environ
 
 
-def test_build_renderer_does_not_touch_trust_remote_code_for_kimi_k2_5(monkeypatch):
-    """K2.5 is already covered by tinker_cookbook's hardcoded trust_remote_code
-    branch, so our opt-in helper must leave HF_TRUST_REMOTE_CODE unset for it."""
+@pytest.mark.parametrize(
+    "renderer_name",
+    [
+        "qwen3_vl_instruct",
+        "qwen3_5",
+        "qwen3_6",
+        "kimi_k25",
+        "kimi_k25_disable_thinking",
+        "kimi_k25_interleaved",
+        "kimi_k26",
+        "kimi_k26_disable_thinking",
+        "kimi_k26_interleaved",
+        "kimi_k26_preserve_thinking",
+        "kimi_k27_code",
+        "kimi_k27_code_preserved",
+        "kimi_k3",
+        "kimi_k3_disable_thinking",
+    ],
+)
+def test_resolved_image_renderer_trusts_opaque_tokenizer_path(
+    monkeypatch: pytest.MonkeyPatch,
+    renderer_name: str,
+) -> None:
     monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
 
     env_at_call: list[str | None] = []
 
-    def fake_get_image_processor(model_name):
+    def fake_get_image_processor(model_name: str) -> str:
+        assert model_name == "gs://model-bucket/uploads/checkpoint/hf"
         env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
         return "image-processor"
 
-    def fake_get_renderer(name, tokenizer, image_processor=None):
+    def fake_get_renderer(
+        name: str, _tokenizer: object, image_processor: object | None = None
+    ) -> tuple[str, str, object | None]:
+        return ("renderer", name, image_processor)
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    result = build_renderer_from_resolved_name(
+        tokenizer="tok",
+        tokenizer_model="gs://model-bucket/uploads/checkpoint/hf",
+        renderer_name=renderer_name,
+    )
+
+    assert env_at_call == ["1"]
+    assert result == ("renderer", renderer_name, "image-processor")
+    assert "HF_TRUST_REMOTE_CODE" not in os.environ
+
+
+def test_image_processor_failure_restores_remote_code_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
+
+    def fail_get_image_processor(_model_name: str) -> None:
+        assert os.environ["HF_TRUST_REMOTE_CODE"] == "1"
+        raise RuntimeError("processor load failed")
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fail_get_image_processor
+    )
+
+    with pytest.raises(RuntimeError, match="processor load failed"):
+        build_renderer_from_resolved_name(
+            tokenizer="tok",
+            tokenizer_model="gs://model-bucket/uploads/checkpoint/hf",
+            renderer_name="kimi_k3",
+        )
+
+    assert "HF_TRUST_REMOTE_CODE" not in os.environ
+
+
+def test_new_image_renderer_inherits_remote_code_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
+
+    env_at_call: list[str | None] = []
+
+    def fake_get_image_processor(_model_name: str) -> str:
+        env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
+        return "image-processor"
+
+    monkeypatch.setattr(
+        "training.utils.supervised.get_image_processor", fake_get_image_processor
+    )
+    monkeypatch.setattr(
+        "training.utils.supervised.get_renderer",
+        lambda *_args, **_kwargs: "renderer",
+    )
+
+    build_renderer_from_resolved_name(
+        tokenizer="tok",
+        tokenizer_model="Qwen/Qwen3-VL-30B-A3B-Instruct",
+        renderer_name="future_model_vl",
+    )
+
+    assert env_at_call == ["1"]
+    assert "HF_TRUST_REMOTE_CODE" not in os.environ
+
+
+def test_build_renderer_uses_remote_code_default_for_kimi_k2_5(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
+
+    env_at_call: list[str | None] = []
+
+    def fake_get_image_processor(_model_name: str) -> str:
+        env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
+        return "image-processor"
+
+    def fake_get_renderer(
+        _name: str, _tokenizer: object, image_processor: object | None = None
+    ) -> str:
         return "renderer"
 
     monkeypatch.setattr(
@@ -1042,11 +1150,12 @@ def test_build_renderer_does_not_touch_trust_remote_code_for_kimi_k2_5(monkeypat
         tokenizer_model="moonshotai/Kimi-K2.5",
     )
 
-    assert env_at_call == [None]
+    assert env_at_call == ["1"]
+    assert "HF_TRUST_REMOTE_CODE" not in os.environ
 
 
 def test_build_renderer_preserves_existing_trust_remote_code_value(monkeypatch):
-    """Don't stomp a user-set HF_TRUST_REMOTE_CODE — setdefault semantics."""
+    """Don't stomp a user-set HF_TRUST_REMOTE_CODE policy."""
     monkeypatch.setenv("HF_TRUST_REMOTE_CODE", "0")
 
     env_at_call: list[str | None] = []
