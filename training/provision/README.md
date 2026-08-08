@@ -55,12 +55,17 @@ deployments:
 trainers:
   policy:
     training_shape_id: accounts/fireworks/trainingShapes/qwen3p5-9b-256k-lora
+    use_reservation: true
     weight_sync_deployment: rollout
 
 recipe:
   rl:
     trainer: policy
 ```
+
+`use_reservation: true` tries the account's reservation capacity before falling
+back to shared trainer capacity. A DPO reference trainer inherits the setting
+and tries independently; an existing trainer ID is reused as-is.
 
 ### Modes
 

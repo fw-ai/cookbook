@@ -199,6 +199,8 @@ or job creation, checkpoint promotion, deployment, or other mutation:
    - stable resource IDs;
    - every parameter the user set, marked **set**;
    - any preemptible trainer scheduling request, marked **admin-only**;
+   - whether managed SFT/DPO or a dedicated Training API trainer should use
+     reservation-first placement, marked **set** or **default**;
    - every default the agent or platform will apply, marked **default**;
    - resolved model, training shape, deployment shape, and context when relevant;
    - cost model, estimate or ceiling, and unknown cost lines;
@@ -258,10 +260,11 @@ This handoff is identical across Claude Code, Cursor, and Codex.
 | Training API ORPO | Not applicable | [`training/recipes/orpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/orpo_loop.py) | `references/sdk-recipes.md` |
 | Training API RL | Not applicable | [`training/recipes/rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/rl_loop.py) | `references/training-api.md`, `references/rl-loss-paths.md` |
 | Async RL scheduling and overlap | Not applicable | [`training/recipes/async_rl_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/async_rl_loop.py) | `references/rl-async.md` |
+| Async serverless RL (experimental) | Not applicable | [`training/recipes/experiment/async_rl_loop_serverless.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/experiment/async_rl_loop_serverless.py) | `references/rl-async.md`, then the live serverless docs for lifecycle and limits |
 | Agentic or tool-using RL | Not applicable | Use `async_rl_loop.py` with an agent/environment rollout adapter | `references/rl-agentic.md`, then `references/rl-async.md` for loop behavior |
 | IGPO | Not applicable | [`training/recipes/igpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/igpo_loop.py) | `references/sdk-recipes.md` |
 | Distillation | Not applicable | [`training/recipes/distillation_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/distillation_loop.py) | `references/sdk-distillation.md` |
-| Serverless RL example | Not applicable | [`training/examples/serverless_rl/`](https://github.com/fw-ai/cookbook/tree/main/training/examples/serverless_rl) | Live serverless docs |
+| Serverless RL quickstart | Not applicable | [`training/examples/serverless_rl/`](https://github.com/fw-ai/cookbook/tree/main/training/examples/serverless_rl) | Live serverless docs |
 | Custom RL loss or research algorithm | Not applicable | Fork the closest maintained RL recipe and replace its documented loss call | `references/rl-custom-loss.md` |
 | New or changed renderer | Not applicable | [`training/renderer/`](https://github.com/fw-ai/cookbook/tree/main/training/renderer) | `references/renderer.md`, `references/renderer-verification.md` |
 
@@ -341,6 +344,11 @@ firectl rftj create --job-id <run-id> \
   --dataset <dataset-id> --evaluator accounts/<acct>/evaluators/<id> \
   --output-model <output-model-id>
 ```
+
+For managed SFT/DPO, add `--use-reservation` only when the approved plan opts in.
+It tries the account's reservation capacity before falling back to shared trainer
+capacity. Full-parameter DPO policy and dedicated reference trainers try
+independently. A retry or resume that finds the stable trainer ID reuses it.
 
 Before launch, read the selected command's `--help`; the installed CLI is the
 command contract.

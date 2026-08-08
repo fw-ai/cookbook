@@ -217,6 +217,28 @@ def test_render_messages_to_datum_preserves_multi_turn_weights():
     ]
 
 
+def test_render_messages_to_datums_supports_per_example_mean_reduction():
+    renderer = StubRenderer(
+        tokens=[10, 11, 12, 13],
+        weights=[0, 1, 1, 1],
+    )
+
+    [rendered] = render_messages_to_datums(
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+        ],
+        renderer=renderer,
+        train_on_what="last_assistant_turn",
+        reduction="mean",
+    )
+
+    assert rendered.datum.loss_fn_inputs["weights"].data == pytest.approx(
+        [1 / 3, 1 / 3, 1 / 3]
+    )
+    assert sum(rendered.datum.loss_fn_inputs["weights"].data) == pytest.approx(1.0)
+
+
 def test_render_messages_to_datum_supports_multimodal_model_input():
     renderer = ModelInputRenderer()
 

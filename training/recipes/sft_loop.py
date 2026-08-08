@@ -362,6 +362,7 @@ def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
         renderer=_worker_state["renderer"],
         train_on_what=_worker_state["train_on_what"],
         tools=tools,
+        reduction="mean",
     )
     if not isinstance(rendered_examples, list):
         rendered_examples = [rendered_examples]

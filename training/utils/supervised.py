@@ -19,7 +19,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 import torch
 import tinker
@@ -899,6 +899,7 @@ def build_datum_from_tokens_and_weights(
     *,
     max_seq_len: int | None = None,
     include_loss_mask: bool = False,
+    reduction: Literal["none", "mean"] = "none",
 ) -> RenderedSupervisedDatum:
     """Build a weighted ``tinker.Datum`` from full tokens and per-token weights."""
     tokens = [int(x) for x in token_ids]
@@ -921,6 +922,7 @@ def build_datum_from_tokens_and_weights(
         tinker.ModelInput.from_ints(tokens),
         weight_tensor,
         max_length=max_seq_len,
+        reduction=reduction,
     )
 
     if include_loss_mask:
@@ -1026,6 +1028,7 @@ def _build_multimodal_datum(
     model_input: tinker.ModelInput,
     weights: list[float],
     max_seq_len: int | None = None,
+    reduction: Literal["none", "mean"] = "none",
 ) -> tinker.Datum:
     """Build a canonical Tinker-shaped multimodal next-token datum.
 
@@ -1047,6 +1050,7 @@ def _build_multimodal_datum(
         model_input,
         torch.tensor(weights, dtype=torch.float32),
         max_length=max_seq_len,
+        reduction=reduction,
     )
 
 
@@ -1056,6 +1060,7 @@ def build_datum_from_model_input_and_weights(
     *,
     max_seq_len: int | None = None,
     include_loss_mask: bool = False,
+    reduction: Literal["none", "mean"] = "none",
 ) -> RenderedSupervisedDatum:
     """Build a weighted datum from a multimodal-capable ``ModelInput``."""
     weights = [float(x) for x in token_weights]
@@ -1063,7 +1068,12 @@ def build_datum_from_model_input_and_weights(
     if _has_non_text_chunks(model_input):
         # Keep the chunked input while using Tinker's canonical expanded target
         # coordinates, including zero wire placeholders for image positions.
-        datum = _build_multimodal_datum(model_input, weights, max_seq_len)
+        datum = _build_multimodal_datum(
+            model_input,
+            weights,
+            max_seq_len,
+            reduction=reduction,
+        )
     elif datum_from_model_input_weights is not None:
         weight_tensor = torch.tensor(weights, dtype=torch.float32)
         if weight_tensor.numel() != model_input.length:
@@ -1071,7 +1081,10 @@ def build_datum_from_model_input_and_weights(
                 f"model_input/weights length mismatch: {model_input.length} != {weight_tensor.numel()}"
             )
         datum = datum_from_model_input_weights(
-            model_input, weight_tensor, max_length=max_seq_len
+            model_input,
+            weight_tensor,
+            max_length=max_seq_len,
+            reduction=reduction,
         )
     else:
         token_ids = _extract_token_ids(model_input)
@@ -1080,6 +1093,7 @@ def build_datum_from_model_input_and_weights(
             token_weights,
             max_seq_len=max_seq_len,
             include_loss_mask=include_loss_mask,
+            reduction=reduction,
         )
 
     if include_loss_mask:
@@ -1174,6 +1188,7 @@ def _build_rendered_supervised_datum(
     *,
     max_seq_len: int | None,
     include_loss_mask: bool,
+    reduction: Literal["none", "mean"] = "none",
 ) -> RenderedSupervisedDatum:
     weight_values = weights.tolist() if hasattr(weights, "tolist") else list(weights)
     if isinstance(rendered_input, tinker.ModelInput):
@@ -1182,6 +1197,7 @@ def _build_rendered_supervised_datum(
             weight_values,
             max_seq_len=max_seq_len,
             include_loss_mask=include_loss_mask,
+            reduction=reduction,
         )
     token_values = (
         rendered_input.tolist()
@@ -1193,6 +1209,7 @@ def _build_rendered_supervised_datum(
         weight_values,
         max_seq_len=max_seq_len,
         include_loss_mask=include_loss_mask,
+        reduction=reduction,
     )
 
 
@@ -1290,6 +1307,7 @@ def render_messages_to_datums(
     max_seq_len: int | None = None,
     include_loss_mask: bool = False,
     tools: Sequence[Mapping[str, Any]] | None = None,
+    reduction: Literal["none", "mean"] = "none",
 ) -> list[RenderedSupervisedDatum]:
     """Render a chat row, splitting multi-target rows when required.
 
@@ -1321,6 +1339,7 @@ def render_messages_to_datums(
             weights,
             max_seq_len=max_seq_len,
             include_loss_mask=include_loss_mask,
+            reduction=reduction,
         )
         for rendered_input, weights in examples
     ]

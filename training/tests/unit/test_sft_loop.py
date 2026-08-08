@@ -417,6 +417,39 @@ def test_main_requests_cleanup_for_sdk_created_trainer(tmp_path, monkeypatch):
     assert calls[0]["cleanup_trainer_on_close"] is True
 
 
+def test_render_one_worker_uses_per_example_mean_reduction(monkeypatch):
+    captured = {}
+    datum = _test_datum("train")
+
+    def fake_render_messages_to_datums(messages, **kwargs):
+        captured.update(kwargs)
+        return [
+            SimpleNamespace(
+                token_ids=[1, 2, 3],
+                token_weights=[0.0, 1.0, 1.0],
+                datum=datum,
+            )
+        ]
+
+    monkeypatch.setattr(
+        module,
+        "render_messages_to_datums",
+        fake_render_messages_to_datums,
+    )
+    monkeypatch.setattr(module, "_write_render_samples", lambda *args: None)
+    module._worker_state.clear()
+    module._worker_state.update(
+        renderer=object(),
+        train_on_what="all_assistant_messages",
+        max_seq_len=32,
+    )
+
+    assert module._render_one_worker(
+        {"messages": [{"role": "assistant", "content": "answer"}]}
+    ) is datum
+    assert captured["reduction"] == "mean"
+
+
 # ---------------------------------------------------------------------------
 # Eval auto carve-out tests
 # ---------------------------------------------------------------------------

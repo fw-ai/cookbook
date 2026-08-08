@@ -19,6 +19,7 @@ def _trainer_config(**overrides) -> TrainerConfig:
         job_id="job-1",
         reference_job_id="ref-job-1",
         cleanup_reference_on_close=False,
+        use_reservation=True,
         region="US_OHIO_1",
         node_count=2,
         custom_image_tag="0.0.0-dev",
@@ -143,6 +144,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "trainer_job_id": "job-1",
             "reference_trainer_job_id": "ref-job-1",
             "cleanup_reference_trainer_on_close": False,
+            "use_reservation": True,
             "reference_required": False,
             "region": "US_OHIO_1",
             "max_context_length": 4096,
@@ -202,6 +204,33 @@ def test_build_service_client_forwards_max_lora_rank(monkeypatch):
     )
 
     assert calls[0]["max_lora_rank"] == 32
+
+
+def test_build_service_client_omits_default_use_reservation(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_from_firetitan_config(**kwargs):
+        calls.append(kwargs)
+        return "service-sentinel"
+
+    class FakeServiceClient:
+        from_firetitan_config = staticmethod(fake_from_firetitan_config)
+
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    build_service_client(
+        api_key="k",
+        base_url="https://api",
+        additional_headers=None,
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=0,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-x"),
+    )
+
+    assert "use_reservation" not in calls[0]
 
 
 def test_build_service_client_defaults_speculative_decoding_enabled(monkeypatch):
@@ -348,7 +377,7 @@ def test_trainer_region_becomes_sdk_region():
         max_lora_rank=0,
         max_context_length=None,
         learning_rate=1e-5,
-        trainer=_trainer_config(region="US_OHIO_1"),
+        trainer=_trainer_config(region="US_OHIO_1", use_reservation=False),
         deployment=_deployment_config(),
     )
 

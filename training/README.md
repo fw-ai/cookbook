@@ -164,6 +164,11 @@ The example entrypoints expose the same setting as `--trainer-replicas 2`.
 It applies to trainer jobs the recipe creates for that run; a pre-created
 `trainer.job_id` value is reused as-is.
 
+To try the account's reservation capacity before falling back to shared trainer
+capacity, set `TrainerConfig(use_reservation=True)`. DPO policy and dedicated
+reference trainers inherit the setting and try independently. A pre-created
+`trainer.job_id` is reused as-is.
+
 **LoRA RL** -- set `lora_rank` to train an adapter:
 
 | Field | What to set |
@@ -207,6 +212,7 @@ For detailed guides, configuration reference, and examples, see the official doc
 
 ```
 recipes/                                Training loop scripts (fork these)
+recipes/experiment/                     Experimental recipe variants, including async serverless RL
 utils/                                  Shared config, data loading, loss functions, metrics
 examples/sft/                           Worked example: SFT getting started
 examples/embedding/                     Worked example: embedding (retrieval) fine-tuning
