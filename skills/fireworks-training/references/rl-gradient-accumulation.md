@@ -14,13 +14,16 @@ Do **not** use trainer-job `grad_accum`, `TrainerJobConfig.gradient_accumulation
 
 | Value | Meaning | Use when |
 |---|---|---|
-| `NUM_LOSS_TOKENS` | Divide by total loss tokens (per-token mean) | Your loss returns a **raw sum**, common for RL/GRPO-style losses |
+| `NUM_LOSS_TOKENS` | Divide by total loss tokens (per-token mean) | Your loss returns a **raw sum**, including built-in cross-entropy and common RL/GRPO-style losses |
 | `NUM_SEQUENCES` | Divide by total sequences (per-sequence mean) | You want per-trajectory weighting |
-| `None` / `NONE` | No normalization | Your loss **already** returns a per-token or per-sequence mean — SFT / DPO / ORPO shapes |
+| `None` / `NONE` | No normalization | Your loss **already** returns a per-token or per-sequence mean |
 
 ## Defaults that matter
 
 - Cookbook RL recipe defaults leave `grad_accumulation_normalization=None`, so `optim_step` performs **no server-side normalization** unless the recipe/user opts in.
+- The SFT recipe passes `reduction="mean"` while constructing each datum, so
+  every example's loss weights sum to 1 and `optim_step` needs no additional
+  normalization.
 - Raw-sum losses should pass `GradAccNormalization.NUM_LOSS_TOKENS`; pre-normalized losses should leave this as `None`. If the mode does not match what your loss returns, you either skip normalization entirely or double-normalize, both of which can break training in a way that's hard to spot from loss metrics alone.
 
 ## Rule of thumb for custom losses
