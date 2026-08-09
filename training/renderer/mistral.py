@@ -48,6 +48,8 @@ from tinker_cookbook.renderers.base import (
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
+from training.renderer.message_weights import untrained_synthesized_context
+
 _SYSTEM_PROMPT_OPEN = "[SYSTEM_PROMPT]"
 _SYSTEM_PROMPT_CLOSE = "[/SYSTEM_PROMPT]"
 _AVAILABLE_TOOLS_OPEN = "[AVAILABLE_TOOLS]"
@@ -235,7 +237,7 @@ class MistralRenderer(Renderer):
         return [synthetic, *messages]
 
     def _preprocess_messages(self, messages: list[Message]) -> list[Message]:
-        return self._ensure_system_message(messages)
+        return untrained_synthesized_context(self._ensure_system_message(messages))
 
     # ------------------------------------------------------------------
     # Renderer ABC

@@ -32,6 +32,8 @@ from tinker_cookbook.renderers.base import (
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
+from training.renderer.message_weights import untrained_synthesized_context
+
 _DEFAULT_SYSTEM_PROMPT = (
     "You are MiniMax-M2, a helpful AI assistant built by MiniMax. "
     "Knowledge cutoff: 2025-06."
@@ -295,7 +297,9 @@ class MiniMaxM2Renderer(Renderer):
         return grouped
 
     def _preprocess_messages(self, messages: list[Message]) -> list[Message]:
-        return self._group_tool_messages(self._ensure_system_message(messages))
+        return untrained_synthesized_context(
+            self._group_tool_messages(self._ensure_system_message(messages))
+        )
 
     def _role_for_message(self, message: Message) -> str:
         if message["role"] == "assistant":
