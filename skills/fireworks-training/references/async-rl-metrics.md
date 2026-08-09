@@ -27,9 +27,12 @@ in every metric record. Read these first:
 - `max_head_offpolicy_versions` (`O`)
 - `max_concurrency_rollout_sample` (`C`, optional)
 
-One optimizer batch contains `B = P × G` samples. When `C` is unset there is no
-concurrency gate, and `producer/concurrency_capacity_samples` is intentionally
-absent. Do not interpret a missing concurrency-capacity series as zero.
+One optimizer batch requests `B = P × G` logical rollout results. Producer
+metrics call these scheduler slots `samples`; they are rollout calls and GRPO
+group members, not the trainer trajectories inside each result. When `C` is
+unset there is no concurrency gate, and
+`producer/concurrency_capacity_samples` is intentionally absent. Do not
+interpret a missing concurrency-capacity series as zero.
 
 ## Read complete histories
 
@@ -83,10 +86,17 @@ The optimizer record exposes exactly five rollout-quality metrics:
 | Metric | Meaning |
 |---|---|
 | `rollout/raw_reward` | Mean reward before `dynamic_filter_fn` |
-| `rollout/filtered_reward` | Mean reward on samples sent to forward/backward |
-| `rollout/raw_samples` | Successfully assembled samples before filtering |
-| `rollout/filtered_samples` | Samples sent to forward/backward |
+| `rollout/filtered_reward` | Mean reward on logical rollout results retained after filtering |
+| `rollout/raw_samples` | Successfully assembled logical rollout results before filtering |
+| `rollout/filtered_samples` | Logical rollout results retained after filtering |
 | `rollout/filter_ratio` | `1 - filtered_samples / raw_samples` |
+
+These counts follow `RolloutRun` rewards, so a run containing multiple
+`RolloutSample` trajectories still contributes one sample. Trainer-facing
+sequence metrics count the contained trajectories instead. In particular,
+`train/local_input_sequences:sum`, when reported, may exceed
+`rollout/filtered_samples`; that is expected and does not mean the GRPO group
+was expanded or its advantage recomputed.
 
 Raw inference-logprob drift metrics are optional: when the sampler does not
 return the distinct raw model-logprob field, the coverage and drift series are
@@ -123,7 +133,7 @@ rows     = Δ producer/completion_refill_rows_submitted_total
 rate     = attempts / Δ producer/elapsed_time_s
 ```
 
-- `attempts > 0` proves completed rollouts triggered admission retries.
+- `attempts > 0` proves completed rollout calls triggered admission retries.
 - `rows > 0` proves those retries admitted new complete prompt rows.
 - `attempts > 0` and `rows = 0` is valid when the staleness gate is full. A
   completion converts reserved samples to accepted samples but does not create

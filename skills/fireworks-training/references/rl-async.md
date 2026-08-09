@@ -28,7 +28,8 @@ Users provide:
 
 - dataset rows through `Config.dataset` or `rows=`;
 - `rollout_fn_factory(setup) -> rollout_fn`;
-- environment interaction, scoring, and trainer-ready rollout segments;
+- environment interaction, scoring, and one or more trainer-ready trajectories
+  per successful rollout call;
 - algorithm and scheduling config;
 - optional `dynamic_filter_fn` and `evaluation_fn` callbacks.
 
@@ -42,7 +43,7 @@ trainer lifecycle state in the rollout.
 
 ## Rollout API
 
-The factory runs once. Each rollout call produces one trajectory:
+The factory runs once. Each rollout call produces one logical rollout result:
 
 ```python
 def make_rollout_fn(setup: RolloutSetup) -> RolloutFn:
@@ -53,8 +54,10 @@ def make_rollout_fn(setup: RolloutSetup) -> RolloutFn:
 ```
 
 The recipe invokes `rollout_fn` `completions_per_prompt` times for each dataset
-row. Return `None` to drop one trajectory draw. Return a `RolloutRun` with one
-or more `RolloutSample` segments on success:
+row. Return `None` to drop that rollout draw. On success, return a `RolloutRun`
+containing one or more trainer-ready `RolloutSample` trajectories. The API
+field is named `segments` because these trajectories may be branches or
+disjoint token spans from one environment interaction:
 
 ```python
 @dataclass
@@ -69,13 +72,20 @@ class RolloutSample:
     reward: float
 ```
 
-For every segment:
+For every returned trajectory:
 
 - `tokens`, `logprobs`, and `loss_mask` must have equal lengths;
 - `loss_mask=1` marks tokens trained on; prompt, user, tool, and environment
   tokens stay `0`;
 - non-generated positions should use `0.0` logprobs;
-- all segments in one run must share the same scalar reward.
+- all trajectories in one run must share the same scalar reward.
+
+`RolloutRun` is the reward, advantage, and GRPO group-member boundary; it is
+not restricted to one trainer trajectory. Group assembly computes one
+advantage per surviving run and broadcasts it to every trajectory in that
+run. Each trajectory is then packed as a separate trainer datum. Thus a group
+with `R` surviving runs has `R` rewards and advantages, while its trainer datum
+count is `sum(len(run.segments) for run in runs)` and may exceed `R`.
 
 `RolloutSetup` contains the tokenizer, tokenizer ID, sampling kwargs, inference
 base URL, API key, deployment model, group size, and caller-provided `extras`.
@@ -124,11 +134,11 @@ Use these symbols when reasoning about capacity:
 
 | Config field | Symbol | Unit | Meaning |
 |---|---:|---|---|
-| `completions_per_prompt` | `G` | samples per row | GRPO trajectories for one dataset row; must be at least 2 |
+| `completions_per_prompt` | `G` | rollout calls per row | Logical GRPO group members requested for one dataset row |
 | `prompt_groups_per_step` | `P` | rows | Complete prompt groups in one optimizer batch |
 | `pipeline_chunks_per_step` | `K` | chunks | Requested forward/backward chunks per optimizer batch |
 | `max_head_offpolicy_versions` | `O` | published versions | Admission headroom beyond the current policy version; `0` is fully on-policy |
-| `max_concurrency_rollout_sample` | `C` | samples | Optional hard cap on in-flight rollout calls |
+| `max_concurrency_rollout_sample` | `C` | rollout calls | Optional hard cap on in-flight rollout calls |
 
 Router Replay (R3) is a numerics-alignment setting, not a scheduling knob.
 Both RL recipes default `router_replay=True` and
@@ -136,9 +146,11 @@ Both RL recipes default `router_replay=True` and
 tokens without the serving cost of `echo=True`. Use full-sequence replay only
 when the extra alignment is worth that throughput cost.
 
-One optimizer batch contains `B = P × G` samples. The scheduler creates
-`min(P, K)` non-empty, balanced chunk targets before production begins. For
-example, `P=10, K=4` creates targets `(3, 3, 2, 2)`.
+One optimizer batch requests `B = P × G` logical rollout results. The number of
+trainer trajectories can be larger when a result contains multiple
+`RolloutSample`s. The scheduler balances its `min(P, K)` non-empty chunk
+targets by prompt rows, not by the eventual trajectory count. For example,
+`P=10, K=4` creates targets `(3, 3, 2, 2)`.
 
 Chunking changes when forward/backward work can start; it does not change the
 optimizer batch. Exactly one optimizer mutation, one sampler hotload, and one
@@ -146,8 +158,9 @@ version publication follow all chunks in a batch.
 
 ## Row-atomic admission gate
 
-Admission bookkeeping uses samples, the same unit as rollout concurrency. A
-row is submitted only when both budgets can fit all `G` rollout calls:
+Admission bookkeeping uses rollout-call slots, exposed as `*_samples` in the
+producer metrics. It does not reserve capacity per returned trajectory. A row
+is submitted only when both budgets can fit all `G` rollout calls:
 
 ```text
 B = prompt_groups_per_step * completions_per_prompt
@@ -217,11 +230,12 @@ batch rather than silently dropping accepted prompt groups.
 
 ## Failure policy
 
-One flaky rollout does not immediately abort a long run:
+One flaky rollout call does not immediately abort a long run:
 
-- `None` is an explicit dropped draw;
+- `None` explicitly drops that call and contributes no trajectories;
 - explicit drops increment `producer/trajectory_drops_total` but are neutral to
-  the infrastructure circuit breaker;
+  the infrastructure circuit breaker; despite its name, this metric counts
+  dropped rollout calls;
 - timeouts, connection failures, HTTP 408/429/5xx, explicitly marked
   `RecoverableRolloutError`s, and known client transport errors are recoverable;
 - recoverable errors drop that draw and continue if the row still satisfies
@@ -240,11 +254,12 @@ Agentic adapters may own a broader trajectory boundary than generic rollouts.
 Keep that policy in the adapter and follow [`rl-agentic.md`](rl-agentic.md);
 malformed R3 data is still discarded at async admission before group assembly.
 
-Incomplete-group retries are bounded. After that budget is exhausted, the row
-is rejected and the producer advances. If every row is rejected, the loop can
-finish with zero optimizer steps; use the returned step count together with
-`producer/trajectory_drops_total` and `producer/rows_rejected_total` as the
-experiment-level success criterion.
+Incomplete-group retries are bounded and `min_group_size` counts surviving
+`RolloutRun`s, not their contained trajectories. After that budget is
+exhausted, the row is rejected and the producer advances. If every row is
+rejected, the loop can finish with zero optimizer steps; use the returned step
+count together with `producer/trajectory_drops_total` and
+`producer/rows_rejected_total` as the experiment-level success criterion.
 
 If a producer failure affects the active optimizer batch, training stops before
 its optimizer mutation. If it affects only a future batch, the recipe finishes
