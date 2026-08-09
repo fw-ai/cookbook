@@ -2,18 +2,22 @@
 
 A Fireworks SFT row marks which turns carry loss with a per-message ``weight``.
 The production entry point (:func:`render_messages_to_datums`, also behind
-``RenderDatasetPreview`` / Render Samples) resolves those flags and renders with
-``TrainOnWhat.CUSTOMIZED``, which requires every rendered message to declare
-``trainable``.
+``RenderDatasetPreview`` / Render Samples) resolves those flags and, for a
+renderer whose chat template strips historical thinking, unrolls the row into
+one datum per user turn. Two layers therefore have to agree about loss
+placement, and the seam between them is where masking has broken before:
 
-Renderers routinely break that requirement, because several synthesize a
-template message *while* rendering, after the dataset's flags were resolved. So
-this module starts from the most basic property there is:
+* the unroll picks the loss mode per prefix,
+* the renderer may synthesize template messages while rendering that prefix —
+  an empty system block, a thinking marker, a reasoning-effort preamble.
 
-    A row that carries weights renders at all, and the template context the
-    renderer invented for itself carries no loss.
+The properties pinned here, in the order they were established:
 
-Later invariants about *where* the loss lands build on this file.
+1. A weighted row renders at all, and the template context the renderer
+   invented for itself carries no loss.
+2. Each unrolled datum trains only its own terminal turn, so masking one
+   message cannot move loss in a split that does not even contain it, and
+   flags that restate the default change nothing at all.
 
 Network-dependent: tokenizers load via ``transformers.AutoTokenizer`` and a
 case skips cleanly when its model cannot be loaded.
@@ -42,6 +46,10 @@ _MATRIX_TOKENIZERS = {
     case.renderer: case.resolved_tokenizer_model() for case in RENDERER_MATRIX
 }
 
+# Renderers the QA matrix does not carry a row for yet. The invariant below
+# needs only a tokenizer, not the matrix's capability flags, so bind them here
+# instead of enrolling them in every harness invariant. Each of these families
+# synthesizes template context, which is exactly what this module guards.
 # Renderers the QA matrix does not carry a row for. Several are the LEGACY
 # concrete names, which resolve to their own classes rather than to the
 # corrected ``*_interleaved`` adapters, so they need their own row here — a
@@ -73,9 +81,7 @@ _TOKENIZER_FOR_RENDERER = {**_MATRIX_TOKENIZERS, **_EXTRA_TOKENIZERS}
 # most legacy/`_interleaved` pairs are DIFFERENT classes.
 _UNCOVERED_RENDERERS = {
     "gpt_oss_low_reasoning": "same class and synthesis path as gpt_oss_high_reasoning",
-    "gpt_oss_medium_reasoning": (
-        "same class and synthesis path as gpt_oss_high_reasoning"
-    ),
+    "gpt_oss_medium_reasoning": "same class and synthesis path as gpt_oss_high_reasoning",
     "qwen3_vl": "vision renderer; needs an image processor fixture",
     "qwen3_vl_instruct": "vision renderer; needs an image processor fixture",
     "deepseek_v4": (
@@ -88,11 +94,10 @@ _UNCOVERED_RENDERERS = {
 # Renderers that cannot render ANY multi-target multi-turn row, weighted or not.
 # Pinned by ``test_multi_turn_gap_is_weight_independent`` so a crash there is
 # never mistaken for weighted-row breakage.
-_NO_MULTI_TARGET_SPLIT = {
-    "minimax_m2": (
-        "reports has_extension_property=False but ships no build_supervised_examples"
-    )
-}
+_NO_MULTI_TURGET_SPLIT_REASON = (
+    "reports has_extension_property=False but ships no build_supervised_examples"
+)
+_NO_MULTI_TARGET_SPLIT = {"minimax_m2": _NO_MULTI_TURGET_SPLIT_REASON}
 
 # Renderer families that synthesize a template message while rendering, with a
 # marker from that message's rendered text. Under per-message weights the
@@ -102,7 +107,6 @@ _SYNTHESIZED_CONTEXT_MARKERS = [
     ("gpt_oss_high_reasoning", "Reasoning: high"),
     ("gemma4_thinking", "<|think|>"),
     ("mistral", "[SYSTEM_PROMPT]"),
-    ("kimi_k25", "You are Kimi"),
 ]
 
 
@@ -173,6 +177,10 @@ def _trained_text(tokenizer, datum) -> str:
     )
 
 
+def _trained_token_count(datum) -> int:
+    return sum(1 for weight in datum.token_weights if weight > 0)
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Rows. Every round's terminal assistant stays trainable so no round is
 # skipped and the weighted render has one datum per unweighted datum.
@@ -226,7 +234,7 @@ def _is_multi_turn(row: list[dict[str, Any]]) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# A weighted row renders
+# The invariant
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -257,6 +265,61 @@ def test_a_weighted_row_renders_and_trains_its_answer(name: str, row_id: str):
     )
 
 
+@pytest.mark.parametrize("name", _RENDERER_NAMES)
+def test_all_weights_one_renders_like_an_unweighted_row(name: str):
+    """``weight: 1`` on every assistant states the default and must therefore be
+    a complete no-op: same datum count, same tokens, same masks.
+
+    This is the sharpest check that the unroll applies the flags per turn rather
+    than across the whole row. A renderer that hands each prefix the caller's
+    mode verbatim re-trains every earlier turn in every later split, which shows
+    up here as a mask that differs from the unweighted row's.
+    """
+    if name in _NO_MULTI_TARGET_SPLIT:
+        pytest.skip(f"{name!r} {_NO_MULTI_TARGET_SPLIT[name]}")
+    tokenizer, renderer = _resolve_renderer(name)
+
+    weighted = _render(renderer, _MULTI_TURN_ALL_TRAINED)
+    reference = _render(renderer, _without_weights(_MULTI_TURN_ALL_TRAINED))
+
+    assert len(weighted) == len(reference), (
+        f"{name!r}: weight=1 everywhere must not change the datum count"
+    )
+    for index, (datum, reference_datum) in enumerate(zip(weighted, reference)):
+        assert datum.token_ids == reference_datum.token_ids, (
+            f"{name!r} datum {index}: weights select loss, so they must not change "
+            "the rendered token sequence"
+        )
+        assert datum.token_weights == reference_datum.token_weights, (
+            f"{name!r} datum {index}: weight=1 restates the default, so it must not "
+            f"change the mask; trained {_trained_text(tokenizer, datum)!r} vs "
+            f"{_trained_text(tokenizer, reference_datum)!r}"
+        )
+
+
+@pytest.mark.parametrize("name", _RENDERER_NAMES)
+def test_masked_answer_is_never_trained_by_any_datum(name: str):
+    """The masked message stays in the prompt as history and never picks up loss
+    in any datum, including the later rounds that carry it as context."""
+    if name in _NO_MULTI_TARGET_SPLIT:
+        pytest.skip(f"{name!r} {_NO_MULTI_TARGET_SPLIT[name]}")
+    tokenizer, renderer = _resolve_renderer(name)
+
+    datums = _render(renderer, _MULTI_TURN_MASKED_MIDDLE)
+
+    trained_slices = [_trained_text(tokenizer, datum) for datum in datums]
+    assert not [slice_ for slice_ in trained_slices if "RETRY" in slice_], (
+        f"{name!r}: the masked message must never be trained; got {trained_slices!r}"
+    )
+    assert any("ANSWER" in slice_ for slice_ in trained_slices), (
+        f"{name!r}: the trained answer must still be trained; got {trained_slices!r}"
+    )
+    full_decodes = [tokenizer.decode(datum.token_ids) for datum in datums]
+    assert any("RETRY" in decoded for decoded in full_decodes), (
+        f"{name!r}: the masked message must remain in the prompt as history"
+    )
+
+
 @pytest.mark.parametrize(
     "name,marker",
     _SYNTHESIZED_CONTEXT_MARKERS,
@@ -267,8 +330,10 @@ def test_synthesized_template_context_is_rendered_but_never_trained(
 ):
     """Named check for the renderers that synthesize a message mid-render.
 
-    The message they add has to be rendered — the prompt would otherwise differ
-    from what the model sees at inference — and it has to stay out of the loss.
+    These families used to fail the render outright on any weighted row,
+    because the message they add reaches the base renderer with no ``trainable``
+    field. It has to be rendered (the prompt would otherwise differ from
+    inference) and it has to stay out of the loss.
     """
     tokenizer, renderer = _resolve_renderer(name)
 
@@ -284,6 +349,355 @@ def test_synthesized_template_context_is_rendered_but_never_trained(
             f"{name!r} datum {index}: synthesized template context {marker!r} must "
             "carry no loss"
         )
+
+
+# The reported shape: a tool-calling Qwen 3.5 row whose only weight is a single
+# `"weight": 0` on a superseded draft in the last round.
+_CUSTOMER_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_order",
+            "description": "Look up an order by id.",
+            "parameters": {
+                "type": "object",
+                "properties": {"order_id": {"type": "string"}},
+                "required": ["order_id"],
+            },
+        },
+    }
+]
+
+
+def _customer_row() -> list[dict[str, Any]]:
+    def tool_call(order_id: str, call_id: str) -> dict[str, Any]:
+        return {
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": "lookup_order",
+                "arguments": '{"order_id": "%s"}' % order_id,
+            },
+        }
+
+    return [
+        {"role": "system", "content": "You are a support agent."},
+        {"role": "user", "content": "Where is order A?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "REASON_1",
+            "tool_calls": [tool_call("A", "call_a")],
+        },
+        {"role": "tool", "content": "shipped", "tool_call_id": "call_a"},
+        {"role": "assistant", "content": "ANSWER_1", "reasoning_content": "REASON_2"},
+        {"role": "user", "content": "And order B?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "REASON_3",
+            "tool_calls": [tool_call("B", "call_b")],
+        },
+        {"role": "tool", "content": "delayed", "tool_call_id": "call_b"},
+        {"role": "assistant", "content": "ANSWER_2", "reasoning_content": "REASON_4"},
+        {"role": "user", "content": "Summarize both."},
+        {
+            "role": "assistant",
+            "content": "ANSWER_3_DRAFT",
+            "reasoning_content": "REASON_5",
+            "weight": 0,
+        },
+        {"role": "assistant", "content": "ANSWER_3", "reasoning_content": "REASON_6"},
+    ]
+
+
+def test_customer_qwen3_5_row_trains_each_answer_in_exactly_one_datum():
+    """One `"weight": 0` must not move loss anywhere else in the row.
+
+    This is the reported symptom: masking a single superseded draft in the last
+    round changed loss placement in the earlier splits, which do not even
+    contain the masked message.
+    """
+    tokenizer, renderer = _resolve_renderer("qwen3_5_interleaved")
+
+    def render(row):
+        return render_messages_to_datums(
+            [dict(message) for message in row],
+            renderer=renderer,
+            train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+            tools=_CUSTOMER_TOOLS,
+        )
+
+    weighted = render(_customer_row())
+    reference = render(_without_weights(_customer_row()))
+
+    assert len(weighted) == 3, f"expected one datum per user turn, got {len(weighted)}"
+    trained = [_trained_text(tokenizer, datum) for datum in weighted]
+
+    assert (
+        "ANSWER_1" in trained[0]
+        and "REASON_1" in trained[0]
+        and "REASON_2" in trained[0]
+    )
+    assert (
+        "ANSWER_2" in trained[1]
+        and "REASON_3" in trained[1]
+        and "REASON_4" in trained[1]
+    )
+    assert "ANSWER_3" in trained[2] and "REASON_6" in trained[2]
+    assert "ANSWER_3_DRAFT" not in trained[2] and "REASON_5" not in trained[2]
+    for index, answer in enumerate(["ANSWER_1", "ANSWER_2", "ANSWER_3"]):
+        for other_index, other in enumerate(["ANSWER_1", "ANSWER_2", "ANSWER_3"]):
+            if other_index == index:
+                continue
+            assert other not in trained[index], (
+                f"datum {index} must train only {answer!r}; {other!r} also carries loss "
+                f"in {trained[index]!r}"
+            )
+
+    # Historical reasoning is stripped once a turn becomes history, which is why
+    # the row is unrolled at all.
+    assert "REASON_2" not in tokenizer.decode(weighted[1].token_ids)
+    assert "REASON_4" not in tokenizer.decode(weighted[2].token_ids)
+
+    # The splits that do not contain the masked message must be untouched by it.
+    for index in (0, 1):
+        assert weighted[index].token_ids == reference[index].token_ids
+        assert weighted[index].token_weights == reference[index].token_weights, (
+            f"datum {index} does not contain the masked message, so its loss mask must "
+            "not change when that message is masked"
+        )
+
+
+# Modes whose target set is some subset of the assistant messages. For these,
+# per-message weights that are all 1 restate exactly what the mode already says,
+# so they must be a complete no-op.
+_ASSISTANT_TARGET_REQUESTS = [
+    TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    TrainOnWhat.LAST_ASSISTANT_TURN,
+    TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+]
+
+# Modes that also target user/system messages. The weight schema resolves an
+# unflagged non-assistant message to untrained, so weights genuinely narrow these
+# to the assistants — a contradictory configuration, but it must still only ever
+# narrow.
+_WHOLE_SEQUENCE_REQUESTS = [
+    TrainOnWhat.ALL_MESSAGES,
+    TrainOnWhat.ALL_TOKENS,
+]
+
+_MODE_PROBE_ROW = [
+    {"role": "system", "content": "S"},
+    {"role": "user", "content": "Q1"},
+    {"role": "assistant", "content": "A1"},
+    {"role": "user", "content": "Q2"},
+    {"role": "assistant", "content": "A2"},
+]
+
+
+def _render_mode_probe(renderer, messages, requested: TrainOnWhat):
+    return render_messages_to_datums(
+        [dict(message) for message in messages],
+        renderer=renderer,
+        train_on_what=requested,
+    )
+
+
+def _all_assistant_weights_one(row: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {**message, "weight": 1} if message["role"] == "assistant" else message
+        for message in row
+    ]
+
+
+@pytest.mark.parametrize("requested", _ASSISTANT_TARGET_REQUESTS, ids=lambda m: m.value)
+def test_all_weights_one_is_a_no_op_under_any_assistant_target_mode(
+    requested: TrainOnWhat,
+):
+    """``train_on_what`` is user-settable config, and a narrow one must stay
+    narrow. Under a mode that already targets only assistants, ``weight: 1``
+    everywhere states nothing new, so the render must not move — not the datum
+    count, not a single token, not a single weight."""
+    tokenizer, renderer = _resolve_renderer("qwen3_5")
+
+    weighted = _render_mode_probe(
+        renderer, _all_assistant_weights_one(_MODE_PROBE_ROW), requested
+    )
+    reference = _render_mode_probe(renderer, _MODE_PROBE_ROW, requested)
+
+    assert len(weighted) == len(reference), (
+        f"{requested.value}: weight=1 everywhere must not change the datum count"
+    )
+    for index, (datum, reference_datum) in enumerate(zip(weighted, reference)):
+        assert datum.token_ids == reference_datum.token_ids
+        assert datum.token_weights == reference_datum.token_weights, (
+            f"{requested.value} datum {index}: weight=1 restates the default, so it "
+            f"must not change the mask; trained "
+            f"{_trained_text(tokenizer, datum)!r} vs "
+            f"{_trained_text(tokenizer, reference_datum)!r}"
+        )
+
+
+@pytest.mark.parametrize("requested", _WHOLE_SEQUENCE_REQUESTS, ids=lambda m: m.value)
+def test_weights_never_widen_loss_under_a_whole_sequence_mode(requested: TrainOnWhat):
+    """Combining weights with a mode that targets user/system messages narrows to
+    the assistants, because an unflagged non-assistant message resolves to
+    untrained. Contradictory config, but it must never gain loss the requested
+    mode does not assign."""
+    _tokenizer, renderer = _resolve_renderer("qwen3_5")
+
+    weighted = _render_mode_probe(
+        renderer, _all_assistant_weights_one(_MODE_PROBE_ROW), requested
+    )
+    reference = _render_mode_probe(renderer, _MODE_PROBE_ROW, requested)
+
+    assert len(weighted) == len(reference)
+    for index, (datum, reference_datum) in enumerate(zip(weighted, reference)):
+        assert datum.token_ids == reference_datum.token_ids
+        leaked = [
+            position
+            for position, (weight, reference_weight) in enumerate(
+                zip(datum.token_weights, reference_datum.token_weights)
+            )
+            if weight > 0 and reference_weight == 0
+        ]
+        assert not leaked, (
+            f"{requested.value} datum {index}: positions {leaked[:8]} carry loss the "
+            "requested mode does not assign"
+        )
+
+
+@pytest.mark.parametrize(
+    "requested",
+    # The single-target modes, which render the row as one datum. A row asking
+    # for ALL_ASSISTANT_MESSAGES goes through the unroll instead, where a masked
+    # terminal answer drops its whole round rather than falling through.
+    [TrainOnWhat.LAST_ASSISTANT_MESSAGE, TrainOnWhat.LAST_ASSISTANT_TURN],
+    ids=lambda m: m.value,
+)
+def test_a_mask_no_mode_expresses_still_respects_the_requested_mode(
+    requested: TrainOnWhat,
+):
+    """A mask no built-in mode expresses falls through to ``CUSTOMIZED``, which
+    honours every flag verbatim. Flags on messages the requested mode never
+    selects have to be cleared first, or masking the terminal answer under a
+    narrow mode would move loss onto an earlier turn the caller excluded — and
+    on a strip-history renderer those tokens have already lost their thinking.
+    """
+    tokenizer, renderer = _resolve_renderer("qwen3_5")
+
+    row = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "A1", "weight": 1},
+        {"role": "user", "content": "Q2"},
+        {"role": "assistant", "content": "A2", "weight": 1},
+        {"role": "assistant", "content": "A3", "weight": 0},
+    ]
+    weighted = _render_mode_probe(renderer, row, requested)
+    reference = _render_mode_probe(renderer, _without_weights(row), requested)
+
+    assert len(weighted) == len(reference)
+    for index, (datum, reference_datum) in enumerate(zip(weighted, reference)):
+        assert datum.token_ids == reference_datum.token_ids
+        leaked = [
+            position
+            for position, (weight, reference_weight) in enumerate(
+                zip(datum.token_weights, reference_datum.token_weights)
+            )
+            if weight > 0 and reference_weight == 0
+        ]
+        assert not leaked, (
+            f"{requested.value} datum {index}: positions {leaked[:8]} carry loss the "
+            f"requested mode does not assign; trained "
+            f"{_trained_text(tokenizer, datum)!r} vs the unweighted row's "
+            f"{_trained_text(tokenizer, reference_datum)!r}"
+        )
+
+
+@pytest.mark.parametrize("name", ["qwen3_5", "nemotron3", "gemma4_thinking"])
+def test_a_weighted_tool_result_inside_the_terminal_turn_is_not_trained(name: str):
+    """Demoting history clears the flags BEFORE the terminal turn; inside it,
+    a flag on something the turn's own mode would not train has to be cleared
+    too.
+
+    A tool result carrying ``weight: 1`` is the concrete case: an unrolled datum
+    trains its terminal assistant turn, and a tool result is not part of that
+    however the dataset flags it.
+    """
+    tokenizer, renderer = _resolve_renderer(name)
+
+    datums = _render(
+        renderer,
+        [
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1", "weight": 1},
+            {"role": "user", "content": "Q2"},
+            {"role": "assistant", "content": "CALL", "weight": 1},
+            {"role": "tool", "content": "TOOLRESULT", "weight": 1},
+            {"role": "assistant", "content": "RETRY", "weight": 0},
+            {"role": "assistant", "content": "ANSWER", "weight": 1},
+        ],
+    )
+
+    trained = [_trained_text(tokenizer, datum) for datum in datums]
+    assert not [slice_ for slice_ in trained if "TOOLRESULT" in slice_], (
+        f"{name!r}: a tool result is never a training target; got {trained!r}"
+    )
+    assert any("ANSWER" in slice_ for slice_ in trained), (
+        f"{name!r}: the terminal answer must still be trained; got {trained!r}"
+    )
+
+
+@pytest.mark.parametrize("name", ["qwen3_5", "nemotron3", "mistral"])
+def test_customized_without_any_weights_still_fails_loudly(name: str):
+    """A row with no per-message flags cannot be rendered with ``CUSTOMIZED``.
+
+    Nothing says which messages to train, so the renderer rejects it. That has
+    to stay an error: quietly treating every message as untrained would train a
+    misconfigured job on nothing at all.
+    """
+    _tokenizer, renderer = _resolve_renderer(name)
+
+    with pytest.raises(AssertionError, match="trainable"):
+        render_messages_to_datums(
+            [
+                {"role": "user", "content": "Q1"},
+                {"role": "assistant", "content": "A1"},
+                {"role": "user", "content": "Q2"},
+                {"role": "assistant", "content": "A2"},
+            ],
+            renderer=renderer,
+            train_on_what=TrainOnWhat.CUSTOMIZED,
+        )
+
+
+def test_weights_with_a_user_and_system_mode_relocate_loss_to_the_assistants():
+    """Known limitation, pinned so it stays visible.
+
+    ``ALL_USER_AND_SYSTEM_MESSAGES`` and the weight schema disagree about every
+    message: the mode targets exactly the roles the schema resolves to untrained.
+    On an unrolling renderer the requested mode never reaches the unroll, whose
+    per-prefix default is the terminal assistant turn, so the flags win and loss
+    moves from the user/system turns onto the assistants rather than emptying
+    out. Combining the two is contradictory configuration and no SFT recipe does
+    it; making the requested mode reach the unroll would mean widening
+    ``build_supervised_examples``, which is an upstream-compatible signature.
+    """
+    tokenizer, renderer = _resolve_renderer("qwen3_5")
+
+    weighted = _render_mode_probe(
+        renderer,
+        _all_assistant_weights_one(_MODE_PROBE_ROW),
+        TrainOnWhat.ALL_USER_AND_SYSTEM_MESSAGES,
+    )
+
+    trained = [_trained_text(tokenizer, datum) for datum in weighted]
+    assert all("A" in slice_ for slice_ in trained), (
+        f"expected the flags to win over the requested mode; got {trained!r}"
+    )
+    # Still one target per datum, which is what the unroll exists to guarantee.
+    assert "A1" not in trained[1], f"history must not be re-trained; got {trained!r}"
 
 
 def test_a_row_with_no_weights_is_left_completely_alone():

@@ -47,6 +47,25 @@ prefix as context for any *later* trainable round. This matches the
 V1 SFT trainer's ``_split_at_thinking_boundaries`` filter (it skips
 yielding a round whose terminal assistant has ``weight != 1``).
 
+Per-message weights (``CUSTOMIZED``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A row that carries any ``weight`` / ``trainable`` field is rendered with
+``CUSTOMIZED`` so per-message flags are honored. ``CUSTOMIZED`` weights
+every trainable message wherever it appears, which on a prefix render
+would re-train each earlier assistant turn once per later split — with
+its thinking already stripped from history, the exact train/inference
+mismatch this split exists to avoid.
+
+Each prefix is therefore reduced to its own terminal turn: every message
+before that turn is demoted to context, so an assistant turn is trained
+in exactly the one datum where it is the target. The flags that survive
+select only messages of the terminal turn, and whenever they select
+exactly what a built-in mode selects the prefix renders with that mode
+instead, keeping a weighted row byte-identical to the same row without
+weights. Flags that mask part of the terminal turn in a way no built-in
+mode expresses keep ``CUSTOMIZED``.
+
 Booleanization of ``weight`` follows
 ``training/utils/supervised.py::_resolve_trainable``: ``trainable``
 wins if present, otherwise ``bool(weight)``, otherwise the assistant
@@ -65,6 +84,13 @@ import warnings
 from typing import Any, Mapping, Sequence
 
 from tinker_cookbook.renderers.base import TrainOnWhat
+
+from training.renderer.message_weights import (
+    equivalent_builtin_train_on_what,
+    flags_clamped_to_mode,
+    uses_per_message_weights,
+    without_trainable_flags,
+)
 
 
 def _is_trainable_assistant(message: Mapping[str, Any]) -> bool:
@@ -87,6 +113,30 @@ def _terminal_assistant(prefix: Sequence[Any]) -> Mapping[str, Any] | None:
         if isinstance(msg, Mapping) and msg.get("role") == "assistant":
             return msg
     return None
+
+
+def _terminal_turn_start(prefix: Sequence[Any]) -> int:
+    """Index of the first message after the prefix's last user message.
+
+    That message onward is the terminal turn: the one target this datum
+    exists to train.
+    """
+    for idx in range(len(prefix) - 1, -1, -1):
+        msg = prefix[idx]
+        if isinstance(msg, Mapping) and msg.get("role") == "user":
+            return idx + 1
+    return 0
+
+
+def _history_demoted_to_context(prefix: Sequence[Any]) -> list[Any]:
+    """Keep per-message flags on the terminal turn, mark history as context."""
+    terminal_start = _terminal_turn_start(prefix)
+    return [
+        msg
+        if idx >= terminal_start or not isinstance(msg, Mapping)
+        else {**msg, "trainable": False}
+        for idx, msg in enumerate(prefix)
+    ]
 
 
 class DisaggregateMultiTurnMixin:
@@ -129,10 +179,13 @@ class DisaggregateMultiTurnMixin:
             idx for idx, message in enumerate(messages) if message["role"] == "user"
         ]
 
-        if train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES:
+        if train_on_what not in (
+            TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+            TrainOnWhat.CUSTOMIZED,
+        ):
             warnings.warn(
                 "Using train_on_what=ALL_MESSAGES/ALL_TOKENS/"
-                "ALL_USER_AND_SYSTEM_MESSAGES/CUSTOMIZED with a renderer that "
+                "ALL_USER_AND_SYSTEM_MESSAGES with a renderer that "
                 "does not satisfy the extension property "
                 "(has_extension_property=False). The same train_on_what mode "
                 "is applied to each per-user-turn split.",
@@ -152,11 +205,36 @@ class DisaggregateMultiTurnMixin:
             # context.
             if terminal is not None and not _is_trainable_assistant(terminal):
                 continue
-            mode = (
-                TrainOnWhat.LAST_ASSISTANT_TURN
-                if train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES
-                else train_on_what
-            )
+            if train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES:
+                mode = TrainOnWhat.LAST_ASSISTANT_TURN
+            elif train_on_what == TrainOnWhat.CUSTOMIZED and uses_per_message_weights(
+                prefix
+            ):
+                prefix = _history_demoted_to_context(prefix)
+                # A fully trainable terminal turn restates LAST_ASSISTANT_TURN
+                # and a terminal turn masked down to its final answer restates
+                # LAST_ASSISTANT_MESSAGE; either way the weighted row renders
+                # identically to the same row without weights. Only a mask no
+                # built-in mode expresses needs per-message weights.
+                builtin_mode = equivalent_builtin_train_on_what(
+                    prefix,
+                    TrainOnWhat.LAST_ASSISTANT_TURN,
+                )
+                if builtin_mode is None:
+                    mode = TrainOnWhat.CUSTOMIZED
+                    # Demotion clears the flags BEFORE the terminal turn.
+                    # Inside it, a flag on something LAST_ASSISTANT_TURN would
+                    # not train — a tool result carrying weight: 1 — must not
+                    # pick up loss either.
+                    prefix = flags_clamped_to_mode(
+                        prefix,
+                        TrainOnWhat.LAST_ASSISTANT_TURN,
+                    )
+                else:
+                    mode = builtin_mode
+                    prefix = without_trainable_flags(prefix)
+            else:
+                mode = train_on_what
             examples.append(self.build_supervised_example(prefix, train_on_what=mode))
 
         return examples

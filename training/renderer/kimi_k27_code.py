@@ -31,6 +31,7 @@ from tinker_cookbook.renderers.kimi_k26 import (
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.kimi_k26 import (
     KimiK26PreserveThinkingRenderer as _CookbookKimiK26PreserveThinkingRenderer,
 )
@@ -99,9 +100,18 @@ class _KimiK27CodeMixin:
 
 class KimiK27CodeRenderer(
     _KimiK27CodeMixin,
+    DisaggregateMultiTurnMixin,
     _UpstreamKimiK26PreserveThinkingRenderer,
 ):
-    """Legacy concrete ``kimi_k27_code`` behavior."""
+    """Legacy concrete ``kimi_k27_code`` behavior.
+
+    The upstream base reports no extension property and unrolls multi-turn rows
+    with its own splitter, which hands each per-user-turn prefix the caller's
+    mode verbatim. A row carrying per-message weights therefore arrived as
+    ``CUSTOMIZED`` and re-trained every earlier assistant turn in every later
+    prefix. The mixin reduces each prefix to its own terminal turn instead, and
+    is byte-identical to the upstream splitter for rows without weights.
+    """
 
 
 class KimiK27CodePreservedRenderer(
