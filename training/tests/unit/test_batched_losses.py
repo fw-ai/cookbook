@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,7 @@ from training.utils.losses import (
     make_batch_weighted_sft_loss_fn,
     make_orpo_loss_fn,
     make_sft_loss_fn,
+    perplexity_from_nll,
 )
 from training.utils.rl.common import (
     _normalize_prompt_lens,
@@ -30,6 +33,38 @@ def _make_dummy_logprobs(seq_len: int, seed: int = 0) -> torch.Tensor:
 
 def _zeros(n: int) -> list[float]:
     return [0.0] * n
+
+
+def test_perplexity_from_nll_uses_float64_range() -> None:
+    ppl = perplexity_from_nll(torch.tensor(100.0, dtype=torch.float32))
+
+    assert ppl == pytest.approx(math.exp(100.0))
+    assert math.isfinite(ppl)
+
+
+def test_perplexity_from_nll_handles_float64_boundary() -> None:
+    max_finite_nll = math.log(sys.float_info.max)
+
+    assert perplexity_from_nll(max_finite_nll) == pytest.approx(sys.float_info.max)
+    assert perplexity_from_nll(math.nextafter(max_finite_nll, math.inf)) == math.inf
+
+
+@pytest.mark.parametrize(
+    ("nll", "expected"),
+    [
+        (math.inf, math.inf),
+        (-math.inf, 0.0),
+    ],
+)
+def test_perplexity_from_nll_handles_infinities(
+    nll: float,
+    expected: float,
+) -> None:
+    assert perplexity_from_nll(nll) == expected
+
+
+def test_perplexity_from_nll_preserves_nan() -> None:
+    assert math.isnan(perplexity_from_nll(math.nan))
 
 
 class TestNormalizePromptLens:

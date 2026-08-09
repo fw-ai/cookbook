@@ -5,11 +5,21 @@ RL losses (GRPO, DAPO, GSPO) live in ``utils.rl``.
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Tuple, Callable
 
 import torch
 import tinker
 import torch.nn.functional as F
+
+
+def perplexity_from_nll(nll: float | torch.Tensor) -> float:
+    """Exponentiate NLL in float64, returning infinity beyond its range."""
+    value = nll.item() if isinstance(nll, torch.Tensor) else float(nll)
+    try:
+        return math.exp(value)
+    except OverflowError:
+        return math.inf
 
 
 def _zero_loss(logprobs_list: List[torch.Tensor]) -> torch.Tensor:
@@ -285,7 +295,7 @@ def make_sft_loss_fn(
         n = max(len(resp_t), 1)
         ce = -resp_lp.sum() / n
         with torch.no_grad():
-            ppl = torch.exp(ce).item()
+            ppl = perplexity_from_nll(ce)
         return ce, {"ce_loss": ce.item(), "ppl": ppl, "response_tokens": len(resp_t)}
 
     return loss_fn
@@ -335,7 +345,7 @@ def make_batch_sft_loss_fn(
 
         with torch.no_grad():
             avg_nll = total_nll / total_response_tokens if total_response_tokens > 0 else 0.0
-            ppl = torch.exp(torch.tensor(avg_nll)).item()
+            ppl = perplexity_from_nll(avg_nll)
 
         return avg_loss, {
             "ce_loss": avg_nll,
@@ -431,7 +441,7 @@ def make_batch_weighted_sft_loss_fn(
 
         with torch.no_grad():
             avg_nll = total_nll / total_weight if total_weight > 0 else 0.0
-            ppl = torch.exp(torch.tensor(avg_nll)).item()
+            ppl = perplexity_from_nll(avg_nll)
 
         return loss_to_backprop, {
             "ce_loss": avg_nll,

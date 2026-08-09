@@ -83,7 +83,7 @@ from training.utils import (
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.serverless import setup_serverless_training
-from training.utils.losses import make_batch_weighted_sft_loss_fn
+from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
 from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
@@ -733,7 +733,7 @@ def run_eval(
         return None
 
     eval_loss = eval_loss_sum / eval_loss_weight
-    eval_ppl = torch.exp(torch.tensor(eval_loss)).item()
+    eval_ppl = perplexity_from_nll(eval_loss)
 
     logger.info(
         "[Eval] Epoch %d | Loss: %.4f | PPL: %.2f | Tokens: %d",
@@ -1072,7 +1072,7 @@ def main(
 
             if loss_weight > 0:
                 avg_loss = loss_sum / loss_weight
-                ppl = torch.exp(torch.tensor(avg_loss)).item()
+                ppl = perplexity_from_nll(avg_loss)
                 current_lr = _current_lr(s)
                 logger.info(
                     "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d | depth: %d",
@@ -1169,7 +1169,7 @@ def main(
                         if eval_loss is not None:
                             runner.append_metrics(
                                 step,
-                                {"eval/loss": eval_loss, "eval/ppl": torch.exp(torch.tensor(eval_loss)).item()},
+                                {"eval/loss": eval_loss, "eval/ppl": perplexity_from_nll(eval_loss)},
                             )
                     except Exception as e:
                         logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
