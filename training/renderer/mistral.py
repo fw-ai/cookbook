@@ -8,8 +8,8 @@ Mistral / Ministral models that ship the same Tekken-style chat template):
   prompt is auto-injected when the conversation has no system message — exactly
   matching the chat template's behavior)
 - Optional ``[AVAILABLE_TOOLS]<json>[/AVAILABLE_TOOLS]`` block emitted after the
-  system block when tools are supplied (via the renderer's ``_pending_tools``
-  hook used by ``create_conversation_prefix_with_tools``)
+  system block when tools are supplied (declared through
+  ``create_conversation_prefix_with_tools``)
 - User turns: ``[INST]<content>[/INST]``
 - Assistant turns: ``<content>[TOOL_CALLS]<name>[ARGS]<args>...</s>``  — tool
   calls (if any) are appended directly with no separator between calls; ``</s>``
@@ -48,6 +48,8 @@ from tinker_cookbook.renderers.base import (
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
+from training.renderer.message_weights import untrained_synthesized_context
+
 _SYSTEM_PROMPT_OPEN = "[SYSTEM_PROMPT]"
 _SYSTEM_PROMPT_CLOSE = "[/SYSTEM_PROMPT]"
 _AVAILABLE_TOOLS_OPEN = "[AVAILABLE_TOOLS]"
@@ -67,6 +69,12 @@ _TOOL_RESULTS_CLOSE = "[/TOOL_RESULTS]"
 # (``{"role": "system", "content": ""}``) still renders as
 # ``[SYSTEM_PROMPT][/SYSTEM_PROMPT]`` (matching HF chat-template behavior).
 _DEFAULT_SYSTEM_SENTINEL = "__MISTRAL_RENDERER_DEFAULT_SYSTEM__"
+
+# Private key carrying the declared tools on the synthetic system message that
+# ``create_conversation_prefix_with_tools`` returns. Keeping them on the message
+# rather than on the renderer means the same conversation renders identically
+# however many times it is rendered.
+_TOOLS_KEY = "__mistral_renderer_tools__"
 
 
 _TOOL_CALL_RE = re.compile(
@@ -155,10 +163,6 @@ class MistralRenderer(Renderer):
     def __init__(self, tokenizer: Tokenizer) -> None:
         super().__init__(tokenizer)
         self.default_system_prompt = self._detect_default_system_prompt()
-        # Filled by ``create_conversation_prefix_with_tools`` and consumed by
-        # ``render_message`` on the system turn so that the
-        # ``[AVAILABLE_TOOLS]`` block lands in the right spot.
-        self._pending_tools: list[Any] | None = None
 
     # ------------------------------------------------------------------
     # Special-token helpers
@@ -235,7 +239,7 @@ class MistralRenderer(Renderer):
         return [synthetic, *messages]
 
     def _preprocess_messages(self, messages: list[Message]) -> list[Message]:
-        return self._ensure_system_message(messages)
+        return untrained_synthesized_context(self._ensure_system_message(messages))
 
     # ------------------------------------------------------------------
     # Renderer ABC
@@ -268,9 +272,9 @@ class MistralRenderer(Renderer):
         else:
             content = _visible_text(raw)
         body = content + _SYSTEM_PROMPT_CLOSE
-        if self._pending_tools:
-            body += _format_tools_block(self._pending_tools)
-            self._pending_tools = None
+        tools = message.get(_TOOLS_KEY)
+        if tools:
+            body += _format_tools_block(tools)
         return _SYSTEM_PROMPT_OPEN, body
 
     def _render_user_message(self, message: Message) -> tuple[str, str]:
@@ -362,18 +366,18 @@ class MistralRenderer(Renderer):
         tools: list[ToolSpec],
         system_prompt: str = "",
     ) -> list[Message]:
-        """Stage tool specs to be emitted on the next system turn.
+        """Return the system turn that carries the tool specs.
 
-        Returns a single system message (carrying the user-supplied prompt or a
-        marker for the default) and stashes the tool list on ``self`` so that
-        ``render_message`` can append the ``[AVAILABLE_TOOLS]`` block at the
-        right position. This matches the Jinja template, where tools are
-        rendered immediately after the system block and before any user turn.
+        The tool list rides on the message under a private key rather than on
+        ``self`` so the same conversation renders identically however many times
+        it is rendered. ``_render_system_message`` appends the
+        ``[AVAILABLE_TOOLS]`` block from it, matching the Jinja template, where
+        tools follow the system block and precede any user turn.
         """
-        self._pending_tools = _wrap_tool_specs(tools)
-        if system_prompt:
-            return [Message(role="system", content=system_prompt)]
-        return [Message(role="system", content=_DEFAULT_SYSTEM_SENTINEL)]
+        content = system_prompt if system_prompt else _DEFAULT_SYSTEM_SENTINEL
+        message = Message(role="system", content=content)
+        message[_TOOLS_KEY] = _wrap_tool_specs(tools)  # type: ignore[typeddict-unknown-key]
+        return [message]
 
     # ------------------------------------------------------------------
     # Response parsing

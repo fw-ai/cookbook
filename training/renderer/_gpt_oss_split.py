@@ -40,13 +40,21 @@ from __future__ import annotations
 
 from typing import Any
 
+import tinker
+import torch
 from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import RenderContext, RenderedMessage
+from tinker_cookbook.renderers.base import (
+    RenderContext,
+    RenderedMessage,
+    Renderer,
+    TrainOnWhat,
+)
 from tinker_cookbook.renderers.base import Message as RenderMessage
 from tinker_cookbook.renderers.base import ensure_list
 from tinker_cookbook.renderers.gpt_oss import GptOssRenderer
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.message_weights import untrained_synthesized_context
 
 
 class GptOssSplitRenderer(DisaggregateMultiTurnMixin, GptOssRenderer):
@@ -55,6 +63,34 @@ class GptOssSplitRenderer(DisaggregateMultiTurnMixin, GptOssRenderer):
     multi-turn SFT data so training tokens match HF
     ``apply_chat_template`` rendering.
     """
+
+    def build_supervised_example(
+        self,
+        messages: list[RenderMessage],
+        train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+        """Declare gpt-oss's reasoning-effort preamble untrained.
+
+        Upstream prepends ``_get_system_message()`` from inside its own
+        ``build_supervised_example``, after the caller resolved per-message
+        weights, so under ``CUSTOMIZED`` that preamble reaches the base
+        renderer with no ``trainable`` field and fails its contract. The
+        preamble is template context that never carries loss; upstream exposes
+        no seam to flag it, so repeat its two-line prepend here instead.
+        """
+        system_message = (
+            self._get_system_message()
+            if train_on_what is TrainOnWhat.CUSTOMIZED
+            else None
+        )
+        if system_message is None:
+            return super().build_supervised_example(messages, train_on_what)
+        self._warn_if_user_system_message(messages)
+        return Renderer.build_supervised_example(
+            self,
+            untrained_synthesized_context([system_message, *messages]),
+            train_on_what=train_on_what,
+        )
 
     def render_message(
         self, message: RenderMessage, ctx: RenderContext

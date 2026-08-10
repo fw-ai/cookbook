@@ -74,9 +74,7 @@ class _KimiReasoningFieldPrecedenceMixin:
                 visible_parts = [
                     part
                     for part in content
-                    if not (
-                        isinstance(part, dict) and part.get("type") == "thinking"
-                    )
+                    if not (isinstance(part, dict) and part.get("type") == "thinking")
                 ]
             else:
                 visible_parts = [{"type": "text", "text": content}]
@@ -90,10 +88,19 @@ class _KimiReasoningFieldPrecedenceMixin:
 
 class KimiK25InterleavedRenderer(
     _KimiReasoningFieldPrecedenceMixin,
+    DisaggregateMultiTurnMixin,
     _NoImplicitSystemMessageMixin,
     _TinkerKimiK25Renderer,
 ):
-    """K2.5's only history mode: INTERLEAVED."""
+    """K2.5's only history mode: INTERLEAVED.
+
+    Tinker's own unrolling splits on the same per-user-turn prefixes, but hands
+    each prefix the caller's mode verbatim. A row carrying per-message weights
+    reaches it as ``CUSTOMIZED``, which then re-trains every earlier assistant
+    turn once per later prefix — with its thinking already stripped from
+    history, the train/inference mismatch the unrolling exists to prevent. The
+    mixin reduces each prefix to its own terminal turn instead.
+    """
 
 
 class KimiK26InterleavedRenderer(KimiK25InterleavedRenderer):

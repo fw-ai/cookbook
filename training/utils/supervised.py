@@ -13,7 +13,6 @@ token-level ``weights`` so training uses the same spans that the UI shows.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import logging
 import os
@@ -49,6 +48,12 @@ from training.renderer.thinking_trace import (
     get_thinking_trace_model_capability,
     normalize_thinking_trace_history_mode,
     resolve_thinking_trace_renderer_plan,
+)
+from training.renderer.message_weights import (
+    equivalent_builtin_train_on_what,
+    render_masked_example,
+    stable_chunk_sentinel,
+    without_trainable_flags,
 )
 from training.renderer.reasoning_fields import (
     ORIGINAL_REASONING,
@@ -798,9 +803,7 @@ def normalize_messages(
                     f"Unsupported reasoning value type: {type(reasoning)!r}"
                 )
 
-            if reasoning_content is not None and not isinstance(
-                reasoning_content, str
-            ):
+            if reasoning_content is not None and not isinstance(reasoning_content, str):
                 raise TypeError(
                     "Unsupported reasoning_content value type: "
                     f"{type(reasoning_content)!r}"
@@ -846,25 +849,6 @@ def normalize_messages(
     return normalized
 
 
-def _stable_chunk_sentinel(chunk: Any) -> int:
-    if isinstance(chunk, tinker.types.ImageAssetPointerChunk):
-        payload = f"{chunk.type}:{chunk.location}:{chunk.format}:{chunk.expected_tokens}".encode()
-    elif isinstance(chunk, tinker.types.ImageChunk):
-        payload = b"|".join(
-            [
-                chunk.type.encode(),
-                chunk.format.encode(),
-                str(chunk.expected_tokens).encode(),
-                bytes(chunk.data),
-            ]
-        )
-    else:  # pragma: no cover - defensive branch for future chunk types
-        payload = repr(chunk).encode()
-
-    digest = hashlib.sha1(payload).digest()
-    return -(int.from_bytes(digest[:8], "big") + 1)
-
-
 def _flatten_model_input_sequence_ids(model_input: tinker.ModelInput) -> list[int]:
     sequence_ids: list[int] = []
     for chunk in model_input.chunks:
@@ -872,7 +856,7 @@ def _flatten_model_input_sequence_ids(model_input: tinker.ModelInput) -> list[in
             sequence_ids.extend(int(token) for token in chunk.tokens)
             continue
 
-        sentinel = _stable_chunk_sentinel(chunk)
+        sentinel = stable_chunk_sentinel(chunk)
         sequence_ids.extend([sentinel] * int(chunk.length))
     return sequence_ids
 
@@ -1157,16 +1141,15 @@ def render_messages_to_datum(
     dataset author explicitly excluded.
     """
     normalized_messages = normalize_messages(messages)
-    effective_train_on_what = parse_train_on_what(train_on_what)
+    requested_train_on_what = parse_train_on_what(train_on_what)
+    effective_train_on_what = requested_train_on_what
     if any("trainable" in m for m in normalized_messages):
         effective_train_on_what = TrainOnWhat.CUSTOMIZED
-    rendered_input, weights = renderer.build_supervised_example(
+    rendered_input, weights = _render_singular_example(
+        renderer,
         normalized_messages,
-        train_on_what=_equivalent_single_example_train_on_what(
-            renderer,
-            normalized_messages,
-            effective_train_on_what,
-        ),
+        effective_train_on_what,
+        requested_train_on_what,
     )
     return _build_rendered_supervised_datum(
         rendered_input,
@@ -1221,7 +1204,13 @@ def _requires_renderer_supervised_examples(
     messages: list[Message],
     train_on_what: TrainOnWhat,
 ) -> bool:
-    """Whether rendering must use the renderer's multi-example dispatcher."""
+    """Whether rendering must use the renderer's multi-example dispatcher.
+
+    Decide on the mode the caller ASKED for, not on the ``CUSTOMIZED`` that
+    per-message weights promote the row to. A single-target mode needs no split
+    whether or not the row carries weights, and splitting it would make adding
+    ``weight: 1`` change how many datums a row produces.
+    """
     if getattr(renderer, "has_extension_property", False):
         return False
     if train_on_what not in _SPLIT_REQUIRED_TRAINING_MODES:
@@ -1261,12 +1250,54 @@ def _equivalent_single_example_train_on_what(
     return train_on_what
 
 
+def _render_singular_example(
+    renderer: Renderer,
+    messages: list[Message],
+    train_on_what: TrainOnWhat,
+    requested_train_on_what: TrainOnWhat,
+) -> tuple[Any, Any]:
+    """Render one datum for the whole conversation.
+
+    Per-message weights that select exactly what a built-in mode selects are
+    rendered through that built-in mode with the flags dropped, so a weighted
+    row stays byte-identical to the same row without weights and does not depend
+    on each renderer's own ``CUSTOMIZED`` branch. Any other mask is intersected
+    with the render the row would get without weights, so a ``weight`` field can
+    only ever withhold loss. A caller that asked for ``CUSTOMIZED`` outright has
+    no such reference render — the flags are the request, not a mask over one.
+    """
+    default_mode = _equivalent_single_example_train_on_what(
+        renderer,
+        messages,
+        requested_train_on_what,
+    )
+    if (
+        train_on_what is TrainOnWhat.CUSTOMIZED
+        and default_mode is not TrainOnWhat.CUSTOMIZED
+    ):
+        builtin_mode = equivalent_builtin_train_on_what(messages, default_mode)
+        if builtin_mode is None:
+            return render_masked_example(
+                renderer,
+                messages,
+                default_train_on_what=default_mode,
+            )
+        return renderer.build_supervised_example(
+            without_trainable_flags(messages),
+            train_on_what=builtin_mode,
+        )
+    return renderer.build_supervised_example(messages, train_on_what=default_mode)
+
+
 def _build_renderer_supervised_examples(
     renderer: Renderer,
     messages: list[Message],
     train_on_what: TrainOnWhat,
+    requested_train_on_what: TrainOnWhat,
 ) -> list[tuple[Any, Any]]:
-    if _requires_renderer_supervised_examples(renderer, messages, train_on_what):
+    if _requires_renderer_supervised_examples(
+        renderer, messages, requested_train_on_what
+    ):
         build_supervised_examples = getattr(renderer, "build_supervised_examples", None)
         if build_supervised_examples is None:
             raise TypeError(
@@ -1282,13 +1313,11 @@ def _build_renderer_supervised_examples(
         )
 
     return [
-        renderer.build_supervised_example(
+        _render_singular_example(
+            renderer,
             messages,
-            train_on_what=_equivalent_single_example_train_on_what(
-                renderer,
-                messages,
-                train_on_what,
-            ),
+            train_on_what,
+            requested_train_on_what,
         )
     ]
 
@@ -1317,7 +1346,8 @@ def render_messages_to_datums(
         messages, renderer=renderer, tools=tools
     )
 
-    effective_train_on_what = parse_train_on_what(train_on_what)
+    requested_train_on_what = parse_train_on_what(train_on_what)
+    effective_train_on_what = requested_train_on_what
     if any("trainable" in m for m in normalized_messages):
         effective_train_on_what = TrainOnWhat.CUSTOMIZED
 
@@ -1325,6 +1355,7 @@ def render_messages_to_datums(
         renderer,
         normalized_messages,
         effective_train_on_what,
+        requested_train_on_what,
     )
 
     return [

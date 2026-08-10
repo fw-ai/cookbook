@@ -74,6 +74,16 @@ def _test_datum(test_id: str):
     )
 
 
+def test_batch_loss_metrics_separate_weight_from_token_count():
+    first = _test_datum("first")
+    first.loss_fn_inputs["weights"].data = [0.0, 0.5, 0.5]
+    second = _test_datum("second")
+    second.loss_fn_inputs["weights"].data = [0.0, 1.0]
+
+    assert module._batch_loss_weight([first, second]) == 2.0
+    assert module._count_response_tokens([first, second]) == 3
+
+
 def test_init_render_worker_forwards_materialized_tokenizer_plan(monkeypatch):
     captured: dict = {}
 

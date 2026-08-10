@@ -135,7 +135,11 @@ def test_every_declared_renderer_matches_live_extension_property() -> None:
 def test_legacy_concrete_names_are_not_rebound_to_corrected_adapters() -> None:
     tokenizer = _StringTokenizer()
     expected_types = {
-        "kimi_k25": "KimiK25Renderer",
+        # ``*SplitRenderer`` keeps the legacy name's rendering and only adds
+        # weight-aware per-user-turn unrolling, the same shape ``qwen3_5`` has
+        # had. A rebind to a corrected adapter would change the rendered tokens;
+        # these do not.
+        "kimi_k25": "KimiK25SplitRenderer",
         "qwen3_5": "Qwen3_5SplitRenderer",
         "qwen3_6": "Qwen3_6SplitRenderer",
         "qwen3_6_preserve_thinking": "Qwen3_6PreserveThinkingSplitRenderer",

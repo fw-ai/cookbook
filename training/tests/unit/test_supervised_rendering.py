@@ -14,6 +14,7 @@ from tinker_cookbook.renderers import (
 )
 from tinker_cookbook.renderers.base import RenderedMessage
 
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.data import prepare_sampling_messages
 from training.utils.supervised import (
@@ -113,6 +114,27 @@ class SplitRenderer:
 
     def build_supervised_example(self, messages, train_on_what):
         raise AssertionError("render_messages_to_datums should use split examples")
+
+
+class DisaggregateRecordingRenderer(DisaggregateMultiTurnMixin):
+    """Real unroll mixin over a renderer that records each per-split call."""
+
+    has_extension_property = False
+
+    def __init__(self):
+        self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+
+    def build_supervised_example(
+        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN
+    ):
+        self.calls.append(([dict(message) for message in messages], train_on_what))
+        # Tokens depend only on the conversation, like a real renderer: the mask
+        # mode never moves them, and rendering the same prefix twice matches.
+        token = len(messages)
+        return (
+            torch.tensor([token, token, token], dtype=torch.int64),
+            torch.tensor([0, 1, 1], dtype=torch.float32),
+        )
 
 
 class BaseToolPrefixRenderer(Renderer):
@@ -438,6 +460,142 @@ def test_render_messages_to_datums_uses_renderer_split_for_weighted_rows():
         False,
         False,
         True,
+    ]
+
+
+def test_weighted_row_trains_each_assistant_turn_in_exactly_one_split():
+    """A weighted row renders with ``CUSTOMIZED``, so each per-user-turn
+    split must be reduced to its own terminal turn. Otherwise ``CUSTOMIZED``
+    re-weights every earlier assistant turn in every later split, training
+    history whose thinking has already been stripped."""
+
+    renderer = DisaggregateRecordingRenderer()
+
+    render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+            {"role": "assistant", "content": "a3", "weight": 0},
+            {"role": "user", "content": "u4"},
+            {"role": "assistant", "content": "a4"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    # The a3 round is skipped entirely (its terminal assistant is masked),
+    # and each remaining round trains only its own answer.
+    assert [
+        [message["content"] for message in messages] for messages, _ in renderer.calls
+    ] == [
+        ["u1", "a1"],
+        ["u1", "a1", "u2", "a2"],
+        ["u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4"],
+    ]
+    # Every terminal turn here is fully trainable, so the per-message flags
+    # carry no information and the split renders like an unweighted row.
+    assert all(
+        train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN
+        for _, train_on_what in renderer.calls
+    )
+    assert all(
+        "trainable" not in message
+        for messages, _ in renderer.calls
+        for message in messages
+    )
+
+
+def test_weighted_row_masks_terminal_turn_down_to_its_answer():
+    """A terminal turn masked down to its final answer states exactly what
+    ``LAST_ASSISTANT_MESSAGE`` selects, so the split renders with that mode and
+    drops the flags instead of relying on the renderer's CUSTOMIZED branch."""
+
+    renderer = DisaggregateRecordingRenderer()
+
+    render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2-draft", "weight": 0},
+            {"role": "assistant", "content": "a2"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    messages, train_on_what = renderer.calls[-1]
+    assert train_on_what == TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    assert [message["content"] for message in messages] == [
+        "u1",
+        "a1",
+        "u2",
+        "a2-draft",
+        "a2",
+    ]
+    assert all("trainable" not in message for message in messages)
+
+
+def test_weighted_row_keeps_customized_for_a_mask_no_builtin_mode_expresses():
+    """Masking a middle message of the terminal turn selects a set no built-in
+    mode expresses, so per-message weights are required — but only for that
+    turn. Everything before it is demoted to context so no earlier turn is
+    trained twice, and the flagged render is intersected with the unweighted one
+    so masking cannot start training a message the row would otherwise skip."""
+
+    renderer = DisaggregateRecordingRenderer()
+
+    render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2-call"},
+            {"role": "assistant", "content": "a2-retry", "weight": 0},
+            {"role": "assistant", "content": "a2"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    flagged_messages, flagged_mode = renderer.calls[-2]
+    default_messages, default_mode = renderer.calls[-1]
+    assert flagged_mode == TrainOnWhat.CUSTOMIZED
+    assert [
+        (message["content"], message["trainable"]) for message in flagged_messages
+    ] == [
+        ("u1", False),
+        ("a1", False),
+        ("u2", False),
+        ("a2-call", True),
+        ("a2-retry", False),
+        ("a2", True),
+    ]
+    assert default_mode == TrainOnWhat.LAST_ASSISTANT_TURN
+    assert all("trainable" not in message for message in default_messages)
+
+
+def test_weighted_row_split_does_not_warn_about_extension_property(recwarn):
+    renderer = DisaggregateRecordingRenderer()
+
+    render_messages_to_datums(
+        [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1", "weight": 0},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+
+    assert not [
+        warning
+        for warning in recwarn
+        if "does not satisfy the extension property" in str(warning.message)
     ]
 
 
@@ -813,25 +971,25 @@ def test_normalize_messages_rejects_non_numeric_weight():
         )
 
 
-def test_render_messages_to_datum_auto_switches_to_customized_when_weight_set():
-    """When the dataset marks messages with ``weight`` / ``trainable``,
-    ``render_messages_to_datum`` must auto-promote ``train_on_what`` to
-    ``CUSTOMIZED`` so the renderer honors the per-message flag. Otherwise
-    the legacy V1 SFT convention (``weight=0`` means "context only")
-    silently degrades into "train on everything" on the V2 path."""
+class _SingularRecordingRenderer:
+    def __init__(self):
+        self.calls: list[tuple[list[dict], TrainOnWhat]] = []
 
-    class RecordingRenderer:
-        def __init__(self):
-            self.calls: list[tuple[list[dict], TrainOnWhat]] = []
+    def build_supervised_example(self, messages, train_on_what):
+        self.calls.append(([dict(message) for message in messages], train_on_what))
+        return (
+            torch.tensor([1, 2, 3, 4], dtype=torch.int64),
+            torch.tensor([0, 0, 1, 1], dtype=torch.float32),
+        )
 
-        def build_supervised_example(self, messages, train_on_what):
-            self.calls.append((list(messages), train_on_what))
-            return (
-                torch.tensor([1, 2, 3, 4], dtype=torch.int64),
-                torch.tensor([0, 0, 1, 1], dtype=torch.float32),
-            )
 
-    renderer = RecordingRenderer()
+def test_render_messages_to_datum_honors_weight_through_an_equivalent_mode():
+    """A ``weight`` field must never degrade into "train on everything". When
+    the flags select exactly what a built-in mode selects, that mode carries
+    the intent and the flags are dropped, so the row renders byte-for-byte like
+    an unweighted row through the renderer's well-trodden path."""
+
+    renderer = _SingularRecordingRenderer()
     render_messages_to_datum(
         [
             {"role": "user", "content": "u"},
@@ -841,8 +999,51 @@ def test_render_messages_to_datum_auto_switches_to_customized_when_weight_set():
         renderer=renderer,
         train_on_what="all_assistant_messages",
     )
-    _, resolved_train_on_what = renderer.calls[0]
+    messages, resolved_train_on_what = renderer.calls[0]
+    assert resolved_train_on_what == TrainOnWhat.LAST_ASSISTANT_MESSAGE
+    assert all("trainable" not in message for message in messages)
+
+
+def test_render_messages_to_datum_uses_customized_when_no_mode_matches():
+    """Masking a middle assistant message selects a set no built-in mode
+    expresses, so the render must fall back to per-message weights."""
+
+    renderer = _SingularRecordingRenderer()
+    render_messages_to_datum(
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "assistant", "content": "b", "weight": 0},
+            {"role": "assistant", "content": "c"},
+        ],
+        renderer=renderer,
+        train_on_what="all_assistant_messages",
+    )
+    messages, resolved_train_on_what = renderer.calls[0]
     assert resolved_train_on_what == TrainOnWhat.CUSTOMIZED
+    assert [message["trainable"] for message in messages] == [False, True, False, True]
+
+
+def test_explicitly_requested_customized_renders_once_without_a_reference():
+    """A caller that asks for ``CUSTOMIZED`` outright states the loss directly,
+    so there is no unweighted render to intersect with — rendering it against
+    one would hand the renderer a flagless conversation under ``CUSTOMIZED``."""
+
+    renderer = _SingularRecordingRenderer()
+    render_messages_to_datum(
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "assistant", "content": "b", "weight": 0},
+            {"role": "assistant", "content": "c"},
+        ],
+        renderer=renderer,
+        train_on_what="customized",
+    )
+    assert len(renderer.calls) == 1
+    messages, resolved_train_on_what = renderer.calls[0]
+    assert resolved_train_on_what == TrainOnWhat.CUSTOMIZED
+    assert [message["trainable"] for message in messages] == [False, True, False, True]
 
 
 def test_render_messages_to_datum_uses_equivalent_single_example_mode():

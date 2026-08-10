@@ -88,6 +88,7 @@ from tinker_cookbook.renderers.base import (
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.message_weights import untrained_synthesized_context
 
 # ── Special tokens (must match encoding_dsv4.py exactly) ────────────────────
 # NOTE: ``｜`` is U+FF5C FULLWIDTH VERTICAL LINE (not ASCII ``|``).
@@ -331,7 +332,7 @@ def _merge_tool_messages(messages: list[Message]) -> list[Message]:
                     "content": msg.get("content", ""),
                     "content_blocks": [text_block],
                 }
-                for key in ("task", "wo_eos", "mask"):
+                for key in ("task", "wo_eos", "mask", "trainable"):
                     if key in msg:
                         new_msg[key] = msg[key]
                 merged.append(new_msg)
@@ -647,7 +648,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         )
         if self.thinking_mode == "thinking" and self._effective_strip:
             merged = _drop_thinking_from_history(merged)
-        return merged
+        return untrained_synthesized_context(merged)
 
     @property
     def _bos_tokens(self) -> list[int]:

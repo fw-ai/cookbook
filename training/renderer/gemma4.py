@@ -123,6 +123,8 @@ from tinker_cookbook.renderers.base import (
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
+from training.renderer.message_weights import untrained_synthesized_context
+
 _BOS_TOKEN = "<bos>"
 _TURN_OPEN = "<|turn>"
 _TURN_CLOSE = "<turn|>"
@@ -791,14 +793,14 @@ class Gemma4Renderer(Renderer):
         # ``<|turn>system`` rather than ``<|turn>developer``.
         if result and result[0].get("role") == "developer":
             result[0] = {**result[0], "role": "system"}
-        if not self.enable_thinking:
-            return result
-
-        if result and result[0]["role"] in ("system", "developer"):
-            result[0] = {**result[0], _THINK_PREFIX_KEY: True}
-        else:
-            result.insert(0, {"role": "system", "content": "", _THINK_PREFIX_KEY: True})
-        return result
+        if self.enable_thinking:
+            if result and result[0]["role"] in ("system", "developer"):
+                result[0] = {**result[0], _THINK_PREFIX_KEY: True}
+            else:
+                result.insert(
+                    0, {"role": "system", "content": "", _THINK_PREFIX_KEY: True}
+                )
+        return untrained_synthesized_context(result)
 
     def _with_render_messages(self, messages: list[Message], fn: Callable[[], Any]) -> Any:
         _render_messages_local.messages = messages

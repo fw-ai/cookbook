@@ -53,6 +53,7 @@ import transformers
 import training.renderer  # noqa: F401  — registers Split overrides
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.renderers.base import Renderer, TrainOnWhat
+from training.utils.supervised import render_messages_to_datums
 
 # (registered name, HF model id, override class name).
 _PARITY_CASES = [
@@ -667,6 +668,91 @@ def test_disaggregate_skips_non_trainable_round(
         f"got trained slice: {trained1!r}"
     )
     assert "A3" in trained1
+
+
+@pytest.mark.parametrize(
+    "name,model_id,split_classname",
+    _PARITY_CASES,
+    ids=[case[0] for case in _PARITY_CASES],
+)
+def test_weighted_row_trains_each_answer_once_through_production_path(
+    name: str, model_id: str, split_classname: str
+):
+    """The production entry point promotes a row carrying ``weight`` to
+    ``CUSTOMIZED``. Each unrolled datum must still train only its own
+    terminal answer, so an answer is never trained twice and a masked
+    answer is never trained at all."""
+    tok, renderer = _resolve_renderer(name, model_id, split_classname)
+
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "Q2"},
+        {"role": "assistant", "content": "A2"},
+        {"role": "user", "content": "Q3"},
+        {"role": "assistant", "content": "A3", "weight": 0},
+        {"role": "user", "content": "Q4"},
+        {"role": "assistant", "content": "A4"},
+    ]
+    rendered = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+
+    trained_slices = [
+        _trained_text(tok, datum.token_ids, datum.token_weights) for datum in rendered
+    ]
+    assert len(trained_slices) == 3, (
+        f"{name!r}: expected 3 datums (A3's round is masked out); "
+        f"got {len(trained_slices)}"
+    )
+    for datum_index, expected_answer in enumerate(["A1", "A2", "A4"]):
+        trained = trained_slices[datum_index]
+        assert expected_answer in trained, (
+            f"{name!r} datum {datum_index}: {expected_answer!r} must be trained; "
+            f"got {trained!r}"
+        )
+        for other in ("A1", "A2", "A3", "A4"):
+            if other == expected_answer:
+                continue
+            assert other not in trained, (
+                f"{name!r} datum {datum_index}: {other!r} must stay masked in this "
+                f"datum; got {trained!r}"
+            )
+
+
+@pytest.mark.parametrize(
+    "name,model_id,split_classname",
+    _PARITY_CASES,
+    ids=[case[0] for case in _PARITY_CASES],
+)
+def test_all_weights_one_renders_like_an_unweighted_row(
+    name: str, model_id: str, split_classname: str
+):
+    """``weight: 1`` on every assistant turn states the default, so the row
+    must render byte-for-byte like the same row without any weights."""
+    _tok, renderer = _resolve_renderer(name, model_id, split_classname)
+
+    messages = _multi_turn_messages(n=3)
+    weighted = [
+        {**message, "weight": 1} if message["role"] == "assistant" else message
+        for message in messages
+    ]
+
+    def _rendered(rows: list[dict[str, Any]]):
+        return [
+            (datum.token_ids, datum.token_weights)
+            for datum in render_messages_to_datums(
+                rows,
+                renderer=renderer,
+                train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+            )
+        ]
+
+    assert _rendered(weighted) == _rendered(messages), (
+        f"{name!r}: explicit weight=1 must not change tokenization or masks"
+    )
 
 
 @pytest.mark.parametrize(

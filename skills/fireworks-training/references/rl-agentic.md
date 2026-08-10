@@ -1,9 +1,9 @@
 # RL: agentic rollout design
 
 Use this reference when one logical rollout contains multiple policy calls,
-tool calls, environment steps, retries, subagents, or context rewrites. Read
-[`rl-async.md`](rl-async.md) separately for scheduler, batching, off-policy,
-optimizer, and publication behavior.
+tool calls, environment steps, retries, subagents, context rewrites, or
+trainer-ready trajectories. Read [`rl-async.md`](rl-async.md) separately for
+scheduler, batching, off-policy, optimizer, and publication behavior.
 
 ## Sections
 
@@ -28,8 +28,10 @@ async def rollout_fn(sample_prompt: dict) -> RolloutRun | None:
     ...
 ```
 
-One call is one logical environment trajectory and one GRPO completion. It may
-return multiple physical `RolloutSample` segments. Preserve these invariants:
+One successful call produces one logical rollout and GRPO group member. It may
+return one or more trainer-ready trajectories as `RolloutSample`s in
+`RolloutRun.segments`. In this reference, *trajectory* means one such trainer
+input; it is not another group member. Preserve these invariants:
 
 1. Record the exact prompt and output token IDs observed at inference. Do not
    reconstruct generated tokens from text when exact IDs are available.
@@ -37,8 +39,9 @@ return multiple physical `RolloutSample` segments. Preserve these invariants:
    raw log probability and Router Replay payload.
 3. Set loss only on policy-generated tokens. Mask prompts, system text, user
    messages, tool results, environment observations, and repaired context.
-4. Give every physical segment from the same logical run the same reward. The
-   run remains one group member and receives one advantage.
+4. Give every trajectory from the same logical run the same reward. The run
+   remains one group member, receives one advantage, and broadcasts that
+   advantage to all of its trajectories.
 5. Make every non-append, truncation, repair, and drop decision explicit and
    observable. Never silently zip, trim, or pad malformed generated data.
 
@@ -96,14 +99,15 @@ declared parent. Select one policy deliberately:
 
 ### Split
 
-Flush the prior exact-ancestry segment and start another segment from the new
-prompt. Preserve both sampled outputs, reward, logical run, group membership,
-and advantage. This is the general policy implemented by
+Flush the prior exact-ancestry trajectory and start another trajectory from the
+new prompt. Return both under the same `RolloutRun`, preserving sampled
+outputs, reward, group membership, and advantage. This is the general policy
+implemented by
 `training.utils.rl.agent.merge_turn_segments` and used by the Harbor/OpenCode
 example.
 
-Splitting is lossless and easy to audit. It can increase physical trainer
-sequences, and a new segment cannot reuse a prior generated suffix as trainable
+Splitting is lossless and easy to audit. It increases trainer trajectory
+count, and a new trajectory cannot reuse a prior generated suffix as trainable
 ancestry.
 
 ### Realign
@@ -113,9 +117,9 @@ later prompt's representation, mask the replacement, and continue. Fork or
 reject anything outside the validated repair window. This is similar to
 Slime's bounded repair policy.
 
-Realignment reduces segmentation but changes which earlier sampled tokens carry
-loss. Require replay tests proving that the mismatch is rendering drift rather
-than a semantic history rewrite.
+Realignment reduces trajectory splitting but changes which earlier sampled
+tokens carry loss. Require replay tests proving that the mismatch is rendering
+drift rather than a semantic history rewrite.
 
 ### Reject or retry
 
@@ -138,13 +142,13 @@ message normalization, tool-call identity, subagent parent selection, retries,
 and context-management semantics. A generic token tree should only receive the
 chosen parent and exact turn snapshot.
 
-When one logical run branches:
+When one logical rollout branches:
 
-- materialize the selected root-to-leaf paths;
+- materialize the selected root-to-leaf paths as trainer trajectories;
 - train each shared generated node on only one selected path;
 - include shared tokens as masked context on later paths;
-- keep all physical segments in one `RolloutRun`;
-- retain one environment reward and one prompt-group completion.
+- keep all trajectories in one `RolloutRun`;
+- retain one environment reward, one group member, and one advantage.
 
 Do not call every non-append history "compaction." Dynamic system fields,
 subagent roots, retries, tool rewrites, renderer changes, and genuine context
@@ -228,8 +232,8 @@ Before a paid training run:
    renderer and assembler.
 4. Assert token/logprob/loss-mask lengths and optional R3 alignment at the
    rollout gate.
-5. Confirm multiple physical segments remain one logical completion in reward,
-   advantage, and rollout metrics.
+5. Confirm multiple returned trajectories remain one logical rollout in
+   reward, advantage, grouping, and rollout metrics.
 6. Measure mismatch, split/realign/reject, retry, drop, zero-turn, and rollout
    length distributions.
 7. Confirm a broken trace is dropped, while a legitimate terminal environment
@@ -246,7 +250,8 @@ Before a paid training run:
 - a local policy server records exact sampler responses;
 - example-local code resolves structured history and retries;
 - shared agent utilities own sampler affinity and token ancestry;
-- any exact-token non-append boundary starts another physical segment.
+- any exact-token non-append boundary starts another `RolloutSample`
+  trajectory within the same logical run.
 
 Fork only the pieces that match the target harness. Harbor is environment
 support, OpenCode is one agent, and strict split-on-mismatch is one valid policy;

@@ -83,7 +83,7 @@ from training.utils import (
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.serverless import setup_serverless_training
-from training.utils.losses import make_batch_weighted_sft_loss_fn
+from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
 from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
@@ -666,6 +666,25 @@ class Config:
 # ---------------------------------------------------------------------------
 
 
+def _batch_loss_weight(batch: List[tinker.Datum]) -> float:
+    """Return summed loss weight without scanning for token telemetry."""
+    return float(
+        sum(
+            sum(datum.loss_fn_inputs["weights"].data)
+            for datum in batch
+        )
+    )
+
+
+def _count_response_tokens(batch: List[tinker.Datum]) -> int:
+    """Return the number of tokens with positive loss weight."""
+    return sum(
+        float(weight) > 0
+        for datum in batch
+        for weight in datum.loss_fn_inputs["weights"].data
+    )
+
+
 def run_eval(
     eval_data: List[tinker.Datum],
     client: ReconnectableClient,
@@ -686,7 +705,8 @@ def run_eval(
     logger.info("[Eval] Running evaluation (%d examples)...", len(eval_data))
 
     eval_loss_sum = 0.0
-    eval_resp_tokens = 0
+    eval_loss_weight = _batch_loss_weight(eval_data)
+    eval_resp_tokens = _count_response_tokens(eval_data)
 
     train_loss_fn = make_batch_weighted_sft_loss_fn()
 
@@ -702,20 +722,18 @@ def run_eval(
         if len(batch) >= batch_size:
             m = _eval_batch(batch)
             eval_loss_sum += m.get("ce_loss_sum", 0.0)
-            eval_resp_tokens += int(m.get("response_tokens", 0))
             batch = []
 
     if batch:
         m = _eval_batch(batch)
         eval_loss_sum += m.get("ce_loss_sum", 0.0)
-        eval_resp_tokens += int(m.get("response_tokens", 0))
 
-    if eval_resp_tokens == 0:
+    if eval_loss_weight <= 0:
         logger.warning("[Eval] No valid eval tokens, skipping metrics")
         return None
 
-    eval_loss = eval_loss_sum / eval_resp_tokens
-    eval_ppl = torch.exp(torch.tensor(eval_loss)).item()
+    eval_loss = eval_loss_sum / eval_loss_weight
+    eval_ppl = perplexity_from_nll(eval_loss)
 
     logger.info(
         "[Eval] Epoch %d | Loss: %.4f | PPL: %.2f | Tokens: %d",
@@ -993,6 +1011,7 @@ def main(
         def _pipe_submit(batch: list[tinker.Datum], step: int) -> int:
             """Submit one fwd_bwd + optim_step pair (non-blocking). Returns updated step."""
             tokens = sum(len(c.tokens) for d in batch for c in d.model_input.chunks if hasattr(c, "tokens"))
+            loss_weight = _batch_loss_weight(batch)
             step += 1
             adam = tinker.AdamParams(learning_rate=_current_lr(step), **adam_kwargs)
             t_submit = time.time()
@@ -1000,6 +1019,7 @@ def main(
                 (
                     step,
                     tokens,
+                    loss_weight,
                     t_submit,
                     client.submit_forward_backward(batch, loss_fn="cross_entropy"),
                     client.submit_optim_step(adam),
@@ -1010,11 +1030,10 @@ def main(
         def _pipe_collect() -> None:
             """Pop the oldest pair, emit per-step metrics + checkpoint."""
             nonlocal pipe_total_tokens, last_t_fb_done, last_t_opt_done, last_optim_time
-            s, tokens, t_submit, fb_fut, opt_fut = in_flight.popleft()
+            s, tokens, loss_weight, t_submit, fb_fut, opt_fut = in_flight.popleft()
             result = fb_fut.result(timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S)
             t_fb_done = time.time()
             loss_sum = result.metrics.get("loss:sum", 0.0)
-            response_tokens = result.metrics.get("response_tokens")
             optim_result = opt_fut.result(timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S)
             t_opt_done = time.time()
 
@@ -1051,9 +1070,9 @@ def main(
             step_metrics["train/total_tokens"] = tokens
             step_metrics["train/tokens_per_sec"] = tps
 
-            if response_tokens and response_tokens > 0:
-                avg_loss = loss_sum / response_tokens
-                ppl = torch.exp(torch.tensor(avg_loss)).item()
+            if loss_weight > 0:
+                avg_loss = loss_sum / loss_weight
+                ppl = perplexity_from_nll(avg_loss)
                 current_lr = _current_lr(s)
                 logger.info(
                     "Step %d/%d | Loss: %.4f | PPL: %.2f | tok/s: %.0f | tokens: %d | depth: %d",
@@ -1150,7 +1169,7 @@ def main(
                         if eval_loss is not None:
                             runner.append_metrics(
                                 step,
-                                {"eval/loss": eval_loss, "eval/ppl": torch.exp(torch.tensor(eval_loss)).item()},
+                                {"eval/loss": eval_loss, "eval/ppl": perplexity_from_nll(eval_loss)},
                             )
                     except Exception as e:
                         logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
