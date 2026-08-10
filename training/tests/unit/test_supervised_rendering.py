@@ -543,7 +543,8 @@ def test_weighted_row_keeps_customized_for_a_mask_no_builtin_mode_expresses():
     """Masking a middle message of the terminal turn selects a set no built-in
     mode expresses, so per-message weights are required — but only for that
     turn. Everything before it is demoted to context so no earlier turn is
-    trained twice."""
+    trained twice, and the flagged render is intersected with the unweighted one
+    so masking cannot start training a message the row would otherwise skip."""
 
     renderer = DisaggregateRecordingRenderer()
 
@@ -560,9 +561,12 @@ def test_weighted_row_keeps_customized_for_a_mask_no_builtin_mode_expresses():
         train_on_what="all_assistant_messages",
     )
 
-    messages, train_on_what = renderer.calls[-1]
-    assert train_on_what == TrainOnWhat.CUSTOMIZED
-    assert [(message["content"], message["trainable"]) for message in messages] == [
+    flagged_messages, flagged_mode = renderer.calls[-2]
+    default_messages, default_mode = renderer.calls[-1]
+    assert flagged_mode == TrainOnWhat.CUSTOMIZED
+    assert [
+        (message["content"], message["trainable"]) for message in flagged_messages
+    ] == [
         ("u1", False),
         ("a1", False),
         ("u2", False),
@@ -570,6 +574,8 @@ def test_weighted_row_keeps_customized_for_a_mask_no_builtin_mode_expresses():
         ("a2-retry", False),
         ("a2", True),
     ]
+    assert default_mode == TrainOnWhat.LAST_ASSISTANT_TURN
+    assert all("trainable" not in message for message in default_messages)
 
 
 def test_weighted_row_split_does_not_warn_about_extension_property(recwarn):

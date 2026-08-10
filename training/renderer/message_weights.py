@@ -10,33 +10,38 @@ Two invariants keep that mode honest. Both live here because renderers and the
 render dispatcher each need one of them.
 
 Template context is never a target
-    A renderer may synthesize messages while rendering — an empty system block
+    A renderer may synthesize messages while rendering: an empty system block
     Nemotron-3 and MiniMax-M2 always emit, Gemma 4's thinking marker, gpt-oss's
-    reasoning-effort preamble, Mistral's baked-in default prompt, Kimi's default
-    system message — long after the dataset's flags were resolved. They come
+    reasoning-effort preamble, Mistral's baked-in default prompt. Those come
     from the prompt template rather than the dataset, so they must never carry
-    loss, and ``CUSTOMIZED`` additionally requires them to say so.
-    :func:`untrained_synthesized_context` is where each renderer says it.
+    loss. ``CUSTOMIZED`` also requires every rendered message to declare
+    ``trainable``, so a synthesized message without the flag fails the render
+    outright. :func:`untrained_synthesized_context` supplies it.
 
-Flags that restate the default change nothing
-    ``weight=1`` restates the default (see ``_resolve_trainable``), so when the
-    messages the flags select are exactly the messages some built-in mode
-    selects, that mode is equivalent, and rendering with it keeps a weighted row
-    byte-identical to the same row without weights — on each renderer's
-    well-trodden built-in path rather than its ``CUSTOMIZED`` branch.
-    :func:`equivalent_builtin_train_on_what` finds it.
+Weights only ever remove loss
+    ``weight=1`` restates the default (see ``_resolve_trainable``), so the loss
+    a weighted row carries is the loss the unweighted row carries intersected
+    with the flags. :func:`render_masked_example` computes that intersection
+    directly. :func:`equivalent_builtin_train_on_what` finds the cases where a
+    single built-in mode already selects it, which keeps the common weighted row
+    on the renderer's well-trodden built-in path and off ``CUSTOMIZED``.
 
-    Which messages a mode selects is the renderer's own decision, and a renderer
-    that overrides ``build_supervised_example`` may read a mode more narrowly
-    than the base does — Kimi ends its "last assistant turn" at the last
-    non-tool-call assistant rather than at the last user message. The reasoning
-    here uses the base renderer's rule, which is an upper bound.
+    "The loss the unweighted row carries" is the renderer's own decision, and a
+    renderer that overrides ``build_supervised_example`` may read a mode more
+    narrowly than the base does — Kimi ends its "last assistant turn" at the
+    last non-tool-call assistant rather than at the last user message. So the
+    message-level reasoning here uses the base renderer's rule, and the
+    authoritative narrowing is the token-level intersection in
+    :func:`render_masked_example`.
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Mapping, Sequence
 
+import tinker
+import torch
 from tinker_cookbook.renderers.base import TrainOnWhat
 
 # Modes whose target set is some subset of the assistant messages, ordered so
@@ -96,27 +101,6 @@ def without_trainable_flags(messages: Sequence[Any]) -> list[Any]:
     ]
 
 
-def flags_clamped_to_mode(
-    messages: Sequence[Any],
-    train_on_what: TrainOnWhat,
-) -> list[Any]:
-    """Clear flags on messages ``train_on_what`` does not select.
-
-    A weight can only withhold loss, so a flag on a message the requested mode
-    never targets must not pull it back in. Use this for the masks
-    :func:`equivalent_builtin_train_on_what` cannot express: they render with
-    ``CUSTOMIZED``, which honours every flag verbatim regardless of the mode the
-    caller actually asked for.
-    """
-    targets = _mode_targets(messages, train_on_what)
-    return [
-        message
-        if not isinstance(message, Mapping) or idx in targets
-        else {**message, "trainable": False}
-        for idx, message in enumerate(messages)
-    ]
-
-
 def _mode_targets(messages: Sequence[Any], mode: TrainOnWhat) -> frozenset[int]:
     """Indices ``mode`` assigns loss to under the base ``Renderer``'s rule.
 
@@ -153,6 +137,64 @@ def _mode_targets(messages: Sequence[Any], mode: TrainOnWhat) -> frozenset[int]:
     return frozenset(targets)
 
 
+def stable_chunk_sentinel(chunk: Any) -> int:
+    """A negative pseudo token id standing for one non-text chunk.
+
+    Derived from the chunk's content, never from its position, so the same image
+    keeps the same id however the surrounding text happens to be chunked.
+    """
+    if isinstance(chunk, tinker.types.ImageAssetPointerChunk):
+        payload = (
+            f"{chunk.type}:{chunk.location}:{chunk.format}:{chunk.expected_tokens}"
+        ).encode()
+    elif isinstance(chunk, tinker.types.ImageChunk):
+        payload = b"|".join(
+            [
+                chunk.type.encode(),
+                chunk.format.encode(),
+                str(chunk.expected_tokens).encode(),
+                bytes(chunk.data),
+            ]
+        )
+    else:  # pragma: no cover - defensive branch for future chunk types
+        payload = repr(chunk).encode()
+
+    digest = hashlib.sha1(payload).digest()
+    return -(int.from_bytes(digest[:8], "big") + 1)
+
+
+def _rendered_positions(rendered_input: Any) -> list[int]:
+    """Per-position identity of a rendered sequence.
+
+    Flattened deliberately: chunk boundaries are not part of the identity,
+    because a renderer may split one chunk in two to weight part of it
+    differently (GLM masks the injected ``<think>`` token that opens a trainable
+    assistant turn) without moving a single token. That is also why a non-text
+    chunk is identified by its content rather than by where it sits in the chunk
+    list — splitting a text chunk elsewhere must not make an image look
+    different.
+
+    Accepts a bare token sequence as well, matching what the render path already
+    tolerates from a renderer that returns token ids instead of a ``ModelInput``.
+    """
+    chunks = getattr(rendered_input, "chunks", None)
+    if chunks is None:
+        tokens = (
+            rendered_input.tolist()
+            if hasattr(rendered_input, "tolist")
+            else rendered_input
+        )
+        return [int(token) for token in tokens]
+
+    positions: list[int] = []
+    for chunk in chunks:
+        if isinstance(chunk, tinker.types.EncodedTextChunk):
+            positions.extend(int(token) for token in chunk.tokens)
+        else:
+            positions.extend([stable_chunk_sentinel(chunk)] * int(chunk.length))
+    return positions
+
+
 def _flagged_targets(messages: Sequence[Any]) -> frozenset[int]:
     return frozenset(
         idx
@@ -174,7 +216,8 @@ def equivalent_builtin_train_on_what(
     mode leaves alone must not pull it back in.
 
     Returns ``None`` when no built-in mode selects that set — a middle tool call
-    masked inside an otherwise trained turn, say — which needs ``CUSTOMIZED``.
+    masked inside an otherwise trained turn, say — which needs ``CUSTOMIZED``
+    and :func:`render_masked_example`.
     """
     if not uses_per_message_weights(messages):
         return None
@@ -183,3 +226,43 @@ def equivalent_builtin_train_on_what(
         if _mode_targets(messages, mode) == target:
             return mode
     return None
+
+
+def render_masked_example(
+    renderer: Any,
+    messages: Sequence[Any],
+    *,
+    default_train_on_what: TrainOnWhat,
+) -> tuple[Any, torch.Tensor]:
+    """Render per-message weights as a mask over the renderer's default loss.
+
+    Use this for the masks :func:`equivalent_builtin_train_on_what` cannot
+    express. ``CUSTOMIZED`` asks each renderer to weight messages by their own
+    flag, which for a renderer whose built-in modes are narrower than "every
+    assistant after the last user" can weight MORE than the unweighted row
+    would: Kimi treats back-to-back assistants as separate turns, so masking the
+    middle one would otherwise start training the first. Intersecting with the
+    unweighted render keeps ``weight`` a mask.
+
+    ``train_on_what`` selects weights and never changes the rendered tokens, so
+    the two weight vectors are positionally aligned. That is checked rather than
+    assumed: a renderer that carried per-render state on ``self`` instead of on
+    the messages would silently misalign the two, which would corrupt loss
+    placement rather than fail. This costs a second render, which is why the
+    equivalent-mode path handles the common masks instead.
+    """
+    flagged_input, flagged_weights = renderer.build_supervised_example(
+        list(messages),
+        train_on_what=TrainOnWhat.CUSTOMIZED,
+    )
+    default_input, default_weights = renderer.build_supervised_example(
+        without_trainable_flags(messages),
+        train_on_what=default_train_on_what,
+    )
+    if _rendered_positions(flagged_input) != _rendered_positions(default_input):
+        raise RuntimeError(
+            f"{type(renderer).__name__} rendered different tokens under CUSTOMIZED and "
+            f"under {default_train_on_what.value}; rendering the same conversation must "
+            "not depend on the loss mode or on renderer state left by an earlier render"
+        )
+    return flagged_input, torch.minimum(flagged_weights, default_weights)

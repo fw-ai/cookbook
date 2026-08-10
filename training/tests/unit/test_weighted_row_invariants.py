@@ -18,6 +18,12 @@ The properties pinned here, in the order they were established:
 2. Each unrolled datum trains only its own terminal turn, so masking one
    message cannot move loss in a split that does not even contain it, and
    flags that restate the default change nothing at all.
+3. Weights only ever REMOVE loss. For the same row rendered with and without
+   weights, the token sequences are identical and every position the weighted
+   render trains is also trained by the unweighted one. Since an unweighted
+   render assigns loss exclusively to the terminal turn's assistant output,
+   that single subset relation subsumes 1 and 2 and is the contract worth
+   remembering.
 
 Network-dependent: tokenizers load via ``transformers.AutoTokenizer`` and a
 case skips cleanly when its model cannot be loaded.
@@ -31,13 +37,18 @@ from functools import cache
 from typing import Any
 
 import pytest
+import tinker
 import transformers
 
 import training.renderer  # noqa: F401  — registers the cookbook renderers
 from tinker_cookbook.renderers import get_registered_renderer_names, get_renderer
 from tinker_cookbook.renderers.base import TrainOnWhat
 from training.renderer.deepseek_v4 import _merge_tool_messages
-from training.renderer.message_weights import untrained_synthesized_context
+from training.renderer.message_weights import (
+    _rendered_positions,
+    stable_chunk_sentinel,
+    untrained_synthesized_context,
+)
 from training.tests.unit.renderer_matrix import RENDERER_MATRIX
 from training.utils.supervised import render_messages_to_datums
 
@@ -263,6 +274,84 @@ def test_a_weighted_row_renders_and_trains_its_answer(name: str, row_id: str):
     assert any("ANSWER" in slice_ or "A2" in slice_ for slice_ in trained), (
         f"{name!r}/{row_id}: the row's final answer must be trained; got {trained!r}"
     )
+
+
+@pytest.mark.parametrize("row_id", sorted(_ROWS))
+@pytest.mark.parametrize("name", _RENDERER_NAMES)
+def test_weights_only_remove_loss_from_the_terminal_turn(name: str, row_id: str):
+    """Per-message weights must not move tokens, must not add loss anywhere, and
+    must only ever withhold loss from the datum's own terminal turn.
+
+    The unweighted render of the same row is the reference: it trains exactly
+    each datum's terminal turn, so "weighted loss ⊆ unweighted loss" is what
+    rules out training history a second time and rules out loss leaking onto a
+    system block, thinking marker, or reasoning preamble the renderer
+    synthesized after the flags were resolved.
+    """
+    row = _ROWS[row_id]
+    if name in _NO_MULTI_TARGET_SPLIT and _is_multi_turn(row):
+        pytest.skip(
+            f"{name!r} {_NO_MULTI_TARGET_SPLIT[name]}; pinned by "
+            "test_multi_turn_gap_is_weight_independent"
+        )
+    tokenizer, renderer = _resolve_renderer(name)
+
+    weighted = _render(renderer, row)
+    reference = _render(renderer, _without_weights(row))
+
+    assert len(weighted) == len(reference), (
+        f"{name!r}/{row_id}: weights must not change how many datums a row "
+        f"produces; got {len(weighted)} vs {len(reference)}"
+    )
+    for index, (datum, reference_datum) in enumerate(zip(weighted, reference)):
+        assert datum.token_ids == reference_datum.token_ids, (
+            f"{name!r}/{row_id} datum {index}: weights select loss, so they must "
+            "not change the rendered token sequence"
+        )
+        leaked = [
+            position
+            for position, (weight, reference_weight) in enumerate(
+                zip(datum.token_weights, reference_datum.token_weights)
+            )
+            if weight > 0 and reference_weight == 0
+        ]
+        assert not leaked, (
+            f"{name!r}/{row_id} datum {index}: positions {leaked[:8]} carry loss "
+            "that the unweighted render does not — weights may only withhold "
+            "loss from the terminal turn, never add it to history or to "
+            "renderer-synthesized template context"
+        )
+
+    masked_contents = [
+        message["content"] for message in row if message.get("weight") == 0
+    ]
+    if not masked_contents:
+        # Flags that only restate the default must be a complete no-op, so the
+        # preview a customer inspects matches the unweighted row byte for byte.
+        assert [datum.token_weights for datum in weighted] == [
+            datum.token_weights for datum in reference
+        ], f"{name!r}/{row_id}: weight=1 everywhere must not change any mask"
+        return
+
+    weighted_trained = [_trained_text(tokenizer, datum) for datum in weighted]
+    for content in masked_contents:
+        assert not [trained for trained in weighted_trained if content in trained], (
+            f"{name!r}/{row_id}: masked message {content!r} must not be trained by any "
+            f"datum; got {weighted_trained!r}"
+        )
+    # Guard against a vacuous pass: when the unweighted render does train the
+    # masked message, the weighted one has to end up with strictly less loss.
+    # Renderers whose built-in modes already exclude it (Kimi treats
+    # back-to-back assistants as separate turns) legitimately match.
+    reference_trained = [_trained_text(tokenizer, datum) for datum in reference]
+    if any(
+        content in trained
+        for content in masked_contents
+        for trained in reference_trained
+    ):
+        assert sum(_trained_token_count(datum) for datum in weighted) < sum(
+            _trained_token_count(datum) for datum in reference
+        ), f"{name!r}/{row_id}: masking must withhold loss the unweighted row applies"
 
 
 @pytest.mark.parametrize("name", _RENDERER_NAMES)
@@ -670,6 +759,83 @@ def test_customized_without_any_weights_still_fails_loudly(name: str):
             renderer=renderer,
             train_on_what=TrainOnWhat.CUSTOMIZED,
         )
+
+
+def test_an_image_slot_is_identified_by_content_not_by_chunk_position():
+    """The two renders are compared position by position, and a non-text chunk
+    has no tokens to compare, so it needs a stand-in.
+
+    That stand-in has to come from the chunk's content. Deriving it from the
+    chunk's index in the chunk list would break the moment a mode splits a text
+    chunk somewhere else in the sequence — which GLM does, to mask the injected
+    ``<think>`` — shifting every later index and making identical image slots
+    look different.
+    """
+    image = tinker.types.ImageAssetPointerChunk(
+        location="gs://bucket/image.png",
+        format="png",
+        expected_tokens=4,
+    )
+    same_image = tinker.types.ImageAssetPointerChunk(
+        location="gs://bucket/image.png",
+        format="png",
+        expected_tokens=4,
+    )
+    other_image = tinker.types.ImageAssetPointerChunk(
+        location="gs://bucket/other.png",
+        format="png",
+        expected_tokens=4,
+    )
+
+    # One text chunk on the left, versus the same tokens split in two.
+    whole = tinker.ModelInput(
+        chunks=[tinker.types.EncodedTextChunk(tokens=[1, 2, 3]), image]
+    )
+    split = tinker.ModelInput(
+        chunks=[
+            tinker.types.EncodedTextChunk(tokens=[1]),
+            tinker.types.EncodedTextChunk(tokens=[2, 3]),
+            same_image,
+        ]
+    )
+
+    assert _rendered_positions(whole) == _rendered_positions(split), (
+        "splitting a text chunk must not change how the image slot is identified"
+    )
+    assert stable_chunk_sentinel(image) != stable_chunk_sentinel(other_image), (
+        "a different image must still compare as different"
+    )
+
+
+def test_mistral_tool_declarations_survive_a_second_render():
+    """Declared tools must ride on the message, not on the renderer.
+
+    Masking a subset of a turn renders the same conversation twice to intersect
+    the flagged loss with the default loss. A renderer that consumed per-render
+    state would drop its tool block on the second pass and silently misalign the
+    two weight vectors.
+    """
+    tokenizer, renderer = _resolve_renderer("mistral")
+
+    messages = [
+        {"role": "user", "content": "Where is order A?"},
+        {"role": "assistant", "content": "CALL", "weight": 1},
+        {"role": "assistant", "content": "RETRY", "weight": 0},
+        {"role": "assistant", "content": "ANSWER", "weight": 1},
+    ]
+    datums = render_messages_to_datums(
+        [dict(message) for message in messages],
+        renderer=renderer,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+        tools=_CUSTOMER_TOOLS,
+    )
+
+    assert len(datums) == 1
+    decoded = tokenizer.decode(datums[0].token_ids)
+    assert "[AVAILABLE_TOOLS]" in decoded, (
+        "the tool declaration block must survive rendering the row twice"
+    )
+    assert "[AVAILABLE_TOOLS]" not in _trained_text(tokenizer, datums[0])
 
 
 def test_weights_with_a_user_and_system_mode_relocate_loss_to_the_assistants():

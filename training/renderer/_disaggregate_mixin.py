@@ -87,7 +87,7 @@ from tinker_cookbook.renderers.base import TrainOnWhat
 
 from training.renderer.message_weights import (
     equivalent_builtin_train_on_what,
-    flags_clamped_to_mode,
+    render_masked_example,
     uses_per_message_weights,
     without_trainable_flags,
 )
@@ -221,18 +221,16 @@ class DisaggregateMultiTurnMixin:
                     TrainOnWhat.LAST_ASSISTANT_TURN,
                 )
                 if builtin_mode is None:
-                    mode = TrainOnWhat.CUSTOMIZED
-                    # Demotion clears the flags BEFORE the terminal turn.
-                    # Inside it, a flag on something LAST_ASSISTANT_TURN would
-                    # not train — a tool result carrying weight: 1 — must not
-                    # pick up loss either.
-                    prefix = flags_clamped_to_mode(
-                        prefix,
-                        TrainOnWhat.LAST_ASSISTANT_TURN,
+                    examples.append(
+                        render_masked_example(
+                            self,
+                            prefix,
+                            default_train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
+                        )
                     )
-                else:
-                    mode = builtin_mode
-                    prefix = without_trainable_flags(prefix)
+                    continue
+                mode = builtin_mode
+                prefix = without_trainable_flags(prefix)
             else:
                 mode = train_on_what
             examples.append(self.build_supervised_example(prefix, train_on_what=mode))
