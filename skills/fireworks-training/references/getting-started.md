@@ -91,4 +91,4 @@ firectl quota list      # GPU quotas, rate limits, spend limit, usage
 - [ ] New fine-tuned LoRA in `firectl model list`.
 - [ ] Deploy it on-demand and get a sensible completion → `references/deploy-and-troubleshoot.md`.
 
-> Wrong text learned / assistant turn ignored? Use Render Samples / [Debug SFT tokenization](https://docs.fireworks.ai/fine-tuning/debug-sft-tokenization.md).
+> Wrong text learned or assistant turn ignored? Use Render Samples and `renderer-verification.md`.

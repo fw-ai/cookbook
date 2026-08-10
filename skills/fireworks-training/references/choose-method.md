@@ -44,7 +44,7 @@ JSONL, one object per line; OpenAI-style `messages`. **Min 3, max 3M** (aim for 
 {"messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"Capital of France?"},{"role":"assistant","content":"Paris."}]}
 ```
 
-Docs: https://docs.fireworks.ai/fine-tuning/fine-tuning-models · [weighted training](https://docs.fireworks.ai/fine-tuning/weighted-training)
+Docs: https://docs.fireworks.ai/fine-tuning/fine-tuning-models.md. For managed RFT weighting and launch controls, read `managed-rft-operations.md` and the installed CLI help.
 
 ## DPO format
 
@@ -59,7 +59,7 @@ If the user has prompts but no preference pairs, do not reject the task or silen
 
 ## RFT — reinforcement fine-tuning
 
-Provide three things (not necessarily labeled outputs): a **dataset** of prompts; an **evaluator or inline reward** that scores an output 0.0→1.0; and the **agent** being trained. Managed RFT uses a registered evaluator. Training API RFT uses reward code and may read `ground_truth` or any other field declared by that reward. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/how-rft-works · [evaluators](https://docs.fireworks.ai/fine-tuning/evaluators)
+Provide three things (not necessarily labeled outputs): a **dataset** of prompts; an **evaluator or inline reward** that scores an output 0.0→1.0; and the **agent** being trained. Managed RFT uses a registered evaluator. Training API RFT uses reward code and may read `ground_truth` or any other field declared by that reward. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md. Evaluator authoring: `preference-data-and-evaluators.md`.
 
 ## Classification (a common SFT task)
 
@@ -77,7 +77,7 @@ For anything past a smoke run, don't hand-pick one config: run the small grid be
 
 ## LoRA vs full-parameter
 
-**Pick LoRA first** — small adapter, cheaper/faster, fewer GPUs, deployable on the base model. **LoRA rank** default 8 (range 4–32); raise for complex reasoning, keep low for style/format. Go **full-parameter** only when LoRA plateaus and you have GPU budget. Docs: https://docs.fireworks.ai/fine-tuning/parameter-tuning
+**Pick LoRA first** — small adapter, cheaper/faster, fewer GPUs, deployable on the base model. Resolve the current default and range from live docs, the selected training shape, and CLI or recipe configuration. Go **full-parameter** only when LoRA plateaus and you have GPU budget. Docs: https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md.
 
 ## Data quality (the main driver of SFT quality)
 

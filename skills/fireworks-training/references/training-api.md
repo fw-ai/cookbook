@@ -23,7 +23,7 @@ Use **managed training** for standard SFT/DPO/ORPO/RFT jobs. Reach for the **Tra
 | **Serverless** | Supported-model LoRA SFT or RL, shared pool, per-token billing, no provisioning | `training/examples/serverless_rl/` for the synchronous quickstart; `training/recipes/experiment/async_rl_loop_serverless.py` for experimental async RL |
 | **Dedicated** | Full-parameter, DPO, broader model/method support, sustained runs, explicit trainer/deployment/checkpoint control | `training/recipes/` |
 
-Read the live [serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and [dedicated lifecycle](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) pages before choosing.
+Read the live [serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and [dedicated](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md) pages before choosing.
 
 ## Two agent-drivable ways to run RFT/RL
 
@@ -85,7 +85,7 @@ Recipes cover SFT, DPO/ORPO, and RL (GRPO, DAPO, GSPO, CISPO).
 - `optim_step(...)` — optimizer update after gradient accumulation.
 - `save_weights_for_sampler()` + `create_sampling_client()` — export a checkpoint + stand up a sampler (weight sync for eval/rollouts).
 
-Loss docs: https://docs.fireworks.ai/fine-tuning/training-api/loss-functions
+Loss and datum routing: `training-api-losses.md`.
 
 ```python
 def loss_fn(data, logprobs_list):   # logprobs_list: per-token, requires_grad

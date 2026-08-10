@@ -168,7 +168,7 @@ def check_training_contract(
         "must never configure",
         "https://docs.fireworks.ai/llms.txt",
         "https://docs.fireworks.ai/fine-tuning/training-api/serverless.md",
-        "https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md",
+        "https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md",
         "git rev-parse HEAD",
         "training/pyproject.toml",
         "training/recipes/sft_loop.py",

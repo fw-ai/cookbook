@@ -9,7 +9,7 @@ is controlled by `max_head_offpolicy_versions`, not by delaying weight sync.
 `weight_sync_timeout` controls the hotload timeout; the *scope* (who owns the
 GCS bucket) is set on `DeployConfig.weight_sync_scope`.
 
-For current user-facing checkpoint and sampling flows, see [Training and Sampling](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) and [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading.md). This file is the deep scope-mismatch and recovery reference.
+For the current user-facing lifecycle, see [Dedicated Training](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md). This file is the deep scope-mismatch and recovery reference.
 
 ## Weight sync scope: PER_TRAINER vs PER_DEPLOYMENT
 
@@ -105,7 +105,7 @@ Note that neither mode re-prefills: `ASYNC` reuses the old-weight KV and `SYNC`
 avoids the overlap entirely. Fireworks has no mode that discards the prefix KV
 and recomputes it under the new weights mid-generation.
 
-## Base vs delta chain
+## Incremental snapshots ARC2
 
 For full-parameter training, the first sampler save is `base` (full weights, ~16 GB for 8B). Subsequent saves are `delta` (XOR diff, ~10× smaller). The SDK-managed sampler backend records this chain automatically — users don't pick per-step.
 
@@ -245,8 +245,8 @@ Agents sometimes copy old cookbook snippets that reference `hot_load_deployment_
 
 ## See also
 
-- [Training and Sampling](https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md) — current user-facing lifecycle
-- [Saving and Loading](https://docs.fireworks.ai/fine-tuning/training-api/saving-and-loading.md) — checkpoint and sampler behavior
+- [Dedicated Training](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md) — user-facing lifecycle
+- [`sdk-checkpoints.md`](sdk-checkpoints.md) — checkpoint and resume behavior
 - Low-level `WeightSyncer` lifecycle: `fireworks.training.sdk.weight_syncer.WeightSyncer` (installed under `src/fireworks/training/sdk/weight_syncer.py`). Recipes use SDK-managed service hotload directly.
 - `save_weights_for_sampler_ext`, `save_state`, `list_checkpoints`: `fireworks.training.sdk.client.FiretitanTrainingClient`.
 - Trainer + deployment managers this flow depends on: `fireworks.training.sdk.trainer.TrainerJobManager` and `fireworks.training.sdk.deployment.DeploymentManager`.

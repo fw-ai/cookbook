@@ -168,10 +168,11 @@ serverless, or dedicated workflows.
 Live docs:
 
 - Training overview: <https://docs.fireworks.ai/fine-tuning/finetuning-intro.md>
+- Agent Skills: <https://docs.fireworks.ai/fine-tuning/agent/use-with-coding-agents.md>
 - Managed training: <https://docs.fireworks.ai/fine-tuning/managed-finetuning-intro.md>
 - Training API: <https://docs.fireworks.ai/fine-tuning/training-api/introduction.md>
 - Serverless training: <https://docs.fireworks.ai/fine-tuning/training-api/serverless.md>
-- Dedicated training lifecycle: <https://docs.fireworks.ai/fine-tuning/training-api/training-and-sampling.md>
+- Dedicated training: <https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md>
 
 ## Mandatory final-plan confirmation
 
@@ -254,7 +255,7 @@ This handoff is identical across Claude Code, Cursor, and Codex.
 | Managed SFT | `firectl sftj` | Not applicable | `references/choose-method.md` |
 | Managed DPO | `firectl dpo-job create --loss-method DPO` | Not applicable | `references/choose-method.md` |
 | Managed ORPO | `firectl dpo-job create --loss-method ORPO` | Not applicable | `references/choose-method.md` |
-| Managed RFT | `firectl rftj create --evaluator <resource>` | Not applicable | `references/preference-data-and-evaluators.md`, `references/training-api.md` |
+| Managed RFT | `firectl rftj create --evaluator <resource>` | Not applicable | `references/managed-rft-operations.md`, `references/preference-data-and-evaluators.md` |
 | Training API SFT | Not applicable | [`training/recipes/sft_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/sft_loop.py) | `references/sdk-recipes.md` |
 | Training API DPO | Not applicable | [`training/recipes/dpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/dpo_loop.py) | `references/sdk-recipes.md` |
 | Training API ORPO | Not applicable | [`training/recipes/orpo_loop.py`](https://github.com/fw-ai/cookbook/blob/main/training/recipes/orpo_loop.py) | `references/sdk-recipes.md` |
@@ -420,6 +421,10 @@ Read only what the task requires:
 | Method choice, schemas, classification, LoRA/full parameter | `references/choose-method.md` |
 | Preference generation and evaluator authoring | `references/preference-data-and-evaluators.md` |
 | Managed versus Training API RFT | `references/training-api.md` |
+| Managed RFT launch, monitoring, and validation | `references/managed-rft-operations.md` |
+| Managed RFT remote tracing | `references/rft-agent-tracing.md` |
+| Secure training operations | `references/secure-training-operations.md` |
+| Training API losses and datum contracts | `references/training-api-losses.md` |
 | Models, contexts, shapes, and costs | `references/models-shapes-and-cost.md` |
 | Deployment, evaluation, and teardown | `references/deploy-and-troubleshoot.md` |
 | Failure classification and escalation | `references/error-reference.md` |

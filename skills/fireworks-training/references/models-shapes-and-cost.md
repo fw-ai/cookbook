@@ -1,6 +1,6 @@
 # Models, training shapes & cost
 
-*Source of truth: [Training shapes catalog](https://docs.fireworks.ai/fine-tuning/training-api/training-shapes.md) · [pricing](https://fireworks.ai/pricing) — these are generated live; always defer to them over anything written here.*
+*Source of truth: [Models and method support](https://docs.fireworks.ai/fine-tuning/models.md), [Training shapes](https://docs.fireworks.ai/fine-tuning/training-api/training-shapes.md), and [pricing](https://fireworks.ai/pricing). These are generated live; always defer to them over anything written here.*
 
 How to choose a base model + training shape, and reason about cost. **Always confirm against the live catalog and pricing page — model lists and prices change.**
 
@@ -10,7 +10,7 @@ A **training shape** is a pre-configured GPU + model profile bundled into one re
 
 Locked by the shape (not user-overridable): `acceleratorType`, `acceleratorCount`, `nodeCount`, `maxSupportedContextLength`, trainer image, linked deployment shape. You still set: `base_model`, `lora_rank`, `lora_alpha`, `learning_rate`, `display_name`, replica counts.
 
-**Pick one:** find your base model in the catalog → pick the shape matching your method (SFT/DPO/RFT) and approach (LoRA vs full-param); the per-model **Training method support** matrix shows combinations + total GPU + surfaces. Pass the full path, e.g. `accounts/fireworks/trainingShapes/qwen3p5-9b-256k`. Catalog (live): https://docs.fireworks.ai/fine-tuning/training-api/training-shapes.md
+**Pick one:** find your base model in the catalog, confirm the supported method and surface, then pick the compatible shape for LoRA or full-parameter work. Pass the full path, for example `accounts/fireworks/trainingShapes/qwen3p5-9b-256k`. Live catalog: https://docs.fireworks.ai/fine-tuning/models.md
 
 ```python
 service = FiretitanServiceClient.from_firetitan_config(
@@ -24,7 +24,7 @@ service = FiretitanServiceClient.from_firetitan_config(
 
 ## Supported base models
 
-Most major open families — **DeepSeek, Qwen, Kimi, GLM, Gemma, Llama, Nemotron, MiniMax** and more. Eligibility is specific to method, tuning mode, and training shape. Confirm SFT, DPO, ORPO, or RFT support in the live Training Shapes matrix before launch. The set is generated from the live registry — **don't hardcode it**. Live: [tunable text](https://app.fireworks.ai/models?filter=LLM&tunable=true) · [vision](https://app.fireworks.ai/models?filter=vision&tunable=true) · [method-support matrix](https://docs.fireworks.ai/fine-tuning/training-api/training-shapes.md)
+Eligibility is specific to model, method, tuning mode, surface, and training shape. Confirm support in the live Models matrix before launch. The set is generated from the registry; do not hardcode a family list. Live: [tunable text](https://app.fireworks.ai/models?filter=LLM&tunable=true) · [vision](https://app.fireworks.ai/models?filter=vision&tunable=true) · [method-support matrix](https://docs.fireworks.ai/fine-tuning/models.md)
 
 ## Context length & LoRA configuration
 
@@ -42,7 +42,7 @@ The platform maps GPU class + count to the model — **let it**. Larger/MoE → 
 
 **Per training token** — managed SFT and DPO where listed. **Read current rates from the live [pricing page](https://fireworks.ai/pricing)** rather than trusting a hardcoded table.
 
-**Runtime-priced resources** — managed RFT may be free for eligible small models (confirm on the live pricing page; do not assume a fixed size threshold). Other managed RFT and dedicated Training API resources follow current pricing. Dedicated trainers and deployments use GPU-hour rates, including priced classes such as B300 and GB300, and are metered by runtime.
+**Runtime-priced resources** — managed RFT and dedicated Training API resources follow current pricing. Dedicated trainers and deployments use GPU-hour rates and are metered by runtime. Never claim a free RFT tier unless the live pricing page explicitly shows one.
 
 **Inference:** serverless per-token; dedicated per GPU-hour.
 
