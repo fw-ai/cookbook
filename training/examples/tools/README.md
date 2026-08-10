@@ -9,3 +9,4 @@ Standalone utility scripts that complement the main cookbook recipes.
 | `list_checkpoints.py` | List checkpoint rows known to the control plane for a trainer job. |
 | `reconnect_and_adjust_lr.py` | Reconnect to an existing trainer job and adjust the learning rate mid-run. |
 | `verify_logprobs.py` | Compare inference-time and training-time logprobs for a checkpoint. |
+| `audit_gpu_usage.py` | Read-only audit of which GPUs an account holds and who holds them. Reconciles computed charges against reported quota usage and flags rollout deployments left running without a trainer. |
