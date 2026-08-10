@@ -80,7 +80,9 @@ firectl model list                             # the new LoRA appears here
 firectl quota list      # GPU quotas, rate limits, spend limit, usage
 ```
 
-- On-demand GPU quota is a **ceiling on concurrent GPUs — not a reservation**; you pay only for what runs, capacity isn't held.
+- On-demand GPU quota is a **ceiling on concurrent GPUs**, not a capacity guarantee — a job within quota can still fail to schedule.
+- **Quota is charged on the autoscaling ceiling**, so `used` counts what your resources are *entitled* to, not what is running: a deployment charges `acceleratorCount x maxReplicaCount` even at zero replicas. Billing follows actual GPU-seconds; quota does not.
+- An RL job charges `training-<gpu>-count` for **both** its trainer and its rollout deployment, so `used` is normally about double what the fine-tuning page shows. Reconciling a mismatch → `references/gpu-quota-accounting.md`.
 - A **monthly spend limit** pauses all usage when hit. Need more GPUs → [contact Fireworks](https://fireworks.ai/company/contact-us).
 
 ## First-successful-job checklist

@@ -168,6 +168,8 @@ After retention, both `list_checkpoints` and `promote_checkpoint` return `NOT_FO
 
 **Practical implication:** you can safely delete a trainer as soon as a run finishes. You have a month to promote checkpoints via the API.
 
+> **Deleting the trainer does not delete its rollout deployment.** The deployment keeps running, keeps charging `training-<gpu>-count` (or `global--<gpu>-count` once detached), and is pinned at `min == max` replicas so it cannot scale itself down — while the tombstoned trainer stops appearing in listings, removing the only pointer to it. Delete or zero the deployment explicitly in the same breath as the trainer: `references/gpu-quota-accounting.md`.
+
 ## Promoting a checkpoint
 
 One field — the `name` from the list response. Works identically for `PER_TRAINER` and `PER_DEPLOYMENT` runs, alive or within retention.

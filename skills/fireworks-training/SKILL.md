@@ -422,6 +422,7 @@ Read only what the task requires:
 | Managed versus Training API RFT | `references/training-api.md` |
 | Models, contexts, shapes, and costs | `references/models-shapes-and-cost.md` |
 | Deployment, evaluation, and teardown | `references/deploy-and-troubleshoot.md` |
+| GPU quota accounting, dashboard mismatches, orphaned rollout deployments | `references/gpu-quota-accounting.md` |
 | Failure classification and escalation | `references/error-reference.md` |
 | Resume, idempotency, progress, and final report | `references/run-state-and-reporting.md` |
 | Cookbook setup and examples | `references/sdk-setup.md`, `references/sdk-examples.md` |

@@ -88,7 +88,7 @@ firectl deployment delete <DEPLOYMENT_ID>
 # FailedPrecondition ("pass --ignore-checks to skip this check"). Force teardown now:
 firectl deployment delete <DEPLOYMENT_ID> --ignore-checks
 ```
-Lighter: `scale_to_zero` (min/max replicas = 0). Defaults: scale to zero after ~1h idle; min-0 deployments auto-deleted after 7 days idle. A scaled-to-zero deployment returns **`503 DEPLOYMENT_SCALING_UP`** on the first request — add retry/backoff.
+Lighter: `scale_to_zero` (min/max replicas = 0 — **both**; min alone keeps charging quota). Defaults: scale to zero after ~1h idle; min-0 deployments auto-deleted after 7 days idle. Neither default rescues a deployment pinned at `min == max`, which is how cookbook rollout deployments are created. A scaled-to-zero deployment returns **`503 DEPLOYMENT_SCALING_UP`** on the first request — add retry/backoff.
 
 ### Recover orphaned spend (you lost the deployment name)
 
@@ -98,9 +98,12 @@ If a run's session ended and there is no manifest / no recorded ID, do not assum
 firectl deployment list -a <ACCOUNT_ID>                 # enumerate ALL deployments
 firectl deployment get <DEPLOYMENT_ID> -o json -a <ACCOUNT_ID>   # per hit: State + replica counts
 #   -> a deployment with Replica Count / Ready Replica Count > 0 is actively billing
+#   -> 0 replicas still holds quota if maxReplicaCount > 0
 firectl model list -a <ACCOUNT_ID>                      # correlate the fine-tuned model created around that time
 firectl rlor-trainer-job list -a <ACCOUNT_ID>           # a dedicated Training API trainer may also still be live
 ```
+
+> **An RL rollout deployment outlives its trainer.** Deleting a trainer job tombstones it — it disappears from `rlor-trainer-job list` and the fine-tuning page — but leaves the paired `<trainer-id>-rollout` deployment running and charging quota, pinned so it can never scale to zero. `deployment list` is the only listing that still shows it. Full accounting model, per-user attribution, and a one-pass audit script: `references/gpu-quota-accounting.md`.
 
 Then stop the spend (confirm first; may hit the agent guard → run manually):
 
