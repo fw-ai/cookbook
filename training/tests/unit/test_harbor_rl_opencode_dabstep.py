@@ -12,7 +12,7 @@ from training.examples.rl.harbor_rl_opencode.dabstep import (
     rows_for_tasks,
     usable_group_probability,
 )
-from training.examples.rl.harbor_rl_opencode.evaluate import (
+from training.examples.rl.harbor.evaluate import (
     evaluate_rows,
     make_fixed_evaluation,
 )

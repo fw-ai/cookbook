@@ -23,7 +23,6 @@ import math
 import os
 import re
 import signal
-import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -68,7 +67,7 @@ from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import datum_target_len
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
 from training.utils.rl.tis import TISConfig
-from training.utils.timer import elapsed_timer, flush_timing
+from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
 logger = logging.getLogger(__name__)
 
@@ -770,15 +769,13 @@ def main(
                 ).result()
             return {"result": result, "learning_rate": learning_rate}
 
-        def create_sampler_version(step: int) -> tuple[Any, str, float]:
-            started = time.monotonic()
-            client, snapshot = _create_snapshot_sampling_client(
+        def create_sampler_version(step: int) -> tuple[Any, str]:
+            return _create_snapshot_sampling_client(
                 service=service,
                 training_client=training_client,
                 tokenizer=tokenizer,
                 name=_snapshot_name(cfg.snapshot_prefix, f"step-{step}"),
             )
-            return client, snapshot, time.monotonic() - started
 
         def save_training_state(step: int) -> str:
             saved = training_client.save_state(
@@ -800,14 +797,18 @@ def main(
                 return
             if not force and step % evaluation_interval:
                 return
-            metrics = await evaluation_fn(step, evaluation_rollout_fn)
+            with wall_timer() as span:
+                metrics = await evaluation_fn(step, evaluation_rollout_fn)
             last_evaluation_step = step
-            if metrics:
-                log_metrics(
-                    {"rollout/step": step, **metrics},
-                    step=step,
-                    metrics_file=cfg.metrics_file,
-                )
+            log_metrics(
+                {
+                    "rollout/step": step,
+                    "eval/wall_time": span.elapsed,
+                    **(metrics or {}),
+                },
+                step=step,
+                metrics_file=cfg.metrics_file,
+            )
 
         async def run_training() -> tuple[int, dict[str, Any], str, list[str]]:
             periodic_checkpoints: list[str] = []
@@ -863,17 +864,17 @@ def main(
                                 batch.batch_id,
                                 optimizer_batch=batch,
                             )
-                            (
-                                next_client,
-                                latest_snapshot,
-                                sync_time,
-                            ) = await coordinator.run_blocking(
-                                "weight_sync",
-                                create_sampler_version,
-                                batch.batch_id,
-                                optimizer_batch=batch,
-                            )
-                            await sampler.replace(next_client)
+                            with wall_timer() as update_span:
+                                (
+                                    next_client,
+                                    latest_snapshot,
+                                ) = await coordinator.run_blocking(
+                                    "weight_sync",
+                                    create_sampler_version,
+                                    batch.batch_id,
+                                    optimizer_batch=batch,
+                                )
+                                await sampler.replace(next_client)
                             published = coordinator.publish(batch)
                             telemetry.finish_step(
                                 batch=batch,
@@ -890,7 +891,8 @@ def main(
                                 ],
                                 optim_result=optimizer["result"],
                                 timing_metrics=flush_timing(),
-                                weight_sync_time=sync_time,
+                                step_time=published.step_time,
+                                weight_update_time=update_span.elapsed,
                                 learning_rate=optimizer["learning_rate"],
                             )
                             interval = cfg.dcp_save_interval
@@ -900,12 +902,21 @@ def main(
                                 and completed_steps > 0
                                 and completed_steps % interval == 0
                             ):
-                                checkpoint = await coordinator.run_blocking(
-                                    "checkpoint",
-                                    save_training_state,
-                                    batch.batch_id,
-                                )
+                                with wall_timer() as checkpoint_span:
+                                    checkpoint = await coordinator.run_blocking(
+                                        "checkpoint",
+                                        save_training_state,
+                                        batch.batch_id,
+                                    )
                                 periodic_checkpoints.append(checkpoint)
+                                log_metrics(
+                                    {
+                                        "rollout/step": batch.batch_id,
+                                        "checkpoint/wall_time": checkpoint_span.elapsed,
+                                    },
+                                    step=batch.batch_id,
+                                    metrics_file=cfg.metrics_file,
+                                )
                             await evaluate(batch.batch_id)
                         await evaluate(coordinator.global_step, force=True)
                     finally:

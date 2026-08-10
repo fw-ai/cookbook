@@ -19,9 +19,12 @@ Minimal rollouts for the async recipe (`training/recipes/async_rl_loop.py`):
 - `eval_protocol_chat/` — OpenAI-style messages sent through an Eval Protocol
   `RemoteRolloutProcessor` server; the completed chat rollout is converted
   into the async recipe's `RolloutRun` format with a cookbook renderer.
-- `harbor_rl_opencode/` — an OpenCode policy adapted to Harbor's native task,
-  local Docker `Trial`, and verifier interfaces. The async recipe still owns
-  the normal `RolloutRun` fan-out and GRPO grouping.
+- `harbor/` — the shared Harbor trial and OpenCode policy adapter used by the
+  task-specific examples below.
+- `harbor_rl_opencode/` — DABstep task selection and training entrypoints over
+  the shared Harbor/OpenCode rollout function.
+- `harbor_rl_terminal_bench/` — a serverless 8x8 Terminal-Bench training
+  entrypoint over the Harbor/OpenCode rollout function.
 
 Each example exposes `rollout_fn_factory(setup) -> rollout_fn` (signature
 `async def rollout_fn(sample_prompt) -> RolloutRun | None`) and a `train.py`

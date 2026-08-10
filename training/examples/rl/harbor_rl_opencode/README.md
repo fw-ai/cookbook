@@ -52,7 +52,7 @@ task images instead of installing Node and OpenCode in every rollout:
 
 ```bash
 uv run python -m \
-  training.examples.rl.harbor_rl_opencode.prepare_opencode_tasks \
+  training.examples.rl.harbor.prepare_opencode_tasks \
   --source ~/.cache/harbor/tasks/terminal-bench-2.0 \
   --destination ~/.cache/harbor/tasks/terminal-bench-opencode \
   --opencode-version <pinned-version> \
@@ -137,6 +137,9 @@ regrade/source trials are rejected explicitly.
 Each `rollout_fn` call returns one logical `RolloutRun` or `None`. A failed call
 may create multiple fresh Harbor trials within its bounded retry budget;
 sessions, policy keys, and containers are never reused across attempts.
+Sampling and trace-integrity failures invalidate the whole attempt, so partial
+turns are retried and then discarded instead of being trained with a verifier
+reward. Valid agent outcomes keep the reward returned by Harbor.
 `openai_policy.py` owns OpenCode history matching and resolves each trainable
 request to either the current parent or a new root. The shared token-level
 training session records only exact prompt/output tokens, logprobs, and explicit
@@ -198,9 +201,10 @@ The serverless entrypoint fixes the audited K3 defaults: rank-64 LoRA, LR
 8 groups, two client-GRPO forward/backward chunks with default token-level TIS,
 one optimizer mutation, zero off-policy versions, completion-only Router
 Replay, `num_loss_tokens` gradient normalization, and three full-rollout
-retries before discard. It intentionally exposes no rollout-concurrency
-override, so admission stays on the coordinator's adaptive default. The local
-Harbor Docker environment and history-rewrite-aware rollout function are
+retries before discard. Rollout admission stays on the coordinator's adaptive
+default. Independently, the shared Harbor adapter limits active local trials to
+24 so Docker environment capacity does not become sampler concurrency policy.
+The local Harbor environment and history-rewrite-aware rollout function are
 identical in sampling and training.
 
 Use `--lora-rank`, `--adam-beta2`, `--adam-epsilon`, and `--weight-decay` for

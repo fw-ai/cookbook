@@ -243,7 +243,7 @@ Before a paid training run:
 
 ## Cookbook example
 
-`training/examples/rl/harbor_rl_opencode/` is one concrete adapter:
+`training/examples/rl/harbor/` is one concrete adapter:
 
 - Harbor owns local Docker task execution and verifier reward;
 - OpenCode supplies the multi-turn agent and tool behavior;
@@ -253,6 +253,8 @@ Before a paid training run:
 - any exact-token non-append boundary starts another `RolloutSample`
   trajectory within the same logical run.
 
+The DABstep and Terminal-Bench entrypoints keep their task selection and
+experiment defaults in `harbor_rl_opencode/` and `harbor_rl_terminal_bench/`.
 Fork only the pieces that match the target harness. Harbor is environment
 support, OpenCode is one agent, and strict split-on-mismatch is one valid policy;
 none is required by `async_rl_loop`.

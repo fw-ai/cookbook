@@ -78,11 +78,10 @@ class OptimizerBatch:
     _consumer_started: bool = False
     _consumed: bool = False
     _ready_chunks: int = 0
-    _trainer_wait_for_chunk_time: float = 0.0
-    _trainer_wait_for_rollout_time: float = 0.0
+    _train_chunk_wait_time: float = 0.0
     _train_started_at: float | None = None
     _train_finished_at: float | None = None
-    _rollout_wait_at_train_start: float = 0.0
+    _chunk_wait_at_train_start: float = 0.0
 
     @property
     def planned_chunks(self) -> int:
@@ -133,7 +132,7 @@ class OptimizerBatch:
         while True:
             wait_started = time.monotonic()
             item = await self._queue.get()
-            self._trainer_wait_for_chunk_time += time.monotonic() - wait_started
+            self._train_chunk_wait_time += time.monotonic() - wait_started
             if item is _BATCH_FINISHED:
                 self._consumed = True
                 return

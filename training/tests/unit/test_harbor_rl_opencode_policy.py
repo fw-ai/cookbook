@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from training.examples.rl.harbor_rl_opencode import openai_policy
-from training.examples.rl.harbor_rl_opencode.openai_policy import (
+from training.examples.rl.harbor import openai_policy
+from training.examples.rl.harbor.openai_policy import (
     OpenCodePolicyServer,
     OpenCodePolicySession,
 )
@@ -248,6 +248,7 @@ def test_history_wipe_splits_token_chains_but_keeps_one_rollout(monkeypatch):
     assert session.request_traces[0]["tools"] == _TOOLS
     assert session.request_traces[0]["prompt_ids"] == [1, 2]
     assert session.request_traces[0]["completion_ids"] == [10]
+    assert session.request_traces[0]["parser_fallback"] is False
     assert session.request_traces[2]["turn_kind"] == "auxiliary"
     assert [segment.metadata["segment_kind"] for segment in segments] == [
         "history_wipe",
@@ -808,7 +809,7 @@ def test_openai_renderer_preserves_reasoning_as_thinking_content():
 def test_opencode_config_uses_absolute_xdg_path_when_shell_env_is_absent():
     pytest.importorskip("harbor")
     # lazy: ConfigurableOpenCode subclasses Harbor's optional OpenCode agent.
-    from training.examples.rl.harbor_rl_opencode.opencode import (
+    from training.examples.rl.harbor.opencode import (
         ConfigurableOpenCode,
     )
 
@@ -831,7 +832,7 @@ def test_baked_opencode_version_must_match_the_requested_pin(
     raises,
 ):
     pytest.importorskip("harbor")
-    from training.examples.rl.harbor_rl_opencode.opencode import (
+    from training.examples.rl.harbor.opencode import (
         ConfigurableOpenCode,
     )
 

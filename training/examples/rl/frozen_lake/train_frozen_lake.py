@@ -74,7 +74,7 @@ from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.tis import TISConfig
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.checkpoints import TrainingCheckpoints
-from training.utils.timer import timer, flush_timing
+from training.utils.timer import flush_timing, wall_timer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -737,30 +737,29 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             def save_intermediate_checkpoint(step: int, data_consumed: int) -> None:
                 logger.info("[step %d] dcp_save...", step)
                 t0 = time.time()
-                with timer("dcp_save"):
-                    ckpt.save(
-                        f"step-{step}",
-                        resumable=True,
-                        promotable=False,
-                        data_consumed=data_consumed,
-                    )
+                ckpt.save(
+                    f"step-{step}",
+                    resumable=True,
+                    promotable=False,
+                    data_consumed=data_consumed,
+                )
                 logger.info(
                     "[step %d] dcp_save: done (%.1fs)",
                     step,
                     time.time() - t0,
                 )
 
-            def _weight_sync(step: int) -> None:
+            def _weight_sync(step: int) -> float:
                 logger.info("[step %d] weight_sync: saving + loading...", step)
-                t0 = time.time()
-                with timer("weight_sync"):
+                with wall_timer() as span:
                     saved = policy.save_weights_for_sampler_ext(f"step-{step}")
                     service.hotload_sampler_snapshot(saved.snapshot_name)
                 logger.info(
                     "[step %d] weight_sync: done (%.1fs)",
                     step,
-                    time.time() - t0,
+                    span.elapsed,
                 )
+                return span.elapsed
 
             def should_accept(pg: PromptGroup) -> bool:
                 return len(set(pg.rewards)) > 1
@@ -878,7 +877,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                                 batch.batch_id,
                                 optimizer_batch=batch,
                             )
-                            await coordinator.run_blocking(
+                            weight_update_time = await coordinator.run_blocking(
                                 "weight_sync",
                                 _weight_sync,
                                 batch.batch_id,
@@ -901,7 +900,8 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                                 ],
                                 optim_result=optim_result,
                                 timing_metrics=flush_timing(),
-                                weight_sync_time=None,
+                                step_time=published.step_time,
+                                weight_update_time=weight_update_time,
                                 learning_rate=cfg.learning_rate,
                             )
 

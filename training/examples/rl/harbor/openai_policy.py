@@ -764,6 +764,9 @@ class OpenCodePolicyServer:
                     ),
                     "assistant_message": copy.deepcopy(message),
                     "finish_reason": turn.finish_reason,
+                    "parser_fallback": bool(
+                        turn.metadata.get("parser_fallback", False)
+                    ),
                     "turn_kind": decision.kind.value
                     if decision is not None
                     else "auxiliary",

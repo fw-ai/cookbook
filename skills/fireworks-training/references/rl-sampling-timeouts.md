@@ -42,11 +42,13 @@ deployment returns any metrics.
 3. **If queue/TTFT evidence is not high or is absent, do not claim capacity as
    the cause.** Investigate gateway timeout limits, network stability, hotload
    readiness, request size, or an overly short `DeployConfig.sample_timeout`.
-4. **Compare trainer/sampler waits for async RL.** If
-   `perf/trainer_wait_for_sampler_time` is high and sampler queue metrics are
-   high, the sampler is the slow side. If `perf/sampler_wait_for_trainer_time`
-   is high, the trainer or off-policy gate is more likely limiting progress.
-   See [`rl-async.md#diagnosing-waits`](rl-async.md#diagnosing-waits).
+4. **Compare async RL phase and producer metrics.** High
+   `perf/train_chunk_wait_time` together with high sampler queue metrics points
+   to a slow sampler. Near-zero staleness capacity with in-flight samples below
+   the concurrency limit points to the off-policy admission gate instead.
+   `perf/train_wait_time` alone is not enough evidence because it also includes
+   evaluation, checkpoint, and weight-publication time. See
+   [`async-rl-metrics.md#diagnose-the-bottleneck`](async-rl-metrics.md#diagnose-the-bottleneck).
 
 ## What not to infer
 

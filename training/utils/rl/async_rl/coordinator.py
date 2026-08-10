@@ -36,6 +36,7 @@ class PublishResult:
 
     resolved_rows: int
     trained_against_version: int
+    step_time: float
 
 
 class AsyncRLCoordinator:
@@ -69,6 +70,7 @@ class AsyncRLCoordinator:
         self._active_batch: OptimizerBatch | None = None
         self._started = False
         self._closed = False
+        self._step_started_at: float | None = None
         self._executor: ThreadPoolExecutor | None = None
         self._producer = RolloutProducer(
             rows=rows,
@@ -110,6 +112,7 @@ class AsyncRLCoordinator:
             max_workers=1,
             thread_name_prefix="async-rl-trainer",
         )
+        self._step_started_at = time.monotonic()
         self._producer.start()
         self._started = True
 
@@ -119,14 +122,11 @@ class AsyncRLCoordinator:
             raise RuntimeError(
                 f"batch {self._active_batch.batch_id} must publish before next_batch"
             )
-        wait_started = time.monotonic()
         item = await self._output.get()
-        wait_time = time.monotonic() - wait_started
         if item is _PRODUCER_FINISHED:
             return None
         if isinstance(item, _ProducerFailed):
             raise item.error
-        item._trainer_wait_for_rollout_time = wait_time
         self._active_batch = item
         return item
 
@@ -157,9 +157,8 @@ class AsyncRLCoordinator:
         if tracks_training and optimizer_batch is not None:
             if optimizer_batch._train_started_at is None:
                 optimizer_batch._train_started_at = time.monotonic()
-                optimizer_batch._rollout_wait_at_train_start = float(
-                    self._producer.snapshot()["rollout_wait_for_trainer_time_total"]
-                    or 0.0
+                optimizer_batch._chunk_wait_at_train_start = (
+                    optimizer_batch._train_chunk_wait_time
                 )
         executor = self._executor
         if executor is None:
@@ -189,10 +188,17 @@ class AsyncRLCoordinator:
             raise RuntimeError(f"batch {batch.batch_id} is not active")
         trained_against_version = self.published_version
         resolved_rows = self._producer.publish(batch)
+        published_at = time.monotonic()
+        step_started_at = self._step_started_at
+        if step_started_at is None:
+            raise RuntimeError("async RL coordinator has no active step timer")
+        step_time = max(0.0, published_at - step_started_at)
+        self._step_started_at = published_at
         self._active_batch = None
         return PublishResult(
             resolved_rows=resolved_rows,
             trained_against_version=trained_against_version,
+            step_time=step_time,
         )
 
     def snapshot(self) -> dict[str, int | float | bool | None]:

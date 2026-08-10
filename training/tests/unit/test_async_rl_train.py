@@ -147,6 +147,7 @@ def _finish_step(
     batch: OptimizerBatch,
     *,
     trained_against_version: int,
+    step_time: float,
 ) -> dict:
     return telemetry.finish_step(
         batch=batch,
@@ -155,7 +156,8 @@ def _finish_step(
         fwd_bwd_results=[],
         optim_result=SimpleNamespace(metrics={}),
         timing_metrics={},
-        weight_sync_time=0.0,
+        step_time=step_time,
+        weight_update_time=0.0,
         learning_rate=1e-5,
     )
 
@@ -442,6 +444,7 @@ def test_later_chunk_queues_while_first_chunk_trains() -> None:
                 telemetry,
                 batch,
                 trained_against_version=published.trained_against_version,
+                step_time=published.step_time,
             )
             assert metrics["async/realized_training_chunks"] == 2
 
@@ -527,7 +530,7 @@ def test_final_optimizer_batch_uses_its_realized_size() -> None:
     _run(scenario())
 
 
-def test_train_wall_time_ends_with_optimizer() -> None:
+def test_step_time_includes_weight_update_but_train_time_does_not() -> None:
     async def scenario() -> None:
         telemetry = _telemetry()
         coordinator = _coordinator(
@@ -561,8 +564,36 @@ def test_train_wall_time_ends_with_optimizer() -> None:
                 telemetry,
                 batch,
                 trained_against_version=published.trained_against_version,
+                step_time=published.step_time,
             )
-            assert 0 < metrics["perf/train_step_wall_time"] < 0.01
+            assert 0 < metrics["perf/train_time"] < 0.01
+            assert metrics["perf/step_time"] >= 0.01
+            assert metrics["perf/train_wait_time"] >= 0.01
+            assert 0 < metrics["perf/wait_time_ratio"] <= 1
+
+    _run(scenario())
+
+
+def test_step_time_starts_at_the_previous_publication() -> None:
+    async def scenario() -> None:
+        coordinator = _coordinator(
+            [_row(0), _row(1)],
+            prompt_groups_per_step=1,
+            training_chunks_per_step=1,
+        )
+        async with coordinator:
+            first = await coordinator.next_batch()
+            assert first is not None
+            await _consume(first)
+            coordinator.publish(first)
+
+            await asyncio.sleep(0.01)
+
+            second = await coordinator.next_batch()
+            assert second is not None
+            await _consume(second)
+            published = coordinator.publish(second)
+            assert published.step_time >= 0.01
 
     _run(scenario())
 
@@ -594,6 +625,7 @@ def test_raw_rewards_include_filtered_groups_but_not_failed_rollouts() -> None:
                 telemetry,
                 first,
                 trained_against_version=first_published.trained_against_version,
+                step_time=first_published.step_time,
             )
 
             second = await coordinator.next_batch()
@@ -604,6 +636,7 @@ def test_raw_rewards_include_filtered_groups_but_not_failed_rollouts() -> None:
                 telemetry,
                 second,
                 trained_against_version=second_published.trained_against_version,
+                step_time=second_published.step_time,
             )
 
             assert first_metrics["rollout/raw_reward"] == 1.0

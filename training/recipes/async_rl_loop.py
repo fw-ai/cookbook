@@ -80,7 +80,7 @@ from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
 from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
-from training.utils.timer import elapsed_timer, flush_timing
+from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,7 @@ __all__ = [
     "make_evaluation_rollout_fn",
     "main",
 ]
+
 
 @dataclass
 class Config:
@@ -275,7 +276,7 @@ def _save_checkpoint(
     promotable: bool = False,
 ) -> None:
     logger.info("[%s] dcp_save...", name)
-    with elapsed_timer("dcp_save") as span:
+    with wall_timer() as span:
         ckpt.save(
             name,
             resumable=resumable,
@@ -543,13 +544,17 @@ def main(
                 return
             if not force and step % evaluation_interval:
                 return
-            metrics = await evaluation_fn(step, evaluation_rollout_fn)
+            with wall_timer() as span:
+                metrics = await evaluation_fn(step, evaluation_rollout_fn)
             last_evaluation_step = step
-            if metrics:
-                log_metrics(
-                    {"rollout/step": step, **metrics},
-                    step=step,
-                )
+            log_metrics(
+                {
+                    "rollout/step": step,
+                    "eval/wall_time": span.elapsed,
+                    **(metrics or {}),
+                },
+                step=step,
+            )
 
         def make_row_requests():
             rows_per_epoch = len(rows)
@@ -708,10 +713,10 @@ def main(
             }
 
         def sync_weights(step: int) -> float:
-            with elapsed_timer("weight_sync") as sync_span:
+            with wall_timer() as span:
                 saved = policy.save_weights_for_sampler(f"step-{step}")
                 service.hotload_sampler_snapshot(saved.path)
-            return sync_span.elapsed
+            return span.elapsed
 
         async def run_training() -> tuple[int, dict[str, Any]]:
             telemetry = AsyncRLTelemetry(
@@ -790,7 +795,8 @@ def main(
                             ],
                             optim_result=optimizer["result"],
                             timing_metrics=flush_timing(),
-                            weight_sync_time=sync_wall_time,
+                            step_time=published.step_time,
+                            weight_update_time=sync_wall_time,
                             learning_rate=optimizer["learning_rate"],
                         )
                         await evaluate(batch.batch_id)
@@ -803,12 +809,20 @@ def main(
                             and rollouts_completed % interval == 0
                         ):
                             try:
-                                await coordinator.run_blocking(
-                                    "checkpoint",
-                                    _save_checkpoint,
-                                    ckpt,
-                                    name=f"step-{batch.batch_id}",
-                                    data_consumed=published.resolved_rows,
+                                with wall_timer() as span:
+                                    await coordinator.run_blocking(
+                                        "checkpoint",
+                                        _save_checkpoint,
+                                        ckpt,
+                                        name=f"step-{batch.batch_id}",
+                                        data_consumed=published.resolved_rows,
+                                    )
+                                log_metrics(
+                                    {
+                                        "rollout/step": batch.batch_id,
+                                        "checkpoint/wall_time": span.elapsed,
+                                    },
+                                    step=batch.batch_id,
                                 )
                             except (OSError, RuntimeError) as error:
                                 logger.warning(

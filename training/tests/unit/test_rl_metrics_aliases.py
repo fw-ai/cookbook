@@ -8,10 +8,7 @@ import tinker
 from tinker.lib.chunked_fwdbwd_helpers import combine_fwd_bwd_output_results
 
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.metrics import (
-    build_accumulated_async_loop_stats,
-    compute_step_metrics,
-)
+from training.utils.rl.metrics import compute_step_metrics
 
 
 def _make_prompt_group() -> PromptGroup:
@@ -29,33 +26,6 @@ def _make_prompt_group() -> PromptGroup:
     )
 
 
-class TestAsyncMetricHelpers:
-    def test_build_accumulated_async_loop_stats_merges_chunk_stats(self):
-        latest = {
-            "filter_drops": 1,
-            "sample_fails": 2,
-            "total_sampled": 3,
-            "resolved_rows": 4,
-            "all_raw_rewards": [0.0, 1.0, 0.0],
-        }
-
-        loop_stats = build_accumulated_async_loop_stats(
-            latest_loop_stats=latest,
-            trainer_wait_for_sampler_time=0.7,
-            sampler_wait_for_trainer_time=0.2,
-            train_wall_time=1.3,
-        )
-
-        assert loop_stats is not None
-        assert loop_stats is not latest
-        assert loop_stats["all_raw_rewards"] == [0.0, 1.0, 0.0]
-        assert loop_stats["trainer_wait_for_sampler_time"] == 0.7
-        assert loop_stats["sampler_wait_for_trainer_time"] == 0.2
-        assert loop_stats["train_wall_time"] == 1.3
-        assert loop_stats["scheduler_step_wall_time"] == 2.0
-        assert loop_stats["resolved_rows"] == 4
-
-
 class TestComputeStepMetrics:
     def test_uses_canonical_loop_stats_keys(self):
         metrics = compute_step_metrics(
@@ -65,11 +35,11 @@ class TestComputeStepMetrics:
             n_accum=4,
             timing_metrics={"perf/fwd_bwd_time": 1.0},
             loop_stats={
-                "trainer_wait_for_sampler_time": 3.0,
-                "perf/trainer_wait_for_chunk_time": 0.25,
-                "rollout_batch_wall_time": 2.0,
-                "train_wall_time": 1.0,
-                "scheduler_step_wall_time": 6.0,
+                "perf/step_time": 6.0,
+                "perf/train_time": 1.0,
+                "perf/train_wait_time": 5.0,
+                "perf/wait_time_ratio": 5 / 6,
+                "perf/train_chunk_wait_time": 0.25,
                 "all_raw_rewards": [1.0, 0.0],
                 "async/in_flight_samples_mean": 6.5,
                 "async/realized_training_chunks": 4,
@@ -88,24 +58,22 @@ class TestComputeStepMetrics:
             "rollout/filter_ratio": 0.5,
         }
         assert metrics["train/target_tokens"] == 3
-        assert metrics["perf/trainer_wait_for_sampler_time"] == 3.0
-        assert metrics["perf/trainer_wait_for_chunk_time"] == 0.25
-        assert metrics["perf/rollout_batch_wall_time"] == 2.0
-        assert metrics["perf/train_step_wall_time"] == 1.0
-        assert metrics["perf/scheduler_step_wall_time"] == 6.0
-        assert metrics["perf/trainer_idle_ratio"] == 3.25 / 6
-        assert "perf/trainer_wait_ratio" not in metrics
-        assert metrics["perf/rollout_batch_wall_ratio"] == 1 / 3
+        assert metrics["perf/step_time"] == 6.0
+        assert metrics["perf/train_time"] == 1.0
+        assert metrics["perf/train_wait_time"] == 5.0
+        assert metrics["perf/wait_time_ratio"] == 5 / 6
+        assert metrics["perf/train_chunk_wait_time"] == 0.25
         assert metrics["perf/step_samples_per_s"] == 1 / 6
         assert metrics["perf/step_tokens_per_s"] == 1 / 3
-        assert metrics["perf/rollout_batch_samples_per_s"] == 0.5
-        assert metrics["perf/rollout_batch_tokens_per_s"] == 1.0
         assert metrics["async/in_flight_samples_mean"] == 6.5
         assert metrics["async/realized_training_chunks"] == 4
         assert metrics["async/trained_against_version"] == 2
-        assert "perf/wait_time_ratio" not in metrics
         assert "perf/overlap_ratio" not in metrics
-        assert "perf/step_wall_time" not in metrics
+        assert "perf/trainer_idle_ratio" not in metrics
+        assert "perf/trainer_wait_for_sampler_time" not in metrics
+        assert "perf/sampler_wait_for_trainer_time" not in metrics
+        assert "perf/scheduler_step_wall_time" not in metrics
+        assert "perf/rollout_batch_wall_time" not in metrics
         assert "perf/rollout_samples_per_s" not in metrics
         assert "perf/rollout_tokens_per_s" not in metrics
 

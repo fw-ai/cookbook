@@ -13,8 +13,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from training.examples.rl.harbor_rl_opencode.harbor import DEFAULT_OPENCODE_VERSION
+from training.examples.rl.harbor.trial import DEFAULT_OPENCODE_VERSION
 
+# Preserve the original marker so already-prepared task trees remain idempotent.
 _MARKER = "# Added by harbor_rl_opencode.prepare_opencode_tasks"
 _SUFFIX = r"""
 

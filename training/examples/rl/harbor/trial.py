@@ -22,9 +22,7 @@ from training.utils.rl.async_rl.errors import RecoverableRolloutError
 
 HARBOR_TASK_CONFIG_KEY = "harbor_task_config"
 DEFAULT_OPENCODE_VERSION = "1.18.8"
-_OPENCODE_IMPORT_PATH = (
-    "training.examples.rl.harbor_rl_opencode.opencode:ConfigurableOpenCode"
-)
+_OPENCODE_IMPORT_PATH = "training.examples.rl.harbor.opencode:ConfigurableOpenCode"
 # Keep this wire-format value local so importing dataset helpers does not import
 # OpenCode and its optional Harbor dependency.
 _POLICY_HOST_PLACEHOLDER = "{host}"

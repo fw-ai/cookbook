@@ -9,12 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from training.examples.rl.harbor_rl_opencode import harbor as harbor_adapter
-from training.examples.rl.harbor_rl_opencode import prepare_opencode_tasks
-from training.examples.rl.harbor_rl_opencode import rollout
+from training.examples.rl.harbor import prepare_opencode_tasks
+from training.examples.rl.harbor import rollout
+from training.examples.rl.harbor import trial as harbor_adapter
+from training.examples.rl.harbor.trial import DEFAULT_OPENCODE_VERSION
 from training.examples.rl.harbor_rl_opencode import train as train_example
 from training.examples.rl.harbor_rl_opencode import train_serverless
-from training.examples.rl.harbor_rl_opencode.harbor import DEFAULT_OPENCODE_VERSION
 from training.utils.rl.async_rl.errors import RecoverableRolloutError
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 
@@ -392,6 +392,57 @@ def test_rollout_retries_may_be_disabled():
         rollout.make_rollout_fn(setup)
 
 
+def test_harbor_trial_concurrency_must_be_positive():
+    setup = _setup()
+    setup.extras["max_concurrent_trials"] = 0
+
+    with pytest.raises(ValueError, match="max_concurrent_trials"):
+        rollout.make_rollout_fn(setup)
+
+
+def test_harbor_trial_concurrency_is_separate_from_rollout_fanout(monkeypatch):
+    setup = _setup()
+    setup.extras["max_concurrent_trials"] = 1
+    runner = rollout.make_rollout_fn(setup)
+    active = 0
+    max_active = 0
+
+    async def run_trial(**_kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return harbor_adapter.HarborTrialOutcome(
+            task_name="example",
+            trial_name="trial-example",
+            reward=1.0,
+            rewards={"reward": 1.0},
+            exception_type=None,
+            exception_message=None,
+        )
+
+    monkeypatch.setattr(rollout, "run_harbor_trial", run_trial)
+
+    async def run_concurrently():
+        await asyncio.gather(
+            runner._run_trial(
+                task_config={"path": "/tasks/example"},
+                policy_key="key-1",
+                run_id="run-1",
+            ),
+            runner._run_trial(
+                task_config={"path": "/tasks/example"},
+                policy_key="key-2",
+                run_id="run-2",
+            ),
+        )
+
+    asyncio.run(run_concurrently())
+
+    assert max_active == 1
+
+
 def test_trajectory_artifact_preserves_trace_and_analysis(tmp_path):
     setup = _setup()
     setup.extras["harbor_trials_dir"] = str(tmp_path)
@@ -433,6 +484,24 @@ def test_trajectory_artifact_preserves_trace_and_analysis(tmp_path):
                 "turn_kind": "wipe",
                 "matched_prefix_len": 0,
             },
+            {
+                "trainable": True,
+                "messages": [{"role": "user", "content": "rerendered"}],
+                "tools": [{"type": "function"}],
+                "prompt_ids": [9, 99],
+                "completion_ids": [100],
+                "completion_logprobs": [-0.5],
+                "completion_raw_logprobs": [-0.6],
+                "completion_routing_matrices": ["route-3"],
+                "completion_text": "finished",
+                "assistant_message": {
+                    "role": "assistant",
+                    "content": "finished",
+                },
+                "finish_reason": "stop",
+                "turn_kind": "append",
+                "matched_prefix_len": 1,
+            },
         ],
     )
     outcome = harbor_adapter.HarborTrialOutcome(
@@ -472,8 +541,8 @@ def test_trajectory_artifact_preserves_trace_and_analysis(tmp_path):
         "segment_arrays_aligned": True,
         "trajectory_issue_count": 0,
     }
-    assert document["analysis"]["summary"]["segment_count"] == 2
-    assert document["analysis"]["summary"]["turn_count"] == 2
+    assert document["analysis"]["summary"]["segment_count"] == 3
+    assert document["analysis"]["summary"]["turn_count"] == 3
     assert document["request_traces"][0]["completion_ids"] == [3]
 
 
@@ -640,7 +709,7 @@ def test_missing_policy_session_retries_without_second_pop_per_attempt(monkeypat
     assert server.pop_calls == 3
 
 
-def test_valid_verifier_reward_survives_non_integrity_sampling_failure(monkeypatch):
+def test_non_integrity_sampling_failure_rejects_partial_trajectory(monkeypatch):
     runner = rollout.make_rollout_fn(_setup())
     session = rollout.OpenCodePolicySession(
         run_id="harbor-opencode:example:0:0:0:0",
@@ -668,16 +737,15 @@ def test_valid_verifier_reward_survives_non_integrity_sampling_failure(monkeypat
         exception_message="terminal task outcome",
     )
 
-    result = asyncio.run(
-        runner._opencode_result(
-            session=session,
-            outcome=outcome,
-            run_id=session.run_id,
-            retry_index=0,
+    with pytest.raises(RecoverableRolloutError, match="sampler unavailable"):
+        asyncio.run(
+            runner._opencode_result(
+                session=session,
+                outcome=outcome,
+                run_id=session.run_id,
+                retry_index=0,
+            )
         )
-    )
-
-    assert result.segments[0].reward == 0.5
 
 
 def test_concurrent_rollouts_wait_for_policy_server_port(monkeypatch):
@@ -901,9 +969,7 @@ def test_trial_adapter_uses_local_docker_and_opencode(monkeypatch, tmp_path):
         "output_limit": 2048,
         "version": DEFAULT_OPENCODE_VERSION,
     }
-    assert "harbor_rl_opencode.opencode:ConfigurableOpenCode" in (
-        seen.config.agent.import_path
-    )
+    assert "harbor.opencode:ConfigurableOpenCode" in seen.config.agent.import_path
     assert seen.config.timeout_multiplier == 2.0
     assert seen.config.verifier.override_timeout_sec == 77
     assert seen.config.artifacts == ["/logs/result.json"]
