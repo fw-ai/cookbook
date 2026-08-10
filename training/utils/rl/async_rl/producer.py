@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Awaitable, Callable, Hashable, Iterable
 from dataclasses import dataclass
 from typing import Any, TypeAlias
@@ -186,8 +185,6 @@ class RolloutProducer:
         self._failure: _ProducerFailed | None = None
         self._driver_wake = asyncio.Event()
         self._driver_task: asyncio.Task[None] | None = None
-        self._rollout_wait_for_trainer_started: float | None = None
-        self._rollout_wait_for_trainer_total = 0.0
         self._stats = _ProducerStats()
 
     @property
@@ -249,7 +246,6 @@ class RolloutProducer:
         self._published_version = batch.batch_id
         self._next_publish_batch_id += 1
         del self._batches[batch.batch_id]
-        self._mark_rollout_wait_for_trainer_end()
         self._driver_wake.set()
         return self.resolved_rows
 
@@ -267,8 +263,6 @@ class RolloutProducer:
             ),
             "source_exhausted": self._source_exhausted,
             "resolved_rows": self.resolved_rows,
-            "rollout_wait_for_trainer_time_total": self._rollout_wait_for_trainer_total
-            + self._active_rollout_wait_for_trainer(),
             "fatal": self._failure is not None,
             "rows_submitted": self._stats.rows_submitted,
             "rows_accepted": self._stats.rows_accepted,
@@ -336,13 +330,10 @@ class RolloutProducer:
                 if self._in_flight:
                     continue
                 if self._waiting_for_publish():
-                    self._mark_rollout_wait_for_trainer_start()
                     self._driver_wake.clear()
                     if self._admission_capacity() >= self._cpp:
-                        self._mark_rollout_wait_for_trainer_end()
                         continue
                     await self._driver_wake.wait()
-                    self._mark_rollout_wait_for_trainer_end()
                     continue
                 raise RuntimeError(self._stall_message())
         except asyncio.CancelledError:
@@ -353,7 +344,6 @@ class RolloutProducer:
             self._fail(error)
         finally:
             await self._cancel_and_join_draws()
-            self._mark_rollout_wait_for_trainer_end()
 
     async def _invoke(self, request: RolloutRow, sub_index: int) -> RolloutRun | None:
         run = await request.run_factory(sub_index)
@@ -367,7 +357,6 @@ class RolloutProducer:
 
     def _refill(self) -> int | None:
         if self._closing or self._failure is not None or self._source_exhausted:
-            self._mark_rollout_wait_for_trainer_end()
             return None
         submitted = 0
         while self._ensure_prefetched():
@@ -384,14 +373,9 @@ class RolloutProducer:
 
     def _record_refill_stop(self) -> None:
         if self._prefetched is None:
-            self._mark_rollout_wait_for_trainer_end()
             return
         if self._staleness_capacity() < self._cpp:
-            concurrency = self._concurrency_capacity()
-            if concurrency is None or concurrency >= self._cpp:
-                self._mark_rollout_wait_for_trainer_start()
             return
-        self._mark_rollout_wait_for_trainer_end()
         concurrency = self._concurrency_capacity()
         if concurrency is not None and concurrency < self._cpp:
             return
@@ -660,22 +644,6 @@ class RolloutProducer:
             f"published_version={self._published_version}, "
             f"source_prefetched={self._prefetched is not None}"
         )
-
-    def _mark_rollout_wait_for_trainer_start(self) -> None:
-        if self._rollout_wait_for_trainer_started is None:
-            self._rollout_wait_for_trainer_started = time.monotonic()
-
-    def _mark_rollout_wait_for_trainer_end(self) -> None:
-        if self._rollout_wait_for_trainer_started is not None:
-            self._rollout_wait_for_trainer_total += (
-                time.monotonic() - self._rollout_wait_for_trainer_started
-            )
-            self._rollout_wait_for_trainer_started = None
-
-    def _active_rollout_wait_for_trainer(self) -> float:
-        if self._rollout_wait_for_trainer_started is None:
-            return 0.0
-        return time.monotonic() - self._rollout_wait_for_trainer_started
 
 
 def _validate_producer_args(

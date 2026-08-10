@@ -16,15 +16,15 @@ from training.examples.rl.harbor_rl_opencode.dabstep import (
     DABstepManifest,
     rows_for_tasks,
 )
-from training.examples.rl.harbor_rl_opencode.evaluate import (
+from training.examples.rl.harbor.evaluate import (
     evaluate_rows,
     make_fixed_evaluation,
 )
-from training.examples.rl.harbor_rl_opencode.harbor import (
+from training.examples.rl.harbor.rollout import make_rollout_fn
+from training.examples.rl.harbor.trial import (
     DEFAULT_OPENCODE_VERSION,
     load_harbor_rows,
 )
-from training.examples.rl.harbor_rl_opencode.rollout import make_rollout_fn
 from training.recipes.experiment.async_rl_loop_serverless import (
     Config,
     main,

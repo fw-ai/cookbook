@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from training.examples.rl.harbor_rl_opencode.harbor import (
+from training.examples.rl.harbor.trial import (
     DEFAULT_OPENCODE_VERSION,
     HarborTrialOutcome,
     load_harbor_trial_config,
@@ -19,7 +19,7 @@ from training.examples.rl.harbor_rl_opencode.harbor import (
     task_config_from_row,
     task_name_from_row,
 )
-from training.examples.rl.harbor_rl_opencode.openai_policy import (
+from training.examples.rl.harbor.openai_policy import (
     OpenCodePolicyServer,
     OpenCodePolicySession,
 )
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from training.recipes.async_rl_loop import RolloutFn, RolloutSetup
 
 logger = logging.getLogger(__name__)
+DEFAULT_MAX_CONCURRENT_TRIALS = 24
 
 
 def _artifact_stem(run_id: str, retry_index: int) -> str:
@@ -61,6 +62,29 @@ def _sample_shape(sample: RolloutSample) -> dict[str, int | None]:
     }
 
 
+def _split_trace_segments(
+    traces: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    """Split diagnostic traces at the same exact-token ancestry boundary."""
+    segments: list[list[dict[str, Any]]] = []
+    accumulated: list[int] = []
+    for trace in traces:
+        prompt_ids = [int(token) for token in trace.get("prompt_ids") or []]
+        starts_segment = (
+            not segments
+            or trace.get("turn_kind") == "wipe"
+            or prompt_ids[: len(accumulated)] != accumulated
+        )
+        if starts_segment:
+            segments.append([])
+        segments[-1].append(trace)
+        accumulated = [
+            *prompt_ids,
+            *[int(token) for token in trace.get("completion_ids") or []],
+        ]
+    return segments
+
+
 class _HarborRolloutRunner:
     """Own the example-specific Harbor configuration and local policy server."""
 
@@ -76,6 +100,15 @@ class _HarborRolloutRunner:
         self._rollout_retries = int(setup.extras.get("rollout_retries", 3))
         if self._rollout_retries < 0:
             raise ValueError("rollout_extras['rollout_retries'] must be >= 0")
+        max_concurrent_trials = int(
+            setup.extras.get(
+                "max_concurrent_trials",
+                DEFAULT_MAX_CONCURRENT_TRIALS,
+            )
+        )
+        if max_concurrent_trials < 1:
+            raise ValueError("rollout_extras['max_concurrent_trials'] must be >= 1")
+        self._trial_semaphore = asyncio.Semaphore(max_concurrent_trials)
         terminal_failure_reward = setup.extras.get("terminal_failure_reward")
         self._terminal_failure_reward = (
             None if terminal_failure_reward is None else float(terminal_failure_reward)
@@ -295,6 +328,11 @@ class _HarborRolloutRunner:
                 f"Harbor/OpenCode trace integrity failed for {outcome.task_name}: "
                 f"{session.trace_integrity_error}"
             )
+        if session.sampling_failures:
+            raise RecoverableRolloutError(
+                f"Harbor/OpenCode sampling failed for {outcome.task_name}: "
+                f"{session.last_error or 'unknown sampling error'}"
+            )
 
         token_segments = session.drain()
         if not token_segments:
@@ -381,11 +419,7 @@ class _HarborRolloutRunner:
         trainable_traces = [
             trace for trace in session.request_traces if trace.get("trainable")
         ]
-        trace_segments: list[list[dict[str, Any]]] = []
-        for trace in trainable_traces:
-            if trace.get("turn_kind") == "wipe" or not trace_segments:
-                trace_segments.append([])
-            trace_segments[-1].append(trace)
+        trace_segments = _split_trace_segments(trainable_traces)
         analyses = [
             analyze_token_turn_traces(
                 traces,
@@ -488,15 +522,16 @@ class _HarborRolloutRunner:
         run_id: str,
         **agent_kwargs: Any,
     ) -> HarborTrialOutcome:
-        return await run_harbor_trial(
-            task_config=task_config,
-            policy_key=policy_key,
-            run_id=run_id,
-            trial_config=self._trial_config,
-            trials_dir=self._trials_dir,
-            terminal_failure_reward=self._terminal_failure_reward,
-            **agent_kwargs,
-        )
+        async with self._trial_semaphore:
+            return await run_harbor_trial(
+                task_config=task_config,
+                policy_key=policy_key,
+                run_id=run_id,
+                trial_config=self._trial_config,
+                trials_dir=self._trials_dir,
+                terminal_failure_reward=self._terminal_failure_reward,
+                **agent_kwargs,
+            )
 
     async def _wait_to_retry(
         self,

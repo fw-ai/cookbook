@@ -114,6 +114,17 @@ class TimerSpan:
 
 
 @contextmanager
+def wall_timer():
+    """Measure elapsed wall time without recording a step metric."""
+    span = TimerSpan()
+    started = time.perf_counter()
+    try:
+        yield span
+    finally:
+        span.elapsed = time.perf_counter() - started
+
+
+@contextmanager
 def elapsed_timer(name: str):
     span = TimerSpan()
     t = Timer()

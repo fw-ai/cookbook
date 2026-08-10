@@ -40,6 +40,7 @@ ASYNC_RL_WANDB_METRIC_STEPS: _MetricSteps = {
     "batch/*": "rollout/step",
     "async/*": "rollout/step",
     "eval/*": "rollout/step",
+    "checkpoint/*": "rollout/step",
     "producer/event": None,
     "producer/*": "producer/event",
 }

@@ -257,3 +257,4 @@ def test_async_producer_metrics_use_their_own_event_axis():
 
 def test_async_eval_metrics_use_the_rollout_step_axis():
     assert logging_utils.ASYNC_RL_WANDB_METRIC_STEPS["eval/*"] == "rollout/step"
+    assert logging_utils.ASYNC_RL_WANDB_METRIC_STEPS["checkpoint/*"] == "rollout/step"

@@ -10,10 +10,7 @@ from typing import Any, TypeAlias
 
 from training.utils.rl.async_rl.batch import OptimizerBatch
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.metrics import (
-    build_accumulated_async_loop_stats,
-    compute_step_metrics,
-)
+from training.utils.rl.metrics import compute_step_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -231,26 +228,28 @@ class AsyncRLTelemetry:
         fwd_bwd_results: Sequence[Any],
         optim_result: Any,
         timing_metrics: dict[str, Any],
-        weight_sync_time: float | None,
+        step_time: float,
+        weight_update_time: float | None,
         learning_rate: float,
     ) -> dict[str, Any]:
         reporter = self._reporter
         if reporter is None:
             raise RuntimeError("async RL telemetry is not started")
-        snapshot = self.snapshot()
         offsets = [
             trained_against_version - submit_version
             for submit_version in batch.submit_versions
         ]
-        train_wall_time = 0.0
+        train_pipeline_time = 0.0
         if batch._train_started_at is not None:
-            train_wall_time = (
+            train_pipeline_time = (
                 batch._train_finished_at or time.monotonic()
             ) - batch._train_started_at
-        rollout_wait = (
-            float(snapshot["rollout_wait_for_trainer_time_total"] or 0.0)
-            - batch._rollout_wait_at_train_start
+        train_chunk_wait_time = max(
+            0.0,
+            batch._train_chunk_wait_time - batch._chunk_wait_at_train_start,
         )
+        train_time = max(0.0, train_pipeline_time - train_chunk_wait_time)
+        train_wait_time = max(0.0, step_time - train_time)
         loop_stats: dict[str, Any] = {
             "async/version_offset_mean": sum(offsets) / len(offsets),
             "async/version_offset_max": max(offsets),
@@ -258,28 +257,25 @@ class AsyncRLTelemetry:
             "async/trained_against_version": trained_against_version,
             "async/realized_training_chunks": batch.realized_chunks,
             "all_raw_rewards": batch.completed_rewards,
-            "trainer_wait_for_sampler_time": batch._trainer_wait_for_rollout_time,
-            "sampler_wait_for_trainer_time": max(0.0, rollout_wait),
-            "perf/trainer_wait_for_chunk_time": batch._trainer_wait_for_chunk_time,
-            "perf/train_wall_time": train_wall_time,
+            "perf/step_time": step_time,
+            "perf/train_time": train_time,
+            "perf/train_wait_time": train_wait_time,
+            "perf/wait_time_ratio": (
+                train_wait_time / step_time if step_time > 0 else 0.0
+            ),
+            "perf/train_chunk_wait_time": train_chunk_wait_time,
             **reporter.finish_step(),
         }
-        accumulated_stats = build_accumulated_async_loop_stats(
-            latest_loop_stats=loop_stats,
-            trainer_wait_for_sampler_time=batch._trainer_wait_for_rollout_time,
-            sampler_wait_for_trainer_time=max(0.0, rollout_wait),
-            train_wall_time=train_wall_time,
-        )
         metrics = compute_step_metrics(
             prompt_groups=prompt_groups,
             fwd_bwd_results=fwd_bwd_results,
             optim_result=optim_result,
             n_accum=len(fwd_bwd_results),
             timing_metrics=timing_metrics,
-            loop_stats=accumulated_stats,
+            loop_stats=loop_stats,
         )
-        if weight_sync_time is not None:
-            metrics["perf/weight_sync_time"] = weight_sync_time
+        if weight_update_time is not None:
+            metrics["perf/weight_update_time"] = weight_update_time
         metrics["train/lr"] = learning_rate
         metrics["rollout/step"] = batch.batch_id
         metrics["train/step"] = batch.batch_id

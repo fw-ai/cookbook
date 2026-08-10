@@ -1,7 +1,8 @@
 # Reading async RL metrics
 
 Use this procedure to verify producer liveness, rollout/train overlap, admission
-gates, and pipeline sizing for `training/recipes/async_rl_loop.py`.
+gates, and pipeline sizing for `training/recipes/async_rl_loop.py` and its
+serverless experiment counterpart.
 
 ## Keep the two metric streams separate
 
@@ -9,7 +10,7 @@ The recipe deliberately has two observation clocks:
 
 | Stream | Axis | Contents |
 |---|---|---|
-| Optimizer batch | `rollout/step` | Reward, loss, version lag, trainer waits, realized chunks, and sampled producer means |
+| Optimizer batch | `rollout/step` | Reward, loss, version lag, step phases, realized chunks, and sampled producer means |
 | Rollout producer | `producer/event` | Live producer gauges and cumulative refill/admission counters |
 
 Producer records are emitted at startup, shutdown, and at most once every 10
@@ -108,6 +109,29 @@ Optimizer telemetry keeps `train/grad_norm` and `train/grad_norm_rms`.
 `train/grad_norm_post_clip` appears only when clipping changes the norm. API
 aggregation aliases and LoRA/pre-clip duplicates are intentionally omitted.
 
+## Read the timing boundary
+
+Async timing follows the small phase-oriented contract used by Slime and
+AReaL. The metrics describe client-loop wall time; none claims physical GPU
+utilization.
+
+| Metric | Meaning |
+|---|---|
+| `perf/step_time` | Wall time from the previous policy publication to this publication. The first step starts with the coordinator. |
+| `perf/train_time` | Active trainer pipeline wall time, from the first train chunk through optimizer completion, excluding waits for later chunks. |
+| `perf/train_wait_time` | `max(perf/step_time - perf/train_time, 0)`: all client-loop time outside active training. |
+| `perf/wait_time_ratio` | `perf/train_wait_time / perf/step_time`. This is not a GPU-idle ratio. |
+| `perf/train_chunk_wait_time` | The subset of pipeline time spent waiting for a later rollout chunk. |
+| `perf/weight_update_time` | Sampler weight publication. For serverless sampling this includes snapshot creation and draining the replaced sampling client. |
+| `perf/step_samples_per_s` / `perf/step_tokens_per_s` | Optimizer-update cadence computed with `perf/step_time`. These are not raw sampler throughput. |
+
+Post-publication evaluation and checkpoint records expose `eval/wall_time` and
+`checkpoint/wall_time` on the step that requested the operation. They
+contribute to the next publication interval's `perf/step_time`; the initial
+forced evaluation runs before the coordinator and is the exception. Phase
+metrics can overlap the broad `perf/train_wait_time` remainder, so do not add
+every metric in the table and expect the sum to equal `perf/step_time`.
+
 ## Compare producer gauges with optimizer steps
 
 `producer/in_flight_samples` and the capacity gauges use the independent
@@ -153,16 +177,13 @@ before unblocking the trainer. The cookbook unit test uses this procedure.
 
 | Evidence | Interpretation | First action |
 |---|---|---|
-| High `perf/trainer_wait_for_sampler_time`; in-flight near `C` | Rollout-bound and using its configured window | Add rollout capacity or raise `C` if deployment capacity and the off-policy budget allow it |
-| High trainer wait; in-flight below `C`; admission capacity below `G` | Admission gate, not deployment capacity, is limiting rollout | Inspect staleness capacity and `O`; do not add replicas first |
-| High `perf/sampler_wait_for_trainer_time` | Producer exhausted version headroom while waiting for publication | Speed up trainer/hotload, or raise `O` only if more off-policy data is acceptable |
-| High `perf/trainer_wait_for_chunk_time` | Later chunks arrive too slowly | Increase rollout capacity before increasing `K` |
+| High `perf/wait_time_ratio` and high `eval/wall_time` or `checkpoint/wall_time` | Periodic work, not rollout capacity, dominates publication cadence | Change the relevant interval or workload |
+| High `perf/weight_update_time` | Weight save/hotload or serverless client draining is slow | Inspect publication latency and outstanding sampler requests |
+| High `perf/train_chunk_wait_time`; in-flight near `C` | Later chunks are rollout-bound while using the configured window | Add rollout capacity or raise `C` if deployment capacity and the off-policy budget allow it |
+| High wait; in-flight below `C`; admission capacity below `G` | Admission gate, not deployment capacity, is limiting rollout | Inspect staleness capacity and `O`; do not add replicas first |
+| Staleness capacity near zero during training | Producer exhausted version headroom before publication | Speed up training/publication, or raise `O` only if more off-policy data is acceptable |
 | Near-zero chunk wait with a large `async/realized_training_chunks` | Trainer RPCs may be finer-grained than needed | Benchmark a smaller `K` to trade pipeline latency for fewer RPCs |
 | Positive `async/in_flight_samples_mean` with nonzero train time | Rollouts and training occupied the same publication window | Use the strict blocked-trainer test when exact physical overlap must be proven |
-
-`perf/trainer_idle_ratio` includes both the initial wait for a batch and waits
-for later chunks, divided by scheduler-step wall time. It is therefore the
-step-level idle fraction, not just the initial rollout wait.
 
 ## Admission-capacity check
 

@@ -21,7 +21,11 @@ _LOOP_STAT_PASSTHROUGH_KEYS = (
     "async/concurrency_capacity_samples_mean",
     "async/realized_training_chunks",
     "async/trained_against_version",
-    "perf/trainer_wait_for_chunk_time",
+    "perf/step_time",
+    "perf/train_time",
+    "perf/train_wait_time",
+    "perf/wait_time_ratio",
+    "perf/train_chunk_wait_time",
 )
 
 _CANONICAL_OPTIMIZER_METRICS = ("grad_norm", "grad_norm_rms", "lr")
@@ -74,32 +78,6 @@ def add_train_perf_metrics(metrics: dict[str, Any], *, total_model_tokens: int) 
     train_time = metrics.get("perf/fwd_bwd_time", 0.0)
     if train_time > 0:
         metrics["perf/train_tokens_per_s"] = total_model_tokens / train_time
-
-    step_time = metrics.get("perf/step_time", 0.0)
-    weight_sync_time = metrics.get("perf/weight_sync_time", 0.0)
-    if step_time > 0 and weight_sync_time > 0:
-        metrics["perf/weight_sync_ratio"] = weight_sync_time / step_time
-
-
-def build_accumulated_async_loop_stats(
-    *,
-    latest_loop_stats: dict[str, Any] | None,
-    trainer_wait_for_sampler_time: float,
-    sampler_wait_for_trainer_time: float,
-    train_wall_time: float,
-) -> dict[str, Any] | None:
-    """Merge per-chunk scheduler stats into one optimizer-step stats payload."""
-    if latest_loop_stats is None:
-        return None
-
-    loop_stats = dict(latest_loop_stats)
-    loop_stats["trainer_wait_for_sampler_time"] = trainer_wait_for_sampler_time
-    loop_stats["sampler_wait_for_trainer_time"] = sampler_wait_for_trainer_time
-    loop_stats["train_wall_time"] = train_wall_time
-    loop_stats["scheduler_step_wall_time"] = (
-        trainer_wait_for_sampler_time + train_wall_time
-    )
-    return loop_stats
 
 
 def compute_step_metrics(
@@ -212,66 +190,61 @@ def compute_step_metrics(
             if key in loop_stats:
                 metrics[key] = loop_stats[key]
 
-        rollout_wall_time = float(loop_stats.get("rollout_batch_wall_time", 0.0))
-        if rollout_wall_time > 0:
-            metrics["perf/rollout_batch_wall_time"] = rollout_wall_time
-
-        train_wall_time = float(loop_stats.get("train_wall_time", 0.0))
-        if train_wall_time > 0:
-            metrics["perf/train_step_wall_time"] = train_wall_time
-
-        trainer_wait_for_sampler_time = float(
-            loop_stats.get("trainer_wait_for_sampler_time", 0.0)
-        )
-        if trainer_wait_for_sampler_time > 0:
-            metrics["perf/trainer_wait_for_sampler_time"] = (
-                trainer_wait_for_sampler_time
-            )
-        sampler_wait_for_trainer_time = float(
-            loop_stats.get("sampler_wait_for_trainer_time", 0.0)
-        )
-        if sampler_wait_for_trainer_time > 0:
-            metrics["perf/sampler_wait_for_trainer_time"] = (
-                sampler_wait_for_trainer_time
-            )
-
-        scheduler_step_wall_time = float(
-            loop_stats.get("scheduler_step_wall_time", 0.0)
-        )
-        if scheduler_step_wall_time <= 0:
-            scheduler_step_wall_time = (
-                rollout_wall_time + trainer_wait_for_sampler_time + train_wall_time
-            )
-        if scheduler_step_wall_time > 0:
-            metrics["perf/scheduler_step_wall_time"] = scheduler_step_wall_time
-            metrics["perf/step_samples_per_s"] = (
-                filtered_samples / scheduler_step_wall_time
-            )
-            metrics["perf/step_tokens_per_s"] = (
-                completion_tokens / scheduler_step_wall_time
-            )
+        if "async/realized_training_chunks" in loop_stats:
+            step_time = float(loop_stats.get("perf/step_time", 0.0))
+            if step_time > 0:
+                metrics["perf/step_samples_per_s"] = filtered_samples / step_time
+                metrics["perf/step_tokens_per_s"] = completion_tokens / step_time
+        else:
+            rollout_wall_time = float(loop_stats.get("rollout_batch_wall_time", 0.0))
             if rollout_wall_time > 0:
-                metrics["perf/rollout_batch_wall_ratio"] = (
-                    rollout_wall_time / scheduler_step_wall_time
-                )
-            trainer_wait_for_chunk_time = float(
-                loop_stats.get("perf/trainer_wait_for_chunk_time", 0.0)
-            )
-            trainer_idle_time = (
-                trainer_wait_for_sampler_time + trainer_wait_for_chunk_time
-            )
-            trainer_idle_ratio = min(
-                1.0,
-                trainer_idle_time / scheduler_step_wall_time,
-            )
-            metrics["perf/trainer_idle_ratio"] = trainer_idle_ratio
+                metrics["perf/rollout_batch_wall_time"] = rollout_wall_time
 
-        if rollout_wall_time > 0:
-            metrics["perf/rollout_batch_samples_per_s"] = (
-                filtered_samples / rollout_wall_time
+            train_wall_time = float(loop_stats.get("train_wall_time", 0.0))
+            if train_wall_time > 0:
+                metrics["perf/train_step_wall_time"] = train_wall_time
+
+            trainer_wait_for_sampler_time = float(
+                loop_stats.get("trainer_wait_for_sampler_time", 0.0)
             )
-            metrics["perf/rollout_batch_tokens_per_s"] = (
-                completion_tokens / rollout_wall_time
+            if trainer_wait_for_sampler_time > 0:
+                metrics["perf/trainer_wait_for_sampler_time"] = (
+                    trainer_wait_for_sampler_time
+                )
+            sampler_wait_for_trainer_time = float(
+                loop_stats.get("sampler_wait_for_trainer_time", 0.0)
             )
+            if sampler_wait_for_trainer_time > 0:
+                metrics["perf/sampler_wait_for_trainer_time"] = (
+                    sampler_wait_for_trainer_time
+                )
+
+            scheduler_step_wall_time = float(
+                loop_stats.get("scheduler_step_wall_time", 0.0)
+            )
+            if scheduler_step_wall_time <= 0:
+                scheduler_step_wall_time = (
+                    rollout_wall_time + trainer_wait_for_sampler_time + train_wall_time
+                )
+            if scheduler_step_wall_time > 0:
+                metrics["perf/scheduler_step_wall_time"] = scheduler_step_wall_time
+                metrics["perf/step_samples_per_s"] = (
+                    filtered_samples / scheduler_step_wall_time
+                )
+                metrics["perf/step_tokens_per_s"] = (
+                    completion_tokens / scheduler_step_wall_time
+                )
+                if rollout_wall_time > 0:
+                    metrics["perf/rollout_batch_wall_ratio"] = (
+                        rollout_wall_time / scheduler_step_wall_time
+                    )
+
+            if rollout_wall_time > 0:
+                metrics["perf/rollout_batch_samples_per_s"] = (
+                    filtered_samples / rollout_wall_time
+                )
+                metrics["perf/rollout_batch_tokens_per_s"] = (
+                    completion_tokens / rollout_wall_time
+                )
 
     return metrics
