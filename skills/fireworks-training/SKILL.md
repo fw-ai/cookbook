@@ -43,8 +43,10 @@ pricing site blocked, GitHub blocked), do not fall back to hardcoded values —
 degrade explicitly:
 
 - **Live docs unreachable:** substitute read-only `firectl` catalog reads
-  (`model get`, `training-shape list`) and a `--dry-run -o json` to resolve
-  shapes and defaults; label anything still unresolved as unknown.
+  (`model get`, `training-shape-version list --base-model <model>`) and a
+  `--dry-run -o json` to resolve shapes and defaults; label anything still
+  unresolved as unknown. Read shapes through the version collection —
+  `training-shape list`/`get` are owner-only and deny customer principals.
 - **Pricing page unreachable:** present the cost *formula* and ask the user for
   the current per-unit rate rather than guessing a number.
 - **GitHub blocked:** the Training API / cookbook path (which requires cloning

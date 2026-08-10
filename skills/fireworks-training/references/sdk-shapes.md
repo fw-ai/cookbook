@@ -67,12 +67,36 @@ The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 el
 
 ## Listing available shapes
 
+Read shapes through the **version** collection, not the parent shape resource:
+
 ```bash
-firectl training-shape list      # alias: firectl ts list
-firectl deployment-shape list    # alias: firectl ds list
+# Shared catalog entries your account can actually launch on
+firectl training-shape-version list --base-model accounts/fireworks/models/<model>
+
+# Every field of the exact version a launch will resolve to
+firectl training-shape-version get \
+  accounts/fireworks/trainingShapes/<shape>/versions/latest
 ```
 
-Or programmatically via `FireworksClient` — see the SDK docs linked from the repo README.
+Or programmatically via `FireworksClient.resolve_training_profile(<shape_id>)`, which
+hits the same version collection.
+
+### Why not `firectl training-shape list` / `get`
+
+`TrainingShape` (the parent resource) is account-scoped and carries no public
+visibility flag, so it is readable only by the account that owns it:
+
+- `firectl training-shape list` accepts no wildcard parent (`ListTrainingShapes`
+  rejects `accounts/-` with `InvalidArgument`), so it can only ever list shapes
+  **in one account**. For a customer account that is normally empty — it never
+  shows the shared `accounts/fireworks/...` catalog.
+- `firectl training-shape get accounts/fireworks/trainingShapes/<shape>` is a
+  cross-account read into the `fireworks` account and returns
+  `rpc error: code = PermissionDenied` for every customer principal.
+
+Neither result depends on Training API entitlement, so **neither command is an
+access check**. Public visibility lives on `TrainingShapeVersion.public`, which is
+why the version reads above work and the parent reads do not.
 
 ## Do not pin a `/versions/<id>`
 
@@ -81,7 +105,7 @@ Pass the bare shape path `accounts/fireworks/trainingShapes/<shape>`. The platfo
 - The platform only serves validated versions — a versioned ref cannot force an unvalidated one.
 - Pinning locks the run to a stale version and prevents the platform from rolling the shape forward when a better-validated image lands.
 
-For the full list of shapes in your account, run `firectl training-shape list` (above).
+To see the versions behind a shape, run `firectl training-shape-version list` (above).
 
 ## When `resolve_training_profile` raises `Failed to resolve latest validated training shape`
 

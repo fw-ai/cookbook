@@ -10,7 +10,9 @@ Docs: https://docs.fireworks.ai/fine-tuning/training-api/introduction · Cookboo
 
 ## Access preflight
 
-Before selecting a Training API path, confirm that the target account was enabled through onboarding or account settings. For dedicated work, read the account and shared shape inventories with `firectl training-shape list`; this proves shape visibility but does not by itself prove serverless entitlement. If no authoritative read-only entitlement signal is available, mark access unverified and ask the user to confirm enablement. Do not discover access by creating a trainer or serverless session.
+Before selecting a Training API path, confirm that the target account was enabled through onboarding or account settings. For dedicated work, read the shared shape catalog with `firectl training-shape-version list --base-model <model>`; this proves the shape is published and launchable, but does not by itself prove account entitlement. If no authoritative read-only entitlement signal is available, mark access unverified and ask the user to confirm enablement. Do not discover access by creating a trainer or serverless session.
+
+Do **not** use `firectl training-shape list` or `firectl training-shape get` as a preflight. The parent `TrainingShape` resource is account-scoped with no public visibility flag, so a customer principal gets `PermissionDenied` on the shared catalog and an empty list for its own account — regardless of entitlement. See [sdk-shapes.md](sdk-shapes.md#why-not-firectl-training-shape-list--get).
 
 ## Managed training vs Training API
 
