@@ -13,8 +13,11 @@ tokenizer_model="${QWEN3P6_TOKENIZER:-Qwen/Qwen3.6-27B}"
 python_bin="${PYTHON_BIN:-python}"
 
 cookbook_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-sdk_root="$cookbook_root/../python-sdk/src"
-export PYTHONPATH="$cookbook_root:$sdk_root${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$cookbook_root${PYTHONPATH:+:$PYTHONPATH}"
+# Optional: prefer a local fireworks-ai checkout when developing against it.
+if [[ -d "$cookbook_root/../python-sdk/src" ]]; then
+  export PYTHONPATH="$cookbook_root/../python-sdk/src:$PYTHONPATH"
+fi
 export PYTHONUNBUFFERED=1
 mkdir -p "$run_dir"
 
