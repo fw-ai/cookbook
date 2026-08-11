@@ -85,6 +85,7 @@ __all__ = [
     "make_sft_loss_fn",
     "normalize_preference_row",
     "RenderedSupervisedDatum",
+    "RenderedChunkSpan",
     "RenderedPreferencePair",
     "build_next_token_datum",
     "build_datum_from_token_mask",
@@ -97,6 +98,7 @@ __all__ = [
     "render_preference_pair",
     "render_messages_to_datum",
     "render_messages_to_datums",
+    "rendered_chunk_spans",
     "resolve_renderer_name",
     "resolve_renderer_plan",
     "resolve_renderer_snapshot",
@@ -174,6 +176,7 @@ from training.utils.streaming import (
     make_render_dataloader,
 )
 from training.utils.supervised import (
+    RenderedChunkSpan,
     RenderedPreferencePair,
     RenderedSupervisedDatum,
     build_datum_from_token_mask,
@@ -186,6 +189,7 @@ from training.utils.supervised import (
     populate_render_worker_state,
     render_messages_to_datum,
     render_messages_to_datums,
+    rendered_chunk_spans,
     render_preference_pair,
     resolve_renderer_name,
     resolve_renderer_plan,

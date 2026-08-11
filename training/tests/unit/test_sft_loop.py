@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from types import SimpleNamespace
 
 import pytest
+import tinker
 
 import training.recipes.sft_loop as module
 from training.utils import supervised as supervised_utils
@@ -221,6 +223,7 @@ def test_configure_render_sample_state_does_not_repopulate_renderer(tmp_path, mo
     assert module._worker_state["render_samples_local_dir"] == str(tmp_path)
     assert module._worker_state["render_samples_limit"] == 3
     assert module._worker_state["render_samples_written"] == 0
+    assert module._worker_state["render_samples_vision_written"] == 0
 
 
 def test_resolve_render_samples_limit(monkeypatch):
@@ -282,6 +285,15 @@ def test_write_render_samples_captures_token_debug_payload(tmp_path):
             "worker_id": 2,
             "renderer": "unit-renderer",
             "train_on_what": "all_assistant_messages",
+            "image_count": 0,
+            "image_token_count": 0,
+            "rendered_chunks": [
+                {
+                    "type": "text",
+                    "token_start": 0,
+                    "token_count": 3,
+                }
+            ],
             "token_ids": [10, 11, 12],
             "decoded_tokens": ["tok-10", "tok-11", "tok-12"],
             "token_weights": [0.0, 0.0, 1.0],
@@ -290,6 +302,95 @@ def test_write_render_samples_captures_token_debug_payload(tmp_path):
         }
     ]
     assert module._worker_state["render_samples_written"] == 1
+
+
+def test_write_render_samples_keeps_late_vision_candidate_after_worker_limit(tmp_path):
+    module._worker_state.clear()
+    module._worker_state.update(
+        tokenizer=None,
+        render_samples_local_dir=str(tmp_path),
+        render_samples_limit=1,
+        render_samples_written=0,
+        render_samples_vision_written=0,
+        worker_id=0,
+        resolved_renderer_name="unit-renderer",
+        train_on_what_str="all_assistant_messages",
+    )
+
+    def rendered(model_input, token_id):
+        model_input_token_count = model_input.length
+        datum = SimpleNamespace(
+            model_input=model_input,
+            loss_fn_inputs={
+                "target_tokens": SimpleNamespace(
+                    data=[token_id + 1] * model_input_token_count
+                ),
+                "weights": SimpleNamespace(data=[0.0] * model_input_token_count),
+            },
+        )
+        return SimpleNamespace(
+            token_ids=[token_id] * model_input_token_count + [token_id + 1],
+            token_weights=[0.0] * model_input_token_count + [1.0],
+            datum=datum,
+        )
+
+    text_input = tinker.ModelInput(
+        chunks=[tinker.types.EncodedTextChunk(tokens=[10])]
+    )
+    vision_input = tinker.ModelInput(
+        chunks=[
+            tinker.types.EncodedTextChunk(tokens=[20]),
+            tinker.types.ImageChunk(
+                data=b"renderer-jpeg",
+                format="jpeg",
+                expected_tokens=64,
+            ),
+        ]
+    )
+
+    module._write_render_samples(
+        {module.JSONL_ROW_INDEX_KEY: 0},
+        [rendered(text_input, 10)],
+    )
+    module._write_render_samples(
+        {module.JSONL_ROW_INDEX_KEY: 1},
+        [rendered(vision_input, 20)],
+    )
+    module._write_render_samples(
+        {module.JSONL_ROW_INDEX_KEY: 2},
+        [rendered(vision_input, 30)],
+    )
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "render_samples.worker-0.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    assert [(record["source_jsonl_row_index"], record["image_count"]) for record in records] == [
+        (0, 0),
+        (1, 1),
+    ]
+    assert records[1]["image_token_count"] == 64
+    assert records[1]["rendered_chunks"] == [
+        {"type": "text", "token_start": 0, "token_count": 1},
+        {
+            "type": "image",
+            "token_start": 1,
+            "token_count": 64,
+            "image_index": 0,
+            "format": "jpeg",
+            "visual_token_count": 64,
+            "fingerprint": hashlib.sha256(b"renderer-jpeg").hexdigest(),
+        },
+        {"type": "text", "token_start": 65, "token_count": 1},
+    ]
+    assert records[1]["decoded_tokens"][1] == (
+        "<image 1: JPEG, 64 visual tokens>"
+    )
+    assert records[1]["decoded_tokens"][2:65] == [""] * 63
+    assert module._worker_state["render_samples_written"] == 2
+    assert module._worker_state["render_samples_vision_written"] == 1
 
 
 def test_finalize_render_samples_uploads_worker_jsonl(tmp_path, monkeypatch):
@@ -334,6 +435,47 @@ def test_finalize_render_samples_enforces_global_limit_round_robin(tmp_path, mon
             b'{"worker":0,"seq":0}\n' b'{"worker":1,"seq":0}\n' b'{"worker":0,"seq":1}\n'
         ),
     }
+
+
+def test_finalize_render_samples_backfills_vision_records_within_global_limit(
+    tmp_path,
+    monkeypatch,
+):
+    records = [
+        {"source_jsonl_row_index": index, "image_count": 0}
+        for index in range(module.DEFAULT_RENDER_SAMPLE_LIMIT)
+    ] + [
+        {"source_jsonl_row_index": index, "image_count": 1}
+        for index in range(module.DEFAULT_RENDER_SAMPLE_LIMIT, 26)
+    ]
+    (tmp_path / "render_samples.worker-0.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records)
+    )
+    uploaded: dict[str, bytes] = {}
+    monkeypatch.setattr(
+        module.fileio,
+        "write_bytes",
+        lambda path, data: uploaded.setdefault(path, data),
+    )
+
+    module._finalize_render_samples(
+        str(tmp_path),
+        "gs://bucket/job/render_samples.jsonl",
+        render_samples_limit=module.DEFAULT_RENDER_SAMPLE_LIMIT,
+    )
+
+    selected = [
+        json.loads(line)
+        for line in uploaded["gs://bucket/job/render_samples.jsonl"]
+        .decode()
+        .splitlines()
+    ]
+    assert len(selected) == module.DEFAULT_RENDER_SAMPLE_LIMIT
+    assert [record["source_jsonl_row_index"] for record in selected] == [
+        *range(15),
+        *range(20, 25),
+    ]
+    assert sum(record["image_count"] > 0 for record in selected) == 5
 
 
 def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
@@ -654,5 +796,3 @@ class TestPrepareDatasets:
         assert eval_data == []
         assert len(train_ds) == 1
         assert "too small for auto carve-out" in caplog.text
-
-

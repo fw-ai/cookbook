@@ -9,6 +9,32 @@ from training.utils.rl.grpo import make_grpo_loss_fn
 
 
 class TestGRPOMetrics:
+    def test_reports_policy_gradient_estimator_variance_proxy(self):
+        pi_rows = [
+            torch.tensor([-1.0, -1.0], requires_grad=True),
+            torch.tensor([-1.0, -1.0], requires_grad=True),
+        ]
+        fn = make_grpo_loss_fn(
+            advantages=[1.0, -1.0],
+            ref_logprobs=[],
+            prompt_len=[1, 1],
+            inf_logprobs=[[-1.0, -1.0], [-1.0, -1.0]],
+            old_policy_logprobs=[[-1.0, -1.0], [-1.0, -1.0]],
+            kl_beta=0.0,
+        )
+
+        _, metrics = fn([], pi_rows)
+
+        # At ratio=TIS=1, the two datum coefficients are -1 and +1.
+        assert metrics["policy_gradient/coefficient_variance_proxy"] == pytest.approx(
+            2.0
+        )
+        assert metrics["policy_gradient/estimator_variance_proxy"] == pytest.approx(1.0)
+        assert metrics["policy_gradient/estimator_std_error_proxy"] == pytest.approx(
+            1.0
+        )
+        assert metrics["policy_gradient/sample_count"] == 2
+
     def test_reports_reference_kl_separately_from_ppo_kl(self):
         pi_vals = [-2.0, -1.0, -0.5]
         ref_vals = [-2.0, -1.3, -0.1]

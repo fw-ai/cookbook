@@ -89,7 +89,7 @@ Show the spec to the user and resolve ambiguity before implementing the evaluato
 
 ### Managed RFT evaluator
 
-Managed RFT uses a registered eval3 evaluator with an `entry_point`. Use Eval Protocol's current code-first flow and defer exact APIs to the live [evaluator docs](https://docs.fireworks.ai/fine-tuning/evaluators.md).
+Managed RFT uses a registered evaluator with a reviewed entry point. Use Eval Protocol's current code-first flow, read `managed-rft-operations.md`, and defer exact APIs to the live [RFT overview](https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md).
 
 1. Write the Eval Protocol reward in the workspace.
 2. Add deterministic unit examples for full credit, partial credit, zero, malformed output, and edge cases.

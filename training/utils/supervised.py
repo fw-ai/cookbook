@@ -13,6 +13,7 @@ token-level ``weights`` so training uses the same spans that the UI shows.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -69,6 +70,25 @@ class RenderedSupervisedDatum:
     token_ids: list[int]
     token_weights: list[float]
     datum: tinker.Datum
+
+
+@dataclass(frozen=True)
+class RenderedChunkSpan:
+    """An ordered text or image range in a rendered supervised sequence.
+
+    ``token_start`` and ``token_count`` index the flattened ``token_ids`` /
+    ``token_weights`` arrays on :class:`RenderedSupervisedDatum`. Image bytes
+    and asset locations are deliberately not exposed; ``fingerprint`` is a
+    stable, non-reversible identity for confirming which rendered image chunk
+    occupied the range.
+    """
+
+    kind: Literal["text", "image"]
+    token_start: int
+    token_count: int
+    image_index: int | None = None
+    image_format: str = ""
+    fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -859,6 +879,95 @@ def _flatten_model_input_sequence_ids(model_input: tinker.ModelInput) -> list[in
         sentinel = stable_chunk_sentinel(chunk)
         sequence_ids.extend([sentinel] * int(chunk.length))
     return sequence_ids
+
+
+def _image_chunk_fingerprint(chunk: Any) -> str:
+    if isinstance(chunk, tinker.types.ImageChunk):
+        payload = bytes(chunk.data)
+    elif isinstance(chunk, tinker.types.ImageAssetPointerChunk):
+        payload = chunk.location.encode()
+    else:  # pragma: no cover - guarded by rendered_chunk_spans
+        raise TypeError(f"Unsupported image chunk type: {type(chunk)!r}")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def rendered_chunk_spans(rendered: RenderedSupervisedDatum | Any) -> list[RenderedChunkSpan]:
+    """Preserve rendered text/image boundaries without copying image payloads.
+
+    The trainer's canonical flattened sequence uses negative sentinels for
+    image positions. Those sentinels are useful for identity/alignment but are
+    not tokenizer IDs and therefore cannot be decoded for a human preview.
+    This helper recovers the ordered chunk ranges from the exact ``ModelInput``
+    that is sent to training and appends any trailing target-only token range.
+    """
+
+    token_count = len(getattr(rendered, "token_ids", ()))
+    if token_count == 0:
+        return []
+
+    model_input = getattr(getattr(rendered, "datum", None), "model_input", None)
+    chunks = getattr(model_input, "chunks", None)
+    if not chunks:
+        return [RenderedChunkSpan("text", 0, token_count)]
+
+    spans: list[RenderedChunkSpan] = []
+    cursor = 0
+    image_index = 0
+    for chunk in chunks:
+        if isinstance(chunk, tinker.types.EncodedTextChunk):
+            chunk_token_count = len(chunk.tokens)
+            kind: Literal["text", "image"] = "text"
+        elif isinstance(
+            chunk,
+            (tinker.types.ImageChunk, tinker.types.ImageAssetPointerChunk),
+        ):
+            chunk_token_count = int(chunk.length)
+            kind = "image"
+        else:
+            raise TypeError(f"Unsupported rendered chunk type: {type(chunk)!r}")
+
+        if chunk_token_count < 0 or cursor + chunk_token_count > token_count:
+            raise ValueError(
+                "rendered chunk/token length mismatch: "
+                f"range {cursor}:{cursor + chunk_token_count} exceeds {token_count}"
+            )
+        if chunk_token_count == 0:
+            continue
+
+        if kind == "image":
+            spans.append(
+                RenderedChunkSpan(
+                    kind="image",
+                    token_start=cursor,
+                    token_count=chunk_token_count,
+                    image_index=image_index,
+                    image_format=str(chunk.format),
+                    fingerprint=_image_chunk_fingerprint(chunk),
+                )
+            )
+            image_index += 1
+        else:
+            spans.append(
+                RenderedChunkSpan(
+                    kind="text",
+                    token_start=cursor,
+                    token_count=chunk_token_count,
+                )
+            )
+        cursor += chunk_token_count
+
+    # Supervised rendering keeps the final target token outside model_input.
+    # Keep this generic so synthetic/legacy datums with a larger trailing range
+    # remain displayable too.
+    if cursor < token_count:
+        spans.append(
+            RenderedChunkSpan(
+                kind="text",
+                token_start=cursor,
+                token_count=token_count - cursor,
+            )
+        )
+    return spans
 
 
 def _rendered_sequence_ids_from_datum(datum: tinker.Datum) -> list[int]:

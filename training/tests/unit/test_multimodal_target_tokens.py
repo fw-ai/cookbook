@@ -8,12 +8,16 @@ model-specific image token ID and keeps image positions masked out of loss.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 import torch
 import tinker
 
 from training.utils.supervised import (
+    RenderedChunkSpan,
     build_datum_from_model_input_and_weights,
+    rendered_chunk_spans,
     render_messages_to_datum,
 )
 
@@ -53,6 +57,33 @@ class TestMultimodalTargetTokensUseExpandedCoordinates:
 
         assert targets == [11, 0, 0, 0, 12, 13]
         assert len(targets) == rendered.datum.model_input.length
+
+    def test_rendered_chunk_spans_preserve_image_identity_and_order(self):
+        model_input = _make_multimodal_model_input(
+            prefix_tokens=[10, 11],
+            image_expected_tokens=3,
+            suffix_tokens=[12, 13],
+        )
+        rendered = build_datum_from_model_input_and_weights(
+            model_input,
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0],
+        )
+
+        assert rendered_chunk_spans(rendered) == [
+            RenderedChunkSpan(kind="text", token_start=0, token_count=2),
+            RenderedChunkSpan(
+                kind="image",
+                token_start=2,
+                token_count=3,
+                image_index=0,
+                image_format="png",
+                fingerprint=hashlib.sha256(
+                    b"https://example.com/img.png"
+                ).hexdigest(),
+            ),
+            RenderedChunkSpan(kind="text", token_start=5, token_count=1),
+            RenderedChunkSpan(kind="text", token_start=6, token_count=1),
+        ]
 
     def test_large_image_chunk(self):
         """A typical Qwen3-VL image span stays explicit in target coordinates."""

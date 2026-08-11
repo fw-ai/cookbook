@@ -93,11 +93,29 @@ def make_grpo_loss_fn(
         surr1 = -ratio * ctx.adv
         surr2 = -clipped_ratio * ctx.adv
         per_token_loss = torch.maximum(surr1, surr2) * ctx.tis_weight
+
+        # Mean coefficient multiplying d(log pi) for this datum, including
+        # PPO clipping and TIS. This is an inexpensive variance proxy across
+        # samples, not per-parameter gradient covariance.
+        unclipped_selected = surr1 >= surr2
+        clipped_has_gradient = (ratio >= 1.0 - eps_clip) & (ratio <= 1.0 + _eps_high)
+        ratio_with_gradient = torch.where(
+            unclipped_selected | clipped_has_gradient,
+            ratio,
+            torch.zeros_like(ratio),
+        )
+        pg_coefficient = (
+            -ctx.adv * ratio_with_gradient * ctx.tis_weight * ctx.resp_mask
+        )[active]
+        pg_datum_coefficient = pg_coefficient.detach().float().mean()
         extra = {
             "clip_frac": clip_frac,
             "ratio_mean": ratio_mean,
             "resp_len": float(len(ctx.resp_pi)),
             "adv_term": (-ctx.adv * ctx.resp_pi * ctx.resp_mask).sum().item(),
+            "pg_datum_coefficient_sum": pg_datum_coefficient.item(),
+            "pg_datum_coefficient_sq_sum": pg_datum_coefficient.square().item(),
+            "pg_datum_count": 1.0,
         }
         if ctx.resp_ref is not None:
             ref_log_ratio = ctx.resp_ref - ctx.resp_pi
@@ -132,6 +150,23 @@ def make_grpo_loss_fn(
                 result.extra_sums["kl_term"] / nt if nt > 0 else 0.0
             )
         metrics["mean_loss"] = result.total_loss.item() / nt if nt > 0 else 0.0
+        pg_count = int(result.extra_sums.get("pg_datum_count", 0.0))
+        if pg_count:
+            pg_sum = result.extra_sums.get("pg_datum_coefficient_sum", 0.0)
+            pg_sq_sum = result.extra_sums.get("pg_datum_coefficient_sq_sum", 0.0)
+            pg_mean = pg_sum / pg_count
+            pg_variance = (
+                max((pg_sq_sum - pg_sum * pg_mean) / (pg_count - 1), 0.0)
+                if pg_count > 1
+                else 0.0
+            )
+            pg_estimator_variance = pg_variance / pg_count
+            metrics["policy_gradient/coefficient_variance_proxy"] = pg_variance
+            metrics["policy_gradient/estimator_variance_proxy"] = pg_estimator_variance
+            metrics["policy_gradient/estimator_std_error_proxy"] = (
+                pg_estimator_variance**0.5
+            )
+            metrics["policy_gradient/sample_count"] = pg_count
         if raw_inf_logprobs is not None:
             metrics.update(
                 compute_inference_observability_metrics(
