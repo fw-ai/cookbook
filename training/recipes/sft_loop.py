@@ -74,6 +74,7 @@ from training.utils import (
     populate_render_worker_state,
     read_api_extra_headers_env,
     render_messages_to_datums,
+    rendered_chunk_spans,
     resolve_renderer_snapshot,
     setup_wandb,
     validate_config,
@@ -98,6 +99,7 @@ _worker_state: dict = {}
 
 RENDER_SAMPLE_LIMIT_ENV = "FIRETITAN_SFT_RENDER_SAMPLES_LIMIT"
 DEFAULT_RENDER_SAMPLE_LIMIT = 20
+MAX_VISION_RENDER_SAMPLE_RESERVE = 5
 
 
 def _parse_render_samples_limit(value: str) -> int | None:
@@ -161,16 +163,89 @@ def _remaining_render_sample_capacity() -> int | None:
     return max(0, int(limit) - written)
 
 
+def _vision_render_sample_target(limit: int | None) -> int | None:
+    """Number of preview slots reserved for rendered image examples.
+
+    The full-dump mode needs no reservation because it keeps every record.
+    For capped previews, reserve roughly one quarter of the slots, up to five,
+    while still guaranteeing one image example when the cap is non-zero.
+    """
+    if limit is None:
+        return None
+    if limit <= 0:
+        return 0
+    return min(MAX_VISION_RENDER_SAMPLE_RESERVE, max(1, (int(limit) + 3) // 4))
+
+
+def _rendered_chunk_records(rendered: Any) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for span in rendered_chunk_spans(rendered):
+        record: dict[str, Any] = {
+            "type": span.kind,
+            "token_start": span.token_start,
+            "token_count": span.token_count,
+        }
+        if span.kind == "image":
+            record.update(
+                image_index=span.image_index,
+                format=span.image_format,
+                visual_token_count=span.token_count,
+                fingerprint=span.fingerprint,
+            )
+        records.append(record)
+    return records
+
+
+def _rendered_image_stats(rendered: Any) -> tuple[int, int]:
+    model_input = getattr(getattr(rendered, "datum", None), "model_input", None)
+    chunks = getattr(model_input, "chunks", ())
+    image_chunks = [
+        chunk
+        for chunk in chunks
+        if isinstance(
+            chunk,
+            (tinker.types.ImageChunk, tinker.types.ImageAssetPointerChunk),
+        )
+    ]
+    return len(image_chunks), sum(max(0, int(chunk.length)) for chunk in image_chunks)
+
+
+def _decode_rendered_tokens(
+    token_ids: list[int],
+    chunk_records: list[dict[str, Any]],
+) -> list[str]:
+    """Decode text positions and make rendered image ranges visible.
+
+    Image sequence IDs are negative alignment sentinels rather than tokenizer
+    IDs. Emit one marker at the start of each image range and keep the remaining
+    slots empty so this stays aligned one-to-one with ``token_ids``.
+    """
+
+    decoded = ["" for _ in token_ids]
+    for record in chunk_records:
+        start = int(record["token_start"])
+        count = int(record["token_count"])
+        end = start + count
+        if record["type"] == "image":
+            image_number = int(record.get("image_index", 0)) + 1
+            image_format = str(record.get("format", "image")).upper()
+            decoded[start] = (
+                f"<image {image_number}: {image_format}, "
+                f"{int(record['visual_token_count'])} visual tokens>"
+            )
+            continue
+        decoded[start:end] = _decode_tokens(token_ids[start:end])
+    return decoded
+
+
 def _write_render_samples(row: dict, rendered_examples: list[Any]) -> None:
     local_dir = _worker_state.get("render_samples_local_dir") or ""
     if not local_dir:
         return
-    remaining = _remaining_render_sample_capacity()
-    if remaining == 0:
+    render_samples_limit = _worker_state.get("render_samples_limit")
+    if render_samples_limit == 0:
         return
-
-    selected = rendered_examples if remaining is None else rendered_examples[:remaining]
-    if not selected:
+    if not rendered_examples:
         return
 
     row_index = row.get(JSONL_ROW_INDEX_KEY)
@@ -182,7 +257,22 @@ def _write_render_samples(row: dict, rendered_examples: list[Any]) -> None:
     path = _render_sample_worker_path()
     try:
         with open(path, "a", encoding="utf-8") as handle:
-            for split_index, rendered in enumerate(selected):
+            for split_index, rendered in enumerate(rendered_examples):
+                image_count, image_token_count = _rendered_image_stats(rendered)
+                remaining = _remaining_render_sample_capacity()
+                vision_target = _vision_render_sample_target(render_samples_limit)
+                vision_written = int(
+                    _worker_state.get("render_samples_vision_written", 0)
+                )
+                needs_vision_reserve = (
+                    image_count > 0
+                    and vision_target is not None
+                    and vision_written < vision_target
+                )
+                if remaining == 0 and not needs_vision_reserve:
+                    continue
+
+                chunk_records = _rendered_chunk_records(rendered)
                 token_ids = [int(x) for x in rendered.token_ids]
                 token_weights = [float(x) for x in rendered.token_weights]
                 datum = rendered.datum
@@ -197,14 +287,22 @@ def _write_render_samples(row: dict, rendered_examples: list[Any]) -> None:
                     "worker_id": _worker_state.get("worker_id"),
                     "renderer": _worker_state.get("resolved_renderer_name", ""),
                     "train_on_what": _worker_state.get("train_on_what_str", ""),
+                    "image_count": image_count,
+                    "image_token_count": image_token_count,
+                    "rendered_chunks": chunk_records,
                     "token_ids": token_ids,
-                    "decoded_tokens": _decode_tokens(token_ids),
+                    "decoded_tokens": _decode_rendered_tokens(
+                        token_ids,
+                        chunk_records,
+                    ),
                     "token_weights": token_weights,
                     "training_target_token_ids": target_tokens,
                     "training_loss_weights": training_weights,
                 }
                 handle.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
                 _worker_state["render_samples_written"] = int(_worker_state.get("render_samples_written", 0)) + 1
+                if image_count > 0:
+                    _worker_state["render_samples_vision_written"] = vision_written + 1
     except Exception:  # noqa: BLE001 - render sample write must not fail training
         if not _worker_state.get("render_samples_error_logged"):
             logger.warning("Failed to write SFT render sample", exc_info=True)
@@ -234,6 +332,48 @@ def _round_robin_render_sample_lines(files: list[Path]) -> list[str]:
                 handle.close()
 
 
+def _render_sample_line_has_image(line: str) -> bool:
+    try:
+        return int(json.loads(line).get("image_count", 0)) > 0
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+
+
+def _select_render_sample_lines(
+    all_lines: list[str],
+    render_samples_limit: int | None,
+) -> list[str]:
+    if render_samples_limit is None:
+        return all_lines
+    if render_samples_limit <= 0:
+        return []
+
+    selected = list(all_lines[:render_samples_limit])
+    vision_target = _vision_render_sample_target(render_samples_limit) or 0
+    selected_vision_count = sum(
+        _render_sample_line_has_image(line) for line in selected
+    )
+    missing_vision_count = max(0, vision_target - selected_vision_count)
+    if missing_vision_count == 0:
+        return selected
+
+    vision_candidates = [
+        line
+        for line in all_lines[render_samples_limit:]
+        if _render_sample_line_has_image(line)
+    ][:missing_vision_count]
+    if not vision_candidates:
+        return selected
+    replace_indices = [
+        index
+        for index, line in enumerate(selected)
+        if not _render_sample_line_has_image(line)
+    ][-len(vision_candidates) :]
+    for index, candidate in zip(replace_indices, vision_candidates):
+        selected[index] = candidate
+    return selected
+
+
 def _finalize_render_samples(
     local_dir: str,
     output_path: str,
@@ -244,11 +384,8 @@ def _finalize_render_samples(
     try:
         files = sorted(Path(local_dir).glob("render_samples.worker-*.jsonl"))
         all_lines = _round_robin_render_sample_lines(files)
-        content_parts = all_lines
-        truncated_count = 0
-        if render_samples_limit is not None:
-            content_parts = all_lines[:render_samples_limit]
-            truncated_count = max(0, len(all_lines) - render_samples_limit)
+        content_parts = _select_render_sample_lines(all_lines, render_samples_limit)
+        truncated_count = max(0, len(all_lines) - len(content_parts))
         if not content_parts:
             logger.info("No SFT render samples were captured; skipping %s", output_path)
             return
@@ -256,8 +393,9 @@ def _finalize_render_samples(
         content_bytes = content.encode("utf-8")
         fileio.write_bytes(output_path, content_bytes)
         logger.info(
-            "Uploaded %d SFT render sample records (%d bytes) to %s",
+            "Uploaded %d SFT render sample records (%d with images, %d bytes) to %s",
             len(content_parts),
+            sum(_render_sample_line_has_image(line) for line in content_parts),
             len(content_bytes),
             output_path,
         )
@@ -281,6 +419,7 @@ def _configure_render_sample_state(
         render_samples_local_dir=render_samples_local_dir,
         render_samples_limit=render_samples_limit,
         render_samples_written=0,
+        render_samples_vision_written=0,
         render_samples_error_logged=False,
     )
 
@@ -504,7 +643,8 @@ class Config:
 
     render_samples_limit: int | None = None
     """Global rendered datum sample cap. ``None`` means default; negative
-    values mean full dump. Can be overridden by
+    values mean full dump. Capped previews reserve up to five slots for
+    rendered image examples when available. Can be overridden by
     FIRETITAN_SFT_RENDER_SAMPLES_LIMIT."""
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"

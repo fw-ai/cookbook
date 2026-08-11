@@ -92,3 +92,8 @@ firectl quota list      # GPU quotas, rate limits, spend limit, usage
 - [ ] Deploy it on-demand and get a sensible completion → `references/deploy-and-troubleshoot.md`.
 
 > Wrong text learned or assistant turn ignored? Use Render Samples and `renderer-verification.md`.
+> For multimodal jobs, image-bearing records include ordered `rendered_chunks`,
+> an `image_count`, and the number of visual tokens contributed by each image.
+> Image ranges appear as explicit `<image … visual tokens>` markers rather than
+> blank tokenizer output; the artifact intentionally does not duplicate source
+> image bytes or asset locations.
