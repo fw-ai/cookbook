@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
 from training.utils.runner_state import write_running_progress
-
 
 # -- RunnerConfig -------------------------------------------------------------
 
@@ -68,6 +69,7 @@ class TestRunnerIOStatus:
         assert data["message"] == "training"
         assert data["details"][0]["@type"] == "type.googleapis.com/gateway.JobProgress"
         assert data["details"][0]["percent"] == 30
+
     def test_status_protojson_strict_structure(self, tmp_path):
         """Enforce exact protojson shape: google.rpc.Status with JobProgress detail."""
         path = str(tmp_path / "status.json")
@@ -428,6 +430,55 @@ class TestRunnerIOContextManager:
         data = json.loads(open(path).read())
         assert data["code"] == 9  # FAILED_PRECONDITION
         assert data["message"] == "boom"
+
+    @pytest.mark.parametrize(
+        "module",
+        ["fireworks.client.error", "tinker._exceptions"],
+    )
+    def test_managed_api_network_unavailable_writes_unavailable(self, tmp_path: Path, module: str) -> None:
+        """Managed SDK ENETUNREACH is preserved through nested recipe errors."""
+        api_connection_error = type(
+            "APIConnectionError",
+            (Exception,),
+            {"__module__": module},
+        )
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+        connection_error = api_connection_error("Connection error.")
+        connection_error.__cause__ = OSError(
+            errno.ENETUNREACH,
+            "Network is unreachable",
+            "/token",
+        )
+        recipe_error = RuntimeError("recipe failed")
+        recipe_error.__cause__ = connection_error
+
+        with pytest.raises(RuntimeError, match="recipe failed"):
+            with runner:
+                raise recipe_error
+
+        data = json.loads(open(path).read())
+        assert data["code"] == 14
+        assert data["message"] == "recipe failed"
+
+    def test_customer_integration_network_error_keeps_failed_precondition(self, tmp_path: Path) -> None:
+        """An unrelated customer SDK ENETUNREACH remains customer-owned."""
+
+        class APIConnectionError(Exception):
+            pass
+
+        APIConnectionError.__module__ = "customer_sdk.exceptions"
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+        error = APIConnectionError("Customer integration connection error.")
+        error.__cause__ = OSError(errno.ENETUNREACH, "Network is unreachable")
+
+        with pytest.raises(APIConnectionError):
+            with runner:
+                raise error
+
+        data = json.loads(open(path).read())
+        assert data["code"] == 9
 
     def test_exception_flushes_metadata(self, tmp_path):
         meta = str(tmp_path / "meta.json")
