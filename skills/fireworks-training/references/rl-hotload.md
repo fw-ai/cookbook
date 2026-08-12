@@ -28,7 +28,7 @@ DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
 3. The **trainer owns** the checkpoints. Promote reads them from the trainer's bucket without any deployment ID.
 4. On resume, the deployment is re-attached to the new trainer (PATCH `hotLoadTrainerJob`), which briefly restarts the serving pod.
 
-Bucket path: `gs://.../rl-checkpoints/{account}/trainer-{trainer_id}/`. Good when one trainer feeds multiple deployments, or for clean per-run isolation. Contract test: `training/tests/smoke_test/test_grpo_deepmath_per_trainer_smoke.py`.
+Bucket path: `gs://.../rl-checkpoints/{account}/trainer-{trainer_id}/`. Good when one trainer feeds multiple deployments, or for clean per-run isolation.
 
 ### PER_DEPLOYMENT
 

@@ -1,8 +1,7 @@
 name: Skills Validate
 
 # Gate for the canonical training skill, cookbook routes, confirmation contract,
-# plugin packaging, references, and relative links. Live recipe behavior remains
-# covered by training-smoke.yml.
+# plugin packaging, references, and relative links.
 
 on:
   pull_request:
