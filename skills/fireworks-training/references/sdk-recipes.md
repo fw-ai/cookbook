@@ -26,8 +26,8 @@ Always required on `Config` (with `trainer=TrainerConfig(...)`):
 - `tokenizer_model` — HF model name
 - `log_path` — directory for `dataloader.json` and logs
 - `trainer.training_shape_id` — optional override; leave unset for auto-selection. `accelerator_type` and `accelerator_count` are unsupported; do not set manual `node_count` (see [`sdk-shapes.md`](sdk-shapes.md))
-- `trainer.use_reservation` — optional. When `True`, try the account's
-  reservation capacity before falling back to shared trainer capacity. A
+- `trainer.use_reservation` — optional, default `True`. Tries reservation
+  capacity first; set `False` to use shared trainer capacity. A
   full-parameter DPO reference trainer inherits the option and tries
   independently; an existing `trainer.job_id` is reused as-is.
 

@@ -144,7 +144,6 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "trainer_job_id": "job-1",
             "reference_trainer_job_id": "ref-job-1",
             "cleanup_reference_trainer_on_close": False,
-            "use_reservation": True,
             "reference_required": False,
             "region": "US_OHIO_1",
             "max_context_length": 4096,
@@ -162,6 +161,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "preemptible": True,
             "managed_by": "parent-job",
             "skip_validations": True,
+            "use_reservation": True,
             "cleanup_trainer_on_close": True,
             "cleanup_deployment_on_close": None,
             "create_deployment": True,
@@ -206,7 +206,7 @@ def test_build_service_client_forwards_max_lora_rank(monkeypatch):
     assert calls[0]["max_lora_rank"] == 32
 
 
-def test_build_service_client_omits_default_use_reservation(monkeypatch):
+def test_build_service_client_defaults_use_reservation_true(monkeypatch):
     calls: list[dict] = []
 
     def fake_from_firetitan_config(**kwargs):
@@ -230,7 +230,34 @@ def test_build_service_client_omits_default_use_reservation(monkeypatch):
         trainer=TrainerConfig(training_shape_id="ts-x"),
     )
 
-    assert "use_reservation" not in calls[0]
+    assert calls[0]["use_reservation"] is True
+
+
+def test_build_service_client_forwards_explicit_use_reservation_false(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_from_firetitan_config(**kwargs):
+        calls.append(kwargs)
+        return "service-sentinel"
+
+    class FakeServiceClient:
+        from_firetitan_config = staticmethod(fake_from_firetitan_config)
+
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    build_service_client(
+        api_key="k",
+        base_url="https://api",
+        additional_headers=None,
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=0,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-x", use_reservation=False),
+    )
+
+    assert calls[0]["use_reservation"] is False
 
 
 def test_build_service_client_defaults_speculative_decoding_enabled(monkeypatch):
