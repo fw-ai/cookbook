@@ -16,7 +16,7 @@ Test tiers (see also ``test_supervised_rendering.py`` for resolver coverage):
 Quick commands::
 
     # Resolver override (CI-safe, no checkpoint)
-    cd public-repos/cookbook
+    cd cookbook
     python3 -m pytest training/tests/unit/test_supervised_rendering.py::test_resolve_renderer_name_supports_gemma4_thinking_override -v
 
     # Full file (Tier 1–2; skips when GEMMA4_MODEL_PATH / CUDA unavailable)

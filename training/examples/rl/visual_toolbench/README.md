@@ -45,7 +45,7 @@ Both launchers expect the same 214-row training split and disjoint 50-row
 evaluation split:
 
 ```bash
-cd public-repos/cookbook
+cd cookbook
 export FIREWORKS_API_KEY=fw_...
 export VTB_DATASET=/absolute/path/to/train.jsonl
 export VTB_EVAL_DATASET=/absolute/path/to/eval.jsonl

@@ -33,6 +33,7 @@ File formats:
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import time
@@ -55,6 +56,7 @@ class RunStatus(str, Enum):
 _GRPC_OK = 0
 _GRPC_INVALID_ARGUMENT = 3
 _GRPC_FAILED_PRECONDITION = 9
+_GRPC_UNAVAILABLE = 14
 _JOB_PROGRESS_TYPE_URL = "type.googleapis.com/gateway.JobProgress"
 
 _STATUS_TO_GRPC_CODE: dict[RunStatus, int] = {
@@ -77,6 +79,27 @@ class UserConfigError(Exception):
 
 class WandbConfigError(UserConfigError):
     """Raised when Weights & Biases auth/config is invalid (bad key, entity, or project)."""
+
+
+def _is_managed_api_network_unavailable(error: BaseException) -> bool:
+    """Return whether a managed API connection failed with ENETUNREACH."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    has_managed_api_error = False
+    has_network_unreachable = False
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        error_type = type(current)
+        module_root = error_type.__module__.partition(".")[0]
+        has_managed_api_error = (
+            has_managed_api_error
+            or error_type.__name__ == "APIConnectionError"
+            and module_root in ("fireworks", "tinker")
+        )
+        if isinstance(current, OSError) and current.errno == errno.ENETUNREACH:
+            has_network_unreachable = True
+        current = current.__cause__ or current.__context__
+    return has_managed_api_error and has_network_unreachable
 
 
 @dataclass
@@ -143,7 +166,11 @@ class RunnerIO:
             # surface them as INVALID_ARGUMENT instead of the generic
             # FAILED_PRECONDITION so the control plane preserves the actionable
             # message and category (FIR2-1774).
-            error_code = _GRPC_INVALID_ARGUMENT if isinstance(exc_val, UserConfigError) else None
+            error_code = None
+            if isinstance(exc_val, UserConfigError):
+                error_code = _GRPC_INVALID_ARGUMENT
+            elif isinstance(exc_val, BaseException) and _is_managed_api_network_unavailable(exc_val):
+                error_code = _GRPC_UNAVAILABLE
             self.write_status(
                 RunStatus.FAILED,
                 step=self._last_step,
