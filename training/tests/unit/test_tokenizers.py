@@ -234,6 +234,114 @@ def test_load_unknown_model_tokenizer_when_generic_config_rope_validation_fails(
     assert loaded.get_vocab() == {"[UNK]": 0}
 
 
+def test_load_unknown_model_tokenizer_with_deepseek_v4_model_type(tmp_path):
+    """Bindwell GSM8K SFT used DeepSeek-V4; its HF config type is unregistered."""
+    model_dir = tmp_path / "deepseek-v4-flash"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "deepseek_v4",
+                "rope_theta": 10_000.0,
+                "rope_scaling": {
+                    "factor": 16.0,
+                    "original_max_position_embeddings": 65536,
+                    "type": "yarn",
+                },
+            }
+        )
+    )
+    backend = tokenizers_lib.Tokenizer(
+        tokenizers_lib.models.WordLevel({"[UNK]": 0}, unk_token="[UNK]")
+    )
+    backend.save(str(model_dir / "tokenizer.json"))
+
+    loaded = tokenizers.load_tokenizer(
+        str(model_dir),
+        trust_remote_code=False,
+        local_files_only=True,
+    )
+
+    assert loaded.get_vocab() == {"[UNK]": 0}
+
+
+@pytest.mark.parametrize(
+    "error_kwargs",
+    [
+        pytest.param(
+            {
+                "name": "max_position_embeddings",
+                "use_obj": True,
+            },
+            id="structured-attribute-error",
+        ),
+        pytest.param({}, id="message-only-attribute-error"),
+    ],
+)
+def test_load_tokenizer_retries_generic_config_max_position_error(
+    monkeypatch, error_kwargs
+):
+    calls: list[dict] = []
+    fake_tokenizer = object()
+    config = tokenizers.transformers.PreTrainedConfig()
+
+    def from_pretrained(model, **kwargs):
+        calls.append(kwargs)
+        if "config" in kwargs:
+            return fake_tokenizer
+        raise AttributeError(
+            "'PreTrainedConfig' object has no attribute 'max_position_embeddings'",
+            **(
+                {
+                    "name": error_kwargs["name"],
+                    "obj": config,
+                }
+                if error_kwargs.get("use_obj")
+                else {}
+            ),
+        )
+
+    monkeypatch.setattr(
+        tokenizers.transformers.AutoTokenizer,
+        "from_pretrained",
+        from_pretrained,
+    )
+
+    result = tokenizers.load_tokenizer("deepseek-ai/DeepSeek-V4-Flash")
+
+    assert result is fake_tokenizer
+    assert len(calls) == 2
+    assert "config" not in calls[0]
+    assert calls[1]["config"].max_position_embeddings == 1
+
+
+def test_verifier_load_tokenizer_retries_generic_config_max_position_error(
+    monkeypatch,
+):
+    calls: list[dict] = []
+    fake_tokenizer = object()
+
+    def from_pretrained(model, **kwargs):
+        calls.append(kwargs)
+        if "config" in kwargs:
+            return fake_tokenizer
+        raise AttributeError(
+            "'PreTrainedConfig' object has no attribute 'max_position_embeddings'"
+        )
+
+    monkeypatch.setattr(
+        tokenizers.transformers.AutoTokenizer,
+        "from_pretrained",
+        from_pretrained,
+    )
+
+    result = verifier_tokenizers.load_tokenizer("deepseek-ai/DeepSeek-V4-Flash")
+
+    assert result is fake_tokenizer
+    assert len(calls) == 2
+    assert calls[1]["config"].max_position_embeddings == 1
+
+
 def test_load_tokenizer_does_not_hide_unrelated_attribute_errors(monkeypatch):
     def from_pretrained(model, **kwargs):
         config = tokenizers.transformers.PreTrainedConfig()

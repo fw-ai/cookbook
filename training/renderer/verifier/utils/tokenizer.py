@@ -19,8 +19,10 @@ from typing import Any
 def load_tokenizer(model_id: str) -> Any:
     """Load an HF tokenizer, forwarding ``HF_TOKEN`` if set."""
     # lazy: keep verifier utilities importable without the heavy optional Transformers dependency.
-    import transformers  # noqa: PLC0415 — heavy optional dep
-    from training.utils.tokenizers import needs_mistral_regex_fix  # noqa: PLC0415
+    from training.utils.tokenizers import (  # noqa: PLC0415
+        auto_tokenizer_from_pretrained,
+        needs_mistral_regex_fix,
+    )
 
     hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     kwargs: dict[str, Any] = {
@@ -30,11 +32,8 @@ def load_tokenizer(model_id: str) -> Any:
     if needs_mistral_regex_fix(model_id):
         kwargs["fix_mistral_regex"] = True
     try:
-        return transformers.AutoTokenizer.from_pretrained(
-            model_id,
-            **kwargs,
-        )
-    except (OSError, ValueError) as exc:
+        return auto_tokenizer_from_pretrained(model_id, **kwargs)
+    except (OSError, ValueError, AttributeError) as exc:
         raise RuntimeError(
             f"Could not load tokenizer {model_id!r}: {exc}\n\n"
             "Common causes:\n"
@@ -43,7 +42,11 @@ def load_tokenizer(model_id: str) -> Any:
             "  • Gated / private repo — run `hf auth login` or "
             "`export HF_TOKEN=hf_...` and retry.\n"
             "  • No network access on first load — once cached under "
-            "~/.cache/huggingface/ the tokenizer loads offline."
+            "~/.cache/huggingface/ the tokenizer loads offline.\n"
+            "  • Unrecognized HF model_type (for example deepseek_v4) — "
+            "the cookbook tokenizer loader retries without model-config "
+            "RoPE validation; if this still fails, the tokenizer files "
+            "themselves are missing or unreadable."
         ) from exc
 
 
