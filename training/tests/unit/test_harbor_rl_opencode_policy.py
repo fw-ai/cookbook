@@ -13,6 +13,7 @@ from training.examples.rl.harbor.openai_policy import (
     OpenCodePolicyServer,
     OpenCodePolicySession,
 )
+from training.renderer.reasoning_fields import ORIGINAL_REASONING_CONTENT
 from training.utils.rl.rollout import (
     Rollout,
     RolloutRun,
@@ -795,6 +796,8 @@ def test_openai_renderer_preserves_reasoning_as_thinking_content():
                 "role": "assistant",
                 "content": "visible answer",
                 "reasoning_content": "private reasoning",
+                "recipient": "self",
+                "end_turn": False,
             }
         ],
         tools=[],
@@ -804,6 +807,9 @@ def test_openai_renderer_preserves_reasoning_as_thinking_content():
         {"type": "thinking", "thinking": "private reasoning"},
         {"type": "text", "text": "visible answer"},
     ]
+    assert ORIGINAL_REASONING_CONTENT not in renderer.messages[0]
+    assert "recipient" not in renderer.messages[0]
+    assert "end_turn" not in renderer.messages[0]
 
 
 def test_opencode_config_uses_absolute_xdg_path_when_shell_env_is_absent():

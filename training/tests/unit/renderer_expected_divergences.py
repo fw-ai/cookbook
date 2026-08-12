@@ -142,6 +142,19 @@ HF_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
 }
 
 TEXT_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
+    # Muse Glimmer's upstream template deliberately ignores assistant
+    # ``content`` whenever ``tool_calls`` is truthy. The parser cannot recover
+    # bytes the canonical wire format did not emit; tool names/arguments and
+    # reasoning still round-trip and are asserted separately.
+    ("muse_glimmer", "single_tool_call"): "Muse Glimmer's ATEM template discards narrated assistant content on tool-call turns.",
+    ("muse_glimmer", "dangling_tool_call"): "Muse Glimmer's ATEM template discards narrated assistant content on tool-call turns.",
+    ("muse_glimmer", "assistant_content_plus_tool_call"): "Muse Glimmer's ATEM template discards narrated assistant content on tool-call turns.",
+    ("muse_glimmer", "nested_tool_call_args"): "Muse Glimmer's ATEM template discards narrated assistant content on tool-call turns.",
+    ("muse_glimmer", "json_string_tool_args"): "Muse Glimmer's ATEM template discards narrated assistant content on tool-call turns.",
+    ("muse_glimmer", "dict_tool_args"): "Muse Glimmer's ATEM template discards narrated assistant content on tool-call turns.",
+    ("muse_glimmer", "empty_args_tool_call"): "Muse Glimmer's ATEM template discards narrated assistant content on tool-call turns.",
+    ("muse_glimmer", "thinking_tool_call"): "Muse Glimmer's ATEM template discards narrated assistant content on tool-call turns.",
+    ("muse_glimmer", "thinking_parallel_tool_calls"): "Muse Glimmer's ATEM template discards narrated assistant content on tool-call turns.",
 }
 
 # Empty: the only entries here were Kimi tool-call round-trips, which failed
@@ -155,11 +168,28 @@ TEXT_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
 # entries below instead record an ambiguity inherent to its untyped XML scalar
 # format: the wire bytes cannot distinguish the string "101" from the number 101.
 PARSE_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
+    ("muse_glimmer", "single_tool_call"): "ATEM omits narrated assistant content whenever tool_calls are present, so that text is not recoverable during parse.",
+    ("muse_glimmer", "dangling_tool_call"): "ATEM omits narrated assistant content whenever tool_calls are present, so that text is not recoverable during parse.",
+    ("muse_glimmer", "assistant_content_plus_tool_call"): "ATEM omits narrated assistant content whenever tool_calls are present, so that text is not recoverable during parse.",
+    ("muse_glimmer", "nested_tool_call_args"): "ATEM omits narrated assistant content whenever tool_calls are present, so that text is not recoverable during parse.",
+    ("muse_glimmer", "json_string_tool_args"): "ATEM omits narrated assistant content whenever tool_calls are present, so that text is not recoverable during parse.",
+    ("muse_glimmer", "dict_tool_args"): "ATEM omits narrated assistant content whenever tool_calls are present, so that text is not recoverable during parse.",
+    ("muse_glimmer", "empty_args_tool_call"): "ATEM omits narrated assistant content whenever tool_calls are present, so that text is not recoverable during parse.",
+    ("muse_glimmer", "thinking_tool_call"): "ATEM omits narrated assistant content whenever tool_calls are present, so that text is not recoverable during parse.",
+    ("muse_glimmer", "thinking_parallel_tool_calls"): "ATEM omits narrated assistant content whenever tool_calls are present, so that text is not recoverable during parse.",
     ("minimax_m3", "dangling_tool_call"): "MiniMax M3's XML tool-call wire format carries scalar text without schema/type annotations, so the parser cannot distinguish the string '101' from the number 101.",
     ("minimax_m3", "nested_tool_call_args"): "MiniMax M3's XML tool-call wire format carries scalar text without schema/type annotations, so the parser cannot distinguish the string '101' from the number 101.",
 }
 
-HISTORICAL_PARSE_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {}
+HISTORICAL_PARSE_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
+    ("muse_glimmer", "tool_call_then_answer"): "ATEM drops narrated content from historical tool-call turns.",
+    ("muse_glimmer", "react_two_round_tool_results"): "ATEM drops narrated content from historical tool-call turns.",
+    ("muse_glimmer", "parallel_tool_calls"): "ATEM drops narrated content from historical tool-call turns.",
+    ("muse_glimmer", "parallel_tool_results_reversed"): "ATEM drops narrated content from historical tool-call turns.",
+    ("muse_glimmer", "tool_result_pending_answer"): "ATEM drops narrated content from historical tool-call turns.",
+    ("muse_glimmer", "nested_json_tool_result"): "ATEM drops narrated content from historical tool-call turns.",
+    ("muse_glimmer", "thinking_tool_then_answer"): "ATEM drops narrated content from historical tool-call turns.",
+}
 
 OBSERVATION_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
     ("qwen3_disable_thinking", "consecutive_assistant"): "consecutive assistant turns break the observation==generation-prompt invariant for qwen3_disable_thinking: the interior assistant header in the supervised observation differs from a fresh generation prompt.",

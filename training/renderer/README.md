@@ -1,5 +1,22 @@
 # Training renderers
 
+## Muse Glimmer
+
+`meta-models/Muse-Glimmer-30B` uses the registered `muse_glimmer` renderer.
+It mirrors the model's ATEM chat template at revision
+`a4e59da52a7bc87ae7251dd5545c0dd437c44b68`, including synthetic-system
+defaults, reasoning recipients, image placeholders, tool declarations, ATEM
+calls/results, and the EOM/EOT state machine. The upstream template's symbolic
+video branch is covered for parity, but cookbook training inputs reject video
+parts because video preprocessing is not supported. Tool-call arguments must
+be objects; raw JSON strings are rejected by the upstream template and renderer.
+
+The renderer does not claim the sequence-extension property because appending
+a consecutive assistant message changes a preceding terminal ATEM call from
+`<|eot|>` to `<|eom|>`. Multi-turn SFT is therefore disaggregated into safe
+per-user-turn examples. The shared renderer matrix pins HF token parity, while
+`test_muse_glimmer_renderer.py` covers the template's individual branches.
+
 ## Qwen2.5 32B V1 compatibility
 
 `Qwen/Qwen2.5-32B-Instruct` uses the dedicated `qwen2_5` renderer. It is

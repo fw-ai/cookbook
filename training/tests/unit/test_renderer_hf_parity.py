@@ -87,6 +87,8 @@ _KIMI26_MODEL = "moonshotai/Kimi-K2.6"
 _KIMI26_REVISION = "7eb5002f6aadc958aed6a9177b7ed26bb94011bb"
 _KIMI27_MODEL = "moonshotai/Kimi-K2.7-Code"
 _KIMI27_REVISION = "74797c9c62378b951a1f6fcf5c4631024e9b8bef"
+_MUSE_GLIMMER_MODEL = "meta-models/Muse-Glimmer-30B"
+_MUSE_GLIMMER_REVISION = "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
 _ONE_PIXEL_PNG = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8A"
@@ -95,6 +97,20 @@ _ONE_PIXEL_PNG = (
 
 
 _CASES: list[_Case] = [
+    _Case(
+        case_id="muse-glimmer-single-turn",
+        renderer="muse_glimmer",
+        tokenizer_model=_MUSE_GLIMMER_MODEL,
+        tokenizer_revision=_MUSE_GLIMMER_REVISION,
+        messages=_SHORT_MSGS,
+    ),
+    _Case(
+        case_id="muse-glimmer-multi-turn",
+        renderer="muse_glimmer",
+        tokenizer_model=_MUSE_GLIMMER_MODEL,
+        tokenizer_revision=_MUSE_GLIMMER_REVISION,
+        messages=_MULTI_TURN_MSGS,
+    ),
     _Case(
         case_id="glm5-single-turn",
         renderer="glm5_interleaved",
