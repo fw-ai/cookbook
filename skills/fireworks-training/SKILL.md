@@ -346,10 +346,14 @@ firectl rftj create --job-id <run-id> \
   --output-model <output-model-id>
 ```
 
-For managed SFT/DPO, add `--use-reservation` only when the approved plan opts in.
-It tries the account's reservation capacity before falling back to shared trainer
-capacity. Full-parameter DPO policy and dedicated reference trainers try
-independently. A retry or resume that finds the stable trainer ID reuses it.
+For cookbook / Training API SDK trainers, reservation-first placement is the
+default (`TrainerConfig(use_reservation=True)`). Set `use_reservation=False`
+only when the approved plan opts out onto shared capacity. Full-parameter DPO
+policy and dedicated reference trainers try independently. A retry or resume
+that finds the stable trainer ID reuses it.
+
+For managed SFT/DPO via `firectl`, add `--use-reservation` only when the
+approved plan opts in (CLI default remains off).
 
 Before launch, read the selected command's `--help`; the installed CLI is the
 command contract.

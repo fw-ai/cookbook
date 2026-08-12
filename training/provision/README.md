@@ -63,9 +63,9 @@ recipe:
     trainer: policy
 ```
 
-`use_reservation: true` tries the account's reservation capacity before falling
-back to shared trainer capacity. A DPO reference trainer inherits the setting
-and tries independently; an existing trainer ID is reused as-is.
+`use_reservation` defaults to `true` (reservation-first). Set it to `false` to
+use shared trainer capacity instead. A DPO reference trainer inherits the
+setting and tries independently; an existing trainer ID is reused as-is.
 
 ### Modes
 
