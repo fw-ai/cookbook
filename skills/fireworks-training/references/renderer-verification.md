@@ -15,7 +15,10 @@ inspection happens in a local React GUI seeded by a Python probe.
   tokenizer is fetched from HF and cached under
   `~/.cache/huggingface/`; later loads are offline-friendly. The
   verifier wraps tokenizer-load failures with a friendly error
-  pointing at this prereq.
+  pointing at this prereq. Unknown HuggingFace `model_type` values
+  (for example `deepseek_v4`) are retried through the cookbook
+  tokenizer fallback so verifier probes do not die on Transformers 5.5
+  RoPE validation.
 
 ```bash
 export FIREWORKS_API_KEY=fw_...

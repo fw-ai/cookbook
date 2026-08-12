@@ -166,6 +166,12 @@ not be selected by the history-mode enum.
 - **Treating a Python template as "no template."** Kimi K3 has
   `chat_template=None` but overrides `apply_chat_template`; compare the
   renderer to that method instead of skipping parity or inventing Jinja.
+- **Unknown HF `model_type` (DeepSeek V4).** Transformers 5.5
+  RoPE-validates a generic `PreTrainedConfig` and can raise
+  `max_position_embeddings` before reading `tokenizer.json`. Load
+  through `training.utils.tokenizers.load_tokenizer` (or
+  `auto_tokenizer_from_pretrained`); do not call
+  `AutoTokenizer.from_pretrained` directly.
 
 ## 6. See also
 

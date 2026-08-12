@@ -12,14 +12,49 @@ import transformers
 
 _HTTP_STATUS_PATTERN = re.compile(r"\b([45]\d\d)\b")
 _MISTRAL_TOKENIZER_NAME_PARTS = ("mistral", "ministral")
+_GENERIC_CONFIG_MAX_POS_MESSAGE = (
+    "'PreTrainedConfig' object has no attribute 'max_position_embeddings'"
+)
 
 
 def _is_generic_config_missing_max_position_embeddings(exc: AttributeError) -> bool:
-    """Whether Transformers failed while validating an unrecognized model config."""
+    """Whether Transformers failed while validating an unrecognized model config.
+
+    Transformers 5.5 RoPE-validates the generic ``PreTrainedConfig`` fallback
+    used for unknown ``model_type`` values (for example ``deepseek_v4``). That
+    path reads ``max_position_embeddings``, which 5.5 no longer defaults, so
+    tokenizer loading dies before ``tokenizer.json`` is inspected. Match both
+    the structured ``AttributeError`` fields and the message-only form some
+    call sites raise.
+    """
     config = getattr(exc, "obj", None)
-    return (
+    if (
         getattr(exc, "name", None) == "max_position_embeddings"
         and type(config) is transformers.PreTrainedConfig
+    ):
+        return True
+    return _GENERIC_CONFIG_MAX_POS_MESSAGE in str(exc)
+
+
+def _tokenizer_only_pretrained_config() -> Any:
+    """Config that skips model-only AutoConfig parsing during tokenizer load."""
+    return transformers.PreTrainedConfig(max_position_embeddings=1)
+
+
+def auto_tokenizer_from_pretrained(tokenizer_model: str | None, **kwargs: Any) -> Any:
+    """``AutoTokenizer.from_pretrained`` with the unknown-config RoPE fallback."""
+    try:
+        return transformers.AutoTokenizer.from_pretrained(tokenizer_model, **kwargs)
+    except AttributeError as exc:
+        if not _is_generic_config_missing_max_position_embeddings(exc):
+            raise
+
+    # Supplying a config skips model-only parsing while preserving
+    # AutoTokenizer's tokenizer_config and remote-code routing.
+    return transformers.AutoTokenizer.from_pretrained(
+        tokenizer_model,
+        config=_tokenizer_only_pretrained_config(),
+        **kwargs,
     )
 
 
@@ -128,21 +163,7 @@ def load_tokenizer(
         # implementation is available in the pinned Transformers 5.5.4 release.
         kwargs["fix_mistral_regex"] = True
 
-    try:
-        return transformers.AutoTokenizer.from_pretrained(tokenizer_model, **kwargs)
-    except AttributeError as exc:
-        if not _is_generic_config_missing_max_position_embeddings(exc):
-            raise
-
-    # Transformers 5.5 validates RoPE while loading a fallback PreTrainedConfig.
-    # Unknown model types can therefore fail before their otherwise standard
-    # tokenizer is inspected. Supplying a config skips that model-only parsing
-    # while preserving AutoTokenizer's tokenizer_config and remote-code routing.
-    return transformers.AutoTokenizer.from_pretrained(
-        tokenizer_model,
-        config=transformers.PreTrainedConfig(),
-        **kwargs,
-    )
+    return auto_tokenizer_from_pretrained(tokenizer_model, **kwargs)
 
 
 def load_deployment_tokenizer(deployment: Any) -> Any:

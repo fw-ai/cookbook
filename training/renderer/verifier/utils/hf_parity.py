@@ -32,7 +32,6 @@ from typing import Any
 
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.tokenizer_utils import get_tokenizer
-from transformers import AutoTokenizer
 
 # Importing the cookbook renderer package registers cookbook-local
 # renderer names (glm5, gemma4, minimax_m2, nemotron) under
@@ -42,7 +41,10 @@ from training.utils.supervised import (
     build_tool_prefixed_messages,
     renderer_declares_tools,
 )
-from training.utils.tokenizers import needs_mistral_regex_fix
+from training.utils.tokenizers import (
+    auto_tokenizer_from_pretrained,
+    needs_mistral_regex_fix,
+)
 
 
 @cache
@@ -70,9 +72,9 @@ def _load_tokenizer(
         }
         if tokenizer_revision:
             kwargs["revision"] = tokenizer_revision
-        return AutoTokenizer.from_pretrained(tokenizer_model, **kwargs)
+        return auto_tokenizer_from_pretrained(tokenizer_model, **kwargs)
     if tokenizer_revision:
-        return AutoTokenizer.from_pretrained(
+        return auto_tokenizer_from_pretrained(
             tokenizer_model,
             revision=tokenizer_revision,
             # Registered thinking-history renderers pass their reviewed

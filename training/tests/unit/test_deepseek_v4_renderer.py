@@ -39,6 +39,7 @@ from training.renderer.deepseek_v4 import (
 )
 from training.tests import _encoding_dsv4_oracle as oracle
 from training.utils.supervised import render_messages_to_datums
+from training.utils.tokenizers import load_tokenizer
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.renderers.base import Renderer, ToolCall, TrainOnWhat
 
@@ -56,19 +57,9 @@ def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
 
     for model_id in candidates:
         try:
-            return transformers.AutoTokenizer.from_pretrained(
-                model_id,
-                trust_remote_code=True,
-            )
+            return load_tokenizer(model_id, trust_remote_code=True)
         except Exception:  # noqa: BLE001
-            # DeepSeek V4's tokenizer is a standard tokenizer.json, but
-            # AutoTokenizer first loads the unregistered deepseek_v4 model
-            # config on some Transformers versions. Bypass model config so
-            # this suite cannot silently skip otherwise valid coverage.
-            try:
-                return transformers.PreTrainedTokenizerFast.from_pretrained(model_id)
-            except Exception:  # noqa: BLE001
-                continue
+            continue
     return None
 
 
