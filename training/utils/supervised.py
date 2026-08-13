@@ -452,7 +452,7 @@ def build_renderer_from_resolved_name(
     if (
         load_image_processor
         and get_image_processor is not None
-        and _renderer_uses_images(renderer_name)
+        and renderer_supports_images(renderer_name)
     ):
         return get_renderer(
             renderer_name,
@@ -567,7 +567,13 @@ def _get_image_processor_with_remote_code_default(tokenizer_model: str) -> Any:
         os.environ.pop("HF_TRUST_REMOTE_CODE", None)
 
 
-def _renderer_uses_images(renderer_name: str) -> bool:
+def renderer_supports_images(renderer_name: str) -> bool:
+    """Return whether a resolved renderer accepts image content parts.
+
+    This is the same capability gate used when deciding whether to load an
+    image processor. Managed dataset validation also consumes it so image
+    inputs fail before rendering when the selected renderer is text-only.
+    """
     return any(
         marker in renderer_name
         for marker in (

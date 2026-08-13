@@ -27,6 +27,7 @@ from training.utils.supervised import (
     normalize_messages,
     render_messages_to_datum,
     render_messages_to_datums,
+    renderer_supports_images,
 )
 
 
@@ -1522,6 +1523,24 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
     assert resolve_renderer_name("zai-org/GLM-5.2") == "glm_moe_dsa"
     assert resolve_renderer_name("zai-org/GLM-5.2-FP8") == "glm_moe_dsa"
     assert resolve_renderer_name("custom/glm-5p2-finetune") == "glm_moe_dsa"
+
+
+@pytest.mark.parametrize(
+    ("renderer_name", "expected"),
+    [
+        ("qwen3", False),
+        ("qwen3_vl_instruct", True),
+        ("qwen3_5", True),
+        ("kimi_k25", True),
+        ("glm_moe_dsa", False),
+        ("deepseek_v4", False),
+    ],
+)
+def test_renderer_supports_images_matches_renderer_capability(
+    renderer_name: str,
+    expected: bool,
+) -> None:
+    assert renderer_supports_images(renderer_name) is expected
 
 
 def test_build_renderer_resolves_minimax_m2(monkeypatch) -> None:

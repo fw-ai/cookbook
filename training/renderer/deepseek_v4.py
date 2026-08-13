@@ -179,14 +179,36 @@ def _visible_text(content: Any) -> str:
         for item in content:
             if isinstance(item, str):
                 out.append(item)
-            elif (
-                isinstance(item, Mapping)
-                and item.get("type") == "text"
-                and isinstance(item.get("text"), str)
-            ):
+                continue
+            if not isinstance(item, Mapping):
+                raise TypeError(
+                    "DeepSeek V4 content parts must be JSON objects or strings; "
+                    f"got {item!r}"
+                )
+            if item.get("type") == "text":
+                if not isinstance(item.get("text"), str):
+                    raise TypeError(
+                        'DeepSeek V4 got a nested or non-text value in a type="text" content part; '
+                        f'field "text" is not plain text: {item.get("text")!r}'
+                    )
                 out.append(item["text"])
+            elif item.get("type") == "thinking":
+                if not isinstance(item.get("thinking"), str):
+                    raise TypeError(
+                        'DeepSeek V4 got a non-text value in a type="thinking" content part; '
+                        f'field "thinking" is not plain text: {item.get("thinking")!r}'
+                    )
+                continue
+            else:
+                raise TypeError(
+                    "DeepSeek V4 can only render text and thinking content parts; "
+                    f"got {item!r}"
+                )
         return "".join(out)
-    return str(content)
+    raise TypeError(
+        "DeepSeek V4 message content must be a string or a list of text/thinking parts; "
+        f"got {type(content).__name__}"
+    )
 
 
 def _extract_reasoning_and_text(content: Any) -> tuple[str, str]:
@@ -203,13 +225,34 @@ def _extract_reasoning_and_text(content: Any) -> tuple[str, str]:
         text_parts: list[str] = []
         for part in content:
             if not isinstance(part, Mapping):
-                continue
-            if part.get("type") == "thinking" and isinstance(part.get("thinking"), str):
+                raise TypeError(
+                    "DeepSeek V4 assistant content parts must be JSON objects; "
+                    f"got {part!r}"
+                )
+            if part.get("type") == "thinking":
+                if not isinstance(part.get("thinking"), str):
+                    raise TypeError(
+                        'DeepSeek V4 got a non-text value in a type="thinking" assistant content part; '
+                        f'field "thinking" is not plain text: {part.get("thinking")!r}'
+                    )
                 reasoning_parts.append(part["thinking"])
-            elif part.get("type") == "text" and isinstance(part.get("text"), str):
+            elif part.get("type") == "text":
+                if not isinstance(part.get("text"), str):
+                    raise TypeError(
+                        'DeepSeek V4 got a nested or non-text value in a type="text" assistant content part; '
+                        f'field "text" is not plain text: {part.get("text")!r}'
+                    )
                 text_parts.append(part["text"])
+            else:
+                raise TypeError(
+                    "DeepSeek V4 can only render text and thinking assistant content parts; "
+                    f"got {part!r}"
+                )
         return "".join(reasoning_parts), "".join(text_parts)
-    return "", str(content)
+    raise TypeError(
+        "DeepSeek V4 assistant content must be a string or a list of text/thinking parts; "
+        f"got {type(content).__name__}"
+    )
 
 
 def _normalize_tool_arguments(raw: str) -> dict[str, Any]:
@@ -274,7 +317,7 @@ def _wrap_tool_specs(tools: list[ToolSpec]) -> list[dict[str, Any]]:
     wrapped: list[dict[str, Any]] = []
     for tool in tools:
         if not isinstance(tool, Mapping):
-            raise TypeError(f"DeepseekV4Renderer expected tool mapping, got {type(tool)!r}")
+            raise TypeError(f"DeepseekV4Renderer expected a tool definition object, got {type(tool)!r}")
         if isinstance(tool.get("function"), Mapping):
             wrapped.append(dict(tool))
         else:
@@ -318,7 +361,10 @@ def _merge_tool_messages(messages: list[Message]) -> list[Message]:
             continue
 
         if role == "user":
-            text_block = {"type": "text", "text": msg.get("content", "")}
+            text_block = {
+                "type": "text",
+                "text": _visible_text(msg.get("content", "")),
+            }
             if (
                 merged
                 and merged[-1].get("role") == "user"
