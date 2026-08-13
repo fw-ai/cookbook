@@ -14,6 +14,30 @@ _HTTP_STATUS_PATTERN = re.compile(r"\b([45]\d\d)\b")
 _MISTRAL_TOKENIZER_NAME_PARTS = ("mistral", "ministral")
 
 
+def patch_kimi_tokenizer_bytes_to_unicode() -> None:
+    """Re-export ``bytes_to_unicode`` at its legacy gpt2 location.
+
+    Model-shipped ``tokenization_kimi.py`` (Kimi K2.5 and related) does
+    ``from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode``.
+    Transformers 5.x moved that helper to ``transformers.convert_slow_tokenizer``,
+    so ``AutoTokenizer.from_pretrained(..., trust_remote_code=True)`` crashes
+    before the dataset is opened.
+    """
+    try:
+        # lazy: optional compat imports; older transformers still export the symbol
+        import transformers.models.gpt2.tokenization_gpt2 as gpt2_module
+        from transformers.convert_slow_tokenizer import bytes_to_unicode
+    except ImportError:
+        return
+    if not hasattr(gpt2_module, "bytes_to_unicode"):
+        gpt2_module.bytes_to_unicode = bytes_to_unicode
+
+
+# Eager so DataLoader workers and other AutoTokenizer callers are covered even
+# if they never go through load_tokenizer().
+patch_kimi_tokenizer_bytes_to_unicode()
+
+
 def _is_generic_config_missing_max_position_embeddings(exc: AttributeError) -> bool:
     """Whether Transformers failed while validating an unrecognized model config."""
     config = getattr(exc, "obj", None)
@@ -128,6 +152,7 @@ def load_tokenizer(
         # implementation is available in the pinned Transformers 5.5.4 release.
         kwargs["fix_mistral_regex"] = True
 
+    patch_kimi_tokenizer_bytes_to_unicode()
     try:
         return transformers.AutoTokenizer.from_pretrained(tokenizer_model, **kwargs)
     except AttributeError as exc:
