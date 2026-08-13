@@ -25,10 +25,6 @@ dependencies = [
 eval = [
     "eval-protocol>=0.3.32",
     "pillow",
-    # Pin litellm above the CVE-2026-42208 patched version (1.83.7). eval-protocol
-    # declares an unpinned litellm dependency; without this pin the pip resolver in
-    # the training image build could pull a vulnerable version on rebuild.
-    "litellm>=1.84.3,<2",
 ]
 dev = [
     "fireworks-training-cookbook[eval]",
