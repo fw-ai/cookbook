@@ -13,9 +13,21 @@ turns an existing HF PEFT adapter into a deployable full ``HF_BASE_MODEL`` by:
   3. saving a merged-base sampler checkpoint with
      ``save_weights_for_sampler(checkpoint_type="merged_base")``, which folds
      ``W <- W + scaling * (B @ A)`` into the base weights and exports a full HF
-     base checkpoint with the adapter metadata stripped,
-  4. promoting that checkpoint to a new ``HF_BASE_MODEL`` and waiting for it to
-     reach ``READY``.
+     base checkpoint in ``--export-precision`` with adapter metadata stripped,
+  4. promoting that already-final checkpoint to a new ``HF_BASE_MODEL`` and
+     waiting for it to reach ``READY``.
+
+The precision option names final serving artifacts, not trainer checkpoint
+quantizers. The temporary trainer stays in source precision. Each quantized
+projection is dequantized, merged in BF16/FP32, immediately encoded into the
+resolved target, and staged for export. ``source`` only resolves that target
+from source metadata; explicit BF16, NVFP4, MXFP8, and block-128 FP8 use the
+same pipeline with an override. Dense models quantize their MLP projections;
+MoE models quantize routed-expert projections. Promotion copies the final
+artifact unchanged. Prefer the optional ``source`` default.
+Explicit conversion is an advanced, use-at-your-own-risk override because the
+generated tensor/config layout may not match the model or downstream serving
+precision; validate serving load and inference before promotion.
 
 Why not ``warmStartFrom``? RLOR ``warmStartFrom`` of a PEFT addon is not
 effective: the control plane downloads the adapter, but the trainer session
@@ -36,7 +48,7 @@ Usage:
     export FIREWORKS_API_KEY=...
 
     python merge_lora_and_promote.py \
-        --base-model accounts/fireworks/models/qwen3-8b \
+        --base-model accounts/fireworks/models/qwen3-30b-a3b \
         --adapter-gcs gs://my-bucket/adapters/my-lora \
         --lora-rank 8 \
         --training-shape accounts/<acct>/trainingShapes/<shape>:<version> \
@@ -84,6 +96,7 @@ class MergeConfig:
     lora_rank: int
     training_shape: str
     output_model_id: str
+    export_precision: str
     region: str | None
     snapshot_name: str
     keep_trainer: bool
@@ -91,6 +104,13 @@ class MergeConfig:
     op_timeout_s: float
     checkpoint_poll_timeout_s: float
     promote_poll_timeout_s: float
+
+
+def _training_quant_extra_args(export_precision: str) -> list[str]:
+    # The exporter owns conversion precision. Keep the temporary trainer in
+    # source precision for every target so explicit conversion does not inflate
+    # the live model to bf16 before the layerwise merge begins.
+    return []
 
 
 def parse_args() -> MergeConfig:
@@ -120,6 +140,16 @@ def parse_args() -> MergeConfig:
         "--output-model-id",
         required=True,
         help="ID for the promoted merged base model.",
+    )
+    parser.add_argument(
+        "--export-precision",
+        "--output-precision",
+        dest="export_precision",
+        choices=["source", "bf16", "nvfp4", "mxfp8", "fp8_block128"],
+        default="source",
+        help="Optional final promoted artifact precision (default: source). "
+             "Prefer source. Explicit conversion may not match the model or "
+             "downstream serving precision; validate it before promotion.",
     )
     parser.add_argument(
         "--training-shape",
@@ -160,6 +190,7 @@ def parse_args() -> MergeConfig:
         lora_rank=args.lora_rank,
         training_shape=args.training_shape,
         output_model_id=args.output_model_id,
+        export_precision=args.export_precision,
         region=args.region,
         snapshot_name=args.snapshot_name,
         keep_trainer=args.keep_trainer,
@@ -260,10 +291,10 @@ def main() -> None:
 
     fw_client = FireworksClient(api_key=api_key, base_url=base_url)
     trainer_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
-
     logger.info(
-        "Merge+promote: base=%s adapter=%s rank=%d -> %s",
-        cfg.base_model, cfg.adapter_gcs, cfg.lora_rank, cfg.output_model_id,
+        "Merge+promote: base=%s adapter=%s rank=%d precision=%s -> %s",
+        cfg.base_model, cfg.adapter_gcs, cfg.lora_rank, cfg.export_precision,
+        cfg.output_model_id,
     )
 
     # Provision a short-lived service-mode LoRA trainer from the base model.
@@ -280,6 +311,10 @@ def main() -> None:
             training_shape_id=cfg.training_shape or None,
             region=cfg.region,
             timeout_s=cfg.trainer_timeout_s,
+            # Keep the live model in source precision for both source and
+            # explicit targets; the exporter converts one merged projection at
+            # a time instead of inflating the temporary trainer to full bf16.
+            extra_args=_training_quant_extra_args(cfg.export_precision),
         ),
         cleanup_trainer_on_close=not cfg.keep_trainer,
     )
@@ -295,9 +330,10 @@ def main() -> None:
         logger.info("load_adapter result: %s", load_resp)
 
         logger.info("Saving merged-base checkpoint %r", cfg.snapshot_name)
-        save = policy.save_weights_for_sampler_ext(
-            cfg.snapshot_name, checkpoint_type="merged_base",
-        )
+        save_kwargs = {"checkpoint_type": "merged_base"}
+        if cfg.export_precision != "source":
+            save_kwargs["export_precision"] = cfg.export_precision
+        save = policy.save_weights_for_sampler_ext(cfg.snapshot_name, **save_kwargs)
         logger.info("Saved: path=%s snapshot_name=%s", save.path, save.snapshot_name)
 
         checkpoint = _resolve_merged_checkpoint(
@@ -325,6 +361,11 @@ def main() -> None:
         logger.info(
             "Promoted merged base: %s state=%s kind=%s",
             model.get("name"), model.get("state"), model.get("kind"),
+        )
+        logger.info(
+            "Final merged export ready: %s precision=%s",
+            model.get("name"),
+            cfg.export_precision,
         )
     finally:
         # cleanup_trainer_on_close handles trainer teardown unless --keep-trainer.

@@ -289,7 +289,11 @@ class ReconnectableClient:
         return self._client.load_adapter(adapter_path).result(timeout=timeout)
 
     def save_weights_for_sampler_ext(
-        self, name: str, checkpoint_type: str | None = None, timeout: int = DCP_TIMEOUT_S
+        self,
+        name: str,
+        checkpoint_type: str | None = None,
+        export_precision: str | None = None,
+        timeout: int = DCP_TIMEOUT_S,
     ) -> Any:
         """Deprecated compatibility shim.
 
@@ -303,11 +307,13 @@ class ReconnectableClient:
             DeprecationWarning,
             stacklevel=2,
         )
-        saved = self.save_weights_for_sampler(
-            name,
-            checkpoint_type=checkpoint_type,
-            timeout=timeout,
-        )
+        save_kwargs = {
+            "checkpoint_type": checkpoint_type,
+            "timeout": timeout,
+        }
+        if export_precision is not None:
+            save_kwargs["export_precision"] = export_precision
+        saved = self.save_weights_for_sampler(name, **save_kwargs)
         return SimpleNamespace(path=saved.path, snapshot_name=saved.path)
 
     def save_weights_for_sampler(
@@ -316,12 +322,24 @@ class ReconnectableClient:
         ttl_seconds: int | None = None,
         *,
         checkpoint_type: str | None = None,
+        export_precision: str | None = None,
         timeout: int = DCP_TIMEOUT_S,
     ) -> Any:
+        """Save sampler weights; merged-base output defaults to source format.
+
+        ``export_precision`` is optional. Prefer the source default; explicit
+        conversion is a use-at-your-own-risk override because it may not match
+        the model's downstream serving contract. Validate it before promotion.
+        """
+        save_kwargs = {
+            "ttl_seconds": ttl_seconds,
+            "checkpoint_type": checkpoint_type,
+        }
+        if export_precision is not None:
+            save_kwargs["export_precision"] = export_precision
         return self._require_client().save_weights_for_sampler(
             name,
-            ttl_seconds=ttl_seconds,
-            checkpoint_type=checkpoint_type,
+            **save_kwargs,
         ).result(timeout=timeout)
 
     def save_weights_and_get_sampler(

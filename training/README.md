@@ -198,7 +198,7 @@ python -m recipes.sft_loop      # or whichever recipe you configured
 ## Useful examples
 
 - `examples/tools/promote_checkpoint.py` queries the control plane (`list_checkpoints(job_id)`) for the trainer job's promotable rows and calls the promotion API. No `checkpoints.jsonl`, no temporary trainer — pass `--job-id <id>` and `--base-model <model>` and pick which checkpoint via `--checkpoint-name` / `--step` (default: newest promotable).
-- `examples/tools/merge_lora_and_promote.py` merges a LoRA/PEFT adapter into its base (`checkpoint_type="merged_base"`) and promotes the result as a full `HF_BASE_MODEL`. Provisions a short-lived LoRA trainer, loads the adapter explicitly (`load_adapter`), saves the merged base, and promotes.
+- `examples/tools/merge_lora_and_promote.py` merges a LoRA/PEFT adapter into its base (`checkpoint_type="merged_base"`) and promotes the result as a full `HF_BASE_MODEL`. Source-format export is the recommended default and is discovered from model metadata. Optional `--export-precision` is an advanced output override for BF16, NVFP4, MXFP8, or block-128 FP8; use it at your own risk because an explicit format may not match the model or downstream serving precision, and validate serving load before promotion.
 - `examples/tools/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
 
 ## Documentation
