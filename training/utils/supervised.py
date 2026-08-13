@@ -36,6 +36,7 @@ from tinker_cookbook.image_processing_utils import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.minimax_m3 as _minimax_m3_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.muse_glimmer as _muse_glimmer_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 — split override
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
@@ -247,6 +248,8 @@ def resolve_renderer_name(
     # thinking tags, and XML tool-call format; it is not M2-compatible.
     if "minimax-m3" in normalized_model_name or "minimax_m3" in normalized_model_name:
         return "minimax_m3"
+    if "muse-glimmer" in normalized_model_name or "muse_glimmer" in normalized_model_name:
+        return "muse_glimmer"
     if "qwen3-vl" in normalized_model_name:
         return "qwen3_vl_instruct"
     if normalized_model_name == "qwen/qwen3-235b-a22b-instruct-2507-fp8":
@@ -863,6 +866,16 @@ def normalize_messages(
         name = message.get("name")
         if name is not None:
             normalized_message["name"] = str(name)
+
+        # Muse Glimmer's ATEM protocol routes ordinary assistant messages by
+        # recipient and lets callers override the default EOT/EOM decision.
+        # These are protocol fields rather than content, so retain them through
+        # the common normalization path for renderers that understand them.
+        recipient = message.get("recipient")
+        if recipient is not None:
+            normalized_message["recipient"] = recipient  # type: ignore[typeddict-unknown-key]
+        if "end_turn" in message:
+            normalized_message["end_turn"] = message.get("end_turn")  # type: ignore[typeddict-unknown-key]
 
         normalized.append(normalized_message)
 

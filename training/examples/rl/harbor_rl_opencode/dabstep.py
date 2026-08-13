@@ -9,6 +9,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from training.examples.rl.harbor.prepare_opencode_tasks import task_output_path
+
+_UNSIGNED_NUMERIC_PATTERNS = (
+    r"r'(\d*\.\d+|\d+\.?\d*)%?'",
+    r'r"(\d*\.\d+|\d+\.?\d*)%?"',
+)
+_SIGNED_NUMERIC_PATTERNS = (
+    r"r'([+-]?(?:\d*\.\d+|\d+\.?\d*))%?'",
+    r'r"([+-]?(?:\d*\.\d+|\d+\.?\d*))%?"',
+)
+
 
 @dataclass(frozen=True)
 class DABstepManifest:
@@ -89,6 +100,49 @@ class DABstepManifest:
                     f"DABstep task content drift for {name}: "
                     f"expected {expected}, got {actual}"
                 )
+            _validate_numeric_scorer(task_path)
+
+
+def _scorer_path(task: Path) -> Path:
+    scorer = task_output_path(task, "tests", "scorer.py")
+    if not scorer.is_file():
+        raise ValueError(f"DABstep task {task.name!r} has no tests/scorer.py")
+    return scorer
+
+
+def _validate_numeric_scorer(task: Path) -> None:
+    source = _scorer_path(task).read_text(encoding="utf-8")
+    if any(pattern in source for pattern in _UNSIGNED_NUMERIC_PATTERNS):
+        raise ValueError(
+            f"DABstep task {task.name!r} has a sign-insensitive numeric scorer; "
+            "prepare it with prepare_dabstep_tasks and refresh the manifest"
+        )
+
+
+def make_numeric_scorer_sign_sensitive(task: Path) -> None:
+    """Patch the known upstream DABstep numeric regex."""
+    scorer = _scorer_path(task)
+    source = scorer.read_text(encoding="utf-8")
+    unsigned_matches = sum(
+        source.count(pattern) for pattern in _UNSIGNED_NUMERIC_PATTERNS
+    )
+    signed_matches = sum(source.count(pattern) for pattern in _SIGNED_NUMERIC_PATTERNS)
+    if unsigned_matches == 0 and signed_matches == 1:
+        return
+    if unsigned_matches != 1 or signed_matches:
+        raise ValueError(
+            f"DABstep task {task.name!r} does not contain exactly one known "
+            "unsigned numeric scorer pattern"
+        )
+    for unsigned, signed in zip(
+        _UNSIGNED_NUMERIC_PATTERNS,
+        _SIGNED_NUMERIC_PATTERNS,
+        strict=True,
+    ):
+        if unsigned in source:
+            source = source.replace(unsigned, signed, 1)
+            break
+    scorer.write_text(source, encoding="utf-8")
 
 
 def _directory_sha256(path: Path) -> str:
@@ -310,6 +364,7 @@ def rows_for_tasks(
 __all__ = [
     "AdaptiveTaskSelector",
     "DABstepManifest",
+    "make_numeric_scorer_sign_sensitive",
     "rows_for_tasks",
     "usable_group_probability",
 ]

@@ -173,6 +173,24 @@ sampling-calibration tasks, profile, and content hash of every selected task.
 Both sampling and training verify those hashes before creating a Fireworks
 resource.
 
+Prepare DABstep with its dataset-specific wrapper before generating those
+content hashes:
+
+```bash
+uv run python -m \
+  training.examples.rl.harbor_rl_opencode.prepare_dabstep_tasks \
+  --source ~/.cache/harbor-dabstep/tasks/source \
+  --destination ~/.cache/harbor-dabstep/tasks/opencode \
+  --opencode-version <pinned-version> \
+  --internal-network harbor-dabstep-noegress
+```
+
+The upstream DABstep numeric scorer's regular expression omits leading signs,
+so `-2.18` can incorrectly match a `+2.18` reference. This wrapper makes the
+copied scorer sign-sensitive and fails closed if the upstream scorer no longer
+has the known form. Generate or refresh the external manifest after this step;
+the corrected scorer intentionally changes each task's content hash.
+
 First run the six-task sampling gate through the shared serverless sampling
 pool. This creates neither a trainer job nor a dedicated deployment:
 

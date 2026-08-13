@@ -15,6 +15,7 @@ from tinker_cookbook.renderers.base import (
 )
 
 import training.renderer  # noqa: F401 - register cookbook renderer extensions
+from training.renderer.reasoning_fields import ORIGINAL_REASONING_CONTENT
 
 
 def flatten_content(content: Any) -> str:
@@ -71,8 +72,13 @@ class CookbookTurnRenderer:
             prefix = [{"role": "system", "content": system_prompt}]
         else:
             prefix = []
+        preserve_protocol_fields = bool(getattr(self._renderer, "_preserves_openai_protocol_fields", False))
         rendered = list(prefix) + [
-            _to_renderer_message(message) for message in messages
+            _to_renderer_message(
+                message,
+                preserve_protocol_fields=preserve_protocol_fields,
+            )
+            for message in messages
         ]
         return list(self._renderer.build_generation_prompt(rendered).to_ints())
 
@@ -111,7 +117,11 @@ def _to_tool_specs(
     return specs
 
 
-def _to_renderer_message(raw: dict[str, Any]) -> Message:
+def _to_renderer_message(
+    raw: dict[str, Any],
+    *,
+    preserve_protocol_fields: bool = False,
+) -> Message:
     visible_content = flatten_content(raw.get("content"))
     reasoning_content = raw.get("reasoning_content")
     content: str | list[TextPart | ThinkingPart] = visible_content
@@ -130,6 +140,14 @@ def _to_renderer_message(raw: dict[str, Any]) -> Message:
         "role": raw.get("role", "user"),
         "content": content,
     }
+    if preserve_protocol_fields and reasoning_content is not None:
+        # Preserve the source field as well as the normalized ThinkingPart.
+        # Opted-in renderers consume the former for exact field semantics.
+        message[ORIGINAL_REASONING_CONTENT] = str(reasoning_content)  # type: ignore[typeddict-unknown-key]
+    if preserve_protocol_fields and "recipient" in raw:
+        message["recipient"] = raw.get("recipient")  # type: ignore[typeddict-unknown-key]
+    if preserve_protocol_fields and "end_turn" in raw:
+        message["end_turn"] = raw.get("end_turn")  # type: ignore[typeddict-unknown-key]
     tool_calls = raw.get("tool_calls") or []
     if tool_calls:
         message["tool_calls"] = [

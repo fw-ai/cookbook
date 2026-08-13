@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import socket
 import threading
@@ -332,6 +333,63 @@ def test_load_tokenizer_does_not_misclassify_connection_refused_as_http(monkeypa
 
     assert isinstance(exc_info.value.__cause__, httpx.ConnectError)
     assert tokenizers._huggingface_http_status_code(exc_info.value) is None
+
+
+def test_kimi_bytes_to_unicode_legacy_gpt2_import_is_restored():
+    """Kimi tokenization_kimi.py imports bytes_to_unicode from the gpt2 module."""
+    gpt2_module = importlib.import_module("transformers.models.gpt2.tokenization_gpt2")
+    original = getattr(gpt2_module, "bytes_to_unicode", None)
+    if original is not None:
+        delattr(gpt2_module, "bytes_to_unicode")
+    try:
+        tokenizers.patch_kimi_tokenizer_bytes_to_unicode()
+        from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
+
+        mapping = bytes_to_unicode()
+        assert len(mapping) == 256
+        assert mapping[ord("a")] == "a"
+    finally:
+        if original is not None:
+            gpt2_module.bytes_to_unicode = original
+        elif hasattr(gpt2_module, "bytes_to_unicode"):
+            delattr(gpt2_module, "bytes_to_unicode")
+
+
+def test_kimi_bytes_to_unicode_patch_is_idempotent_and_preserves_existing_attribute():
+    gpt2_module = importlib.import_module("transformers.models.gpt2.tokenization_gpt2")
+    sentinel = object()
+    original = getattr(gpt2_module, "bytes_to_unicode", None)
+    gpt2_module.bytes_to_unicode = sentinel
+    try:
+        tokenizers.patch_kimi_tokenizer_bytes_to_unicode()
+        assert gpt2_module.bytes_to_unicode is sentinel
+    finally:
+        if original is not None:
+            gpt2_module.bytes_to_unicode = original
+        else:
+            delattr(gpt2_module, "bytes_to_unicode")
+
+
+def test_load_tokenizer_applies_kimi_bytes_to_unicode_patch(monkeypatch):
+    calls: list[int] = []
+    real_patch = tokenizers.patch_kimi_tokenizer_bytes_to_unicode
+
+    def counting_patch() -> None:
+        calls.append(1)
+        real_patch()
+
+    monkeypatch.setattr(
+        tokenizers, "patch_kimi_tokenizer_bytes_to_unicode", counting_patch
+    )
+    monkeypatch.setattr(
+        tokenizers.transformers.AutoTokenizer,
+        "from_pretrained",
+        lambda *args, **kwargs: object(),
+    )
+
+    tokenizers.load_tokenizer("moonshotai/Kimi-K2.5")
+
+    assert calls, "load_tokenizer must apply the Kimi tokenizer compat patch"
 
 
 def test_huggingface_unavailability_propagates_to_runner_status(monkeypatch):

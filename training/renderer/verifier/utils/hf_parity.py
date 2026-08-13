@@ -254,7 +254,7 @@ def compare_renderer_to_hf(
     hf_messages = _hf_messages_with_normalized_tool_args(
         messages,
         require_mapping=renderer_name
-        in {"gemma4", "gemma4_thinking", "minimax_m3", "qwen2_5"},
+        in {"gemma4", "gemma4_thinking", "minimax_m3", "muse_glimmer", "qwen2_5"},
     )
     hf_result = tokenizer.apply_chat_template(
         _hf_messages_with_reasoning_parts(

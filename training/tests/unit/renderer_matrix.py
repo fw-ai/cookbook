@@ -140,9 +140,25 @@ class RendererCase:
 _GEMMA4_TOKENIZER = os.environ.get("GEMMA4_MODEL_PATH", "google/gemma-4-31B-it")
 _KIMI_K3_TOKENIZER = "moonshotai/Kimi-K3"
 _KIMI_K3_TOKENIZER_REVISION = "301be1b88c89c0d3a763da6301352cb8fe399e90"
+_MUSE_GLIMMER_TOKENIZER = "meta-models/Muse-Glimmer-30B"
+_MUSE_GLIMMER_REVISION = "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
 
 
 RENDERER_MATRIX: list[RendererCase] = [
+    # -- Muse Glimmer -------------------------------------------------------
+    RendererCase(
+        renderer="muse_glimmer",
+        tokenizer_model=_MUSE_GLIMMER_TOKENIZER,
+        tokenizer_revision=_MUSE_GLIMMER_REVISION,
+        supports_thinking=True,
+        supports_tools=True,
+        # A terminal ATEM call changes EOT to EOM when another assistant
+        # message is appended, so consecutive assistant turns are not prefix
+        # extensions even though ordinary user/assistant histories are.
+        has_extension_property=False,
+        supervised_hf_parity=True,
+        observation_equals_generation=True,
+    ),
     # -- GLM 5.x -----------------------------------------------------------
     # GLM strips historical <think> unconditionally (no extension property)
     # and appends a synthetic terminal role sentinel to supervised examples,
@@ -505,6 +521,7 @@ REQUIRED_RENDERERS: frozenset[str] = frozenset(
         "kimi_k3",
         "minimax_m2",
         "minimax_m3",
+        "muse_glimmer",
         "nemotron3",
         "gemma4",
     }

@@ -81,7 +81,7 @@ def _opencode_suffix(version: str, *, restore_user: str | None) -> str:
     return suffix
 
 
-def _ensure_internal_network(name: str) -> None:
+def ensure_internal_network(name: str) -> None:
     inspect = subprocess.run(
         ["docker", "network", "inspect", name],
         capture_output=True,
@@ -111,7 +111,7 @@ def _ensure_internal_network(name: str) -> None:
     )
 
 
-def _task_output_path(target: Path, *parts: str) -> Path:
+def task_output_path(target: Path, *parts: str) -> Path:
     """Resolve a write target without following task-provided symlinks."""
     path = target.joinpath(*parts)
     cursor = target
@@ -156,7 +156,7 @@ def prepare(
     for task in tasks:
         target = destination / task.name
         shutil.copytree(task, target, symlinks=True)
-        dockerfile = _task_output_path(target, "environment", "Dockerfile")
+        dockerfile = task_output_path(target, "environment", "Dockerfile")
         if not dockerfile.is_file():
             raise ValueError(f"task {task.name!r} has no environment/Dockerfile")
         original = dockerfile.read_text(encoding="utf-8")
@@ -172,7 +172,7 @@ def prepare(
             encoding="utf-8",
         )
         if internal_network:
-            compose = _task_output_path(
+            compose = task_output_path(
                 target,
                 "environment",
                 "docker-compose.yaml",
@@ -197,7 +197,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     if args.internal_network:
-        _ensure_internal_network(args.internal_network)
+        ensure_internal_network(args.internal_network)
     prepared = prepare(
         args.source,
         args.destination,
