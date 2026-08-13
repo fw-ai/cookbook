@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import importlib.util
 import json
 
 import pytest
@@ -12,6 +13,7 @@ from training.examples.rl.harbor_rl_opencode.dabstep import (
     rows_for_tasks,
     usable_group_probability,
 )
+from training.examples.rl.harbor_rl_opencode import prepare_dabstep_tasks
 from training.examples.rl.harbor.evaluate import (
     evaluate_rows,
     make_fixed_evaluation,
@@ -81,6 +83,26 @@ def test_dabstep_manifest_rejects_content_drift(tmp_path, monkeypatch):
         manifest.verify_task_root(tmp_path)
 
 
+def test_dabstep_manifest_rejects_sign_insensitive_scorer(tmp_path, monkeypatch):
+    document = _manifest_document()
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    manifest = DABstepManifest.load(path)
+    first_task = tmp_path / manifest.train_tasks[0]
+    (first_task / "tests").mkdir(parents=True)
+    (first_task / "tests" / "scorer.py").write_text(
+        'match = re.search(r"(\\d*\\.\\d+|\\d+\\.?\\d*)%?", value)\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "training.examples.rl.harbor_rl_opencode.dabstep._directory_sha256",
+        lambda path: "a" * 64,
+    )
+
+    with pytest.raises(ValueError, match="sign-insensitive numeric scorer"):
+        manifest.verify_task_root(tmp_path)
+
+
 def test_dabstep_hash_dependency_is_loaded_only_when_needed(tmp_path, monkeypatch):
     from training.examples.rl.harbor_rl_opencode import dabstep
 
@@ -95,6 +117,62 @@ def test_dabstep_hash_dependency_is_loaded_only_when_needed(tmp_path, monkeypatc
 
     with pytest.raises(RuntimeError, match="example-only 'dirhash' dependency"):
         dabstep._directory_sha256(tmp_path)
+
+
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_prepare_dabstep_tasks_preserves_numeric_signs(tmp_path, quote):
+    source = tmp_path / "dabstep-1"
+    (source / "environment").mkdir(parents=True)
+    (source / "tests").mkdir()
+    (source / "task.toml").write_text("", encoding="utf-8")
+    (source / "environment" / "Dockerfile").write_text(
+        "FROM debian:bookworm\n",
+        encoding="utf-8",
+    )
+    numeric_pattern = rf"r{quote}(\d*\.\d+|\d+\.?\d*)%?{quote}"
+    (source / "tests" / "scorer.py").write_text(
+        "import re\n\n"
+        "def extract_numeric(value):\n"
+        f"    match = re.search({numeric_pattern}, value)\n"
+        "    return float(match.group(1)) if match else None\n",
+        encoding="utf-8",
+    )
+
+    [prepared] = prepare_dabstep_tasks.prepare(
+        source,
+        tmp_path / "prepared",
+        "1.18.10",
+    )
+
+    scorer = prepared / "tests" / "scorer.py"
+    spec = importlib.util.spec_from_file_location("prepared_dabstep_scorer", scorer)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.extract_numeric("-2.18") == -2.18
+    assert module.extract_numeric("+2.18") == 2.18
+
+
+def test_prepare_dabstep_tasks_rejects_unknown_scorer(tmp_path):
+    source = tmp_path / "dabstep-1"
+    (source / "environment").mkdir(parents=True)
+    (source / "tests").mkdir()
+    (source / "task.toml").write_text("", encoding="utf-8")
+    (source / "environment" / "Dockerfile").write_text(
+        "FROM debian:bookworm\n",
+        encoding="utf-8",
+    )
+    (source / "tests" / "scorer.py").write_text(
+        "raise RuntimeError('unknown scorer')\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="known unsigned numeric scorer pattern"):
+        prepare_dabstep_tasks.prepare(
+            source,
+            tmp_path / "prepared",
+            "1.18.10",
+        )
 
 
 def test_adaptive_selector_is_seeded_and_distinct_per_batch():
