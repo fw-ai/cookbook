@@ -49,6 +49,7 @@ def test_config_uses_shared_default_weight_decay():
     cfg = module.Config(log_path="/tmp/dpo_test_logs")
 
     assert cfg.weight_decay == pytest.approx(module.DEFAULT_ADAM["weight_decay"])
+    assert cfg.render_workers == 16
 
 
 @pytest.mark.parametrize("beta", [0, 0.5])

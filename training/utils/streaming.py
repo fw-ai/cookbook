@@ -34,9 +34,8 @@ import torch.utils.data as torch_data
 
 logger = logging.getLogger(__name__)
 
-# Defaults validated end-to-end on a 110K-example, 256K-context SFT
-# dataset on a 16 vCPU / 58 GiB orchestrator pod.
-DEFAULT_RENDER_WORKERS = 4
+# Defaults sized to keep a 16 vCPU orchestrator pod feeding the trainer.
+DEFAULT_RENDER_WORKERS = 16
 DEFAULT_PREFETCH_FACTOR = 2
 JSONL_ROW_INDEX_KEY = "_fireworks_jsonl_row_index"
 
