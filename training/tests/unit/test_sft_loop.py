@@ -76,6 +76,12 @@ def _test_datum(test_id: str):
     )
 
 
+def test_throughput_defaults_keep_trainer_fed():
+    cfg = module.Config(log_path="")
+
+    assert cfg.pipeline_depth == 4
+
+
 def test_batch_loss_metrics_separate_weight_from_token_count():
     first = _test_datum("first")
     first.loss_fn_inputs["weights"].data = [0.0, 0.5, 0.5]

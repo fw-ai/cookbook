@@ -17,6 +17,10 @@ File formats:
     {"code": 0, "message": "training",
      "details": [{"@type": "type.googleapis.com/gateway.JobProgress", "percent": 5}]}
 
+Failed statuses may also include a versioned ``google.rpc.ErrorInfo`` detail
+with a registered training reason.  The top-level code/message remain the
+backward-compatible public status; structured details are additive.
+
 ``metadata_file`` (JSON, overwritten each update)::
 
     {"metadata": {"tokens": 120000, "accelerator_seconds": {"NVIDIA_H100_80GB": 3600}}}
@@ -42,6 +46,19 @@ from enum import Enum
 from typing import Any
 
 from training.utils import fileio
+from training._managed_error_contract import (
+    ERROR_INFO_METADATA_CATEGORY,
+    GRPC_CANCELLED,
+    GRPC_INTERNAL,
+    GRPC_INVALID_ARGUMENT,
+    INTERNAL_ERROR_MESSAGE,
+    REASON_CANCELLED,
+    REASON_INVALID_INPUT,
+    _TrainingErrorStatus,
+    _coerce_training_error_status,
+    build_error_info_detail,
+    extract_training_error_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +71,12 @@ class RunStatus(str, Enum):
 
 
 _GRPC_OK = 0
-_GRPC_INVALID_ARGUMENT = 3
 _GRPC_FAILED_PRECONDITION = 9
 _GRPC_UNAVAILABLE = 14
 _JOB_PROGRESS_TYPE_URL = "type.googleapis.com/gateway.JobProgress"
+_CANCELLED_ERROR_MESSAGE = "Training run cancelled"
+_SIGNAL_CANCELLATION_EXIT_CODES = frozenset({130, 143})
+_SIGNAL_CANCELLATION_MESSAGES = frozenset({"Terminated by SIGINT", "Terminated by SIGTERM"})
 
 _STATUS_TO_GRPC_CODE: dict[RunStatus, int] = {
     RunStatus.PENDING: _GRPC_OK,
@@ -75,6 +94,22 @@ class UserConfigError(Exception):
     generic ``FAILED_PRECONDITION``, so the control plane preserves the
     actionable message and category (FIR2-1774).
     """
+
+    def __init__(
+        self,
+        public_message: str,
+        *,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(public_message)
+        self._fireworks_training_error_status = _coerce_training_error_status(
+            _TrainingErrorStatus(
+                grpc_code=GRPC_INVALID_ARGUMENT,
+                public_message=public_message,
+                reason=REASON_INVALID_INPUT,
+                metadata=metadata or {},
+            )
+        )
 
 
 class WandbConfigError(UserConfigError):
@@ -100,6 +135,43 @@ def _is_managed_api_network_unavailable(error: BaseException) -> bool:
             has_network_unreachable = True
         current = current.__cause__ or current.__context__
     return has_managed_api_error and has_network_unreachable
+
+
+def _is_api_network_unavailable(error: BaseException) -> bool:
+    """Return whether any API connection failed with ENETUNREACH."""
+    current: BaseException | None = error
+    seen: set[int] = set()
+    has_api_error = False
+    has_network_unreachable = False
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        error_type = type(current)
+        has_api_error = has_api_error or error_type.__name__ == "APIConnectionError"
+        if isinstance(current, OSError) and current.errno == errno.ENETUNREACH:
+            has_network_unreachable = True
+        current = current.__cause__ or current.__context__
+    return has_api_error and has_network_unreachable
+
+
+def _is_recipe_cancellation(error: BaseException) -> bool:
+    """Return whether a recipe surfaced an explicit user/platform cancellation.
+
+    Cookbook signal handlers raise ``SystemExit`` so ``RunnerIO`` can flush
+    status/metadata during cleanup. Treat only those conventional signal exits
+    as cancellation; other ``SystemExit`` values may be user-input failures and
+    must keep the safe unknown-exception path.
+    """
+
+    if isinstance(error, KeyboardInterrupt):
+        return True
+    if not isinstance(error, SystemExit):
+        return False
+    code = error.code
+    if isinstance(code, int) and not isinstance(code, bool):
+        return code in _SIGNAL_CANCELLATION_EXIT_CODES
+    if isinstance(code, str):
+        return code.strip() in _SIGNAL_CANCELLATION_MESSAGES
+    return False
 
 
 @dataclass
@@ -162,21 +234,68 @@ class RunnerIO:
 
     def __exit__(self, exc_type: object, exc_val: object, tb: object) -> bool:
         if exc_type is not None:
+            if isinstance(exc_val, BaseException):
+                exc = exc_val
+            else:
+                exc = RuntimeError(str(exc_val))
+
             # User-config errors (bad W&B credentials, etc.) are user-actionable;
             # surface them as INVALID_ARGUMENT instead of the generic
             # FAILED_PRECONDITION so the control plane preserves the actionable
             # message and category (FIR2-1774).
-            error_code = None
-            if isinstance(exc_val, UserConfigError):
-                error_code = _GRPC_INVALID_ARGUMENT
-            elif isinstance(exc_val, BaseException) and _is_managed_api_network_unavailable(exc_val):
+            error_code = GRPC_INTERNAL
+            error_message = INTERNAL_ERROR_MESSAGE
+            error_status = None
+            try:
+                structured_status = extract_training_error_status(exc)
+            except Exception:
+                logger.warning("Invalid structured training error carrier", exc_info=True)
+                structured_status = None
+
+            if structured_status is not None:
+                error_code = structured_status.grpc_code
+                error_message = structured_status.public_message
+                error_status = structured_status
+            elif isinstance(exc, UserConfigError):
+                # Preserve compatibility for subclasses that bypassed
+                # UserConfigError.__init__ and therefore lack the carrier.
+                error_code = GRPC_INVALID_ARGUMENT
+                error_message = str(exc)
+                error_status = _TrainingErrorStatus(
+                    grpc_code=error_code,
+                    public_message=error_message,
+                    reason=REASON_INVALID_INPUT,
+                )
+            elif _is_recipe_cancellation(exc):
+                error_code = GRPC_CANCELLED
+                error_message = _CANCELLED_ERROR_MESSAGE
+                error_status = _TrainingErrorStatus(
+                    grpc_code=error_code,
+                    public_message=error_message,
+                    reason=REASON_CANCELLED,
+                    metadata={ERROR_INFO_METADATA_CATEGORY: "signal"},
+                )
+            elif _is_managed_api_network_unavailable(exc):
                 error_code = _GRPC_UNAVAILABLE
+                error_message = str(exc)
+            elif _is_api_network_unavailable(exc):
+                # Preserve the legacy public status for non-Fireworks/Tinker
+                # customer integration connection failures. Only managed API
+                # connectivity is reclassified above.
+                error_code = _GRPC_FAILED_PRECONDITION
+                error_message = str(exc)
+            else:
+                # Unknown recipe exceptions are platform-attributed. Keep the
+                # traceback in logs while writing only public-safe copy.
+                logger.error("Training run failed with an unexpected exception", exc_info=(exc_type, exc_val, tb))
+
             self.write_status(
                 RunStatus.FAILED,
                 step=self._last_step,
                 total_steps=self._last_total_steps,
-                error=str(exc_val),
+                error=error_message,
                 error_code=error_code,
+                error_status=error_status,
             )
             self.write_metadata()
         return False  # never suppress the exception
@@ -192,6 +311,7 @@ class RunnerIO:
         message: str = "",
         error: str | None = None,
         error_code: int | None = None,
+        error_status: _TrainingErrorStatus | dict[str, Any] | object | None = None,
     ) -> None:
         self._last_step = step
         self._last_total_steps = total_steps
@@ -203,9 +323,24 @@ class RunnerIO:
             "code": grpc_code,
             "message": status_message,
         }
+        details: list[dict[str, Any]] = []
         if total_steps > 0:
-            percent = int(step / total_steps * 100)
-            payload["details"] = [{"@type": _JOB_PROGRESS_TYPE_URL, "percent": percent}]
+            details.append(
+                {
+                    "@type": _JOB_PROGRESS_TYPE_URL,
+                    "percent": int(step / total_steps * 100),
+                }
+            )
+        if error_status is not None:
+            try:
+                normalized = _coerce_training_error_status(error_status)
+                if normalized.grpc_code != grpc_code or normalized.public_message != status_message:
+                    raise ValueError("structured training error carrier does not match " "Status code/message")
+                details.append(build_error_info_detail(normalized))
+            except Exception:
+                logger.warning("Invalid training ErrorInfo; omitting structured detail", exc_info=True)
+        if details:
+            payload["details"] = details
         self._write_json(self._status_file, payload)
 
     def report_rendering_progress(self, current: int, total: int, *, label: str = "rendering data") -> None:

@@ -20,6 +20,11 @@ When a job is stuck or failing, use the resource family that created it:
 
 Run the selected resource and `get` commands with `--help` before relying on flags. Do not substitute `sftj` commands for a DPO or RFT resource. `State` alone lies: a job can read `RUNNING` before the trainer starts, and a silent crash can leave `RUNNING` with no error. Trust a real step, rollout, checkpoint, or linked W&B signal when one is available.
 
+When the status includes a structured training error reason, use that reason as
+the stable classification and treat the human-readable message as display copy.
+Do not parse the message string to infer quota, permission, dataset, or platform
+categories.
+
 ## Common issues (field-observed)
 
 | Symptom | What it usually is | What to do |
@@ -59,6 +64,13 @@ Use a registered `google.rpc.ErrorInfo` detail as the only source for an
 Do not derive a reason from `status.message`, raw exceptions, or other
 human-readable text. If ErrorInfo is absent, omit the reason and keep the
 classification unknown.
+
+Managed recipes may receive private source-native Tinker or serverless-gateway
+context from the SDK. The status writer maps only registered `error_class` or
+gateway `code` values into ErrorInfo; unknown, malformed, or conflicting values
+stay unclassified. Raw errors, classes, codes, types, and messages are not
+copied into status files or support payloads; only registered ErrorInfo fields
+and bounded allowlisted metadata such as Tinker `category` are emitted.
 
 Route product usage and configuration questions to the
 [training docs](https://docs.fireworks.ai/fine-tuning/finetuning-intro.md), and

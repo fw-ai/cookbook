@@ -36,6 +36,7 @@ from training.renderer.deepseek_v4 import (
     _USER_SP,
     _ASSISTANT_SP,
     _DSML,
+    _merge_tool_messages,
 )
 from training.tests import _encoding_dsv4_oracle as oracle
 from training.utils.supervised import render_messages_to_datums
@@ -70,6 +71,84 @@ def _load_tokenizer() -> transformers.PreTrainedTokenizerBase | None:
             except Exception:  # noqa: BLE001
                 continue
     return None
+
+
+def test_merge_tool_messages_maps_structured_user_text_to_a_valid_text_block() -> None:
+    """Regression guard for structured OpenAI content reaching DeepSeek V4.
+
+    A text content part is valid input, but ``content_blocks[].text`` must be a
+    string. Copying the outer content list into that field makes ``join`` fail
+    later in ``_render_user_body``.
+    """
+    merged = _merge_tool_messages(
+        [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "Check the weather"}],
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_weather",
+                        "type": "function",
+                        "function": {
+                            "name": "weather",
+                            "arguments": '{"city":"Seattle"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": [{"type": "text", "text": "Rainy, 12 C"}],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Bring an umbrella"}],
+            },
+        ]
+    )
+
+    assert merged[0]["content_blocks"] == [
+        {"type": "text", "text": "Check the weather"}
+    ]
+    renderer = object.__new__(DeepseekV4Renderer)
+    assert renderer._render_user_body(merged[0]) == "Check the weather"
+    assert renderer._render_user_body(merged[2]) == (
+        "<tool_result>Rainy, 12 C</tool_result>"
+    )
+
+
+def test_merge_tool_messages_rejects_image_content() -> None:
+    with pytest.raises(TypeError, match="can only render text and thinking"):
+        _merge_tool_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "image": "gs://bucket/cat.png"}],
+                }
+            ]
+        )
+
+
+def test_merge_tool_messages_rejects_nested_text_field() -> None:
+    with pytest.raises(TypeError, match="nested or non-text value"):
+        _merge_tool_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": [{"type": "text", "text": "nested"}],
+                        }
+                    ],
+                }
+            ]
+        )
 
 
 @pytest.fixture(scope="module")

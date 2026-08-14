@@ -760,10 +760,10 @@ class Config:
     """Timeout in seconds for forward_backward / optim_step calls.
     0 = use DEFAULT_TIMEOUT_S from training.utils.client."""
 
-    pipeline_depth: int = 1
+    pipeline_depth: int = 4
     """Number of (forward_backward, optim_step) pairs in flight at once
     (inter-step pipelining). Intra-step fb/optim overlap is always on.
-    Increase this number (i.e. set to 4) to improve throughput."""
+    Defaults to 4 to overlap server-side preparation with GPU compute."""
 
     evaluation_dataset: str = ""
     """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
@@ -1148,7 +1148,9 @@ def main(
         last_t_opt_done: float | None = None
         last_optim_time: float | None = None
 
-        def _pipe_submit(batch: list[tinker.Datum], step: int) -> int:
+        def _pipe_submit(
+            batch: list[tinker.Datum], step: int, data_consumed: int,
+        ) -> int:
             """Submit one fwd_bwd + optim_step pair (non-blocking). Returns updated step."""
             tokens = sum(len(c.tokens) for d in batch for c in d.model_input.chunks if hasattr(c, "tokens"))
             loss_weight = _batch_loss_weight(batch)
@@ -1160,6 +1162,7 @@ def main(
                     step,
                     tokens,
                     loss_weight,
+                    data_consumed,
                     t_submit,
                     client.submit_forward_backward(batch, loss_fn="cross_entropy"),
                     client.submit_optim_step(adam),
@@ -1170,7 +1173,15 @@ def main(
         def _pipe_collect() -> None:
             """Pop the oldest pair, emit per-step metrics + checkpoint."""
             nonlocal pipe_total_tokens, last_t_fb_done, last_t_opt_done, last_optim_time
-            s, tokens, loss_weight, t_submit, fb_fut, opt_fut = in_flight.popleft()
+            (
+                s,
+                tokens,
+                loss_weight,
+                data_consumed,
+                t_submit,
+                fb_fut,
+                opt_fut,
+            ) = in_flight.popleft()
             result = fb_fut.result(timeout=cfg.step_timeout or DEFAULT_TIMEOUT_S)
             t_fb_done = time.time()
             loss_sum = result.metrics.get("loss:sum", 0.0)
@@ -1183,7 +1194,12 @@ def main(
             if cfg.dcp_save_interval > 0 and s % cfg.dcp_save_interval == 0:
                 with timer("dcp_save"):
                     logger.info("Saving DCP checkpoint at step %d", s)
-                    ckpt.save(f"step-{s}", resumable=True, promotable=False, data_consumed=cursor.value)
+                    ckpt.save(
+                        f"step-{s}",
+                        resumable=True,
+                        promotable=False,
+                        data_consumed=data_consumed,
+                    )
 
             # Metrics logging
             step_metrics: Dict[str, Any] = flush_timing()
@@ -1273,9 +1289,19 @@ def main(
                     if not batch:
                         continue  # entire batch was filtered (None render); skip
                     epoch_valid_examples += len(batch)
-                    step = _pipe_submit(batch, step)
-                    if len(in_flight) >= cfg.pipeline_depth:  # collect once queue is full
+                    step = _pipe_submit(batch, step, cursor.value)
+                    checkpoint_step = (
+                        cfg.dcp_save_interval > 0
+                        and step % cfg.dcp_save_interval == 0
+                    )
+                    if len(in_flight) >= cfg.pipeline_depth or checkpoint_step:
                         _pipe_collect()
+                    if checkpoint_step:
+                        # Do not submit later optimizer steps ahead of a DCP
+                        # save: the checkpoint and its data cursor must describe
+                        # the same completed step.
+                        while in_flight:
+                            _pipe_collect()
 
                 # Drain in-flight ops so eval sees fully-applied gradients.
                 while in_flight:
