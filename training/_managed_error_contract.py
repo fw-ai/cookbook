@@ -52,19 +52,29 @@ INTERNAL_ERROR_MESSAGE = "Internal error"
 
 _REASON_SOURCES: dict[str, frozenset[str]] = {
     REASON_DATASET_INVALID: frozenset({SOURCE_MANAGED}),
-    REASON_INVALID_INPUT: frozenset({SOURCE_MANAGED, SOURCE_TINKER, SOURCE_SERVERLESS_GATEWAY}),
-    REASON_RESOURCE_NOT_FOUND: frozenset({SOURCE_MANAGED, SOURCE_TINKER, SOURCE_SERVERLESS_GATEWAY}),
+    REASON_INVALID_INPUT: frozenset(
+        {SOURCE_MANAGED, SOURCE_TINKER, SOURCE_SERVERLESS_GATEWAY}
+    ),
+    REASON_RESOURCE_NOT_FOUND: frozenset(
+        {SOURCE_MANAGED, SOURCE_TINKER, SOURCE_SERVERLESS_GATEWAY}
+    ),
     REASON_INSUFFICIENT_CAPACITY: frozenset({SOURCE_MANAGED, SOURCE_TINKER}),
     REASON_QUOTA_EXCEEDED: frozenset({SOURCE_LIFECYCLE, SOURCE_MANAGED}),
     REASON_TIER_REQUIRED: frozenset({SOURCE_LIFECYCLE, SOURCE_MANAGED}),
     REASON_RATE_LIMIT_EXCEEDED: frozenset({SOURCE_SERVERLESS_GATEWAY, SOURCE_MANAGED}),
     REASON_CANCELLED: frozenset({SOURCE_MANAGED, SOURCE_TINKER}),
-    REASON_PERMISSION_DENIED: frozenset({SOURCE_LIFECYCLE, SOURCE_MANAGED, SOURCE_SERVERLESS_GATEWAY}),
+    REASON_PERMISSION_DENIED: frozenset(
+        {SOURCE_LIFECYCLE, SOURCE_MANAGED, SOURCE_SERVERLESS_GATEWAY}
+    ),
     REASON_PREREQUISITE_NOT_MET: frozenset({SOURCE_MANAGED}),
     REASON_RESOURCE_INVALID: frozenset({SOURCE_MANAGED}),
     REASON_TIMEOUT: frozenset({SOURCE_MANAGED, SOURCE_TINKER}),
-    REASON_BACKEND_ERROR: frozenset({SOURCE_MANAGED, SOURCE_TINKER, SOURCE_SERVERLESS_GATEWAY}),
-    REASON_INTERNAL_ERROR: frozenset({SOURCE_MANAGED, SOURCE_TINKER, SOURCE_SERVERLESS_GATEWAY}),
+    REASON_BACKEND_ERROR: frozenset(
+        {SOURCE_MANAGED, SOURCE_TINKER, SOURCE_SERVERLESS_GATEWAY}
+    ),
+    REASON_INTERNAL_ERROR: frozenset(
+        {SOURCE_MANAGED, SOURCE_TINKER, SOURCE_SERVERLESS_GATEWAY}
+    ),
 }
 
 _REASON_METADATA_KEYS: dict[str, frozenset[str]] = {
@@ -102,6 +112,71 @@ class _TrainingErrorStatus:
     source: str = SOURCE_MANAGED
 
 
+@dataclass(frozen=True)
+class _SourceErrorSpec:
+    reason: str
+    grpc_code: int
+    public_message: str
+
+
+_TINKER_ERROR_CLASS_SPECS = {
+    "validation": _SourceErrorSpec(
+        reason=REASON_INVALID_INPUT,
+        grpc_code=GRPC_INVALID_ARGUMENT,
+        public_message="The training request is invalid. Review the request and try again.",
+    ),
+    "not_found": _SourceErrorSpec(
+        reason=REASON_RESOURCE_NOT_FOUND,
+        grpc_code=GRPC_NOT_FOUND,
+        public_message="A required training resource was not found. Verify the referenced resources and try again.",
+    ),
+    "capacity_exhausted": _SourceErrorSpec(
+        reason=REASON_INSUFFICIENT_CAPACITY,
+        grpc_code=GRPC_RESOURCE_EXHAUSTED,
+        public_message="Training capacity is temporarily unavailable. Please try again later.",
+    ),
+    "cancelled": _SourceErrorSpec(
+        reason=REASON_CANCELLED,
+        grpc_code=GRPC_ABORTED,
+        public_message="Training was cancelled.",
+    ),
+    "timeout": _SourceErrorSpec(
+        reason=REASON_TIMEOUT,
+        grpc_code=GRPC_INTERNAL,
+        public_message=INTERNAL_ERROR_MESSAGE,
+    ),
+    "backend": _SourceErrorSpec(
+        reason=REASON_BACKEND_ERROR,
+        grpc_code=GRPC_INTERNAL,
+        public_message=INTERNAL_ERROR_MESSAGE,
+    ),
+    "internal": _SourceErrorSpec(
+        reason=REASON_INTERNAL_ERROR,
+        grpc_code=GRPC_INTERNAL,
+        public_message=INTERNAL_ERROR_MESSAGE,
+    ),
+    "unknown": _SourceErrorSpec(
+        reason=REASON_INTERNAL_ERROR,
+        grpc_code=GRPC_INTERNAL,
+        public_message=INTERNAL_ERROR_MESSAGE,
+    ),
+}
+
+_GATEWAY_CODE_SPECS = {
+    "BAD_REQUEST": _TINKER_ERROR_CLASS_SPECS["validation"],
+    "NOT_FOUND": _TINKER_ERROR_CLASS_SPECS["not_found"],
+    "RATE_LIMIT_EXCEEDED": _SourceErrorSpec(
+        reason=REASON_RATE_LIMIT_EXCEEDED,
+        grpc_code=GRPC_RESOURCE_EXHAUSTED,
+        public_message="Too many training requests. Wait and try again.",
+    ),
+    "SERVICE_UNAVAILABLE": _TINKER_ERROR_CLASS_SPECS["backend"],
+    "INTERNAL_SERVER_ERROR": _TINKER_ERROR_CLASS_SPECS["internal"],
+}
+
+_MISSING = object()
+
+
 def build_error_info_detail(
     value: _TrainingErrorStatus | Mapping[str, Any] | object,
 ) -> dict[str, Any]:
@@ -124,13 +199,93 @@ def build_error_info_detail(
 def extract_training_error_status(
     exc: BaseException,
 ) -> _TrainingErrorStatus | None:
-    """Return only the explicit private carrier attached to an exception."""
+    """Resolve one explicit private carrier, rejecting ambiguous context."""
 
     try:
-        value = exc._fireworks_training_error_status  # type: ignore[attr-defined]
+        status = exc._fireworks_training_error_status  # type: ignore[attr-defined]
     except AttributeError:
+        status = _MISSING
+    try:
+        source = exc._fireworks_training_error_source  # type: ignore[attr-defined]
+    except AttributeError:
+        source = _MISSING
+
+    if status is not _MISSING and source is not _MISSING:
+        raise ValueError("conflicting structured training error carriers")
+    if status is not _MISSING:
+        return _coerce_training_error_status(status)
+    if source is not _MISSING:
+        return _status_from_source_error(source)
+    return None
+
+
+def _status_from_source_error(value: Any) -> _TrainingErrorStatus | None:
+    source = getattr(value, "source", None)
+    if source == SOURCE_TINKER:
+        if _has_any_source_field(value, ("code", "type")):
+            raise ValueError("Tinker source carrier contains gateway fields")
+        error = _validated_source_field(value, "error")
+        category = _validated_source_field(value, "category")
+        error_class = _validated_source_field(value, "error_class")
+        if error is None and category is None and error_class is None:
+            raise ValueError("empty Tinker source carrier")
+        if error_class is None:
+            return None
+        spec = _TINKER_ERROR_CLASS_SPECS.get(error_class)
+        if spec is None:
+            return None
+        metadata = (
+            {ERROR_INFO_METADATA_CATEGORY: category} if category is not None else {}
+        )
+    elif source == SOURCE_SERVERLESS_GATEWAY:
+        if _has_any_source_field(value, ("error", "category", "error_class")):
+            raise ValueError("gateway source carrier contains Tinker fields")
+        code = _validated_source_field(value, "code")
+        error_type = _validated_source_field(value, "type")
+        if code is None and error_type is None:
+            raise ValueError("empty gateway source carrier")
+        if code is None:
+            return None
+        spec = _GATEWAY_CODE_SPECS.get(code)
+        if spec is None:
+            return None
+        metadata = {}
+    else:
+        raise ValueError("structured training error carrier has an unexpected source")
+
+    return _coerce_training_error_status(
+        _TrainingErrorStatus(
+            grpc_code=spec.grpc_code,
+            public_message=spec.public_message,
+            reason=spec.reason,
+            metadata=metadata,
+            source=source,
+        )
+    )
+
+
+def _has_any_source_field(value: Any, names: tuple[str, ...]) -> bool:
+    return any(getattr(value, name, _MISSING) is not _MISSING for name in names)
+
+
+def _validated_source_field(
+    value: Any,
+    name: str,
+) -> str | None:
+    raw = getattr(value, name, _MISSING)
+    if raw is _MISSING or raw is None:
         return None
-    return _coerce_training_error_status(value)
+    if not isinstance(raw, str) or not raw:
+        raise ValueError(f"structured source field {name!r} must be a non-empty string")
+    try:
+        encoded = raw.encode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError(
+            f"structured source field {name!r} is not valid UTF-8"
+        ) from exc
+    if len(encoded) > MAX_METADATA_VALUE_LENGTH:
+        raise ValueError(f"structured source field {name!r} exceeds the size limit")
+    return raw
 
 
 def _coerce_training_error_status(value: Any) -> _TrainingErrorStatus:
@@ -155,7 +310,11 @@ def _coerce_training_error_status(value: Any) -> _TrainingErrorStatus:
             source=getattr(value, "source", None),
         )
 
-    if not isinstance(raw.grpc_code, int) or isinstance(raw.grpc_code, bool) or not 0 <= raw.grpc_code <= 16:
+    if (
+        not isinstance(raw.grpc_code, int)
+        or isinstance(raw.grpc_code, bool)
+        or not 0 <= raw.grpc_code <= 16
+    ):
         raise ValueError("training error status grpc_code must be a gRPC code")
     if not isinstance(raw.public_message, str):
         raise ValueError("training error status public_message must be a string")
@@ -195,7 +354,9 @@ def _validated_metadata(
     if allowed_sources is None:
         raise ValueError(f"unregistered training ErrorInfo reason {reason!r}")
     if source not in allowed_sources:
-        raise ValueError(f"source {source!r} cannot emit training ErrorInfo reason {reason!r}")
+        raise ValueError(
+            f"source {source!r} cannot emit training ErrorInfo reason {reason!r}"
+        )
 
     allowed_metadata = _REASON_METADATA_KEYS.get(reason, frozenset())
     result: dict[str, str] = {}
@@ -215,7 +376,9 @@ def _validated_metadata(
         try:
             rendered = str(value)
         except Exception as exc:
-            raise ValueError(f"metadata value for {key!r} cannot be stringified") from exc
+            raise ValueError(
+                f"metadata value for {key!r} cannot be stringified"
+            ) from exc
         encoded = rendered.encode("utf-8")
         if len(encoded) > MAX_METADATA_VALUE_LENGTH:
             rendered = encoded[:MAX_METADATA_VALUE_LENGTH].decode(

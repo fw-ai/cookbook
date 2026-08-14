@@ -7,6 +7,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from training._managed_error_contract import _TrainingErrorStatus
@@ -18,7 +19,12 @@ from training.utils.runner_state import write_running_progress
 
 class TestRunnerConfig:
     def test_resolve_uses_direct_values(self):
-        cfg = RunnerConfig(status_file="/a", metadata_file="/b", metrics_file="/c", output_model_path="/d")
+        cfg = RunnerConfig(
+            status_file="/a",
+            metadata_file="/b",
+            metrics_file="/c",
+            output_model_path="/d",
+        )
         resolved = cfg.resolve()
         assert resolved.status_file == "/a"
         assert resolved.metadata_file == "/b"
@@ -62,7 +68,9 @@ class TestRunnerIOStatus:
         path = str(tmp_path / "status.json")
         runner = RunnerIO(RunnerConfig(status_file=path))
 
-        runner.write_status(RunStatus.RUNNING, step=3, total_steps=10, message="training")
+        runner.write_status(
+            RunStatus.RUNNING, step=3, total_steps=10, message="training"
+        )
 
         data = json.loads(open(path).read())
         assert data["code"] == 0
@@ -76,7 +84,9 @@ class TestRunnerIOStatus:
         runner = RunnerIO(RunnerConfig(status_file=path))
 
         # 7/20 -> 35%
-        runner.write_status(RunStatus.RUNNING, step=7, total_steps=20, message="training")
+        runner.write_status(
+            RunStatus.RUNNING, step=7, total_steps=20, message="training"
+        )
 
         data = json.loads(open(path).read())
         # Top-level keys: exactly code, message, details
@@ -171,7 +181,9 @@ class TestRunnerIOStatus:
         runner = RunnerIO(RunnerConfig(status_file=path))
 
         runner.write_status(RunStatus.RUNNING, step=1, total_steps=10)
-        runner.write_status(RunStatus.COMPLETED, step=10, total_steps=10, message="done")
+        runner.write_status(
+            RunStatus.COMPLETED, step=10, total_steps=10, message="done"
+        )
 
         data = json.loads(open(path).read())
         assert data["code"] == 0
@@ -242,7 +254,10 @@ class TestRunnerIOMetadata:
 
         runner.write_metadata()
 
-        assert json.loads((tmp_path / "metadata.json").read_text())["metadata"]["tokens"] == 250
+        assert (
+            json.loads((tmp_path / "metadata.json").read_text())["metadata"]["tokens"]
+            == 250
+        )
 
     def test_write_metadata_with_tokens_and_time(self, tmp_path):
         path = str(tmp_path / "meta.json")
@@ -472,7 +487,9 @@ class TestRunnerIOContextManager:
                 )
 
         data = json.loads(open(path).read())
-        assert data["code"] == 3  # INVALID_ARGUMENT, not the generic FAILED_PRECONDITION
+        assert (
+            data["code"] == 3
+        )  # INVALID_ARGUMENT, not the generic FAILED_PRECONDITION
         assert data["message"] == "bad key"
         assert data["details"] == [
             {
@@ -487,7 +504,9 @@ class TestRunnerIOContextManager:
             }
         ]
 
-    def test_structured_exception_carrier_preserves_code_message_and_metadata(self, tmp_path):
+    def test_structured_exception_carrier_preserves_code_message_and_metadata(
+        self, tmp_path
+    ):
         """Downstream SDK errors can carry a public status plus ErrorInfo."""
 
         class StructuredSDKError(RuntimeError):
@@ -523,6 +542,190 @@ class TestRunnerIOContextManager:
             "quota_available": "4",
         }
         assert "raw wrapper text" not in json.dumps(data)
+
+    @staticmethod
+    def _write_source_error(
+        tmp_path, source, *, message="raw source diagnostic", status=None
+    ):
+        class SourceSDKError(RuntimeError):
+            pass
+
+        error = SourceSDKError(message)
+        error._fireworks_training_error_source = source
+        if status is not None:
+            error._fireworks_training_error_status = status
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+        with pytest.raises(SourceSDKError):
+            with runner:
+                raise error
+        return json.loads(open(path).read())
+
+    def test_tinker_source_maps_only_registered_error_class(self, tmp_path):
+        data = self._write_source_error(
+            tmp_path,
+            SimpleNamespace(
+                source="tinker",
+                error="mutable Tinker diagnostic",
+                category="Future-Category/V2",
+                error_class="validation",
+            ),
+        )
+
+        assert (data["code"], data["message"]) == (
+            3,
+            "The training request is invalid. Review the request and try again.",
+        )
+        detail = data["details"][0]
+        assert (detail["reason"], detail["domain"]) == (
+            "INVALID_INPUT",
+            "training.fireworks.ai",
+        )
+        assert detail["metadata"] == {
+            "version": "1",
+            "source": "tinker",
+            "category": "Future-Category/V2",
+        }
+        assert "mutable Tinker diagnostic" not in json.dumps(data)
+        changed_message = self._write_source_error(
+            tmp_path,
+            SimpleNamespace(
+                source="tinker",
+                error="completely different diagnostic",
+                category="Future-Category/V2",
+                error_class="validation",
+            ),
+        )
+        assert changed_message == data
+
+    def test_gateway_source_maps_only_registered_code(self, tmp_path):
+        data = self._write_source_error(
+            tmp_path,
+            SimpleNamespace(
+                source="serverless_gateway",
+                code="RATE_LIMIT_EXCEEDED",
+                type="Future.Gateway.Type/V2",
+            ),
+        )
+
+        assert (data["code"], data["message"]) == (
+            8,
+            "Too many training requests. Wait and try again.",
+        )
+        detail = data["details"][0]
+        assert detail["reason"] == "RATE_LIMIT_EXCEEDED"
+        assert detail["metadata"] == {
+            "version": "1",
+            "source": "serverless_gateway",
+        }
+        assert "Future.Gateway.Type/V2" not in json.dumps(data)
+
+    def test_gateway_registered_code_does_not_require_type(self, tmp_path):
+        data = self._write_source_error(
+            tmp_path,
+            SimpleNamespace(
+                source="serverless_gateway",
+                code="BAD_REQUEST",
+                type=None,
+            ),
+        )
+
+        assert (data["code"], data["message"]) == (
+            3,
+            "The training request is invalid. Review the request and try again.",
+        )
+        assert data["details"][0]["reason"] == "INVALID_INPUT"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            SimpleNamespace(
+                source="tinker",
+                error="looks canonical",
+                category="user",
+                error_class="QUOTA_EXCEEDED",
+            ),
+            SimpleNamespace(
+                source="serverless_gateway",
+                code="PERMISSION_DENIED",
+                type="error",
+            ),
+            SimpleNamespace(
+                source="tinker",
+                error="wrongly cased identifier",
+                category="user",
+                error_class="VaLiDaTiOn",
+            ),
+            SimpleNamespace(
+                source="tinker",
+                error="padded identifier",
+                category="user",
+                error_class=" validation",
+            ),
+            SimpleNamespace(
+                source="serverless_gateway",
+                code="rate_limit_exceeded",
+                type="error",
+            ),
+            SimpleNamespace(
+                source="serverless_gateway",
+                code=" RATE_LIMIT_EXCEEDED",
+                type="error",
+            ),
+        ],
+    )
+    def test_unknown_source_values_remain_unclassified(self, tmp_path, source):
+        data = self._write_source_error(tmp_path, source)
+
+        assert data == {"code": 13, "message": "Internal error"}
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            SimpleNamespace(
+                source="tinker",
+                error="valid",
+                category=7,
+                error_class="validation",
+            ),
+            SimpleNamespace(
+                source="serverless_gateway",
+                code="BAD_REQUEST",
+                type="\ud800",
+            ),
+            SimpleNamespace(
+                source="tinker",
+                error="valid",
+                category="user",
+                error_class="validation",
+                code="BAD_REQUEST",
+            ),
+        ],
+    )
+    def test_malformed_or_mixed_source_carriers_fail_closed(self, tmp_path, source):
+        data = self._write_source_error(tmp_path, source)
+
+        assert data == {"code": 13, "message": "Internal error"}
+
+    def test_conflicting_canonical_and_source_carriers_fail_closed(self, tmp_path):
+        data = self._write_source_error(
+            tmp_path,
+            SimpleNamespace(
+                source="tinker",
+                error="same exception",
+                category="user",
+                error_class="validation",
+            ),
+            status={
+                "grpc_code": 8,
+                "public_message": "quota exceeded",
+                "reason": "QUOTA_EXCEEDED",
+                "domain": "training.fireworks.ai",
+                "source": "lifecycle",
+                "metadata": {},
+            },
+        )
+        assert data == {"code": 13, "message": "Internal error"}
 
     def test_arbitrary_exception_attributes_are_not_treated_as_carrier(self, tmp_path):
         class AttributeShapedError(RuntimeError):
@@ -579,7 +782,9 @@ class TestRunnerIOContextManager:
             SystemExit("Terminated by SIGTERM"),
         ],
     )
-    def test_signal_cancellation_writes_cancelled_status(self, tmp_path: Path, exc: BaseException) -> None:
+    def test_signal_cancellation_writes_cancelled_status(
+        self, tmp_path: Path, exc: BaseException
+    ) -> None:
         """Recipe SIGTERM/SIGINT cleanup exits are structured as CANCELLED, not INTERNAL."""
         path = tmp_path / "status.json"
         runner = RunnerIO(RunnerConfig(status_file=str(path)))
@@ -616,7 +821,9 @@ class TestRunnerIOContextManager:
             SystemExit("dataset is empty: /tmp/data.jsonl"),
         ],
     )
-    def test_non_signal_system_exit_stays_internal(self, tmp_path: Path, exc: SystemExit) -> None:
+    def test_non_signal_system_exit_stays_internal(
+        self, tmp_path: Path, exc: SystemExit
+    ) -> None:
         """Other SystemExit values may be user/config failures; do not classify from free text."""
         path = tmp_path / "status.json"
         runner = RunnerIO(RunnerConfig(status_file=str(path)))

@@ -65,6 +65,13 @@ Do not derive a reason from `status.message`, raw exceptions, or other
 human-readable text. If ErrorInfo is absent, omit the reason and keep the
 classification unknown.
 
+Managed recipes may receive private source-native Tinker or serverless-gateway
+context from the SDK. The status writer maps only registered `error_class` or
+gateway `code` values into ErrorInfo; unknown, malformed, or conflicting values
+stay unclassified. Raw errors, classes, codes, types, and messages are not
+copied into status files or support payloads; only registered ErrorInfo fields
+and bounded allowlisted metadata such as Tinker `category` are emitted.
+
 Route product usage and configuration questions to the
 [training docs](https://docs.fireworks.ai/fine-tuning/finetuning-intro.md), and
 check the [Fireworks status page](https://status.fireworks.ai/) for a suspected
