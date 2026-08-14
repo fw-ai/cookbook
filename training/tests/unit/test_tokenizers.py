@@ -392,7 +392,7 @@ def test_load_tokenizer_applies_kimi_bytes_to_unicode_patch(monkeypatch):
     assert calls, "load_tokenizer must apply the Kimi tokenizer compat patch"
 
 
-def test_huggingface_unavailability_propagates_to_runner_status(monkeypatch):
+def test_huggingface_unavailability_is_sanitized_in_runner_status(monkeypatch):
     status_writes: list[tuple[str, dict]] = []
 
     with local_status_server(503) as url:
@@ -414,6 +414,7 @@ def test_huggingface_unavailability_propagates_to_runner_status(monkeypatch):
                 tokenizers.load_tokenizer("Qwen/Qwen3-8B")
 
     assert status_writes[-1][0] == "status.json"
-    assert status_writes[-1][1]["code"] == 9
-    assert "Hugging Face Hub request failed" in status_writes[-1][1]["message"]
-    assert "HTTP 503" in status_writes[-1][1]["message"]
+    assert status_writes[-1][1] == {
+        "code": 13,
+        "message": "Internal error",
+    }

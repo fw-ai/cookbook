@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
-
+from training._managed_error_contract import _TrainingErrorStatus
 from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
 from training.utils.runner_state import write_running_progress
 
@@ -71,7 +71,7 @@ class TestRunnerIOStatus:
         assert data["details"][0]["percent"] == 30
 
     def test_status_protojson_strict_structure(self, tmp_path):
-        """Enforce exact protojson shape: google.rpc.Status with JobProgress detail."""
+        """Enforce legacy protojson shape: google.rpc.Status with JobProgress detail."""
         path = str(tmp_path / "status.json")
         runner = RunnerIO(RunnerConfig(status_file=path))
 
@@ -92,6 +92,58 @@ class TestRunnerIOStatus:
         assert isinstance(detail["percent"], int)
         assert 0 <= detail["percent"] <= 100
         assert detail["percent"] == 35
+
+    def test_write_status_can_add_error_info_without_dropping_progress(self, tmp_path):
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        runner.write_status(
+            RunStatus.FAILED,
+            step=2,
+            total_steps=4,
+            error="bad config",
+            error_code=3,
+            error_status=_TrainingErrorStatus(
+                grpc_code=3,
+                public_message="bad config",
+                reason="INVALID_INPUT",
+                metadata={"category": "validation"},
+            ),
+        )
+
+        data = json.loads(open(path).read())
+        assert data["code"] == 3
+        assert data["message"] == "bad config"
+        assert data["details"][0] == {
+            "@type": "type.googleapis.com/gateway.JobProgress",
+            "percent": 50,
+        }
+        assert data["details"][1] == {
+            "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+            "reason": "INVALID_INPUT",
+            "domain": "training.fireworks.ai",
+            "metadata": {"version": "1", "source": "managed", "category": "validation"},
+        }
+
+    def test_write_status_omits_invalid_optional_error_info(self, tmp_path):
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        runner.write_status(
+            RunStatus.FAILED,
+            error="bad config",
+            error_code=3,
+            error_status={
+                "grpc_code": 3,
+                "public_message": "bad config",
+                "reason": "NOT_REGISTERED",
+            },
+        )
+
+        assert json.loads(open(path).read()) == {
+            "code": 3,
+            "message": "bad config",
+        }
 
     def test_write_status_with_error(self, tmp_path):
         path = str(tmp_path / "status.json")
@@ -399,11 +451,13 @@ class TestRunnerIOContextManager:
                 raise RuntimeError("boom")
 
         data = json.loads(open(path).read())
-        assert data["code"] == 9
-        assert data["message"] == "boom"
+        assert data["code"] == 13
+        assert data["message"] == "Internal error"
         assert data["details"][0]["percent"] == 50
+        assert len(data["details"]) == 1
 
-    def test_user_config_error_writes_invalid_argument(self, tmp_path):
+    @pytest.mark.parametrize("recipe_category", ["sft_v2", "dpo_v2"])
+    def test_user_config_error_writes_invalid_argument(self, tmp_path, recipe_category):
         """User-actionable errors raised inside the context surface as INVALID_ARGUMENT."""
         from training.utils.runner import WandbConfigError
 
@@ -412,14 +466,96 @@ class TestRunnerIOContextManager:
 
         with pytest.raises(WandbConfigError, match="bad key"):
             with runner:
-                raise WandbConfigError("bad key")
+                raise WandbConfigError(
+                    "bad key",
+                    metadata={"category": recipe_category},
+                )
 
         data = json.loads(open(path).read())
         assert data["code"] == 3  # INVALID_ARGUMENT, not the generic FAILED_PRECONDITION
         assert data["message"] == "bad key"
+        assert data["details"] == [
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "INVALID_INPUT",
+                "domain": "training.fireworks.ai",
+                "metadata": {
+                    "version": "1",
+                    "source": "managed",
+                    "category": recipe_category,
+                },
+            }
+        ]
 
-    def test_generic_exception_writes_failed_precondition(self, tmp_path):
-        """Non-user-config errors keep the default FAILED_PRECONDITION code."""
+    def test_structured_exception_carrier_preserves_code_message_and_metadata(self, tmp_path):
+        """Downstream SDK errors can carry a public status plus ErrorInfo."""
+
+        class StructuredSDKError(RuntimeError):
+            _fireworks_training_error_status = {
+                "grpc_code": 8,
+                "public_message": "quota exceeded",
+                "reason": "QUOTA_EXCEEDED",
+                "domain": "training.fireworks.ai",
+                "source": "lifecycle",
+                "metadata": {
+                    "version": "1",
+                    "source": "lifecycle",
+                    "quota_required": "16",
+                    "quota_available": "4",
+                },
+            }
+
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        with pytest.raises(StructuredSDKError):
+            with runner:
+                raise StructuredSDKError("raw wrapper text")
+
+        data = json.loads(open(path).read())
+        assert data["code"] == 8
+        assert data["message"] == "quota exceeded"
+        assert data["details"][0]["reason"] == "QUOTA_EXCEEDED"
+        assert data["details"][0]["metadata"] == {
+            "version": "1",
+            "source": "lifecycle",
+            "quota_required": "16",
+            "quota_available": "4",
+        }
+        assert "raw wrapper text" not in json.dumps(data)
+
+    def test_arbitrary_exception_attributes_are_not_treated_as_carrier(self, tmp_path):
+        class AttributeShapedError(RuntimeError):
+            code = 3
+            status_code = 400
+            message = "unsafe message"
+
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        with pytest.raises(AttributeShapedError):
+            with runner:
+                raise AttributeShapedError("private traceback detail")
+
+        data = json.loads(open(path).read())
+        assert data == {"code": 13, "message": "Internal error"}
+
+    def test_invalid_empty_private_carrier_is_sanitized(self, tmp_path):
+        class EmptyCarrierError(RuntimeError):
+            _fireworks_training_error_status = {}
+
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        with pytest.raises(EmptyCarrierError):
+            with runner:
+                raise EmptyCarrierError("private traceback detail")
+
+        data = json.loads(open(path).read())
+        assert data == {"code": 13, "message": "Internal error"}
+
+    def test_generic_exception_writes_internal_without_error_info(self, tmp_path):
+        """Unclassified recipe exceptions do not expose raw diagnostics."""
         path = str(tmp_path / "status.json")
         runner = RunnerIO(RunnerConfig(status_file=path))
 
@@ -428,8 +564,70 @@ class TestRunnerIOContextManager:
                 raise RuntimeError("boom")
 
         data = json.loads(open(path).read())
-        assert data["code"] == 9  # FAILED_PRECONDITION
-        assert data["message"] == "boom"
+        assert data["code"] == 13  # INTERNAL
+        assert data["message"] == "Internal error"
+        assert "details" not in data
+        assert "boom" not in json.dumps(data)
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            KeyboardInterrupt(),
+            SystemExit(130),
+            SystemExit(143),
+            SystemExit("Terminated by SIGINT"),
+            SystemExit("Terminated by SIGTERM"),
+        ],
+    )
+    def test_signal_cancellation_writes_cancelled_status(self, tmp_path: Path, exc: BaseException) -> None:
+        """Recipe SIGTERM/SIGINT cleanup exits are structured as CANCELLED, not INTERNAL."""
+        path = tmp_path / "status.json"
+        runner = RunnerIO(RunnerConfig(status_file=str(path)))
+        runner.write_status(RunStatus.RUNNING, step=3, total_steps=10)
+
+        with pytest.raises(type(exc)):
+            with runner:
+                raise exc
+
+        data = json.loads(path.read_text())
+        assert data["code"] == 1
+        assert data["message"] == "Training run cancelled"
+        assert data["details"] == [
+            {
+                "@type": "type.googleapis.com/gateway.JobProgress",
+                "percent": 30,
+            },
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "CANCELLED",
+                "domain": "training.fireworks.ai",
+                "metadata": {
+                    "version": "1",
+                    "source": "managed",
+                    "category": "signal",
+                },
+            },
+        ]
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            SystemExit(1),
+            SystemExit("dataset is empty: /tmp/data.jsonl"),
+        ],
+    )
+    def test_non_signal_system_exit_stays_internal(self, tmp_path: Path, exc: SystemExit) -> None:
+        """Other SystemExit values may be user/config failures; do not classify from free text."""
+        path = tmp_path / "status.json"
+        runner = RunnerIO(RunnerConfig(status_file=str(path)))
+
+        with pytest.raises(SystemExit):
+            with runner:
+                raise exc
+
+        data = json.loads(path.read_text())
+        assert data == {"code": 13, "message": "Internal error"}
+        assert "dataset is empty" not in json.dumps(data)
 
     @pytest.mark.parametrize(
         "module",

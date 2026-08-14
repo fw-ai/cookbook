@@ -20,6 +20,11 @@ When a job is stuck or failing, use the resource family that created it:
 
 Run the selected resource and `get` commands with `--help` before relying on flags. Do not substitute `sftj` commands for a DPO or RFT resource. `State` alone lies: a job can read `RUNNING` before the trainer starts, and a silent crash can leave `RUNNING` with no error. Trust a real step, rollout, checkpoint, or linked W&B signal when one is available.
 
+When the status includes a structured training error reason, use that reason as
+the stable classification and treat the human-readable message as display copy.
+Do not parse the message string to infer quota, permission, dataset, or platform
+categories.
+
 ## Common issues (field-observed)
 
 | Symptom | What it usually is | What to do |
