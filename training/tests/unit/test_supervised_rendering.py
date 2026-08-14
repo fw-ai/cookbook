@@ -1164,6 +1164,36 @@ def test_build_renderer_from_resolved_name_loads_image_processor_by_default(
     assert calls == [("qwen3_vl_instruct", "image-processor")]
 
 
+def test_build_renderer_from_resolved_name_loads_muse_token_counter(monkeypatch):
+    calls: list[tuple[str, object | None]] = []
+    counter = object()
+
+    def fake_from_pretrained(model_name):
+        assert model_name == "meta-models/Muse-Glimmer-30B"
+        return counter
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        assert tokenizer == "tok"
+        calls.append((name, image_processor))
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised._muse_glimmer_renderer."
+        "MuseGlimmerImageTokenCounter.from_pretrained",
+        fake_from_pretrained,
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    renderer = build_renderer_from_resolved_name(
+        tokenizer="tok",
+        tokenizer_model="meta-models/Muse-Glimmer-30B",
+        renderer_name="muse_glimmer",
+    )
+
+    assert renderer == "renderer"
+    assert calls == [("muse_glimmer", counter)]
+
+
 def test_build_renderer_from_resolved_name_can_skip_image_processor(monkeypatch):
     calls: list[tuple[str, object | None]] = []
 
@@ -1532,6 +1562,7 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
         ("qwen3_vl_instruct", True),
         ("qwen3_5", True),
         ("kimi_k25", True),
+        ("muse_glimmer", True),
         ("glm_moe_dsa", False),
         ("deepseek_v4", False),
     ],

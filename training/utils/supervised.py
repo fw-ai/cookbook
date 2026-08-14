@@ -457,7 +457,10 @@ def build_renderer_from_resolved_name(
         return get_renderer(
             renderer_name,
             tokenizer,
-            image_processor=_get_image_processor_with_remote_code_default(tokenizer_model),
+            image_processor=_get_image_processor_with_remote_code_default(
+                tokenizer_model,
+                renderer_name=renderer_name,
+            ),
         )
     return get_renderer(renderer_name, tokenizer)
 
@@ -548,12 +551,25 @@ def populate_render_worker_state(
     )
 
 
-def _get_image_processor_with_remote_code_default(tokenizer_model: str) -> Any:
+def _get_image_processor_with_remote_code_default(
+    tokenizer_model: str,
+    *,
+    renderer_name: str = "",
+) -> Any:
     # Image processors follow the tokenizer loader's permissive-by-default
     # remote-code policy. This is intentionally independent of model and
     # renderer names: managed jobs stage tokenizer artifacts under opaque paths,
     # and new image renderers should not require a second trust allowlist update.
     # Preserve any explicit caller policy, including HF_TRUST_REMOTE_CODE=0.
+    if renderer_name == "muse_glimmer":
+        # The pinned Transformers release can resolve Muse's processor config
+        # but does not register its image processor class yet. Only token
+        # counting is needed on the rendering client; FireTitan owns pixel
+        # preprocessing and independently checks the declared chunk length.
+        return _muse_glimmer_renderer.MuseGlimmerImageTokenCounter.from_pretrained(
+            tokenizer_model
+        )
+
     if "HF_TRUST_REMOTE_CODE" in os.environ:
         return get_image_processor(tokenizer_model)
 
@@ -584,6 +600,7 @@ def renderer_supports_images(renderer_name: str) -> bool:
             "kimi_k26",
             "kimi_k27",
             "kimi_k3",
+            "muse_glimmer",
         )
     )
 

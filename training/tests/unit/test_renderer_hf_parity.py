@@ -112,6 +112,22 @@ _CASES: list[_Case] = [
         messages=_MULTI_TURN_MSGS,
     ),
     _Case(
+        case_id="muse-glimmer-multipart-system-boundary",
+        renderer="muse_glimmer",
+        tokenizer_model=_MUSE_GLIMMER_MODEL,
+        tokenizer_revision=_MUSE_GLIMMER_REVISION,
+        messages=[
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": "Reasoning "},
+                    {"type": "text", "text": "effort: low"},
+                ],
+            },
+            {"role": "user", "content": "  inspect whitespace  "},
+        ],
+    ),
+    _Case(
         case_id="glm5-single-turn",
         renderer="glm5_interleaved",
         tokenizer_model=_GLM51_MODEL,

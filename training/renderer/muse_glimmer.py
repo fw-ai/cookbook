@@ -9,7 +9,9 @@ text protocol and seemingly cosmetic newlines are part of the model contract.
 
 from __future__ import annotations
 
+import itertools
 import json
+import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -19,6 +21,7 @@ from typing import Any
 import tinker
 import torch
 from jinja2.exceptions import TemplateError
+from tinker_cookbook.exceptions import RendererError
 from tinker_cookbook.renderers import register_renderer
 from tinker_cookbook.renderers.base import (
     Message,
@@ -31,6 +34,7 @@ from tinker_cookbook.renderers.base import (
     ToolSpec,
     TrainOnWhat,
     UnparsedToolCall,
+    image_to_chunk,
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
@@ -43,6 +47,8 @@ _START = "<|start|>"
 _MESSAGE = "<|message|>"
 _EOM = "<|eom|>"
 _EOT = "<|eot|>"
+_IMAGE_START = "<|image_start|>"
+_IMAGE_END = "<|image_end|>"
 _TOOLS_ROLE = "_muse_glimmer_tools"
 _TOOLS_KEY = "_muse_glimmer_tool_specs"
 _TOOL_ARGUMENT_ERROR = (
@@ -71,6 +77,78 @@ class MuseGlimmerOptions:
     current_date: str | None = None
     include_current_date: bool = True
     tool_namespace_descriptions: Mapping[str, str] = field(default_factory=dict)
+
+
+class MuseGlimmerImageTokenCounter:
+    """Processor-config-backed visual token counter for Tinker image chunks.
+
+    Transformers 5.5.4 can read Muse's processor config but does not yet
+    register ``MuseGlimmerImageProcessor`` with ``AutoImageProcessor``. The
+    training backend owns pixel preprocessing; the cookbook renderer only
+    needs the exact merged-token count included on each wire ``ImageChunk``.
+    """
+
+    def __init__(
+        self,
+        *,
+        patch_size: int = 14,
+        merge_size: int = 2,
+        max_image_tokens: int = 4096,
+    ) -> None:
+        self.patch_size = int(patch_size)
+        self.merge_size = int(merge_size)
+        self.max_image_tokens = int(max_image_tokens)
+        if min(self.patch_size, self.merge_size, self.max_image_tokens) <= 0:
+            raise ValueError("Muse Glimmer image processor dimensions must be positive")
+
+    @classmethod
+    def from_pretrained(cls, model_name: str) -> MuseGlimmerImageTokenCounter:
+        from transformers.image_processing_utils import BaseImageProcessor
+
+        config, _unused_kwargs = BaseImageProcessor.get_image_processor_dict(model_name)
+        return cls(
+            patch_size=config.get("patch_size", 14),
+            merge_size=config.get("merge_size", 2),
+            max_image_tokens=config.get("max_image_tokens", 4096),
+        )
+
+    def get_number_of_image_patches(
+        self,
+        height: int,
+        width: int,
+        images_kwargs: Mapping[str, Any] | None = None,
+    ) -> int:
+        images_kwargs = images_kwargs or {}
+        patch_size = int(images_kwargs.get("patch_size", self.patch_size))
+        merge_size = int(images_kwargs.get("merge_size", self.merge_size))
+        max_tokens = int(images_kwargs.get("max_image_tokens", self.max_image_tokens))
+        if height <= 0 or width <= 0:
+            raise ValueError(f"Image dimensions must be positive, got {height}x{width}")
+
+        merged_stride = patch_size * merge_size
+        ideal_h = height / merged_stride
+        ideal_w = width / merged_stride
+        ratio = ideal_w / ideal_h
+        if ideal_h * ideal_w > max_tokens:
+            ideal_h = math.sqrt(max_tokens / ratio)
+            ideal_w = ideal_h * ratio
+        candidates = {
+            (patches_h, patches_w)
+            for patches_h, patches_w in itertools.product(
+                (math.floor(ideal_h), math.ceil(ideal_h)),
+                (math.floor(ideal_w), math.ceil(ideal_w)),
+            )
+            if patches_h >= 1
+            and patches_w >= 1
+            and patches_h * patches_w <= max_tokens
+        }
+        if not candidates:
+            candidates = {(max(1, round(ideal_h)), max(1, round(ideal_w)))}
+        merged_h, merged_w = min(
+            candidates,
+            key=lambda grid: abs(grid[0] / grid[1] - height / width),
+        )
+        return merged_h * merged_w * merge_size**2
 
 
 def _json(value: Any) -> str:
@@ -250,10 +328,19 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
         self,
         tokenizer: Tokenizer,
         *,
+        image_processor: Any | None = None,
         options: MuseGlimmerOptions | None = None,
     ) -> None:
         super().__init__(tokenizer)
+        self.image_processor = image_processor
         self.options = options or MuseGlimmerOptions()
+        patch_ids = list(tokenizer.encode("<|patch|>", add_special_tokens=False))
+        if len(patch_ids) != 1:
+            raise RuntimeError(
+                "Muse Glimmer expected '<|patch|>' to be one token: "
+                f"{patch_ids}"
+            )
+        self.image_placeholder_token_id = int(patch_ids[0])
 
     @property
     def _bos_tokens(self) -> list[int]:
@@ -268,6 +355,77 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
 
     def _encode(self, text: str) -> tinker.EncodedTextChunk:
         return tinker.types.EncodedTextChunk(tokens=self.tokenizer.encode(text, add_special_tokens=False))
+
+    @staticmethod
+    def _append_text_piece(
+        pieces: list[str | tinker.types.ImageChunk],
+        text: str,
+    ) -> None:
+        if not text:
+            return
+        if pieces and isinstance(pieces[-1], str):
+            pieces[-1] += text
+        else:
+            pieces.append(text)
+
+    def _content_pieces(
+        self,
+        content: Any,
+        *,
+        text_transform=lambda text: text,
+    ) -> list[str | tinker.types.ImageChunk]:
+        """Materialize template content while retaining image payloads.
+
+        The Jinja template emits one symbolic ``<|patch|>`` per image. The
+        model processor expands that placeholder into image boundary tokens
+        surrounding one patch token per merged visual feature. Tinker models
+        the same expansion with an ``ImageChunk`` between those boundaries.
+        """
+        if isinstance(content, str):
+            text = text_transform(content)
+            return [text] if text else []
+        if content is None:
+            return []
+
+        pieces: list[str | tinker.types.ImageChunk] = []
+        pending_text = ""
+
+        def flush_text() -> None:
+            nonlocal pending_text
+            if pending_text:
+                self._append_text_piece(pieces, text_transform(pending_text))
+                pending_text = ""
+
+        for part in content:
+            if not isinstance(part, Mapping):
+                continue
+            part_type = part.get("type")
+            if part_type == "image":
+                flush_text()
+                if self.image_processor is None:
+                    raise RendererError(
+                        "Muse Glimmer image content requires an image processor; "
+                        "build the renderer with image loading enabled."
+                    )
+                image = part.get("image")
+                if image is None:
+                    raise RendererError("Muse Glimmer image content is missing the 'image' payload.")
+                self._append_text_piece(pieces, _IMAGE_START)
+                pieces.append(image_to_chunk(image, self.image_processor))
+                self._append_text_piece(pieces, _IMAGE_END)
+            elif part_type == "video":
+                pending_text += "<|video|>"
+            elif part_type == "text":
+                pending_text += str(part["text"])
+            # Match the Jinja template by dropping unknown content-part types.
+        flush_text()
+        return pieces
+
+    def _encode_pieces(
+        self,
+        pieces: list[str | tinker.types.ImageChunk],
+    ) -> list[tinker.types.ModelInputChunk]:
+        return [self._encode(piece) if isinstance(piece, str) else piece for piece in pieces]
 
     def _reasoning(self) -> str:
         return "Reasoning strength: " + (self.options.reasoning_strength or "high") + "."
@@ -337,19 +495,31 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
             body = _content(message.get("content"))
             if not message.get("_muse_glimmer_default_system"):
                 body = _replace_reasoning_effort(body)
+            suffix = ""
             if "reasoning strength" not in body.lower():
-                body += "\n\n" + self._reasoning()
+                suffix += "\n\n" + self._reasoning()
             if tools:
-                body += "\n\n" + _render_tool_defs(tools, self.options.tool_namespace_descriptions)
-            body += "\n\n" + _render_system_meta(tools) + _EOT
+                suffix += "\n\n" + _render_tool_defs(tools, self.options.tool_namespace_descriptions)
+            suffix += "\n\n" + _render_system_meta(tools) + _EOT
+            content_pieces = self._content_pieces(
+                message.get("content"),
+                text_transform=(
+                    (lambda text: text)
+                    if message.get("_muse_glimmer_default_system")
+                    else _replace_reasoning_effort
+                ),
+            )
+            self._append_text_piece(content_pieces, suffix)
             return RenderedMessage(
                 header=self._encode(_START + "system" + _MESSAGE),
-                output=[self._encode(body)],
+                output=self._encode_pieces(content_pieces),
             )
         if role == "user":
+            pieces = self._content_pieces(message.get("content"))
+            self._append_text_piece(pieces, _EOT)
             return RenderedMessage(
                 header=self._encode(_START + "user" + _MESSAGE),
-                output=[self._encode(_content(message.get("content")) + _EOT)],
+                output=self._encode_pieces(pieces),
             )
         if role == "tool":
             name = str(
@@ -359,8 +529,19 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
                 or ""
             )
             header = _START + "tool " + name + _MESSAGE
-            body = f'<tool_output name="{name}">\n' + _content(message.get("content")) + "\n</tool_output>" + _EOT
-            return RenderedMessage(header=self._encode(header), output=[self._encode(body)])
+            pieces: list[str | tinker.types.ImageChunk] = [
+                f'<tool_output name="{name}">\n'
+            ]
+            for piece in self._content_pieces(message.get("content")):
+                if isinstance(piece, str):
+                    self._append_text_piece(pieces, piece)
+                else:
+                    pieces.append(piece)
+            self._append_text_piece(pieces, "\n</tool_output>" + _EOT)
+            return RenderedMessage(
+                header=self._encode(header),
+                output=self._encode_pieces(pieces),
+            )
         if role == "assistant":
             has_reasoning, reasoning = original_reasoning_content(message)
             tool_calls = message.get("tool_calls") or []
@@ -382,13 +563,17 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
                 end_turn = message.get("end_turn")
                 if end_turn is None:
                     end_turn = recipient == "user"
-                body = (
-                    prefix
-                    + " to="
-                    + str(recipient)
-                    + _MESSAGE
-                    + _content(message.get("content"))
-                    + (_EOT if end_turn else _EOM)
+                prefix += " to=" + str(recipient) + _MESSAGE
+                pieces = [prefix]
+                for piece in self._content_pieces(message.get("content")):
+                    if isinstance(piece, str):
+                        self._append_text_piece(pieces, piece)
+                    else:
+                        pieces.append(piece)
+                self._append_text_piece(pieces, _EOT if end_turn else _EOM)
+                return RenderedMessage(
+                    header=self._encode(_START + "assistant"),
+                    output=self._encode_pieces(pieces),
                 )
             return RenderedMessage(
                 header=self._encode(_START + "assistant"),
@@ -528,8 +713,7 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
 
 
 def _factory(tokenizer: Tokenizer, image_processor=None) -> MuseGlimmerRenderer:
-    del image_processor
-    return MuseGlimmerRenderer(tokenizer)
+    return MuseGlimmerRenderer(tokenizer, image_processor=image_processor)
 
 
 register_renderer("muse_glimmer", _factory)
