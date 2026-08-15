@@ -180,6 +180,22 @@ class _Qwen3_5TemplateParityMixin:
             )
         ]
 
+    def create_conversation_prefix_with_tools(
+        self,
+        tools: list[ToolSpec],
+        system_prompt: str = "",
+    ) -> list[Message]:
+        # HF templates receive complete OpenAI tool envelopes. The Tinker
+        # prefix hook receives only each inner function ToolSpec, so restore
+        # the outer type/function keys before serializing the <tools> block.
+        wrapped_tools = [
+            {"type": "function", "function": dict(tool)} for tool in tools
+        ]
+        return super().create_conversation_prefix_with_tools(
+            cast(list[ToolSpec], wrapped_tools),
+            system_prompt=system_prompt,
+        )
+
 
 class Qwen3_5SplitRenderer(
     DisaggregateMultiTurnMixin,
@@ -503,22 +519,6 @@ class _Qwen3_8TemplateParityMixin:
         return super().build_supervised_example(
             self._prepare_qwen3_8_messages(messages), *args, **kwargs
         )
-
-    def create_conversation_prefix_with_tools(
-        self,
-        tools: list[ToolSpec],
-        system_prompt: str = "",
-    ) -> list[Message]:
-        # Unlike Qwen3.5/3.6, Qwen3.8 serializes each complete OpenAI tool
-        # envelope, including the outer type/function keys.
-        wrapped_tools = [
-            {"type": "function", "function": dict(tool)} for tool in tools
-        ]
-        return super().create_conversation_prefix_with_tools(
-            cast(list[ToolSpec], wrapped_tools),
-            system_prompt=system_prompt,
-        )
-
 
 class Qwen3_8InterleavedRenderer(
     _Qwen3_8TemplateParityMixin,
