@@ -222,6 +222,32 @@ _CAPABILITIES: tuple[ThinkingTraceModelCapability, ...] = (
         ),
     ),
     ThinkingTraceModelCapability(
+        canonical_family="qwen3.8",
+        aliases=frozenset(
+            {
+                "qwen/qwen3.8-27b",
+                "accounts/fireworks/models/qwen3p8-27b",
+            }
+        ),
+        plans=(
+            # Qwen3.8 HF default is preserve_thinking=true (undefined counts as
+            # true). Keep PRESERVED as the cookbook default so SFT/RL match
+            # serving with --conversation-style=qwen3p8.
+            _plan(
+                ThinkingTraceHistoryMode.PRESERVED,
+                "qwen3_8_preserved",
+                is_default=True,
+                unrolls_multi_turn=False,
+            ),
+            _plan(
+                ThinkingTraceHistoryMode.INTERLEAVED,
+                "qwen3_8_interleaved",
+                is_default=False,
+                unrolls_multi_turn=True,
+            ),
+        ),
+    ),
+    ThinkingTraceModelCapability(
         canonical_family="kimi-k2.5",
         aliases=frozenset(
             {

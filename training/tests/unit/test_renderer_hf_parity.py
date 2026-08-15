@@ -81,6 +81,8 @@ _QWEN35_MODEL = "Qwen/Qwen3.5-35B-A3B"
 _QWEN35_REVISION = "59d61f3ce65a6d9863b86d2e96597125219dc754"
 _QWEN36_MODEL = "Qwen/Qwen3.6-27B"
 _QWEN36_REVISION = "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9"
+_QWEN38_MODEL = "Qwen/Qwen3.8-27B"
+_QWEN38_REVISION = "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
 _KIMI25_MODEL = "moonshotai/Kimi-K2.5"
 _KIMI25_REVISION = "4d01dfe0332d63057c186e0b262165819efb6611"
 _KIMI26_MODEL = "moonshotai/Kimi-K2.6"
@@ -233,6 +235,45 @@ _CASES: list[_Case] = [
         tokenizer_model=_QWEN36_MODEL,
         messages=_MULTI_TURN_MSGS,
         tokenizer_revision=_QWEN36_REVISION,
+        apply_chat_template_kwargs={"preserve_thinking": True},
+    ),
+    # Qwen3.8 uses the qwen3_6 wire format with dedicated adapters for its
+    # default xhigh reasoning preamble. The template defaults
+    # preserve_thinking to true, so only interleaved / disable-thinking cases
+    # pass preserve_thinking=False.
+    _Case(
+        case_id="qwen3_8-thinking-single-turn",
+        renderer="qwen3_8_interleaved",
+        tokenizer_model=_QWEN38_MODEL,
+        messages=_SHORT_MSGS,
+        tokenizer_revision=_QWEN38_REVISION,
+        apply_chat_template_kwargs={"preserve_thinking": False},
+    ),
+    _Case(
+        case_id="qwen3_8-thinking-multi-turn",
+        renderer="qwen3_8_interleaved",
+        tokenizer_model=_QWEN38_MODEL,
+        messages=_MULTI_TURN_MSGS,
+        tokenizer_revision=_QWEN38_REVISION,
+        apply_chat_template_kwargs={"preserve_thinking": False},
+    ),
+    _Case(
+        case_id="qwen3_8-disable-thinking",
+        renderer="qwen3_8_disable_thinking_interleaved",
+        tokenizer_model=_QWEN38_MODEL,
+        messages=_SHORT_MSGS,
+        tokenizer_revision=_QWEN38_REVISION,
+        apply_chat_template_kwargs={
+            "enable_thinking": False,
+            "preserve_thinking": False,
+        },
+    ),
+    _Case(
+        case_id="qwen3_8-preserve-thinking-multi-turn",
+        renderer="qwen3_8_preserved",
+        tokenizer_model=_QWEN38_MODEL,
+        messages=_MULTI_TURN_MSGS,
+        tokenizer_revision=_QWEN38_REVISION,
         apply_chat_template_kwargs={"preserve_thinking": True},
     ),
     _Case(

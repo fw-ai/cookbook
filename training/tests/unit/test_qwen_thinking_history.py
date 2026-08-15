@@ -13,6 +13,7 @@ from functools import lru_cache
 from typing import Any
 
 import pytest
+from jinja2 import TemplateError
 from tinker_cookbook.renderers import ToolCall, TrainOnWhat, get_renderer
 from transformers import AutoTokenizer
 
@@ -49,7 +50,28 @@ _QWEN_INTERLEAVED_RENDERERS = [
         {"enable_thinking": False},
         id="qwen3.6-interleaved-thinking-disabled",
     ),
+    pytest.param(
+        "qwen3_8_interleaved",
+        "Qwen/Qwen3.8-27B",
+        "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        {"preserve_thinking": False},
+        id="qwen3.8-interleaved",
+    ),
+    pytest.param(
+        "qwen3_8_disable_thinking_interleaved",
+        "Qwen/Qwen3.8-27B",
+        "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        {"enable_thinking": False, "preserve_thinking": False},
+        id="qwen3.8-interleaved-thinking-disabled",
+    ),
 ]
+_QWEN38_XHIGH_SYSTEM = (
+    "<|im_start|>system\n"
+    "Reasoning effort is set to xhigh. Please think carefully through the task, "
+    "validate key assumptions, consider plausible alternatives, and prioritize "
+    "correctness, consistency, and clarity in the final answer."
+    "<|im_end|>\n"
+)
 
 
 @lru_cache(maxsize=None)
@@ -184,17 +206,84 @@ def _assert_token_parity(tokenizer, actual: list[int], expected: list[int]) -> N
 
 
 @pytest.mark.parametrize(
-    ("renderer_name", "model", "revision"),
+    "renderer_name",
+    [
+        "qwen3_8_interleaved",
+        "qwen3_8_disable_thinking_interleaved",
+        "qwen3_8_preserved",
+    ],
+)
+@pytest.mark.parametrize(
+    ("messages", "error"),
+    [
+        (
+            [
+                {"role": "developer", "content": "policy"},
+                {"role": "user", "content": "hello"},
+            ],
+            "Unexpected message role",
+        ),
+        (
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "developer", "content": "policy"},
+                {"role": "user", "content": "continue"},
+            ],
+            "Unexpected message role",
+        ),
+        (
+            [
+                {"role": "system", "content": "first"},
+                {"role": "system", "content": "second"},
+                {"role": "user", "content": "hello"},
+            ],
+            "System message must be at the beginning",
+        ),
+        (
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "system", "content": "late"},
+            ],
+            "System message must be at the beginning",
+        ),
+    ],
+)
+def test_qwen38_rejects_layouts_rejected_by_the_official_template(
+    renderer_name: str,
+    messages: list[dict],
+    error: str,
+) -> None:
+    tokenizer = _load_pinned_tokenizer(
+        "Qwen/Qwen3.8-27B",
+        "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+    )
+
+    with pytest.raises(ValueError, match=error):
+        _renderer_tokens(tokenizer, renderer_name, normalize_messages(messages))
+    with pytest.raises(TemplateError, match=error):
+        _hf_tokens(tokenizer, messages)
+
+
+@pytest.mark.parametrize(
+    ("renderer_name", "model", "revision", "template_kwargs"),
     [
         (
             "qwen3_5_interleaved",
             "Qwen/Qwen3.5-35B-A3B",
             "59d61f3ce65a6d9863b86d2e96597125219dc754",
+            {},
         ),
         (
             "qwen3_6_interleaved",
             "Qwen/Qwen3.6-27B",
             "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+            {},
+        ),
+        (
+            "qwen3_8_interleaved",
+            "Qwen/Qwen3.8-27B",
+            "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+            {"preserve_thinking": False},
         ),
     ],
 )
@@ -202,6 +291,7 @@ def test_empty_reasoning_does_not_hide_reasoning_content(
     renderer_name: str,
     model: str,
     revision: str,
+    template_kwargs: dict[str, bool],
 ) -> None:
     tokenizer = _load_pinned_tokenizer(model, revision)
     raw_messages = [
@@ -219,7 +309,7 @@ def test_empty_reasoning_does_not_hide_reasoning_content(
         renderer_name,
         normalize_messages(raw_messages),
     )
-    expected = _hf_tokens(tokenizer, raw_messages)
+    expected = _hf_tokens(tokenizer, raw_messages, **template_kwargs)
 
     _assert_token_parity(tokenizer, actual, expected)
     assert "QWEN_REASONING_CONTENT" in tokenizer.decode(
@@ -322,13 +412,20 @@ def test_clear_unrolls_at_real_user_boundaries_without_splitting_tool_trajectory
 
 
 @pytest.mark.parametrize(
-    ("enabled_renderer", "disabled_renderer", "model", "revision"),
+    (
+        "enabled_renderer",
+        "disabled_renderer",
+        "model",
+        "revision",
+        "has_enablement_preamble",
+    ),
     [
         pytest.param(
             "qwen3_5_interleaved",
             "qwen3_5_disable_thinking_interleaved",
             "Qwen/Qwen3.5-35B-A3B",
             "59d61f3ce65a6d9863b86d2e96597125219dc754",
+            False,
             id="qwen3.5",
         ),
         pytest.param(
@@ -336,16 +433,26 @@ def test_clear_unrolls_at_real_user_boundaries_without_splitting_tool_trajectory
             "qwen3_6_disable_thinking_interleaved",
             "Qwen/Qwen3.6-27B",
             "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+            False,
             id="qwen3.6",
+        ),
+        pytest.param(
+            "qwen3_8_interleaved",
+            "qwen3_8_disable_thinking_interleaved",
+            "Qwen/Qwen3.8-27B",
+            "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+            True,
+            id="qwen3.8",
         ),
     ],
 )
 @pytest.mark.timeout(180)
-def test_thinking_enablement_is_orthogonal_to_clear_history(
+def test_thinking_enablement_preserves_clear_history_semantics(
     enabled_renderer: str,
     disabled_renderer: str,
     model: str,
     revision: str,
+    has_enablement_preamble: bool,
 ) -> None:
     tokenizer = _load_pinned_tokenizer(model, revision)
     messages = _renderer_trajectory(prewrapped_tool_response=True)
@@ -360,8 +467,18 @@ def test_thinking_enablement_is_orthogonal_to_clear_history(
         messages,
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
-    assert list(enabled_input.to_ints()) == list(disabled_input.to_ints())
-    assert enabled_weights.tolist() == disabled_weights.tolist()
+    enabled_trained, enabled_masked = _weighted_text(
+        tokenizer, (enabled_input, enabled_weights)
+    )
+    disabled_trained, disabled_masked = _weighted_text(
+        tokenizer, (disabled_input, disabled_weights)
+    )
+    assert enabled_trained == disabled_trained
+    if has_enablement_preamble:
+        assert enabled_masked.removeprefix(_QWEN38_XHIGH_SYSTEM) == disabled_masked
+    else:
+        assert list(enabled_input.to_ints()) == list(disabled_input.to_ints())
+        assert enabled_weights.tolist() == disabled_weights.tolist()
 
     enabled_text = tokenizer.decode(
         _renderer_tokens(tokenizer, enabled_renderer, messages),
@@ -375,9 +492,12 @@ def test_thinking_enablement_is_orthogonal_to_clear_history(
     disabled_suffix = "\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
     assert enabled_text.endswith(enabled_suffix)
     assert disabled_text.endswith(disabled_suffix)
-    assert enabled_text.removesuffix(enabled_suffix) == disabled_text.removesuffix(
-        disabled_suffix
-    )
+    enabled_prefix = enabled_text.removesuffix(enabled_suffix)
+    disabled_prefix = disabled_text.removesuffix(disabled_suffix)
+    if has_enablement_preamble:
+        assert enabled_prefix.removeprefix(_QWEN38_XHIGH_SYSTEM) == disabled_prefix
+    else:
+        assert enabled_prefix == disabled_prefix
 
 
 @pytest.mark.parametrize("prewrapped_tool_response", [False, True])
@@ -422,31 +542,103 @@ def test_qwen36_preserve_is_prefix_extending_and_does_not_unroll(
     assert all(value in decoded for value in ("thinking1", "thinking2", "thinking3"))
 
 
+@pytest.mark.parametrize("prewrapped_tool_response", [False, True])
+@pytest.mark.timeout(180)
+def test_qwen38_preserve_is_prefix_extending_and_does_not_unroll(
+    prewrapped_tool_response: bool,
+) -> None:
+    tokenizer = _load_pinned_tokenizer(
+        "Qwen/Qwen3.8-27B",
+        "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+    )
+    renderer = get_renderer("qwen3_8_preserved", tokenizer)
+    messages = _renderer_trajectory(
+        prewrapped_tool_response=prewrapped_tool_response,
+    )
+
+    actual = _renderer_tokens(tokenizer, "qwen3_8_preserved", messages)
+    expected = _hf_tokens(
+        tokenizer,
+        _hf_trajectory(prewrapped_tool_response=prewrapped_tool_response),
+        preserve_thinking=True,
+    )
+    _assert_token_parity(tokenizer, actual, expected)
+
+    examples = renderer.build_supervised_examples(
+        messages,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    assert renderer.has_extension_property is True
+    assert len(examples) == 1
+
+    first_turn = renderer.build_supervised_example(
+        messages[:2],
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )[0].to_ints()
+    full = renderer.build_supervised_example(
+        messages,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )[0].to_ints()
+    assert list(full[: len(first_turn)]) == list(first_turn)
+    decoded = tokenizer.decode(full, skip_special_tokens=False)
+    assert all(value in decoded for value in ("thinking1", "thinking2", "thinking3"))
+
+
 @pytest.mark.parametrize(
-    ("renderer_name", "template_kwargs"),
+    ("renderer_name", "model", "revision", "template_kwargs"),
     [
-        pytest.param("qwen3_6_interleaved", {}, id="interleaved"),
+        pytest.param(
+            "qwen3_6_interleaved",
+            "Qwen/Qwen3.6-27B",
+            "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+            {},
+            id="qwen3.6-interleaved",
+        ),
         pytest.param(
             "qwen3_6_preserved",
+            "Qwen/Qwen3.6-27B",
+            "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
             {"preserve_thinking": True},
-            id="preserved",
+            id="qwen3.6-preserved",
         ),
         pytest.param(
             "qwen3_6_disable_thinking_interleaved",
+            "Qwen/Qwen3.6-27B",
+            "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
             {"enable_thinking": False},
-            id="thinking-disabled-separate-axis",
+            id="qwen3.6-thinking-disabled",
+        ),
+        pytest.param(
+            "qwen3_8_interleaved",
+            "Qwen/Qwen3.8-27B",
+            "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+            {"preserve_thinking": False},
+            id="qwen3.8-interleaved",
+        ),
+        pytest.param(
+            "qwen3_8_preserved",
+            "Qwen/Qwen3.8-27B",
+            "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+            {"preserve_thinking": True},
+            id="qwen3.8-preserved",
+        ),
+        pytest.param(
+            "qwen3_8_disable_thinking_interleaved",
+            "Qwen/Qwen3.8-27B",
+            "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+            {"enable_thinking": False, "preserve_thinking": False},
+            id="qwen3.8-thinking-disabled",
         ),
     ],
 )
 @pytest.mark.timeout(180)
 def test_qwen36_non_string_tool_arguments_use_json_serialization(
     renderer_name: str,
+    model: str,
+    revision: str,
     template_kwargs: dict[str, bool],
 ) -> None:
-    tokenizer = _load_pinned_tokenizer(
-        "Qwen/Qwen3.6-27B",
-        "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
-    )
+    tokenizer = _load_pinned_tokenizer(model, revision)
     arguments = {
         "string": "café",
         "boolean": True,

@@ -73,6 +73,7 @@ _EXTRA_TOKENIZERS = {
     "qwen3_6": "Qwen/Qwen3.6-27B",
     "qwen3_6_disable_thinking": "Qwen/Qwen3.6-27B",
     "qwen3_6_preserve_thinking": "Qwen/Qwen3.6-27B",
+    "qwen3_8": "Qwen/Qwen3.8-27B",
     "deepseekv3_thinking": "deepseek-ai/DeepSeek-V3.1",
     "nemotron3_disable_thinking": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
     "gpt_oss_high_reasoning": "openai/gpt-oss-120b",

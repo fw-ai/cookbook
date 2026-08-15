@@ -259,6 +259,16 @@ def resolve_renderer_name(
         # checkpoint precision and training-shape eligibility remain separate
         # control-plane contracts and must not be canonicalized here.
         return "qwen3_instruct"
+    # Qwen3.8-27B (dense VL). Do not match qwen3p8-max / qwen3p8-plus: those
+    # are different checkpoints. HF default preserve_thinking is true, so the
+    # cookbook default renderer keeps historical thinking.
+    if (
+        "qwen3.8-27b" in normalized_model_name
+        or "qwen3_8-27b" in normalized_model_name
+        or "qwen3_8_27b" in normalized_model_name
+        or "qwen3p8-27b" in normalized_model_name
+    ):
+        return "qwen3_8"
     # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
     # adds an opt-in `preserve_thinking` flag (renders historical thinking
     # for ALL assistant turns when true). Default invocation produces output
@@ -596,6 +606,7 @@ def renderer_supports_images(renderer_name: str) -> bool:
             "_vl",
             "qwen3_5",
             "qwen3_6",
+            "qwen3_8",
             "kimi_k25",
             "kimi_k26",
             "kimi_k27",
