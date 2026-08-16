@@ -341,6 +341,41 @@ class TestResume:
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-3")
 
     @pytest.mark.parametrize(
+        "checkpoint_ref, expected_resolve",
+        [
+            ("step-3", ("step-3",)),
+            ("job-1:step-3", ("step-3",)),
+            ("other-job:step-3", ("step-3",)),
+        ],
+    )
+    def test_explicit_checkpoint_can_warm_start_weights_without_optimizer(
+        self, log_dir, checkpoint_ref, expected_resolve
+    ):
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"step-3": 24}, f)
+
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+        info = ckpt.resume(
+            init_from_checkpoint=checkpoint_ref,
+            restore_optimizer=False,
+        )
+
+        expected_source = (
+            "other-job" if checkpoint_ref.startswith("other-job:") else None
+        )
+        assert info == ResumeInfo(
+            step=0, data_consumed=0, source_job_id=expected_source
+        )
+        client.resolve_checkpoint_path.assert_called_once_with(
+            *expected_resolve, source_job_id=expected_source
+        )
+        client.load_state.assert_called_once_with(
+            "path://%s/step-3" % (expected_source or "self")
+        )
+        client.load_state_with_optimizer.assert_not_called()
+
+    @pytest.mark.parametrize(
         "checkpoint_ref",
         [
             "gs://bucket/checkpoints/step-3",

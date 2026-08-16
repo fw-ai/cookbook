@@ -437,6 +437,7 @@ class TrainingCheckpoints:
         *,
         init_from_checkpoint: str | None = None,
         warm_start_from_adapter: str | None = None,
+        restore_optimizer: bool = True,
     ) -> ResumeInfo | None:
         """Determine resume state and load weights into the live client.
 
@@ -446,6 +447,8 @@ class TrainingCheckpoints:
            current-job-qualified ref or serverless current-run ref resumes the
            recipe step/cursor; dedicated bare/path/cross-job and serverless
            cross-run refs restore trainer state but reset the recipe position.
+           Set ``restore_optimizer=False`` for a weights-only warm start; this
+           always resets the recipe position as well.
         2. Newest resumable row on the control plane — auto-resume.
         3. ``warm_start_from_adapter`` — HF PEFT adapter (weights only).
         4. Fresh start (returns ``None``).
@@ -462,7 +465,7 @@ class TrainingCheckpoints:
                 serverless=self._serverless,
                 trainer_id=self._trainer_id,
             )
-            if ref.restore_recipe_state:
+            if ref.restore_recipe_state and restore_optimizer:
                 path = self._client.resolve_checkpoint_path(ref.checkpoint_name)
                 logger.info(
                     "Resuming from explicit same-trainer checkpoint: %s",
@@ -481,12 +484,16 @@ class TrainingCheckpoints:
                 source_job_id=ref.source_job_id,
             )
             logger.info(
-                "Initializing trainer state from %s (weights and optimizer "
-                "restored; recipe step and dataset cursor reset to 0)",
+                "Initializing trainer state from %s (weights restored; optimizer %s; "
+                "recipe step and dataset cursor reset to 0)",
                 path,
+                "restored" if restore_optimizer else "reset",
             )
             t0 = time.time()
-            self._client.load_state_with_optimizer(path)
+            if restore_optimizer:
+                self._client.load_state_with_optimizer(path)
+            else:
+                self._client.load_state(path)
             logger.info("Checkpoint loaded (%.1fs)", time.time() - t0)
             return ResumeInfo(
                 step=0,

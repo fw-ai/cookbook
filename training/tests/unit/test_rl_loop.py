@@ -52,6 +52,57 @@ def test_config_excludes_async_and_advanced_sync_scheduling_knobs() -> None:
         assert not hasattr(cfg, field_name)
 
 
+def test_main_threads_private_weights_only_checkpoint_override(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Service:
+        trainer_job_id = "trainer"
+        reference_client_job_id = None
+
+        def create_training_client(self, *_args, **_kwargs):
+            return object()
+
+        def close(self):
+            pass
+
+    class _Checkpoints:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def resume(self, **kwargs):
+            captured.update(kwargs)
+            raise _StopAfterProvisioning
+
+    _stub_provisioning_dependencies(monkeypatch)
+    monkeypatch.setattr(module, "build_service_client", lambda **_kwargs: _Service())
+    monkeypatch.setattr(
+        module,
+        "ReconnectableClient",
+        SimpleNamespace(from_training_client=lambda client, **_kwargs: client),
+    )
+    monkeypatch.setattr(module, "TrainingCheckpoints", _Checkpoints)
+
+    cfg = module.Config(
+        log_path="/tmp/rl-test",
+        init_from_checkpoint="step-16",
+        kl_beta=0,
+        deployment=module.DeployConfig(tokenizer_model="tokenizer"),
+    )
+    cfg._restore_optimizer_from_init_checkpoint = False
+
+    with pytest.raises(_StopAfterProvisioning):
+        module.main(
+            cfg,
+            sample_prompt_fn=_external_sample_prompt_fn,
+            rows=[{"id": 0}],
+        )
+
+    assert captured == {
+        "init_from_checkpoint": "step-16",
+        "restore_optimizer": False,
+    }
+
+
 def test_main_has_direct_client_grpo_customization_boundary() -> None:
     source = inspect.getsource(module.main)
 
