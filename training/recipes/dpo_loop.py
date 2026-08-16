@@ -649,6 +649,16 @@ def main(
 ):
     cfg = config
     _validate_dpo_beta(cfg.beta)
+    # Internal shape validation can request a resumable-only live handoff
+    # without expanding the public cookbook/control-plane Config contract.
+    final_checkpoint_promotable = getattr(cfg, "_save_final_checkpoint_promotable", True)
+    if cfg.output_model_id and not (
+        cfg.save_final_checkpoint and final_checkpoint_promotable
+    ):
+        raise ValueError(
+            "output_model_id requires save_final_checkpoint=True and "
+            "save_final_checkpoint_promotable=True"
+        )
 
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
@@ -851,7 +861,7 @@ def main(
             ckpt.save(
                 cp_name,
                 resumable=True,
-                promotable=True,
+                promotable=final_checkpoint_promotable,
                 data_consumed=cursor.value,
             )
 
