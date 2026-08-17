@@ -274,6 +274,25 @@ def test_registered_factory_returns_thinking_strip(tokenizer):
     assert type(r).build_supervised_examples is not Renderer.build_supervised_examples
 
 
+def test_registered_disable_thinking_factory_uses_chat_mode(tokenizer):
+    """``get_renderer("deepseek_v4_disable_thinking", tok)`` renders chat mode."""
+    r = get_renderer("deepseek_v4_disable_thinking", tokenizer)
+    assert isinstance(r, DeepseekV4Renderer)
+    assert r.thinking_mode == "chat"
+    # Chat mode never opens a thinking block on the terminal assistant turn.
+    assert r.has_extension_property is True
+
+
+def test_disable_thinking_generation_suffix_closes_think(tokenizer):
+    """The disable-thinking renderer's generation suffix is ``<|Assistant|></think>``."""
+    from tinker_cookbook.renderers.base import RenderContext
+
+    r = get_renderer("deepseek_v4_disable_thinking", tokenizer)
+    ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
+    suffix = r._get_generation_suffix("assistant", ctx)
+    assert tokenizer.decode(suffix) == _ASSISTANT_SP + _THINK_CLOSE
+
+
 def test_keep_thinking_renderer_has_extension_property(renderer_thinking_keep):
     assert renderer_thinking_keep.has_extension_property is True
 
