@@ -101,6 +101,7 @@ _UNCOVERED_RENDERERS = {
         "case would skip; training/tests/unit/test_deepseek_v4_renderer.py skips "
         "for the same reason"
     ),
+    "deepseek_v4_disable_thinking": "shares the deepseek_v4 tokenizer, so it skips for that reason too",
 }
 
 # Renderers that cannot render ANY multi-target multi-turn row, weighted or not.
