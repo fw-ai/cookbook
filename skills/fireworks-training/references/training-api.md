@@ -81,7 +81,7 @@ Recipes cover SFT, DPO/ORPO, and RL (GRPO, DAPO, GSPO, CISPO).
 
 - `forward_backward` — built-in losses by id (e.g. `"cross_entropy"`), no extra forward pass.
 - `forward_backward_custom(datums, loss_fn)` — your Python loss; returns per-token logprobs with gradients. **Loss runs locally; forward/backward run on remote GPUs.**
-- `forward` — forward-only (e.g. reference-model logprobs).
+- `forward` — forward-only (e.g. reference-model logprobs); optional `loss_fn_config={"top_k": K}` returns per-token top-K logprobs/indices — see below.
 - `optim_step(...)` — optimizer update after gradient accumulation.
 - `save_weights_for_sampler()` + `create_sampling_client()` — export a checkpoint + stand up a sampler (weight sync for eval/rollouts).
 
@@ -92,6 +92,27 @@ def loss_fn(data, logprobs_list):   # logprobs_list: per-token, requires_grad
     # return (scalar differentiable loss, {metrics for logging})
     ...
 ```
+
+### Top-K logprobs from `forward` (entropy / distributional KL)
+
+`forward` (forward-only, no gradient) accepts an optional `loss_fn_config={"top_k": K}`. When set, the trainer returns per-token top-K logprobs and their vocab ids alongside the requested-token `logprobs`, in the same pass — no separate full-vocab forward needed:
+
+```python
+result = training_client.forward(
+    data,
+    "cross_entropy",                        # loss_fn id; ignored in forward-only mode
+    loss_fn_config={"top_k": 20},
+).result()
+
+for item in result.loss_fn_outputs:
+    logprobs = item["logprobs"].data             # requested-token logprobs, shape [seq_len]
+    top_k_logprobs = item["top_k_logprobs"].data  # shape [seq_len, 20], float32, sorted descending
+    top_k_indices = item["top_k_indices"].data    # shape [seq_len, 20], int64 vocab ids, same order
+```
+
+Use this to compute per-token distribution statistics a single requested-id logprob can't give you — entropy (`-Σ p·log p`), collision (`Σ p²`), or an approximate KL against a reference model's own top-K — without paying for a full-vocab forward pass. `top_k_logprobs`/`top_k_indices` are populated only when `top_k > 0`; `top_k` must be `>= 0` or the call raises `ValueError`.
+
+**Status:** this is a real, currently-functional path (SDK → `/api/v1/forward` → per-datum top-K extraction), but it predates this doc — it shipped as an internal opt-in extension for offline train/inference numerics verification, is not a Tinker-standard `ForwardBackwardOutput` field, and isn't consumed by any built-in loss (`forward_backward`, `cross_entropy`, `kl_distillation` all ignore it). Treat it as best-effort: verify shape/behavior against the installed SDK before depending on it, and don't build a supported production loss on it without confirming with the training team first.
 
 ## RL: async loop + rollouts
 
