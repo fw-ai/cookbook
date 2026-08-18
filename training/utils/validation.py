@@ -35,6 +35,7 @@ except ImportError:
             )
         ]
 from training.utils.config import DeployConfig, WeightSyncConfig
+from training.utils.runner import UserConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ def validate_config(
         errors.extend(validate_output_model_id(output_model_id))
 
     if errors:
-        raise RuntimeError("\n\n".join(errors))
+        raise UserConfigError("\n\n".join(errors))
 
 
 def validate_preflight(
@@ -112,7 +113,7 @@ def validate_preflight(
             )
 
     if errors:
-        raise RuntimeError("\n\n".join(errors))
+        raise UserConfigError("\n\n".join(errors))
 
     validate_config(
         base_model=getattr(args, "base_model", "") or "",

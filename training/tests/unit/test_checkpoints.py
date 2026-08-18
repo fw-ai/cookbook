@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from training.utils.runner import UserConfigError
 from training.utils.checkpoints import (
     DATALOADER_BASE_NAME,
     ResumeInfo,
@@ -119,7 +120,7 @@ def _make(
 
 class TestValidateWarmStartConfig:
     def test_mutually_exclusive(self):
-        with pytest.raises(ValueError, match="mutually exclusive"):
+        with pytest.raises(UserConfigError, match="mutually exclusive"):
             validate_warm_start_config(
                 warm_start_from_adapter="some/adapter",
                 init_from_checkpoint="job:step-5",
@@ -127,7 +128,7 @@ class TestValidateWarmStartConfig:
             )
 
     def test_warm_start_requires_lora(self):
-        with pytest.raises(ValueError, match="cfg.base_model"):
+        with pytest.raises(UserConfigError, match="cfg.base_model"):
             validate_warm_start_config(
                 warm_start_from_adapter="some/adapter",
                 init_from_checkpoint=None,

@@ -4,6 +4,7 @@ import pytest
 import torch
 
 import training.recipes.embedding_loop as module
+from training.utils.runner import UserConfigError
 
 
 class _StopAfterProvisioning(RuntimeError):
@@ -117,7 +118,7 @@ def test_main_rejects_invalid_base_model(monkeypatch):
         dataset="/tmp/pairs.jsonl",
         tokenizer_model="Qwen/Qwen3-Embedding-8B",
     )
-    with pytest.raises(RuntimeError, match="Invalid base_model"):
+    with pytest.raises(UserConfigError, match="Invalid base_model"):
         module.main(cfg)
 
 

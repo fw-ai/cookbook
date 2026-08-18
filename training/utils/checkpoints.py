@@ -43,6 +43,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 import training.utils.fileio as fileio
+from training.utils.runner import UserConfigError
 
 DATALOADER_BASE_NAME = "dataloader.json"
 DATALOADER_HISTORY_KEEP = 20
@@ -99,11 +100,11 @@ def validate_warm_start_config(
     not via this API — this helper only checks the LoRA adapter path.
     """
     if warm_start_from_adapter and init_from_checkpoint:
-        raise ValueError(
+        raise UserConfigError(
             "warm_start_from_adapter and init_from_checkpoint are mutually exclusive"
         )
     if warm_start_from_adapter and lora_rank == 0:
-        raise ValueError(
+        raise UserConfigError(
             "warm_start_from_adapter requires lora_rank > 0. "
             "For full-param warm-start, set cfg.base_model to the promoted model "
             "resource name — the training session will initialize from it directly."
