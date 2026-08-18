@@ -705,7 +705,7 @@ class TestTrainLoop:
         cfg = module.Config(
             log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0,
         )
-        with pytest.raises(RuntimeError, match="No valid pairs after tokenization"):
+        with pytest.raises(module.DatasetError, match="after tokenization"):
             asyncio.run(
                 module._train_loop(
                     ds, None, CountingReference(), _FakePolicy(),

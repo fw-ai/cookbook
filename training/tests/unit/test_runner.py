@@ -9,7 +9,13 @@ import time
 from pathlib import Path
 
 import pytest
-from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
+from training.utils.runner import (
+    DatasetError,
+    NO_VALID_TRAINING_EXAMPLES_MESSAGE,
+    RunnerConfig,
+    RunnerIO,
+    RunStatus,
+)
 from training.utils.runner_state import write_running_progress
 
 # -- RunnerConfig -------------------------------------------------------------
@@ -433,6 +439,20 @@ class TestRunnerIOContextManager:
             data["code"] == 3
         )  # INVALID_ARGUMENT, not the generic FAILED_PRECONDITION
         assert data["message"] == "bad key"
+        assert "details" not in data
+
+    def test_dataset_error_writes_invalid_argument(self, tmp_path):
+        """Empty-after-tokenize failures surface as INVALID_ARGUMENT, not FAILED_PRECONDITION."""
+        path = str(tmp_path / "status.json")
+        runner = RunnerIO(RunnerConfig(status_file=path))
+
+        with pytest.raises(DatasetError, match="after tokenization"):
+            with runner:
+                raise DatasetError(NO_VALID_TRAINING_EXAMPLES_MESSAGE)
+
+        data = json.loads(open(path).read())
+        assert data["code"] == 3
+        assert data["message"] == NO_VALID_TRAINING_EXAMPLES_MESSAGE
         assert "details" not in data
 
     @pytest.mark.parametrize(

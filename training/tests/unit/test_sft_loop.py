@@ -717,7 +717,7 @@ class TestPrepareDatasets:
         path = _write_jsonl_at(tmp_path / "empty.jsonl", [])
         monkeypatch.setattr(module, "_render_one_worker", lambda r: r)
 
-        with pytest.raises(RuntimeError, match="No examples found"):
+        with pytest.raises(module.DatasetError, match="No examples found"):
             module._prepare_datasets(self._cfg(tmp_path, path))
 
     def test_explicit_eval_dataset(self, tmp_path, monkeypatch):

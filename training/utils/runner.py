@@ -85,6 +85,30 @@ class UserConfigError(Exception):
     """
 
 
+class DatasetError(UserConfigError):
+    """Raised when a recipe has no trainable examples after rendering.
+
+    Typical causes: every row filtered by sequence length, or no assistant
+    tokens selected by ``train_on_what`` / per-message ``weight``. The
+    control plane surfaces this as a user-fixable dataset error instead of
+    sanitizing it to Internal error.
+    """
+
+
+# Keep aligned with firetitan managed dataset validation so customers see one message.
+NO_VALID_TRAINING_EXAMPLES_MESSAGE = (
+    "No valid training examples remained after tokenization. Verify that the "
+    "dataset contains trainable assistant messages for the selected "
+    "train_on_what setting and that examples fit the configured maximum "
+    "sequence length, then retry."
+)
+NO_VALID_PREFERENCE_PAIRS_MESSAGE = (
+    "No valid preference pairs remained after tokenization. Verify that the "
+    "dataset contains valid chosen and rejected examples that fit the "
+    "configured maximum sequence length, then retry."
+)
+
+
 class WandbConfigError(UserConfigError):
     """Raised when Weights & Biases auth/config is invalid (bad key, entity, or project)."""
 

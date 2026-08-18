@@ -59,7 +59,9 @@ from training.utils import (
     DEFAULT_ADAM,
     DEFAULT_RENDER_WORKERS,
     AppendOnlyPickleLog,
+    DatasetError,
     DeployConfig,
+    NO_VALID_PREFERENCE_PAIRS_MESSAGE,
     TrainerConfig,
     JsonlRenderDataset,
     RawRowCursor,
@@ -606,7 +608,7 @@ async def _train_loop(
             raw_rows_consumed,
         )
     if rendered_pairs == 0 or pairs_per_epoch == 0:
-        raise RuntimeError("No valid pairs after tokenization")
+        raise DatasetError(NO_VALID_PREFERENCE_PAIRS_MESSAGE)
 
     total_steps = ((pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
     pbar.total = total_steps
@@ -805,7 +807,7 @@ def main(
 
         pair_dataset = JsonlRenderDataset(cfg.dataset, _render_pair_worker)
         if len(pair_dataset) == 0:
-            raise RuntimeError(f"No data found in {cfg.dataset}")
+            raise DatasetError(f"No data found in {cfg.dataset}")
 
         logger.info(
             "Streaming %d raw preference rows from %s (renderer=%s, workers=%d%s)",
