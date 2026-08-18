@@ -110,9 +110,7 @@ for item in result.loss_fn_outputs:
     top_k_indices = item["top_k_indices"].data    # shape [seq_len, 20], int64 vocab ids, same order
 ```
 
-Use this to compute per-token distribution statistics a single requested-id logprob can't give you — entropy (`-Σ p·log p`), collision (`Σ p²`), or an approximate KL against a reference model's own top-K — without paying for a full-vocab forward pass. `top_k_logprobs`/`top_k_indices` are populated only when `top_k > 0`; `top_k` must be `>= 0` or the call raises `ValueError`.
-
-**Status:** this is a real, currently-functional path (SDK → `/api/v1/forward` → per-datum top-K extraction), but it predates this doc — it shipped as an internal opt-in extension for offline train/inference numerics verification, is not a Tinker-standard `ForwardBackwardOutput` field, and isn't consumed by any built-in loss (`forward_backward`, `cross_entropy`, `kl_distillation` all ignore it). Treat it as best-effort: verify shape/behavior against the installed SDK before depending on it, and don't build a supported production loss on it without confirming with the training team first.
+Use it for per-token distribution statistics a single requested-id logprob can't give you — entropy (`-Σ p·log p`), collision (`Σ p²`), or an approximate KL against a reference model's own top-K. Fields are populated only when `top_k > 0` (`top_k` must be `>= 0`, else `ValueError`). They're for analysis — no built-in loss reads them.
 
 ## RL: async loop + rollouts
 
