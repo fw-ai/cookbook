@@ -4,17 +4,29 @@ from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from training.utils import serverless as serverless_utils
+from training.utils.account import FireworksAccountProvenanceError
 
 
 class _FakeService:
+    instances = []
+
     def __init__(self, *, base_url, api_key, default_headers):
         self.base_url = base_url
         self.api_key = api_key
         self.default_headers = default_headers
         self.training_session_id = "ts-1234"
+        self.training_session_name = (
+            "accounts/test-account-id/trainingSessions/ts-1234"
+        )
+        self.lora_creation_calls = 0
+        self.closed = False
+        self.instances.append(self)
 
     def create_lora_training_client(self, base_model, rank, alpha):
+        self.lora_creation_calls += 1
         assert base_model == "accounts/fireworks/models/qwen3-4b"
         assert rank == 8
         assert alpha == 32
@@ -23,6 +35,9 @@ class _FakeService:
             run_id="run-abcdef",
             run_name="accounts/test-account-id/trainingRuns/run-abcdef",
         )
+
+    def close(self):
+        self.closed = True
 
 
 class _FakeFireworksClient:
@@ -45,6 +60,11 @@ def test_setup_serverless_training_uses_service_training_session_id(
 ):
     created = {}
 
+    monkeypatch.setattr(
+        serverless_utils,
+        "assert_expected_fireworks_account",
+        lambda **_kwargs: "test-account-id",
+    )
     monkeypatch.setattr(serverless_utils, "FiretitanServiceClient", _FakeService)
     monkeypatch.setattr(serverless_utils, "FireworksClient", _FakeFireworksClient)
 
@@ -90,3 +110,69 @@ def test_setup_serverless_training_uses_service_training_session_id(
             "pageSize": 200,
         }
     ]
+
+
+def test_account_mismatch_prevents_serverless_session_creation(monkeypatch, tmp_path):
+    _FakeService.instances = []
+    monkeypatch.setattr(serverless_utils, "FiretitanServiceClient", _FakeService)
+
+    def reject_account(**_kwargs):
+        raise FireworksAccountProvenanceError("wrong authenticated account")
+
+    monkeypatch.setattr(
+        serverless_utils,
+        "assert_expected_fireworks_account",
+        reject_account,
+    )
+    cfg = SimpleNamespace(
+        base_model="accounts/fireworks/models/qwen3-4b",
+        lora_rank=8,
+        max_seq_len=512,
+        step_timeout=None,
+        log_path=str(tmp_path),
+    )
+
+    with ExitStack() as stack, pytest.raises(
+        FireworksAccountProvenanceError, match="wrong authenticated account"
+    ):
+        serverless_utils.setup_serverless_training(
+            cfg,
+            api_key="fw-test-key",
+            base_url="https://api.example.test",
+            additional_headers=None,
+            stack=stack,
+            expected_account_id="research-train",
+        )
+
+    assert _FakeService.instances == []
+
+
+def test_post_create_session_account_mismatch_closes_and_rejects(monkeypatch):
+    service = _FakeService(
+        base_url="https://api.example.test/training/v1/serverless",
+        api_key="fw-test-key",
+        default_headers=None,
+    )
+    service.training_session_name = (
+        "accounts/other-account/trainingSessions/ts-1234"
+    )
+    monkeypatch.setattr(
+        serverless_utils,
+        "assert_expected_fireworks_account",
+        lambda **_kwargs: "research-train",
+    )
+
+    with pytest.raises(
+        FireworksAccountProvenanceError,
+        match="session account differs",
+    ):
+        serverless_utils.create_lora_training_client_for_account(
+            service,
+            expected_account_id="research-train",
+            base_model="accounts/fireworks/models/qwen3-4b",
+            rank=8,
+            alpha=32,
+        )
+
+    assert service.lora_creation_calls == 1
+    assert service.closed is True

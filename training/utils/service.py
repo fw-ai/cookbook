@@ -10,6 +10,7 @@ from fireworks.training.sdk import (
     FiretitanServiceClient,
 )
 
+from training.utils.account import assert_expected_fireworks_account
 from training.utils.config import DeployConfig, TrainerConfig
 
 
@@ -125,6 +126,7 @@ def build_service_client(
     cleanup_trainer_on_close: bool = False,
     cleanup_deployment_on_close: DeploymentCleanupOnClose | None = None,
     reference_required: bool = False,
+    expected_account_id: str | None = None,
 ) -> FiretitanServiceClient:
     """Create an SDK-managed service client from cookbook config."""
     service_kwargs = _firetitan_service_kwargs(
@@ -139,6 +141,12 @@ def build_service_client(
         cleanup_trainer_on_close=cleanup_trainer_on_close,
         cleanup_deployment_on_close=cleanup_deployment_on_close,
         reference_required=reference_required,
+    )
+    assert_expected_fireworks_account(
+        api_key=api_key,
+        base_url=base_url,
+        additional_headers=additional_headers,
+        expected_account_id=expected_account_id,
     )
     return FiretitanServiceClient.from_firetitan_config(
         api_key=api_key,

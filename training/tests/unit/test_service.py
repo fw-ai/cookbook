@@ -12,6 +12,17 @@ from training.utils.config import DeployConfig, TrainerConfig
 from training.utils.service import build_service_client, resolve_router_replay_enabled
 
 
+@pytest.fixture(autouse=True)
+def _stub_account_provenance(monkeypatch):
+    """Keep mapping tests offline; focused tests below cover the guard boundary."""
+
+    monkeypatch.setattr(
+        service,
+        "assert_expected_fireworks_account",
+        lambda **_kwargs: "research-train",
+    )
+
+
 def _trainer_config(**overrides) -> TrainerConfig:
     fields = dict(
         training_shape_id="ts-x",
@@ -176,6 +187,83 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "hot_load_transition_type": "SYNC",
         }
     ]
+
+
+def test_build_service_client_checks_account_before_sdk_creation(monkeypatch):
+    calls: list[tuple[str, object]] = []
+
+    def reject_wrong_account(**kwargs):
+        calls.append(("account", kwargs))
+        raise RuntimeError("wrong account")
+
+    class FakeServiceClient:
+        @staticmethod
+        def from_firetitan_config(**_kwargs):
+            calls.append(("create", None))
+            return "unreachable"
+
+    monkeypatch.setattr(service, "assert_expected_fireworks_account", reject_wrong_account)
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    with pytest.raises(RuntimeError, match="wrong account"):
+        build_service_client(
+            api_key="secret",
+            base_url="https://api.example.com",
+            additional_headers={"X-Test": "1"},
+            base_model="accounts/fireworks/models/base",
+            tokenizer_model=None,
+            max_lora_rank=8,
+            max_context_length=4096,
+            learning_rate=1e-5,
+            trainer=TrainerConfig(training_shape_id="ts-x"),
+            expected_account_id="research-train",
+        )
+
+    assert calls == [
+        (
+            "account",
+            {
+                "api_key": "secret",
+                "base_url": "https://api.example.com",
+                "additional_headers": {"X-Test": "1"},
+                "expected_account_id": "research-train",
+            },
+        )
+    ]
+
+
+def test_build_service_client_allows_sdk_creation_after_account_match(monkeypatch):
+    calls: list[str] = []
+
+    def accept_account(**kwargs):
+        assert kwargs["expected_account_id"] == "research-train"
+        calls.append("account")
+        return "research-train"
+
+    class FakeServiceClient:
+        @staticmethod
+        def from_firetitan_config(**_kwargs):
+            calls.append("create")
+            return "service-sentinel"
+
+    monkeypatch.setattr(service, "assert_expected_fireworks_account", accept_account)
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    result = build_service_client(
+        api_key="secret",
+        base_url="https://api.example.com",
+        additional_headers=None,
+        base_model="accounts/fireworks/models/base",
+        tokenizer_model=None,
+        max_lora_rank=8,
+        max_context_length=4096,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-x"),
+        expected_account_id="research-train",
+    )
+
+    assert result == "service-sentinel"
+    assert calls == ["account", "create"]
 
 
 def test_build_service_client_forwards_max_lora_rank(monkeypatch):

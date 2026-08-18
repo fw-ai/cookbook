@@ -12,6 +12,7 @@ from training.examples.rl import vanilla_sampler
 from training.recipes.experiment import async_rl_loop_serverless as loop
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.rollout import RolloutRun, RolloutSample
+from training.utils.account import FireworksAccountProvenanceError
 
 
 class _Future:
@@ -169,6 +170,20 @@ def _datum_group() -> PromptGroup:
 def _patch_runtime(monkeypatch, service: _Service) -> None:
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setattr(loop, "_make_service", lambda *_args: service)
+    monkeypatch.setattr(
+        loop,
+        "resolve_serverless_account_before_session",
+        lambda **_kwargs: "test",
+    )
+    monkeypatch.setattr(
+        loop,
+        "create_lora_training_client_for_account",
+        lambda service, **kwargs: (
+            service.create_lora_training_client(
+                base_model=kwargs["base_model"], rank=kwargs["rank"]
+            )
+        ),
+    )
     monkeypatch.setattr(loop, "load_tokenizer", lambda *_args: object())
     monkeypatch.setattr(loop, "_router_replay_enabled", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(loop, "setup_wandb", lambda *_args, **_kwargs: True)
@@ -331,6 +346,11 @@ def test_sampling_preflight_finishes_wandb_when_session_creation_fails(
     monkeypatch.setattr(loop, "setup_wandb", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         loop,
+        "resolve_serverless_account_before_session",
+        lambda **_kwargs: "test",
+    )
+    monkeypatch.setattr(
+        loop,
         "_make_service",
         lambda *_args: (_ for _ in ()).throw(PermissionError("beta disabled")),
     )
@@ -351,6 +371,41 @@ def test_sampling_preflight_finishes_wandb_when_session_creation_fails(
         )
 
     assert finished == ["metrics.jsonl"]
+
+
+def test_sampling_preflight_account_mismatch_creates_no_session(monkeypatch) -> None:
+    service = _Service()
+    _patch_runtime(monkeypatch, service)
+    service_creations: list[bool] = []
+    monkeypatch.setattr(
+        loop,
+        "_make_service",
+        lambda *_args: service_creations.append(True),
+    )
+
+    def reject_account(**_kwargs):
+        raise FireworksAccountProvenanceError("wrong authenticated account")
+
+    monkeypatch.setattr(
+        loop,
+        "resolve_serverless_account_before_session",
+        reject_account,
+    )
+
+    async def evaluate(_step, _rollout_fn):
+        return {}
+
+    with pytest.raises(
+        FireworksAccountProvenanceError, match="wrong authenticated account"
+    ):
+        loop.run_sampling_preflight(
+            loop.Config(max_rows=1, expected_account_id="research-train"),
+            rollout_fn_factory=lambda _setup: None,
+            evaluation_fn=evaluate,
+        )
+
+    assert service.lora_creation_calls == []
+    assert service_creations == []
 
 
 def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:

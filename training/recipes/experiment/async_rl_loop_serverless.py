@@ -67,6 +67,10 @@ from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import datum_target_len
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
 from training.utils.rl.tis import TISConfig
+from training.utils.serverless import (
+    create_lora_training_client_for_account,
+    resolve_serverless_account_before_session,
+)
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
 logger = logging.getLogger(__name__)
@@ -97,6 +101,7 @@ class Config:
     """Serverless async-RL configuration with no dedicated resource fields."""
 
     base_model: str = "accounts/fireworks/models/kimi-k3"
+    expected_account_id: str | None = None
     tokenizer_model: str = "moonshotai/Kimi-K3"
     tokenizer_revision: str | None = None
     dataset: str | None = None
@@ -459,9 +464,17 @@ def run_sampling_preflight(
     service: FiretitanServiceClient | None = None
     sampler: ServerlessSampler | None = None
     try:
+        account_id = resolve_serverless_account_before_session(
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=read_api_extra_headers_env(),
+            expected_account_id=cfg.expected_account_id,
+        )
         service = _make_service(api_key, base_url)
         tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision)
-        training_client = service.create_lora_training_client(
+        training_client = create_lora_training_client_for_account(
+            service,
+            expected_account_id=account_id,
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
         )
@@ -595,9 +608,17 @@ def main(
     service: FiretitanServiceClient | None = None
     sampler: ServerlessSampler | None = None
     try:
+        account_id = resolve_serverless_account_before_session(
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=read_api_extra_headers_env(),
+            expected_account_id=cfg.expected_account_id,
+        )
         service = _make_service(api_key, base_url)
         tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision)
-        training_client = service.create_lora_training_client(
+        training_client = create_lora_training_client_for_account(
+            service,
+            expected_account_id=account_id,
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
         )

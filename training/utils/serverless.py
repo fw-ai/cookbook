@@ -11,10 +11,114 @@ path so the training loop is identical from there on.
 
 from __future__ import annotations
 
+from typing import Any, NoReturn
+
 from fireworks.training.sdk import FireworksClient, FiretitanServiceClient
 
+from training.utils.account import (
+    FireworksAccountProvenanceError,
+    assert_expected_fireworks_account,
+)
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.client import DEFAULT_TIMEOUT_S, ReconnectableClient
+
+
+_DEFAULT_LORA_ALPHA = object()
+
+
+def _close_after_account_guard_failure(
+    service: FiretitanServiceClient,
+    error: Exception,
+) -> NoReturn:
+    """Close a possibly connected service, then raise the provenance error."""
+
+    try:
+        service.close()
+    except Exception as close_error:
+        error.add_note(f"serverless service cleanup also failed: {close_error}")
+        raise error from close_error
+    raise error
+
+
+def assert_serverless_session_account(
+    service: FiretitanServiceClient,
+    expected_account_id: str,
+) -> str:
+    """Assert that a created serverless session belongs to the gated account."""
+
+    session_name = getattr(service, "training_session_name", None)
+    parts = session_name.split("/") if isinstance(session_name, str) else []
+    if (
+        len(parts) != 4
+        or parts[0] != "accounts"
+        or parts[1] != expected_account_id
+        or parts[2] != "trainingSessions"
+        or not parts[3]
+    ):
+        _close_after_account_guard_failure(
+            service,
+            FireworksAccountProvenanceError(
+                "serverless training session account differs from the "
+                "pre-creation account gate: "
+                f"session_name={session_name!r}, "
+                f"expected_account={expected_account_id!r}"
+            ),
+        )
+    return session_name
+
+
+def resolve_serverless_account_before_session(
+    *,
+    api_key: str,
+    base_url: str,
+    additional_headers: dict[str, str] | None,
+    expected_account_id: str | None,
+) -> str:
+    """Resolve account identity before constructing a session-owning service."""
+
+    return assert_expected_fireworks_account(
+        api_key=api_key,
+        base_url=base_url,
+        additional_headers=additional_headers,
+        expected_account_id=expected_account_id,
+    )
+
+
+def create_lora_training_client_for_account(
+    service: FiretitanServiceClient,
+    *,
+    expected_account_id: str,
+    base_model: str,
+    rank: int,
+    alpha: int | None | object = _DEFAULT_LORA_ALPHA,
+) -> Any:
+    """Create one LoRA client and assert its session account.
+
+    Callers must obtain ``expected_account_id`` through
+    :func:`resolve_serverless_account_before_session` before constructing
+    ``service``. The resource-name assertion is defense in depth against an SDK
+    or routing discrepancy during session/model creation.
+    """
+
+    create_kwargs: dict[str, Any] = {
+        "base_model": base_model,
+        "rank": rank,
+    }
+    if alpha is not _DEFAULT_LORA_ALPHA:
+        create_kwargs["alpha"] = alpha
+    try:
+        training_client = service.create_lora_training_client(**create_kwargs)
+        assert_serverless_session_account(service, expected_account_id)
+    except FireworksAccountProvenanceError:
+        # The post-create guard already closes the service.
+        raise
+    except Exception as error:
+        try:
+            service.close()
+        except Exception as close_error:
+            error.add_note(f"serverless service cleanup also failed: {close_error}")
+        raise
+    return training_client
 
 
 class ServerlessCheckpointClient:
@@ -63,7 +167,15 @@ class ServerlessCheckpointClient:
         )
 
 
-def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, stack):
+def setup_serverless_training(
+    cfg,
+    *,
+    api_key,
+    base_url,
+    additional_headers,
+    stack,
+    expected_account_id: str | None = None,
+):
     """Build the training + checkpoint handles for a serverless SFT run.
 
     Returns ``(service, client, ckpt, session_id, max_seq_len)``. The caller
@@ -82,13 +194,25 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
             "serverless mode requires Config.max_seq_len to be set "
             "(there is no training shape to resolve it from)."
         )
+    guarded_account_id = resolve_serverless_account_before_session(
+        api_key=api_key,
+        base_url=base_url,
+        additional_headers=additional_headers,
+        expected_account_id=(
+            expected_account_id
+            if expected_account_id is not None
+            else getattr(cfg, "expected_account_id", None)
+        ),
+    )
     service = FiretitanServiceClient(
         base_url=f"{base_url}/training/v1/serverless",
         api_key=api_key,
         default_headers=additional_headers or None,
     )
-    training_client = service.create_lora_training_client(
-        cfg.base_model,
+    training_client = create_lora_training_client_for_account(
+        service,
+        expected_account_id=guarded_account_id,
+        base_model=cfg.base_model,
         rank=cfg.lora_rank,
         alpha=getattr(cfg, "lora_alpha", 32),
     )
@@ -119,7 +243,7 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
     stack.callback(cp_client.close)
     ckpt = TrainingCheckpoints(
         client,
-        ServerlessCheckpointClient(cp_client, cp_client.account_id),
+        ServerlessCheckpointClient(cp_client, guarded_account_id),
         trainer_id=session_id,
         log_path=cfg.log_path,
         lora_rank=cfg.lora_rank,
