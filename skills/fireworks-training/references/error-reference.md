@@ -65,12 +65,16 @@ Do not derive a reason from `status.message`, raw exceptions, or other
 human-readable text. If ErrorInfo is absent, omit the reason and keep the
 classification unknown.
 
-Managed recipes may receive private source-native Tinker or serverless-gateway
-context from the SDK. The status writer maps only registered `error_class` or
-gateway `code` values into ErrorInfo; unknown, malformed, or conflicting values
-stay unclassified. Raw errors, classes, codes, types, and messages are not
-copied into status files or support payloads; only registered ErrorInfo fields
-and bounded allowlisted metadata such as Tinker `category` are emitted.
+The SDK preserves complete Lifecycle statuses and bounded source-native Tinker
+or serverless-gateway context without mapping it to managed categories. The
+internal managed runtime copies an exact Tinker `error_class` or gateway
+`error.code` into ErrorInfo and preserves optional bounded metadata such as
+Tinker `category` or gateway `type`. Control Plane owns the exact source-native
+to canonical mapping. Unknown, malformed, differently cased, whitespace-
+modified, or conflicting structured values fail closed; statuses without
+ErrorInfo retain the legacy fallback. Cookbook recipes do not map source
+identifiers or compose managed ErrorInfo. Do not copy raw error messages or
+tracebacks into support payloads.
 
 Route product usage and configuration questions to the
 [training docs](https://docs.fireworks.ai/fine-tuning/finetuning-intro.md), and
