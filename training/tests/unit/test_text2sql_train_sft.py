@@ -68,6 +68,28 @@ def test_parse_args_uses_bundled_text2sql_dataset_by_default(monkeypatch):
     assert os.path.basename(args.dataset_path) == "text2sql_dataset.jsonl"
 
 
+def test_no_checkpoint_disables_periodic_and_final_saves(monkeypatch):
+    module = _load_module(monkeypatch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["train_sft.py", "--output-model-id", "out-model", "--no-checkpoint"],
+    )
+    monkeypatch.setattr(module.os.path, "exists", lambda path: True)
+    captured = {}
+
+    def fake_main(config):
+        captured["config"] = config
+        return {}
+
+    monkeypatch.setattr(module.sft_loop, "main", fake_main)
+
+    module.main()
+
+    assert captured["config"].dcp_save_interval == -1
+    assert captured["config"].save_final_checkpoint is False
+
+
 def test_main_raises_when_dataset_is_missing(monkeypatch):
     module = _load_module(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["train_sft.py", "--dataset-path", "/tmp/missing.jsonl", "--output-model-id", "out"])

@@ -48,8 +48,11 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-5)
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
-    parser.add_argument("--no-checkpoint", action="store_true",
-                        help="Skip final checkpoint save")
+    parser.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        help="Skip periodic and final checkpoint saves",
+    )
     parser.add_argument("--grad-clip-norm", type=float, default=0.0,
                         help="Max gradient norm for clipping (0 = no clipping)")
     parser.add_argument("--wandb-project", default="sft-tinker")
@@ -92,6 +95,7 @@ def main():
         output_model_id=args.output_model_id,
         grad_clip_norm=args.grad_clip_norm,
         dcp_save_interval=-1 if args.no_checkpoint else 0,
+        save_final_checkpoint=not args.no_checkpoint,
         trainer=TrainerConfig(
             training_shape_id=args.training_shape,
         ),

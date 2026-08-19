@@ -80,7 +80,7 @@ class TestSFTResumeE2E:
 
             log_dir = tempfile.mkdtemp(prefix="sft_resume_")
 
-            # Phase 1: train, save DCP checkpoints to checkpoints.jsonl
+            # Phase 1: save DCP checkpoints and track cursor state in dataloader.json
             logger.info("PHASE 1: initial SFT training")
 
             phase1_config = Config(

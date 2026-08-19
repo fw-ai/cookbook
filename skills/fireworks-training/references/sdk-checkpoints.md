@@ -98,9 +98,9 @@ Priority inside `TrainingCheckpoints.resume` (highest first):
 - `warm_start_from_adapter` and `init_from_checkpoint` are mutually exclusive.
 - Requires `lora_rank > 0`. Full-parameter continue-training uses `base_model` instead.
 
-Exposed by `sft_loop`, `dpo_loop`, `orpo_loop`, and `igpo_loop`. The generic
-GRPO recipes keep the smaller shared resume surface and use
-`init_from_checkpoint` instead.
+Exposed by `sft_loop`, `dpo_loop`, `orpo_loop`, `igpo_loop`,
+`distillation_loop`, and `async_rl_loop`. The synchronous `rl_loop` keeps the
+smaller resume surface and uses `init_from_checkpoint` instead.
 
 ## Cross-run resume
 
