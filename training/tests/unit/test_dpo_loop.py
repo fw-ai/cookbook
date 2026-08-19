@@ -956,6 +956,7 @@ class TestTrainLoop:
             )
         )
         # 4 raw rows this run on top of 100 prior → cursor=104.
+        assert step == 12
         assert cursor.value == 104
         assert saves[-1] == 104
 
@@ -1201,7 +1202,7 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="score"):
+        with pytest.raises(module.DatasetError, match="score"):
             load_preference_dataset(path)
 
     def test_rejects_rows_without_both_chosen_and_rejected(self, tmp_path) -> None:
@@ -1214,7 +1215,7 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="rejected"):
+        with pytest.raises(module.DatasetError, match="rejected"):
             load_preference_dataset(path)
 
     def test_rejects_duplicate_chosen_samples(self, tmp_path) -> None:
@@ -1229,7 +1230,7 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="ambiguous|multiple"):
+        with pytest.raises(module.DatasetError, match="ambiguous|multiple"):
             load_preference_dataset(path)
 
     def test_rejects_unknown_row_format(self, tmp_path) -> None:
@@ -1239,13 +1240,13 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="supported preference format"):
+        with pytest.raises(module.DatasetError, match="supported preference format"):
             load_preference_dataset(path)
 
     def test_rejects_non_list_samples(self, tmp_path) -> None:
         path = _write_preference_jsonl(tmp_path, [{"samples": {"not": "a list"}}])
 
-        with pytest.raises(ValueError, match="list"):
+        with pytest.raises(module.DatasetError, match="list"):
             load_preference_dataset(path)
 
     def test_rejects_non_dict_sample_entry(self, tmp_path) -> None:
@@ -1259,5 +1260,19 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="dict"):
+        with pytest.raises(module.DatasetError, match="dict"):
             load_preference_dataset(path)
+
+    def test_rejects_malformed_jsonl(self, tmp_path) -> None:
+        path = tmp_path / "pref.jsonl"
+        path.write_text('{"chosen": {}, "rejected": {}}\n{"samples":\n')
+
+        with pytest.raises(module.DatasetError, match="invalid JSONL"):
+            load_preference_dataset(str(path))
+
+    def test_rejects_non_object_jsonl_row(self, tmp_path) -> None:
+        path = tmp_path / "pref.jsonl"
+        path.write_text('["not", "an", "object"]\n')
+
+        with pytest.raises(module.DatasetError, match="row must be an object"):
+            load_preference_dataset(str(path))

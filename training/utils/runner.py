@@ -86,12 +86,12 @@ class UserConfigError(Exception):
 
 
 class DatasetError(UserConfigError):
-    """Raised when a recipe has no trainable examples after rendering.
+    """Raised when a dataset is malformed or yields no trainable examples.
 
-    Typical causes: every row filtered by sequence length, or no assistant
-    tokens selected by ``train_on_what`` / per-message ``weight``. The
-    control plane surfaces this as a user-fixable dataset error instead of
-    sanitizing it to Internal error.
+    Typical causes: invalid JSONL/preference-row shape, every row filtered by
+    sequence length, or no assistant tokens selected by ``train_on_what`` /
+    per-message ``weight``. The control plane surfaces this as a user-fixable
+    dataset error instead of sanitizing it to Internal error.
     """
 
 
