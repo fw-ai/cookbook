@@ -307,6 +307,34 @@ _CAPABILITIES: tuple[ThinkingTraceModelCapability, ...] = (
             ),
         ),
     ),
+    ThinkingTraceModelCapability(
+        canonical_family="nemotron3",
+        aliases=frozenset(
+            {
+                "nvidia/nvidia-nemotron-3-super-120b-a12b-bf16",
+                "nvidia/nvidia-nemotron-3-nano-30b-a3b-bf16",
+            }
+        ),
+        plans=(
+            # HF default truncate_history_thinking=True → INTERLEAVED.
+            _plan(
+                ThinkingTraceHistoryMode.INTERLEAVED,
+                "nemotron3_interleaved",
+                is_default=True,
+                unrolls_multi_turn=True,
+            ),
+            # PRESERVED → truncate_history_thinking=False (serving #40028).
+            # Canonical registry name matches the Qwen/Kimi ``*_preserved``
+            # pattern; ``nemotron3_preserve_thinking`` remains a registered
+            # get_renderer alias for direct callers.
+            _plan(
+                ThinkingTraceHistoryMode.PRESERVED,
+                "nemotron3_preserved",
+                is_default=False,
+                unrolls_multi_turn=False,
+            ),
+        ),
+    ),
 )
 
 

@@ -311,6 +311,19 @@ def test_public_semantics_select_vendor_specific_renderer_adapters() -> None:
     assert kimi_interleaved.renderer_name == "kimi_k26_interleaved"
     assert kimi.renderer_name == "kimi_k26_preserve_thinking"
 
+    # Nemotron-3: INTERLEAVED strips via truncate_history_thinking=True;
+    # PRESERVED maps to truncate_history_thinking=False (serving #40028).
+    nemotron_interleaved = resolve_renderer_plan(
+        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+        thinking_trace_history_mode="interleaved",
+    )
+    nemotron = resolve_renderer_plan(
+        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+        thinking_trace_history_mode="preserved",
+    )
+    assert nemotron_interleaved.renderer_name == "nemotron3_interleaved"
+    assert nemotron.renderer_name == "nemotron3_preserved"
+
     qwen38_interleaved = resolve_renderer_plan(
         "Qwen/Qwen3.8-27B",
         thinking_trace_history_mode="interleaved",

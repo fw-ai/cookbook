@@ -80,6 +80,7 @@ The adapter must account for vendor flag polarity:
 | GLM 5.1/5.2 | `clear_thinking` | `true` | `false` |
 | Qwen 3.6 | `preserve_thinking` | `false` | `true` |
 | Kimi K2.6 | `preserve_thinking` | `false` | `true` |
+| Nemotron-3 Nano / Super | `truncate_history_thinking` | `true` | `false` |
 
 Qwen 3.5 and Kimi K2.5 are INTERLEAVED-only; Kimi K2.7 Code is
 PRESERVED-only.
