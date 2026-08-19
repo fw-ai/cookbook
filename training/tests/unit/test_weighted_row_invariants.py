@@ -73,8 +73,15 @@ _EXTRA_TOKENIZERS = {
     "qwen3_6": "Qwen/Qwen3.6-27B",
     "qwen3_6_disable_thinking": "Qwen/Qwen3.6-27B",
     "qwen3_6_preserve_thinking": "Qwen/Qwen3.6-27B",
+    "qwen3_8": "Qwen/Qwen3.8-27B",
     "deepseekv3_thinking": "deepseek-ai/DeepSeek-V3.1",
     "nemotron3_disable_thinking": "nvidia/NVIDIA-Nemotron-Nano-9B-v2",
+    # Same tokenizer family as the QA-matrix ``nemotron3`` row. Preserve /
+    # interleaved aliases are distinct registered names (not covered by the
+    # matrix) and must be enrolled so the coverage guard stays honest.
+    "nemotron3_interleaved": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+    "nemotron3_preserve_thinking": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+    "nemotron3_preserved": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "gpt_oss_high_reasoning": "openai/gpt-oss-120b",
     "gpt_oss_no_sysprompt": "openai/gpt-oss-120b",
     "mistral": "mistralai/Ministral-3-3B-Instruct-2512",
@@ -100,6 +107,7 @@ _UNCOVERED_RENDERERS = {
         "case would skip; training/tests/unit/test_deepseek_v4_renderer.py skips "
         "for the same reason"
     ),
+    "deepseek_v4_disable_thinking": "shares the deepseek_v4 tokenizer, so it skips for that reason too",
 }
 
 # Renderers that cannot render ANY multi-target multi-turn row, weighted or not.

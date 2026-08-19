@@ -58,6 +58,8 @@ from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
     DEFAULT_RENDER_WORKERS,
+    DatasetError,
+    NO_VALID_TRAINING_EXAMPLES_MESSAGE,
     TrainerConfig,
     JSONL_ROW_INDEX_KEY,
     JsonlRenderDataset,
@@ -582,7 +584,7 @@ def _prepare_datasets(
         row_index_key=JSONL_ROW_INDEX_KEY,
     )
     if len(training_ds) == 0:
-        raise RuntimeError(f"No examples found in {cfg.dataset}")
+        raise DatasetError(f"No examples found in {cfg.dataset}")
 
     if cfg.evaluation_dataset:
         eval_ds = JsonlRenderDataset(
@@ -1320,7 +1322,7 @@ def main(
                             training_count,
                         )
                     if epoch_valid_examples == 0:
-                        raise RuntimeError("No valid training examples after tokenization")
+                        raise DatasetError(NO_VALID_TRAINING_EXAMPLES_MESSAGE)
 
                 # Run eval after each epoch
                 if eval_data:

@@ -59,6 +59,10 @@ __all__ = [
     "RunnerConfig",
     "RunnerIO",
     "RunStatus",
+    "DatasetError",
+    "NO_VALID_PREFERENCE_PAIRS_MESSAGE",
+    "NO_VALID_TRAINING_EXAMPLES_MESSAGE",
+    "UserConfigError",
     "StepCallback",
     "WandBConfig",
     "compute_advantages",
@@ -166,7 +170,15 @@ from training.utils.losses import (
     make_sft_loss_fn,
 )
 from training.utils.memlog import MemTracer
-from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
+from training.utils.runner import (
+    DatasetError,
+    NO_VALID_PREFERENCE_PAIRS_MESSAGE,
+    NO_VALID_TRAINING_EXAMPLES_MESSAGE,
+    RunnerConfig,
+    RunnerIO,
+    RunStatus,
+    UserConfigError,
+)
 from training.utils.service import build_service_client, resolve_router_replay_enabled
 from training.utils.streaming import (
     DEFAULT_PREFETCH_FACTOR,

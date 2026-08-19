@@ -1164,6 +1164,36 @@ def test_build_renderer_from_resolved_name_loads_image_processor_by_default(
     assert calls == [("qwen3_vl_instruct", "image-processor")]
 
 
+def test_build_renderer_from_resolved_name_loads_muse_token_counter(monkeypatch):
+    calls: list[tuple[str, object | None]] = []
+    counter = object()
+
+    def fake_from_pretrained(model_name):
+        assert model_name == "meta-models/Muse-Glimmer-30B"
+        return counter
+
+    def fake_get_renderer(name, tokenizer, image_processor=None):
+        assert tokenizer == "tok"
+        calls.append((name, image_processor))
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised._muse_glimmer_renderer."
+        "MuseGlimmerImageTokenCounter.from_pretrained",
+        fake_from_pretrained,
+    )
+    monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
+
+    renderer = build_renderer_from_resolved_name(
+        tokenizer="tok",
+        tokenizer_model="meta-models/Muse-Glimmer-30B",
+        renderer_name="muse_glimmer",
+    )
+
+    assert renderer == "renderer"
+    assert calls == [("muse_glimmer", counter)]
+
+
 def test_build_renderer_from_resolved_name_can_skip_image_processor(monkeypatch):
     calls: list[tuple[str, object | None]] = []
 
@@ -1227,6 +1257,10 @@ def test_build_renderer_uses_tokenizer_remote_code_default_for_image_processor(
         "qwen3_vl_instruct",
         "qwen3_5",
         "qwen3_6",
+        "qwen3_8",
+        "qwen3_8_interleaved",
+        "qwen3_8_disable_thinking_interleaved",
+        "qwen3_8_preserved",
         "kimi_k25",
         "kimi_k25_disable_thinking",
         "kimi_k25_interleaved",
@@ -1497,6 +1531,17 @@ def test_resolve_renderer_name_prefers_qwen3_6() -> None:
     assert resolve_renderer_name("custom/qwen3_6-finetune") == "qwen3_6"
 
 
+def test_resolve_renderer_name_prefers_qwen3_8_27b() -> None:
+    """Qwen3.8-27B defaults to the preserved renderer; Max/Plus must not match."""
+    assert resolve_renderer_name("Qwen/Qwen3.8-27B") == "qwen3_8"
+    assert resolve_renderer_name("accounts/fireworks/models/qwen3p8-27b") == "qwen3_8"
+    try:
+        resolved_max = resolve_renderer_name("accounts/fireworks/models/qwen3p8-max")
+    except ValueError:
+        resolved_max = None
+    assert resolved_max != "qwen3_8"
+
+
 def test_resolve_renderer_name_prefers_gemma4() -> None:
     """Gemma 4 models should resolve to the gemma4 renderer."""
     assert resolve_renderer_name("google/gemma-4-12b-it") == "gemma4"
@@ -1531,7 +1576,10 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
         ("qwen3", False),
         ("qwen3_vl_instruct", True),
         ("qwen3_5", True),
+        ("qwen3_6", True),
+        ("qwen3_8", True),
         ("kimi_k25", True),
+        ("muse_glimmer", True),
         ("glm_moe_dsa", False),
         ("deepseek_v4", False),
     ],

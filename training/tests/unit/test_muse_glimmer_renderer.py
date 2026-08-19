@@ -5,19 +5,32 @@ from __future__ import annotations
 import json
 
 import pytest
+import tinker
 from jinja2.exceptions import TemplateError
+from tinker._compat import model_dump
+from tinker.lib._pydantic_conv import to_pydantic_request
+from tinker_cookbook.exceptions import RendererError
 
 from training.renderer.muse_glimmer import (
     _TOOL_ARGUMENT_ERROR,
     MuseGlimmerOptions,
+    MuseGlimmerImageTokenCounter,
     MuseGlimmerRenderer,
     _content,
+    _factory,
     _render_atem,
     _render_tool_defs,
 )
-from training.utils.supervised import normalize_messages, resolve_renderer_name
+from training.utils.supervised import (
+    normalize_messages,
+    render_messages_to_datum,
+    resolve_renderer_name,
+)
 from training.utils.supervised import build_tool_prefixed_messages
 from training.utils.rl.agent.openai import CookbookTurnRenderer
+from training.utils.rl.rollout.renderer import (
+    build_multimodal_completions_prompt_token_ids,
+)
 
 
 class _Tokenizer:
@@ -32,6 +45,8 @@ class _Tokenizer:
         "<|eot|>": 300004,
         "<|patch|>": 300005,
         "<|video|>": 300006,
+        "<|image_start|>": 300007,
+        "<|image_end|>": 300008,
     }
     _reverse = {value: key for key, value in _special.items()}
 
@@ -54,6 +69,27 @@ class _Tokenizer:
 
 def _renderer(**kwargs) -> MuseGlimmerRenderer:
     return MuseGlimmerRenderer(_Tokenizer(), options=MuseGlimmerOptions(**kwargs))
+
+
+class _ImageProcessor:
+    merge_size = 2
+
+    def get_number_of_image_patches(
+        self,
+        height: int,
+        width: int,
+        images_kwargs: dict,
+    ) -> int:
+        del images_kwargs
+        assert (height, width) == (56, 56)
+        return 16
+
+
+_VISION_IMAGE = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAADgAAAA4CAIAAAAn5KxJAAAAaklEQVR42u3YMQoAIQwEwETu34cvz1VX2AdBnO1sloFYbVZVnJARhwS0O8/"
+    "yymyo/D99zoa2esvpQUFBQUFBQUFBQUFBQXcnTTq3QpelpHUoiYiOurCUgIKCgoKCgoKCgoKCgm6PpeRa6AeiBRFpZuNsuAAAAABJRU5ErkJggg=="
+)
 
 
 def _render(renderer: MuseGlimmerRenderer, messages: list[dict], *, generation=True) -> str:
@@ -174,6 +210,157 @@ def test_content_parts_match_template_and_ignore_unknowns() -> None:
         )
         == "a<|patch|><|video|>b"
     )
+
+
+def test_image_content_materializes_processor_boundaries_and_chunk() -> None:
+    processor = _ImageProcessor()
+    renderer = MuseGlimmerRenderer(_Tokenizer(), image_processor=processor)
+    model_input = renderer.build_generation_prompt(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "before"},
+                    {"type": "image", "image": _VISION_IMAGE},
+                    {"type": "text", "text": "after"},
+                ],
+            }
+        ]
+    )
+
+    image_chunks = [
+        chunk
+        for chunk in model_input.chunks
+        if isinstance(chunk, tinker.types.ImageChunk)
+    ]
+    assert len(image_chunks) == 1
+    assert image_chunks[0].expected_tokens == 4
+    assert image_chunks[0].format == "jpeg"
+
+    rendered_text = "".join(
+        renderer.tokenizer.decode(chunk.tokens)
+        for chunk in model_input.chunks
+        if isinstance(chunk, tinker.types.EncodedTextChunk)
+    )
+    assert "before<|image_start|><|image_end|>after<|eot|>" in rendered_text
+    assert "<|patch|>" not in rendered_text
+    assert renderer.image_processor is processor
+    assert renderer.image_placeholder_token_id == _Tokenizer._special["<|patch|>"]
+
+
+def test_image_content_without_processor_fails_instead_of_dropping_payload() -> None:
+    renderer = _renderer()
+    with pytest.raises(RendererError, match="requires an image processor"):
+        renderer.build_generation_prompt(
+            [
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "image": _VISION_IMAGE}],
+                }
+            ]
+        )
+
+
+def test_factory_forwards_image_processor() -> None:
+    processor = _ImageProcessor()
+    renderer = _factory(_Tokenizer(), processor)
+    assert renderer.image_processor is processor
+
+
+def test_multipart_system_text_is_coalesced_before_normalization() -> None:
+    actual = _render(
+        _renderer(include_current_date=False),
+        [
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": "Reasoning "},
+                    {"type": "text", "text": "effort: low"},
+                ],
+            }
+        ],
+    )
+    assert "Reasoning strength: low" in actual
+    assert "Reasoning effort" not in actual
+    assert actual.lower().count("reasoning strength") == 1
+
+
+def test_sft_and_tinker_wire_preserve_muse_image_chunk() -> None:
+    renderer = MuseGlimmerRenderer(_Tokenizer(), image_processor=_ImageProcessor())
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Read this chart: "},
+                {"type": "image_url", "image_url": {"url": _VISION_IMAGE}},
+            ],
+        },
+        {"role": "assistant", "content": "four"},
+    ]
+    rendered = render_messages_to_datum(messages, renderer=renderer)
+    image_chunks = [
+        chunk
+        for chunk in rendered.datum.model_input.chunks
+        if isinstance(chunk, tinker.types.ImageChunk)
+    ]
+    assert len(image_chunks) == 1
+    assert image_chunks[0].expected_tokens == 4
+
+    wire_request = tinker.types.ForwardBackwardRequest(
+        forward_backward_input=tinker.types.ForwardBackwardInput(
+            data=[rendered.datum],
+            loss_fn="cross_entropy",
+            loss_fn_config=None,
+        ),
+        model_id="muse-glimmer-test",
+        seq_id=1,
+    )
+    wire_payload = model_dump(
+        to_pydantic_request(wire_request),
+        exclude_unset=False,
+        exclude_none=True,
+        mode="json",
+    )
+    wire_chunks = wire_payload["forward_backward_input"]["data"][0]["model_input"][
+        "chunks"
+    ]
+    wire_images = [chunk for chunk in wire_chunks if chunk["type"] == "image"]
+    assert len(wire_images) == 1
+    assert wire_images[0]["expected_tokens"] == 4
+    assert wire_images[0]["format"] == "jpeg"
+    assert wire_images[0]["data"]
+
+    prompt = renderer.build_generation_prompt(normalize_messages(messages[:1]))
+    prompt_ids, images = build_multimodal_completions_prompt_token_ids(
+        messages[:1],
+        prompt,
+        renderer.tokenizer,
+        renderer=renderer,
+    )
+    assert prompt_ids.count(renderer.image_placeholder_token_id) == 1
+    assert len(images) == 1
+    assert images[0].startswith("data:image/jpeg;base64,")
+
+
+def test_image_token_counter_loads_staged_processor_config(tmp_path) -> None:
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps(
+            {
+                "processor_class": "MuseGlimmerProcessor",
+                "image_processor": {
+                    "image_processor_type": "MuseGlimmerImageProcessor",
+                    "patch_size": 14,
+                    "merge_size": 2,
+                    "max_image_tokens": 17,
+                },
+            }
+        )
+    )
+    processor = MuseGlimmerImageTokenCounter.from_pretrained(str(tmp_path))
+    assert processor.patch_size == 14
+    assert processor.merge_size == 2
+    assert processor.max_image_tokens == 17
+    assert processor.get_number_of_image_patches(56, 56, {}) == 16
 
 
 def test_generation_suffix_is_always_assistant() -> None:

@@ -76,6 +76,13 @@ class _StringTokenizer:
             [True, False],
         ),
         (
+            "Qwen/Qwen3.8-27B",
+            "qwen3.8",
+            ["preserved", "interleaved"],
+            "qwen3_8_preserved",
+            [False, True],
+        ),
+        (
             "moonshotai/Kimi-K2.5",
             "kimi-k2.5",
             ["interleaved"],
@@ -143,6 +150,12 @@ def test_legacy_concrete_names_are_not_rebound_to_corrected_adapters() -> None:
         "qwen3_5": "Qwen3_5SplitRenderer",
         "qwen3_6": "Qwen3_6SplitRenderer",
         "qwen3_6_preserve_thinking": "Qwen3_6PreserveThinkingSplitRenderer",
+        "qwen3_8": "Qwen3_8PreservedRenderer",
+        "qwen3_8_preserved": "Qwen3_8PreservedRenderer",
+        "qwen3_8_interleaved": "Qwen3_8InterleavedRenderer",
+        "qwen3_8_disable_thinking_interleaved": (
+            "Qwen3_8DisableThinkingInterleavedRenderer"
+        ),
         "glm5": "GLM5Renderer",
         "glm_moe_dsa": "GLMMoeDsaRenderer",
         "kimi_k27_code": "KimiK27CodeRenderer",
@@ -175,6 +188,12 @@ def test_registered_aliases_are_exact_and_case_insensitive() -> None:
         ).canonical_family
         == "qwen3.6"
     )
+    assert (
+        get_thinking_trace_model_capability(
+            "accounts/fireworks/models/qwen3p8-27b"
+        ).canonical_family
+        == "qwen3.8"
+    )
 
     # The legacy default resolver may understand custom/fine-tuned names, but
     # they are deliberately default-only until explicitly onboarded.
@@ -198,6 +217,14 @@ def test_unspecified_resolves_registered_default() -> None:
     )
     assert kimi.effective_mode is ThinkingTraceHistoryMode.PRESERVED
     assert kimi.renderer_name == "kimi_k27_code_preserved"
+
+    qwen38 = resolve_thinking_trace_renderer_plan(
+        "Qwen/Qwen3.8-27B",
+        requested_mode=None,
+        default_renderer_name="wrong-default",
+    )
+    assert qwen38.effective_mode is ThinkingTraceHistoryMode.PRESERVED
+    assert qwen38.renderer_name == "qwen3_8_preserved"
 
 
 def test_unregistered_model_is_default_only() -> None:
@@ -283,6 +310,30 @@ def test_public_semantics_select_vendor_specific_renderer_adapters() -> None:
     assert qwen.renderer_name == "qwen3_6_preserved"
     assert kimi_interleaved.renderer_name == "kimi_k26_interleaved"
     assert kimi.renderer_name == "kimi_k26_preserve_thinking"
+
+    # Nemotron-3: INTERLEAVED strips via truncate_history_thinking=True;
+    # PRESERVED maps to truncate_history_thinking=False (serving #40028).
+    nemotron_interleaved = resolve_renderer_plan(
+        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+        thinking_trace_history_mode="interleaved",
+    )
+    nemotron = resolve_renderer_plan(
+        "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
+        thinking_trace_history_mode="preserved",
+    )
+    assert nemotron_interleaved.renderer_name == "nemotron3_interleaved"
+    assert nemotron.renderer_name == "nemotron3_preserved"
+
+    qwen38_interleaved = resolve_renderer_plan(
+        "Qwen/Qwen3.8-27B",
+        thinking_trace_history_mode="interleaved",
+    )
+    qwen38 = resolve_renderer_plan(
+        "Qwen/Qwen3.8-27B",
+        thinking_trace_history_mode="preserved",
+    )
+    assert qwen38_interleaved.renderer_name == "qwen3_8_interleaved"
+    assert qwen38.renderer_name == "qwen3_8_preserved"
 
 
 def test_unspecified_preserves_legacy_explicit_renderer_override() -> None:

@@ -11,6 +11,7 @@ import tinker
 import training.recipes.sft_loop as module
 from training.utils import supervised as supervised_utils
 from training.utils.checkpoints import TrainingCheckpoints
+from training.utils.runner import UserConfigError
 
 
 class _StopAfterProvisioning(RuntimeError):
@@ -502,7 +503,7 @@ def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
         init_from_checkpoint="gs://bucket/dcp-dir",
     )
 
-    with pytest.raises(ValueError, match="mutually exclusive"):
+    with pytest.raises(UserConfigError, match="mutually exclusive"):
         module.main(cfg)
 
 
@@ -523,7 +524,7 @@ def test_main_rejects_adapter_with_zero_lora_rank(tmp_path, monkeypatch):
         warm_start_from_adapter="gs://bucket/adapter-dir",
     )
 
-    with pytest.raises(ValueError, match="lora_rank > 0"):
+    with pytest.raises(UserConfigError, match="lora_rank > 0"):
         module.main(cfg)
 
 
@@ -717,7 +718,7 @@ class TestPrepareDatasets:
         path = _write_jsonl_at(tmp_path / "empty.jsonl", [])
         monkeypatch.setattr(module, "_render_one_worker", lambda r: r)
 
-        with pytest.raises(RuntimeError, match="No examples found"):
+        with pytest.raises(module.DatasetError, match="No examples found"):
             module._prepare_datasets(self._cfg(tmp_path, path))
 
     def test_explicit_eval_dataset(self, tmp_path, monkeypatch):

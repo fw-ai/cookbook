@@ -33,7 +33,8 @@ categories.
 | **Fails after a readiness/startup timeout (~3600s)** | Trainer/rollout couldn't become ready in the window (large download, tight capacity). **Platform-side**, often transient. | Confirm the failed resource is terminal. Propose one bounded retry and get approval before replacement spend; escalate recurrence with both job IDs. |
 | **`RESOURCE_EXHAUSTED` / "no capacity" / unschedulable** | Scheduler can't place the job on the requested GPU class/region. **Platform-side (infra)**, not quota, not config. | Offer a smaller supported shape, another supported region, or a capacity request. Confirm terminal state and get approval before a replacement run. Distinct from a 429 quota ceiling. |
 | **Bare "Internal error", no detail** | Unknown. It can mask user data/config errors or platform startup failures. | Re-validate locally, then collect method-specific status, progress, request, and correlation evidence. Keep the classification unknown until evidence supports user or platform attribution. |
-| **Dataset rejected / validation error** | Malformed JSONL — rows missing `messages`, bad roles. **User-side.** Can surface as a plain "Internal error". | Fix the JSONL (every line needs `messages` with `role`+`content`), re-upload (`dataset create` validates on upload). See `references/choose-method.md`. |
+| **Dataset rejected / validation error** | Malformed JSONL — rows missing `messages`, bad roles. **User-side.** Surfaces as `INVALID_ARGUMENT` / `DATASET_INVALID`. | Fix the JSONL (every line needs `messages` with `role`+`content`), re-upload (`dataset create` validates on upload). See `references/choose-method.md`. |
+| **No valid training examples after tokenization** | Dataset passed schema checks, but every row was filtered: no trainable assistant tokens (`train_on_what` / per-message `weight`) or all examples over max sequence length. **User-side.** Surfaces as `INVALID_ARGUMENT` / `DATASET_INVALID` with the recipe message; do not treat this as platform Internal. | Fix assistant `weight` / `train_on_what`, shorten examples, or raise max sequence length, then retry. |
 | **400 on a warm-start / reused config** | Jobs created with validations skipped can 400 when warm-starting/reusing a shape. **Platform-side**, fix rolling out. | Create against a **validated shape** (don't skip validations); retry. If blocked, escalate for an ETA. |
 | **429 on job create** | Quota — a ceiling on concurrent GPUs, not billing. Retry storms make it worse. **User-side (limits).** | Back off; raise quota or run fewer concurrent jobs / a smaller model. |
 | **Account suspended / "spending limit reached"** | **Billing-side**, distinct from quota — budget cap (even with credits), no payment method, or risk review. | Fix in [Billing](https://fireworks.ai/billing). Not a platform bug. |
@@ -65,12 +66,16 @@ Do not derive a reason from `status.message`, raw exceptions, or other
 human-readable text. If ErrorInfo is absent, omit the reason and keep the
 classification unknown.
 
-Managed recipes may receive private source-native Tinker or serverless-gateway
-context from the SDK. The status writer maps only registered `error_class` or
-gateway `code` values into ErrorInfo; unknown, malformed, or conflicting values
-stay unclassified. Raw errors, classes, codes, types, and messages are not
-copied into status files or support payloads; only registered ErrorInfo fields
-and bounded allowlisted metadata such as Tinker `category` are emitted.
+The SDK preserves complete Lifecycle statuses and bounded source-native Tinker
+or serverless-gateway context without mapping it to managed categories. The
+internal managed runtime copies an exact Tinker `error_class` or gateway
+`error.code` into ErrorInfo and preserves optional bounded metadata such as
+Tinker `category` or gateway `type`. Control Plane owns the exact source-native
+to canonical mapping. Unknown, malformed, differently cased, whitespace-
+modified, or conflicting structured values fail closed; statuses without
+ErrorInfo retain the legacy fallback. Cookbook recipes do not map source
+identifiers or compose managed ErrorInfo. Do not copy raw error messages or
+tracebacks into support payloads.
 
 Route product usage and configuration questions to the
 [training docs](https://docs.fireworks.ai/fine-tuning/finetuning-intro.md), and

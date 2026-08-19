@@ -332,6 +332,9 @@ def main(
         )
         resume_info = checkpoint.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
+            restore_optimizer=getattr(
+                cfg, "_restore_optimizer_from_init_checkpoint", True
+            ),
         )
         step_offset = resume_info.step if resume_info else 0
         prior_rows_consumed = resume_info.data_consumed if resume_info else 0

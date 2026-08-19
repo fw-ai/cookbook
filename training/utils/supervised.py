@@ -259,6 +259,16 @@ def resolve_renderer_name(
         # checkpoint precision and training-shape eligibility remain separate
         # control-plane contracts and must not be canonicalized here.
         return "qwen3_instruct"
+    # Qwen3.8-27B (dense VL). Do not match qwen3p8-max / qwen3p8-plus: those
+    # are different checkpoints. HF default preserve_thinking is true, so the
+    # cookbook default renderer keeps historical thinking.
+    if (
+        "qwen3.8-27b" in normalized_model_name
+        or "qwen3_8-27b" in normalized_model_name
+        or "qwen3_8_27b" in normalized_model_name
+        or "qwen3p8-27b" in normalized_model_name
+    ):
+        return "qwen3_8"
     # Qwen3.6 reuses Qwen3.5's vocab + special tokens; the chat template only
     # adds an opt-in `preserve_thinking` flag (renders historical thinking
     # for ALL assistant turns when true). Default invocation produces output
@@ -457,7 +467,10 @@ def build_renderer_from_resolved_name(
         return get_renderer(
             renderer_name,
             tokenizer,
-            image_processor=_get_image_processor_with_remote_code_default(tokenizer_model),
+            image_processor=_get_image_processor_with_remote_code_default(
+                tokenizer_model,
+                renderer_name=renderer_name,
+            ),
         )
     return get_renderer(renderer_name, tokenizer)
 
@@ -548,12 +561,25 @@ def populate_render_worker_state(
     )
 
 
-def _get_image_processor_with_remote_code_default(tokenizer_model: str) -> Any:
+def _get_image_processor_with_remote_code_default(
+    tokenizer_model: str,
+    *,
+    renderer_name: str = "",
+) -> Any:
     # Image processors follow the tokenizer loader's permissive-by-default
     # remote-code policy. This is intentionally independent of model and
     # renderer names: managed jobs stage tokenizer artifacts under opaque paths,
     # and new image renderers should not require a second trust allowlist update.
     # Preserve any explicit caller policy, including HF_TRUST_REMOTE_CODE=0.
+    if renderer_name == "muse_glimmer":
+        # The pinned Transformers release can resolve Muse's processor config
+        # but does not register its image processor class yet. Only token
+        # counting is needed on the rendering client; FireTitan owns pixel
+        # preprocessing and independently checks the declared chunk length.
+        return _muse_glimmer_renderer.MuseGlimmerImageTokenCounter.from_pretrained(
+            tokenizer_model
+        )
+
     if "HF_TRUST_REMOTE_CODE" in os.environ:
         return get_image_processor(tokenizer_model)
 
@@ -580,10 +606,12 @@ def renderer_supports_images(renderer_name: str) -> bool:
             "_vl",
             "qwen3_5",
             "qwen3_6",
+            "qwen3_8",
             "kimi_k25",
             "kimi_k26",
             "kimi_k27",
             "kimi_k3",
+            "muse_glimmer",
         )
     )
 

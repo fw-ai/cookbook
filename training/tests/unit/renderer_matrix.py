@@ -142,6 +142,14 @@ _KIMI_K3_TOKENIZER = "moonshotai/Kimi-K3"
 _KIMI_K3_TOKENIZER_REVISION = "301be1b88c89c0d3a763da6301352cb8fe399e90"
 _MUSE_GLIMMER_TOKENIZER = "meta-models/Muse-Glimmer-30B"
 _MUSE_GLIMMER_REVISION = "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
+_QWEN38_UNSUPPORTED_SCENARIOS = frozenset(
+    {
+        "consecutive_system",
+        "developer_first",
+        "developer_midconversation",
+        "mid_conversation_system",
+    }
+)
 
 
 RENDERER_MATRIX: list[RendererCase] = [
@@ -291,6 +299,49 @@ RENDERER_MATRIX: list[RendererCase] = [
         # supervised assistant header, while the generation prompt opens
         # `<think>`, so observation != generation prompt.
         observation_equals_generation=False,
+    ),
+    # -- Qwen3.8 (aliases the qwen3_6 / qwen3_5 family) --------------------
+    # Same supervised-header / generation-prompt split as 3.5/3.6, so
+    # supervised_hf_parity and observation_equals_generation stay False.
+    # The 3.8 HF template defaults preserve_thinking to true and
+    # reasoning_effort to xhigh. The dedicated 3.8 adapters reproduce that
+    # xhigh system preamble; only the interleaved (strip) row overrides
+    # preserve_thinking.
+    RendererCase(
+        renderer="qwen3_8_interleaved",
+        tokenizer_model="Qwen/Qwen3.8-27B",
+        tokenizer_revision="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        hf_kwargs={"preserve_thinking": False},
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=False,
+        supervised_hf_parity=False,
+        observation_equals_generation=False,
+        unsupported_scenarios=_QWEN38_UNSUPPORTED_SCENARIOS,
+    ),
+    RendererCase(
+        renderer="qwen3_8_disable_thinking_interleaved",
+        tokenizer_model="Qwen/Qwen3.8-27B",
+        tokenizer_revision="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        hf_kwargs={"enable_thinking": False, "preserve_thinking": False},
+        supports_thinking=False,
+        supports_tools=True,
+        has_extension_property=False,
+        supervised_hf_parity=False,
+        observation_equals_generation=False,
+        unsupported_scenarios=_QWEN38_UNSUPPORTED_SCENARIOS,
+    ),
+    RendererCase(
+        renderer="qwen3_8_preserved",
+        tokenizer_model="Qwen/Qwen3.8-27B",
+        tokenizer_revision="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+        hf_kwargs={"preserve_thinking": True},
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
+        supervised_hf_parity=False,
+        observation_equals_generation=False,
+        unsupported_scenarios=_QWEN38_UNSUPPORTED_SCENARIOS,
     ),
     # -- Kimi K2.x ---------------------------------------------------------
     # K2.5 is INTERLEAVED-only. K2.6 exposes INTERLEAVED/PRESERVED, and K2.7
@@ -515,6 +566,9 @@ REQUIRED_RENDERERS: frozenset[str] = frozenset(
         "qwen3_6_interleaved",
         "qwen3_6_disable_thinking_interleaved",
         "qwen3_6_preserved",
+        "qwen3_8_interleaved",
+        "qwen3_8_disable_thinking_interleaved",
+        "qwen3_8_preserved",
         "kimi_k25_interleaved",
         "kimi_k26_interleaved",
         "kimi_k26_preserve_thinking",

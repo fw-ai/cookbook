@@ -172,15 +172,14 @@ class TestComputeStepMetrics:
         assert metrics["train/grad_norm_post_clip"] == 1.0
 
 
-class TestFwdBwdMinibatchAveraging:
-    """With ppo_n_minibatches>1 the per-step train/* metrics must average
-    across minibatches, not report only the last one."""
+class TestFwdBwdResultAveraging:
+    """Per-step train/* metrics average all forward/backward results."""
 
     @staticmethod
     def _fake_fwd_bwd(**metrics):
         return SimpleNamespace(metrics=dict(metrics))
 
-    def test_averages_across_minibatches(self):
+    def test_averages_across_forward_backward_results(self):
         fwd_bwds = [
             self._fake_fwd_bwd(ppo_clip_frac=0.0, ppo_ratio_mean=1.00),
             self._fake_fwd_bwd(ppo_clip_frac=0.1, ppo_ratio_mean=1.05),
@@ -237,8 +236,8 @@ class TestFwdBwdMinibatchAveraging:
         assert metrics["train/inference_k3"] == 0.25
         assert not any(key.startswith("kld/") for key in metrics)
 
-    def test_k1_matches_single_fwd_bwd_behavior(self):
-        """K=1: report the single minibatch's metrics directly (pre-PR behavior)."""
+    def test_single_fwd_bwd_result_is_reported_directly(self):
+        """Report a single forward/backward result without changing its metrics."""
         only = self._fake_fwd_bwd(ppo_clip_frac=0.42, ppo_ratio_mean=1.07)
         metrics = compute_step_metrics(
             prompt_groups=[],

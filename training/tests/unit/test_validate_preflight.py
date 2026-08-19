@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from training.utils.validation import validate_preflight
+from training.utils.runner import UserConfigError
+from training.utils.validation import validate_config, validate_preflight
 
 
 def _cfg(**overrides):
@@ -30,7 +31,7 @@ def _cfg(**overrides):
 
 class TestCredentialChecks:
     def test_missing_api_key_raises(self):
-        with pytest.raises(RuntimeError, match="FIREWORKS_API_KEY"):
+        with pytest.raises(UserConfigError, match="FIREWORKS_API_KEY"):
             validate_preflight(_cfg(), fw_api_key=None)
 
     def test_skip_credential_check(self):
@@ -63,9 +64,13 @@ class TestWeightSyncConfig:
 
 
 class TestModelNameFormat:
+    def test_validate_config_invalid_format_raises_user_config_error(self):
+        with pytest.raises(UserConfigError, match="Invalid base_model"):
+            validate_config("qwen3-8b", "data/test.jsonl")
+
     def test_invalid_format_raises(self):
         args = _cfg(base_model="qwen3-8b")
-        with pytest.raises(RuntimeError, match="Invalid base_model"):
+        with pytest.raises(UserConfigError, match="Invalid base_model"):
             validate_preflight(args, fw_api_key="k")
 
     def test_valid_format(self):
@@ -74,7 +79,7 @@ class TestModelNameFormat:
 
     def test_invalid_output_model_id_raises(self):
         args = _cfg(output_model_id="bad_name")
-        with pytest.raises(RuntimeError, match="output_model_id.*invalid|invalid.*output_model_id"):
+        with pytest.raises(UserConfigError, match="output_model_id.*invalid|invalid.*output_model_id"):
             validate_preflight(args, fw_api_key="k")
 
 
@@ -86,7 +91,7 @@ class TestModelNameFormat:
 class TestMultipleErrors:
     def test_credential_errors_collected(self):
         args = _cfg()
-        with pytest.raises(RuntimeError, match="FIREWORKS_API_KEY"):
+        with pytest.raises(UserConfigError, match="FIREWORKS_API_KEY"):
             validate_preflight(args, fw_api_key=None)
 
     def test_config_errors_collected(self):
@@ -97,7 +102,7 @@ class TestMultipleErrors:
             hot_load_deployment_id=None,
             output_model_id="bad_name",
         )
-        with pytest.raises(RuntimeError) as exc_info:
+        with pytest.raises(UserConfigError) as exc_info:
             validate_preflight(args, fw_api_key="k")
         msg = str(exc_info.value)
         assert "Invalid base_model" in msg

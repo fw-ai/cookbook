@@ -52,6 +52,17 @@ def test_config_uses_shared_default_weight_decay():
     assert cfg.render_workers == 16
 
 
+def test_output_model_requires_promotable_final_checkpoint():
+    cfg = module.Config(
+        log_path="/tmp/dpo_test_logs",
+        output_model_id="trained-model",
+    )
+    cfg._save_final_checkpoint_promotable = False
+
+    with pytest.raises(ValueError, match="output_model_id requires"):
+        module.main(cfg)
+
+
 @pytest.mark.parametrize("beta", [0, 0.5])
 def test_validate_dpo_beta_rejects_outside_range(beta):
     with pytest.raises(ValueError, match=r"Config\.beta must be > 0 and < 0\.5"):
@@ -694,7 +705,7 @@ class TestTrainLoop:
         cfg = module.Config(
             log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0,
         )
-        with pytest.raises(RuntimeError, match="No valid pairs after tokenization"):
+        with pytest.raises(module.DatasetError, match="after tokenization"):
             asyncio.run(
                 module._train_loop(
                     ds, None, CountingReference(), _FakePolicy(),

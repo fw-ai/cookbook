@@ -54,6 +54,8 @@ from fireworks.training.sdk.training_spec import (
 
 from training.utils import (
     DEFAULT_ADAM,
+    DatasetError,
+    NO_VALID_PREFERENCE_PAIRS_MESSAGE,
     TrainerConfig,
     ReconnectableClient,
     RunnerConfig,
@@ -374,7 +376,7 @@ def main(
 
         raw_data = load_preference_dataset(cfg.dataset, cfg.max_pairs)
         if not raw_data:
-            raise RuntimeError(f"No data loaded from {cfg.dataset}")
+            raise DatasetError(f"No data loaded from {cfg.dataset}")
 
         total_raw = len(raw_data)
         log_interval = max(1, total_raw // 20)  # ~5% increments
@@ -419,7 +421,7 @@ def main(
             )
         logger.info("Prepared %d preference pairs", len(pair_cache))
         if not pair_cache:
-            raise RuntimeError("No valid pairs after tokenization")
+            raise DatasetError(NO_VALID_PREFERENCE_PAIRS_MESSAGE)
 
         # -- Training loop -------------------------------------------------------
 

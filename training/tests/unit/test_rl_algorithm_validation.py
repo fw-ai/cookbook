@@ -50,7 +50,6 @@ def test_grpo_builder_validates_config(kwargs, message) -> None:
     [
         ({"reference_job_id": "ref"}, "require kl_beta > 0"),
         ({"anchor_logp": "latest"}, "anchor_logp"),
-        ({"ppo_n_minibatches": 0}, "ppo_n_minibatches"),
     ],
 )
 def test_grpo_recipe_validation(kwargs, message) -> None:

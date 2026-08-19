@@ -28,7 +28,6 @@ def validate_grpo_config(
     reference_job_id: str | None = None,
     reference_configured: bool = False,
     anchor_logp: str | None = None,
-    ppo_n_minibatches: int | None = None,
 ) -> None:
     """Validate GRPO loss and recipe settings before provisioning or training."""
     if kl_beta < 0:
@@ -48,8 +47,6 @@ def validate_grpo_config(
             "anchor_logp must be 'old_policy' or 'rollout', got "
             f"{anchor_logp!r}."
         )
-    if ppo_n_minibatches is not None and ppo_n_minibatches < 1:
-        raise ValueError("ppo_n_minibatches must be >= 1.")
 
 
 def make_grpo_loss_fn(

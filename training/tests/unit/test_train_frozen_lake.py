@@ -7,6 +7,7 @@ from eval_protocol.models import EvaluationRow, InputMetadata, Message
 import pytest
 
 import training.examples.rl.frozen_lake.train_frozen_lake as train_module
+from training.utils.runner import UserConfigError
 from training.utils.rl.rollout import Rollout, RolloutRun, rollout_to_prompt_group
 from training.examples.rl.frozen_lake.masking import (
     build_training_loss_mask,
@@ -67,7 +68,7 @@ def test_main_rejects_invalid_output_model_id(monkeypatch):
 
     cfg = FrozenLakeConfig(output_model_id="bad_name")
 
-    with pytest.raises(RuntimeError, match="output_model_id.*invalid|invalid.*output_model_id"):
+    with pytest.raises(UserConfigError, match="output_model_id.*invalid|invalid.*output_model_id"):
         train_module.main(cfg)
 
 

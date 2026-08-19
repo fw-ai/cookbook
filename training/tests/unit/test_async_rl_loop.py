@@ -12,6 +12,7 @@ import inspect
 import pytest
 
 from training.recipes import async_rl_loop
+from training.utils.runner import UserConfigError
 
 
 class _StopAfterProvisioning(RuntimeError):
@@ -164,7 +165,7 @@ def test_main_rejects_unknown_anchor_logp() -> None:
 def test_main_validates_adapter_warm_start(config_overrides, error) -> None:
     cfg = async_rl_loop.Config(log_path="gs://logs", **config_overrides)
 
-    with pytest.raises(ValueError, match=error):
+    with pytest.raises(UserConfigError, match=error):
         async_rl_loop.main(
             cfg,
             rows=[],

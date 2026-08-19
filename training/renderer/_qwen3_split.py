@@ -27,6 +27,7 @@ from tinker_cookbook.renderers.base import (
     RenderedMessage,
     TextPart,
     ToolCall,
+    ToolSpec,
 )
 from tinker_cookbook.renderers.qwen3 import (
     Qwen3DisableThinkingRenderer,
@@ -178,6 +179,22 @@ class _Qwen3_5TemplateParityMixin:
                 text=chunks[0]["text"].removeprefix("\n\n"),
             )
         ]
+
+    def create_conversation_prefix_with_tools(
+        self,
+        tools: list[ToolSpec],
+        system_prompt: str = "",
+    ) -> list[Message]:
+        # HF templates receive complete OpenAI tool envelopes. The Tinker
+        # prefix hook receives only each inner function ToolSpec, so restore
+        # the outer type/function keys before serializing the <tools> block.
+        wrapped_tools = [
+            {"type": "function", "function": dict(tool)} for tool in tools
+        ]
+        return super().create_conversation_prefix_with_tools(
+            cast(list[ToolSpec], wrapped_tools),
+            system_prompt=system_prompt,
+        )
 
 
 class Qwen3_5SplitRenderer(
@@ -406,6 +423,126 @@ class Qwen3_6PreservedRenderer(
     """Correct Qwen3.6 PRESERVED boundary and tool serialization."""
 
 
+_QWEN3_8_XHIGH_REASONING_INSTRUCTION = (
+    "Reasoning effort is set to xhigh. Please think carefully through the task, "
+    "validate key assumptions, consider plausible alternatives, and prioritize "
+    "correctness, consistency, and clarity in the final answer."
+)
+
+
+def _trim_qwen3_8_content(content: Any) -> Any:
+    """Match Qwen3.8's outer ``render_content(...) | trim`` semantics."""
+
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return content
+
+    parts = [dict(part) if isinstance(part, Mapping) else part for part in content]
+    for part in parts:
+        if isinstance(part, dict) and part.get("type") == "thinking":
+            part["thinking"] = str(part.get("thinking", "")).strip()
+
+    visible_indices = [
+        index
+        for index, part in enumerate(parts)
+        if isinstance(part, Mapping) and part.get("type") != "thinking"
+    ]
+    if visible_indices:
+        first = parts[visible_indices[0]]
+        last = parts[visible_indices[-1]]
+        if isinstance(first, dict) and first.get("type") == "text":
+            first["text"] = str(first.get("text", "")).lstrip()
+        if isinstance(last, dict) and last.get("type") == "text":
+            last["text"] = str(last.get("text", "")).rstrip()
+    return parts
+
+
+class _Qwen3_8TemplateParityMixin:
+    """Qwen3.8-specific defaults layered on the Qwen3.6 wire format."""
+
+    _qwen3_8_enable_thinking = True
+
+    def _prepare_qwen3_8_messages(self, messages: list[Message]) -> list[Message]:
+        prepared: list[Message] = []
+        for index, message in enumerate(messages):
+            role = message.get("role")
+            if role == "system" and index != 0:
+                raise ValueError("System message must be at the beginning")
+            if role not in {"system", "user", "assistant", "tool"}:
+                raise ValueError(f"Unexpected message role: {role!r}")
+            copied = dict(message)
+            copied["content"] = _trim_qwen3_8_content(message.get("content", ""))
+            prepared.append(cast(Message, copied))
+
+        if self._qwen3_8_enable_thinking:
+            if prepared and prepared[0]["role"] == "system":
+                system = dict(prepared[0])
+                content = system.get("content", "")
+                if isinstance(content, list):
+                    if any(
+                        not isinstance(part, Mapping) or part.get("type") != "text"
+                        for part in content
+                    ):
+                        raise ValueError(
+                            "Qwen3.8 system messages cannot contain non-text content"
+                        )
+                    content = "".join(str(part.get("text", "")) for part in content)
+                content = str(content).strip()
+                system["content"] = _QWEN3_8_XHIGH_REASONING_INSTRUCTION + (
+                    f"\n\n{content}" if content else ""
+                )
+                prepared[0] = cast(Message, system)
+            else:
+                synthetic_system = Message(
+                    role="system",
+                    content=_QWEN3_8_XHIGH_REASONING_INSTRUCTION,
+                )
+                if any("trainable" in message for message in prepared):
+                    synthetic_system["trainable"] = False
+                prepared.insert(0, synthetic_system)
+        elif (
+            prepared
+            and prepared[0]["role"] == "system"
+            and prepared[0].get("content") == ""
+        ):
+            prepared.pop(0)
+
+        return prepared
+
+    def build_generation_prompt(self, messages: list[Message], *args, **kwargs):
+        return super().build_generation_prompt(
+            self._prepare_qwen3_8_messages(messages), *args, **kwargs
+        )
+
+    def build_supervised_example(self, messages: list[Message], *args, **kwargs):
+        return super().build_supervised_example(
+            self._prepare_qwen3_8_messages(messages), *args, **kwargs
+        )
+
+class Qwen3_8InterleavedRenderer(
+    _Qwen3_8TemplateParityMixin,
+    Qwen3_6InterleavedRenderer,
+):
+    """Qwen3.8 default-xhigh prompt with interleaved thinking history."""
+
+
+class Qwen3_8DisableThinkingInterleavedRenderer(
+    _Qwen3_8TemplateParityMixin,
+    Qwen3_6DisableThinkingInterleavedRenderer,
+):
+    """Qwen3.8 prompt with thinking disabled and interleaved history."""
+
+    _qwen3_8_enable_thinking = False
+
+
+class Qwen3_8PreservedRenderer(
+    _Qwen3_8TemplateParityMixin,
+    Qwen3_6PreservedRenderer,
+):
+    """Qwen3.8 default-xhigh prompt with preserved thinking history."""
+
+
 register_renderer("qwen3", lambda tok, ip=None: Qwen3SplitRenderer(tok))
 register_renderer(
     "qwen3_disable_thinking",
@@ -462,4 +599,32 @@ register_renderer(
 register_renderer(
     "qwen3_6_preserved",
     lambda tok, ip=None: Qwen3_6PreservedRenderer(tok, image_processor=ip),
+)
+# Qwen3.8-27B reuses the 3.6 wire format with 3.8-specific template defaults.
+# The HF template defaults preserve_thinking to true, so the cookbook default
+# ``qwen3_8`` is the preserved renderer (unlike ``qwen3_6``, which strips).
+#
+# Three Qwen3.8 renderer variants:
+#
+#   `qwen3_8` / `qwen3_8_preserved` — preserve thinking (HF default)
+#   `qwen3_8_interleaved`           — strip historical thinking
+#   `qwen3_8_disable_thinking_interleaved` — empty think block in
+#                                    the generation prompt
+register_renderer(
+    "qwen3_8",
+    lambda tok, ip=None: Qwen3_8PreservedRenderer(tok, image_processor=ip),
+)
+register_renderer(
+    "qwen3_8_interleaved",
+    lambda tok, ip=None: Qwen3_8InterleavedRenderer(tok, image_processor=ip),
+)
+register_renderer(
+    "qwen3_8_disable_thinking_interleaved",
+    lambda tok, ip=None: Qwen3_8DisableThinkingInterleavedRenderer(
+        tok, image_processor=ip
+    ),
+)
+register_renderer(
+    "qwen3_8_preserved",
+    lambda tok, ip=None: Qwen3_8PreservedRenderer(tok, image_processor=ip),
 )

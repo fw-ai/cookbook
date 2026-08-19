@@ -862,4 +862,13 @@ def _deepseek_v4_factory(
     return DeepseekV4Renderer(tokenizer)
 
 
+def _deepseek_v4_disable_thinking_factory(
+    tokenizer: Tokenizer,
+    image_processor: Any = None,
+) -> DeepseekV4Renderer:
+    del image_processor
+    return DeepseekV4Renderer(tokenizer, thinking_mode="chat")
+
+
 register_renderer("deepseek_v4", _deepseek_v4_factory)
+register_renderer("deepseek_v4_disable_thinking", _deepseek_v4_disable_thinking_factory)

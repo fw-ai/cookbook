@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from training.utils.runner import UserConfigError
 from training.utils.checkpoints import (
     DATALOADER_BASE_NAME,
     ResumeInfo,
@@ -119,7 +120,7 @@ def _make(
 
 class TestValidateWarmStartConfig:
     def test_mutually_exclusive(self):
-        with pytest.raises(ValueError, match="mutually exclusive"):
+        with pytest.raises(UserConfigError, match="mutually exclusive"):
             validate_warm_start_config(
                 warm_start_from_adapter="some/adapter",
                 init_from_checkpoint="job:step-5",
@@ -127,7 +128,7 @@ class TestValidateWarmStartConfig:
             )
 
     def test_warm_start_requires_lora(self):
-        with pytest.raises(ValueError, match="cfg.base_model"):
+        with pytest.raises(UserConfigError, match="cfg.base_model"):
             validate_warm_start_config(
                 warm_start_from_adapter="some/adapter",
                 init_from_checkpoint=None,
@@ -339,6 +340,41 @@ class TestResume:
             "step-3", source_job_id=None
         )
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-3")
+
+    @pytest.mark.parametrize(
+        "checkpoint_ref, expected_resolve",
+        [
+            ("step-3", ("step-3",)),
+            ("job-1:step-3", ("step-3",)),
+            ("other-job:step-3", ("step-3",)),
+        ],
+    )
+    def test_explicit_checkpoint_can_warm_start_weights_without_optimizer(
+        self, log_dir, checkpoint_ref, expected_resolve
+    ):
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"step-3": 24}, f)
+
+        ckpt, client, _ = _make(log_dir, fw_rows=[])
+        info = ckpt.resume(
+            init_from_checkpoint=checkpoint_ref,
+            restore_optimizer=False,
+        )
+
+        expected_source = (
+            "other-job" if checkpoint_ref.startswith("other-job:") else None
+        )
+        assert info == ResumeInfo(
+            step=0, data_consumed=0, source_job_id=expected_source
+        )
+        client.resolve_checkpoint_path.assert_called_once_with(
+            *expected_resolve, source_job_id=expected_source
+        )
+        client.load_state.assert_called_once_with(
+            "path://%s/step-3" % (expected_source or "self")
+        )
+        client.load_state_with_optimizer.assert_not_called()
 
     @pytest.mark.parametrize(
         "checkpoint_ref",
