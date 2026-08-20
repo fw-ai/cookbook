@@ -69,7 +69,7 @@ def _mock_client(fw=None, save_state_renames_to: str | None = None):
                 }
             )
         result = MagicMock()
-        result.path = f"tinker://policy/{cp_name}"
+        result.path = cp_name
         return result
 
     client.save_state.side_effect = _save_state
@@ -379,28 +379,25 @@ class TestResume:
     @pytest.mark.parametrize(
         "checkpoint_ref",
         [
-            "gs://bucket/checkpoints/step-3",
             "tinker://run/weights/step-3",
             "s3://bucket/checkpoints/step-3",
             "https://example.test/checkpoints/step-3",
             "cross_job://other-job/step-3",
             "/checkpoints/step-3",
             "relative/checkpoints/step-3",
+            "../step-3",
         ],
     )
-    def test_external_dcp_ref_restores_optimizer_and_resets_recipe_state(
+    def test_dedicated_rejects_non_schema_checkpoint_ref(
         self, log_dir, checkpoint_ref
     ):
         ckpt, client, _ = _make(log_dir, fw_rows=[])
-        info = ckpt.resume(init_from_checkpoint=checkpoint_ref)
 
-        assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
-        client.resolve_checkpoint_path.assert_called_once_with(
-            checkpoint_ref, source_job_id=None
-        )
-        client.load_state_with_optimizer.assert_called_once_with(
-            f"path://self/{checkpoint_ref}"
-        )
+        with pytest.raises(ValueError, match="dedicated|checkpoint path"):
+            ckpt.resume(init_from_checkpoint=checkpoint_ref)
+
+        client.resolve_checkpoint_path.assert_not_called()
+        client.load_state_with_optimizer.assert_not_called()
 
     def test_init_from_checkpoint_serverless_uses_bare_name(self, log_dir):
         # Serverless: init_from_checkpoint must resume from the bare name, not

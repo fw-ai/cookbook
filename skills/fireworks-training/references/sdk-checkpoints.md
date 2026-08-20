@@ -115,10 +115,11 @@ dataset cursor.
 
 To initialize a new recipe run from another DCP checkpoint:
 
-- Dedicated: use `init_from_checkpoint=f"{prior_job_id}:step-N"`, an opaque DCP
-  URI such as `tinker://` or `gs://`, an absolute/relative DCP path, or a bare
-  checkpoint name. A bare dedicated name deliberately keeps the existing
-  step-0 initialization behavior used for phase handoffs on one trainer.
+- Dedicated: use `init_from_checkpoint=f"{prior_job_id}:step-N"` for a
+  cross-job checkpoint, or a bare checkpoint name for a phase handoff on the
+  current trainer. Raw URI and filesystem-path references are not supported.
+  A bare dedicated name deliberately keeps the existing step-0 initialization
+  behavior used for phase handoffs on one trainer.
 - Serverless: use the fully-qualified
   `"<account>/run-<32 lowercase hex>/<checkpoint>"` logical name. Bare names
   refer to the current run. Raw URI (including `gs://`, `tinker://`, and

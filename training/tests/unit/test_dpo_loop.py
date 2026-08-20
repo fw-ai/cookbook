@@ -491,7 +491,7 @@ class _FakePolicy:
         pass
 
     def resolve_checkpoint_path(self, name, source_job_id=None):
-        return f"tinker://unit/state/{name}"
+        return name
 
 
 def _adam_params(*, weight_decay: float = 0.01) -> module.tinker.AdamParams:

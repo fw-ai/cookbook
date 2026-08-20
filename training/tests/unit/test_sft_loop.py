@@ -500,7 +500,7 @@ def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
         max_seq_len=32,
         lora_rank=16,
         warm_start_from_adapter="gs://bucket/adapter-dir",
-        init_from_checkpoint="gs://bucket/dcp-dir",
+        init_from_checkpoint="source-job:step-3",
     )
 
     with pytest.raises(UserConfigError, match="mutually exclusive"):

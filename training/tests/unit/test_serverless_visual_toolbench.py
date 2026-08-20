@@ -444,7 +444,7 @@ def test_run_saves_dcp_every_two_successful_optimizer_updates_and_final(
         def save_state(self, name):
             saved_dcp_names.append(name)
             return SimpleNamespace(
-                result=lambda: SimpleNamespace(path=f"tinker://run/{name}")
+                result=lambda: SimpleNamespace(path=name)
             )
 
         def save_weights_for_sampler(self, _name):
