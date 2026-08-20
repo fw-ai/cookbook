@@ -32,7 +32,6 @@ from dotenv import load_dotenv
 from fireworks.training.sdk import TrainerJobManager
 from training.utils import (
     DEFAULT_ADAM,
-    DEFAULT_RENDER_WORKERS,
     InfraConfig,
     JsonlRenderDataset,
     RawRowCursor,
@@ -60,6 +59,7 @@ from training.utils import (
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.losses import make_batch_weighted_sft_loss_fn
+from training.utils.resource_autosizing import select_render_worker_count
 from training.utils.timer import timer, flush_timing
 
 load_dotenv()
@@ -309,9 +309,9 @@ class Config:
 
     render_workers: int | None = None
     """Number of worker processes for streaming dataset rendering. ``None``
-    auto-selects ``min(os.cpu_count(), DEFAULT_RENDER_WORKERS)``. Set to 1
-    to disable the spawn pool and render in-process (useful for unit tests
-    that monkeypatch the renderer)."""
+    auto-selects from the container cgroup and bound-node memory budgets. Set
+    to 1 to disable the spawn pool and render in-process (useful for unit
+    tests that monkeypatch the renderer)."""
 
     infra: InfraConfig = field(default_factory=InfraConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
@@ -559,17 +559,17 @@ def main(
         # Render JSONL rows on the fly inside DataLoader workers so peak
         # RAM is O(num_workers * per_worker_render_footprint) instead of
         # O(dataset_size). See docs/engineering/sft-v2-orchestrator-oom-debug.md.
-        num_workers = (
-            cfg.render_workers
-            if cfg.render_workers is not None
-            else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
-        )
         init_args = (
             cfg.tokenizer_model, cfg.renderer_name,
             cfg.train_on_what, cfg.max_seq_len,
         )
         _init_render_worker(*init_args)
         worker_init_fn = functools.partial(_init_render_worker, *init_args)
+        num_workers = (
+            cfg.render_workers
+            if cfg.render_workers is not None
+            else select_render_worker_count()
+        )
 
         training_dataset, eval_data = _prepare_datasets(cfg)
         training_count = len(training_dataset)
