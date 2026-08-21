@@ -7,6 +7,7 @@ set -euo pipefail
 #   FIREWORKS_API_KEY   Fireworks key with serverless-training access (required)
 #   WANDB_API_KEY       Weights & Biases key (optional; enables W&B tracking)
 #   WANDB_ENTITY        W&B entity/team (optional; required for W&B logging)
+#   COUNTDOWN_DATASET   custom prepared JSONL path (optional; default auto-downloads)
 
 : "${FIREWORKS_API_KEY:?set a Fireworks key with serverless-training access}"
 
@@ -27,7 +28,7 @@ export HF_TRUST_REMOTE_CODE="${HF_TRUST_REMOTE_CODE:-1}"
 mkdir -p "$run_dir"
 
 # Materialize the TinyZero countdown dataset on first run.
-dataset="$cookbook_root/training/examples/serverless_rl/data/countdown_3to4_train.jsonl"
+dataset="${COUNTDOWN_DATASET:-$cookbook_root/training/examples/serverless_rl/data/countdown_3to4_train.jsonl}"
 if [[ ! -f "$dataset" ]]; then
   echo "dataset not found at $dataset -- preparing from Jiayi-Pan/Countdown-Tasks-3to4"
   "$python_bin" -m training.examples.serverless_rl.countdown_rl \
@@ -41,6 +42,7 @@ cmd=(
   --tokenizer-model "${KIMI_K3_TOKENIZER:-moonshotai/Kimi-K3}"
   --dataset "$dataset"
   --steps "$steps"
+  --router-replay
   --checkpoint-name "countdown-k3-$run_stamp"
   --final-checkpoint-name "countdown-k3-final-$run_stamp"
   --run-dir "$run_dir"
