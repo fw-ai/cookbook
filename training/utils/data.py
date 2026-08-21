@@ -12,6 +12,7 @@ import torch
 import requests
 
 from fireworks.training.sdk.errors import request_with_retries
+from training.utils.runner import DatasetError
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,19 @@ def iter_preference_examples(
                 return
 
 
+def _load_jsonl_object(line: str, *, path: str, line_no: int) -> dict[str, Any]:
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise DatasetError(f"{path}:{line_no}: invalid JSONL: {exc.msg}.") from exc
+    if not isinstance(row, dict):
+        raise DatasetError(
+            f"{path}:{line_no}: JSONL row must be an object, got "
+            f"{type(row).__name__}."
+        )
+    return row
+
+
 def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dict[str, Any]]:
     """Load preference dataset (chosen/rejected pairs).
 
@@ -161,7 +175,7 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
     - ``{"samples": [{"messages": ..., "score": 0.0 | 1.0}, ...]}`` -- our
       legacy preference-sample format. Scores are *strictly* binary: 1.0
       marks the chosen sample, 0.0 marks the rejected sample. Graded scores
-      (e.g. 0.5, 0.8) and missing scores raise ``ValueError`` instead of
+      (e.g. 0.5, 0.8) and missing scores raise ``DatasetError`` instead of
       being silently dropped.
     - ``{"input": ..., "preferred_output": ..., "non_preferred_output": ...}``
       -- OpenAI fine-tuning DPO format.
@@ -176,33 +190,33 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
             line = raw_line.strip()
             if not line:
                 continue
-            row = json.loads(line)
+            row = _load_jsonl_object(line, path=path, line_no=line_no)
             if "chosen" in row and "rejected" in row:
                 data.append(row)
             elif "samples" in row:
                 samples = row["samples"]
                 if not isinstance(samples, list):
-                    raise ValueError(
+                    raise DatasetError(
                         f"{path}:{line_no}: 'samples' must be a list, got "
                         f"{type(samples).__name__}."
                     )
                 chosen = rejected = None
                 for i, sample in enumerate(samples):
                     if not isinstance(sample, dict):
-                        raise ValueError(
+                        raise DatasetError(
                             f"{path}:{line_no}: samples[{i}] must be a dict, "
                             f"got {type(sample).__name__}."
                         )
                     evals = sample.get("evals")
                     if evals is not None and not isinstance(evals, dict):
-                        raise ValueError(
+                        raise DatasetError(
                             f"{path}:{line_no}: samples[{i}].evals must be a "
                             f"dict if present, got {type(evals).__name__}."
                         )
                     score = (evals or {}).get("score", sample.get("score"))
                     if score == 1.0:
                         if chosen is not None:
-                            raise ValueError(
+                            raise DatasetError(
                                 f"{path}:{line_no}: row has multiple samples "
                                 f"with score=1.0; preference is ambiguous. "
                                 f"Each samples row must have exactly one "
@@ -212,7 +226,7 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
                         chosen = sample
                     elif score == 0.0:
                         if rejected is not None:
-                            raise ValueError(
+                            raise DatasetError(
                                 f"{path}:{line_no}: row has multiple samples "
                                 f"with score=0.0; preference is ambiguous. "
                                 f"Each samples row must have exactly one "
@@ -221,7 +235,7 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
                             )
                         rejected = sample
                     else:
-                        raise ValueError(
+                        raise DatasetError(
                             f"{path}:{line_no}: invalid preference score "
                             f"{score!r} in samples[{i}]. Samples-format "
                             f"preference rows must use exactly score=1.0 "
@@ -229,7 +243,7 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
                             f"missing scores are not supported."
                         )
                 if chosen is None or rejected is None:
-                    raise ValueError(
+                    raise DatasetError(
                         f"{path}:{line_no}: samples row does not yield both a "
                         f"chosen (score=1.0) and a rejected (score=0.0) "
                         f"sample (chosen={chosen is not None}, "
@@ -254,7 +268,7 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
                     }
                 )
             else:
-                raise ValueError(
+                raise DatasetError(
                     f"{path}:{line_no}: row does not match any supported "
                     f"preference format. Expected one of:\n"
                     f"  - {{'chosen': ..., 'rejected': ...}}\n"

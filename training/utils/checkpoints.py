@@ -53,9 +53,35 @@ _RESUMABLE_TYPE_SUFFIXES = ("TRAINING", "TRAINING_LORA")
 logger = logging.getLogger(__name__)
 
 _URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
-_SERVERLESS_CROSS_RUN_RE = re.compile(
-    r"^[^/]+/run-[0-9a-f]{32}/[^/]+(?:/[^/]+)*$"
-)
+_DNS_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+_RUN_ID_RE = re.compile(r"^run-[0-9a-f]{32}$")
+
+
+def _validate_logical_checkpoint_path(path: str) -> str:
+    if not path:
+        raise ValueError("checkpoint path must not be empty")
+    if "\x00" in path or "\\" in path:
+        raise ValueError("checkpoint path contains invalid characters")
+    for segment in path.split("/"):
+        if segment in ("", ".", ".."):
+            raise ValueError("checkpoint path contains empty or traversal segments")
+        if not _DNS_LABEL_RE.fullmatch(segment):
+            raise ValueError(f"checkpoint path segment {segment!r} is not a valid DNS label")
+    return path
+
+
+def _validate_serverless_cross_run_ref(checkpoint_ref: str) -> str:
+    segments = checkpoint_ref.split("/")
+    if len(segments) < 3:
+        raise ValueError(
+            "serverless cross-run checkpoints must use '<account>/run-<32 lowercase hex>/<checkpoint>'"
+        )
+    _validate_logical_checkpoint_path(checkpoint_ref)
+    if not _RUN_ID_RE.fullmatch(segments[1]):
+        raise ValueError(
+            "serverless cross-run checkpoints must use '<account>/run-<32 lowercase hex>/<checkpoint>'"
+        )
+    return checkpoint_ref
 
 
 # -- Public types --------------------------------------------------------------
@@ -237,8 +263,8 @@ def _parse_explicit_checkpoint_ref(
 ) -> _ExplicitCheckpointRef:
     """Resolve the recipe-facing checkpoint grammar.
 
-    Dedicated trainers accept a local checkpoint name, ``<job>:<name>``, or a
-    supported DCP path. Serverless trainers accept a current-run bare name or a
+    Dedicated trainers accept a logical checkpoint name or ``<job>:<name>``.
+    Serverless trainers accept a current-run bare name or a
     fully-qualified ``<account>/<run>/<name>`` cross-run reference. Keeping
     this classification explicit is important because only reference forms
     whose contract denotes continuation can restore cookbook-owned step and
@@ -279,30 +305,46 @@ def _parse_explicit_checkpoint_ref(
                     "a same-session checkpoint reference must use a bare "
                     "checkpoint name"
                 )
-            return _ExplicitCheckpointRef(checkpoint_name, None, True)
+            return _ExplicitCheckpointRef(
+                _validate_logical_checkpoint_path(checkpoint_name),
+                None,
+                True,
+            )
         if "/" in spec:
-            if not _SERVERLESS_CROSS_RUN_RE.fullmatch(spec):
-                raise ValueError(
-                    "serverless cross-run checkpoints must use "
-                    "'<account>/run-<32 lowercase hex>/<checkpoint>'"
-                )
-            return _ExplicitCheckpointRef(spec, None, False)
-        return _ExplicitCheckpointRef(spec, None, True)
+            return _ExplicitCheckpointRef(
+                _validate_serverless_cross_run_ref(spec),
+                None,
+                False,
+            )
+        return _ExplicitCheckpointRef(
+            _validate_logical_checkpoint_path(spec),
+            None,
+            True,
+        )
 
     if is_uri or spec.startswith("/") or "/" in spec:
-        return _ExplicitCheckpointRef(spec, None, False)
+        raise ValueError(
+            "dedicated init_from_checkpoint must be a logical checkpoint name "
+            "or '<job_id>:<checkpoint_name>'"
+        )
     if ":" not in spec:
         # Preserve the dedicated recipe contract: a bare name is trainer-state
         # initialization at recipe step 0. Shape-validation uses this for DPO
         # -> RL phase handoff on one trainer. Dedicated full resume is explicit
         # via "<current_job_id>:<checkpoint>" or control-plane auto-resume.
-        return _ExplicitCheckpointRef(spec, None, False)
+        return _ExplicitCheckpointRef(
+            _validate_logical_checkpoint_path(spec),
+            None,
+            False,
+        )
 
     source_job_id, checkpoint_name = spec.split(":", 1)
     if not source_job_id or not checkpoint_name:
         raise ValueError(
             "init_from_checkpoint must use '<job_id>:<checkpoint_name>'"
         )
+    _validate_logical_checkpoint_path(source_job_id)
+    _validate_logical_checkpoint_path(checkpoint_name)
     return _ExplicitCheckpointRef(
         checkpoint_name,
         None if source_job_id == trainer_id else source_job_id,

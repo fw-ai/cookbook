@@ -57,7 +57,6 @@ from tqdm import tqdm
 
 from training.utils import (
     DEFAULT_ADAM,
-    DEFAULT_RENDER_WORKERS,
     AppendOnlyPickleLog,
     DatasetError,
     DeployConfig,
@@ -85,6 +84,7 @@ from training.utils import (
     wandb_log,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
+from training.utils.resource_autosizing import select_render_worker_count
 from training.utils.runner_state import write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
@@ -145,8 +145,9 @@ class Config:
     """Max concurrent reference forward passes during cache warm-up."""
     ref_cache_batch_size: int = 1
     """Number of preference pairs per reference forward call during caching."""
-    render_workers: int = DEFAULT_RENDER_WORKERS
-    """Number of DataLoader workers for streaming render. <=1 = in-process."""
+    render_workers: int | None = None
+    """Number of DataLoader workers for streaming render. ``None`` dynamically
+    selects from the runtime CPU and memory budgets. <=1 = in-process."""
 
     group_by_length: bool = False
     """Compose each batch from similarly-sized preference pairs (bucket-then-
@@ -382,6 +383,13 @@ async def _train_loop(
         raise ValueError("ref_cache_log is required when cfg.epochs > 1")
 
     batch_size = cfg.batch_size
+    num_workers = (
+        cfg.render_workers
+        if cfg.render_workers is not None
+        else select_render_worker_count(
+            available_parallel_tasks=len(pair_dataset)
+        )
+    )
     step = step_offset
     rough_pairs_per_epoch = (
         min(len(pair_dataset), cfg.max_pairs)
@@ -503,7 +511,7 @@ async def _train_loop(
     loader = make_render_dataloader(
         pair_dataset,
         batch_size=batch_size,
-        num_workers=cfg.render_workers,
+        num_workers=num_workers,
         shuffle=group_by_length,  # grouped path uses seeded shuffle; else file order
         generator=loader_generator,
         worker_init_fn=worker_init_fn,
@@ -809,11 +817,20 @@ def main(
         if len(pair_dataset) == 0:
             raise DatasetError(f"No data found in {cfg.dataset}")
 
+        num_workers = (
+            cfg.render_workers
+            if cfg.render_workers is not None
+            else select_render_worker_count(
+                available_parallel_tasks=len(pair_dataset)
+            )
+        )
+        cfg.render_workers = num_workers
+
         logger.info(
             "Streaming %d raw preference rows from %s (renderer=%s, workers=%d%s)",
             len(pair_dataset), cfg.dataset,
             resolved_renderer_name,
-            cfg.render_workers,
+            num_workers,
             (
                 f", max_pairs={cfg.max_pairs}"
                 if cfg.max_pairs is not None
