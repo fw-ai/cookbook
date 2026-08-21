@@ -336,7 +336,7 @@ def check_serverless_example(errors: list[str]) -> None:
         REPO_ROOT / "training/examples/serverless_rl/README.md"
     ).read_text(encoding="utf-8")
     for path, text in (("countdown_rl.py", example), ("README.md", readme)):
-        if "qwen3p6-27b" not in text:
+        if "kimi-k3" not in text:
             errors.append(f"serverless_rl/{path}: supported default model is missing")
         if "qwen3p5-27b" in text:
             errors.append(f"serverless_rl/{path}: unsupported stale model remains")

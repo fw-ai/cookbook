@@ -9,7 +9,7 @@ that evaluates to the target. The model is asked to reason inside
 ``composite_reward`` is the signal the RL loop optimizes. It is intentionally
 shaped so partial progress is rewarded: emitting a well-formed answer, using the
 right numbers, and hitting the target each earn credit. This vendored copy keeps
-the example fully standalone -- no monorepo imports.
+the example fully standalone -- no extra cookbook imports.
 """
 
 from __future__ import annotations
