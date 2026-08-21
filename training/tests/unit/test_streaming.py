@@ -639,7 +639,7 @@ def test_dataloader_group_by_length_overhead_is_bounded(tmp_path):
 
 
 def test_default_constants_are_sane():
-    assert DEFAULT_RENDER_WORKERS == 16
+    assert DEFAULT_RENDER_WORKERS == 4
     assert DEFAULT_PREFETCH_FACTOR >= 1
 
 

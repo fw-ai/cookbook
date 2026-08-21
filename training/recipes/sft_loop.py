@@ -57,7 +57,6 @@ from fireworks.training.sdk.training_spec import (
 from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
-    DEFAULT_RENDER_WORKERS,
     DatasetError,
     NO_VALID_TRAINING_EXAMPLES_MESSAGE,
     TrainerConfig,
@@ -87,6 +86,7 @@ from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.serverless import setup_serverless_training
 from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
+from training.utils.resource_autosizing import select_render_worker_count
 from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
@@ -783,9 +783,9 @@ class Config:
 
     render_workers: int | None = None
     """Number of worker processes for streaming dataset rendering. ``None``
-    auto-selects ``min(os.cpu_count(), DEFAULT_RENDER_WORKERS)``. Set to 1
-    to disable the spawn pool and render in-process (useful for unit tests
-    that monkeypatch the renderer)."""
+    auto-selects from the container cgroup and bound-node memory budgets. Set
+    to 1 to disable the spawn pool and render in-process (useful for unit
+    tests that monkeypatch the renderer)."""
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
@@ -1021,9 +1021,6 @@ def main(
         # Render JSONL rows on the fly inside DataLoader workers so peak
         # RAM is O(num_workers * per_worker_render_footprint) instead of
         # O(dataset_size).
-        num_workers = (
-            cfg.render_workers if cfg.render_workers is not None else min(os.cpu_count() or 1, DEFAULT_RENDER_WORKERS)
-        )
         base_init_args = (
             cfg.tokenizer_model,
             resolved_renderer_name,
@@ -1036,6 +1033,13 @@ def main(
         _init_render_worker(*base_init_args)
 
         training_dataset, eval_data = _prepare_datasets(cfg)
+        num_workers = (
+            cfg.render_workers
+            if cfg.render_workers is not None
+            else select_render_worker_count(
+                available_parallel_tasks=len(training_dataset)
+            )
+        )
 
         render_samples_local_dir = ""
         render_samples_limit = _resolve_render_samples_limit(cfg.render_samples_limit)

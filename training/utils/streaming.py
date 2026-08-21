@@ -36,8 +36,10 @@ from training.utils.runner import DatasetError
 
 logger = logging.getLogger(__name__)
 
-# Defaults sized to keep a 16 vCPU orchestrator pod feeding the trainer.
-DEFAULT_RENDER_WORKERS = 16
+# Four workers is the large-dataset-tested safe fallback. Managed SFT and DPO
+# jobs auto-size below the runtime CPU and memory ceilings instead of treating
+# this fallback as a fixed target.
+DEFAULT_RENDER_WORKERS = 4
 DEFAULT_PREFETCH_FACTOR = 2
 JSONL_ROW_INDEX_KEY = "_fireworks_jsonl_row_index"
 

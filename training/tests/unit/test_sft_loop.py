@@ -81,6 +81,7 @@ def test_throughput_defaults_keep_trainer_fed():
     cfg = module.Config(log_path="")
 
     assert cfg.pipeline_depth == 4
+    assert cfg.render_workers is None
 
 
 def test_batch_loss_metrics_separate_weight_from_token_count():

@@ -49,7 +49,7 @@ def test_config_uses_shared_default_weight_decay():
     cfg = module.Config(log_path="/tmp/dpo_test_logs")
 
     assert cfg.weight_decay == pytest.approx(module.DEFAULT_ADAM["weight_decay"])
-    assert cfg.render_workers == 16
+    assert cfg.render_workers is None
 
 
 def test_output_model_requires_promotable_final_checkpoint():
@@ -514,6 +514,56 @@ def _stub_train_step_deps(monkeypatch, events: dict):
 
 
 class TestTrainLoop:
+    def test_auto_sizes_render_workers(self, tmp_path, monkeypatch):
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        selected: dict = {}
+        original_make_render_dataloader = module.make_render_dataloader
+
+        def fake_select_render_worker_count(*, available_parallel_tasks):
+            selected["tasks"] = available_parallel_tasks
+            return 3
+
+        def capture_make_render_dataloader(*args, **kwargs):
+            selected["workers"] = kwargs["num_workers"]
+            kwargs["num_workers"] = 0
+            return original_make_render_dataloader(*args, **kwargs)
+
+        monkeypatch.setattr(
+            module,
+            "select_render_worker_count",
+            fake_select_render_worker_count,
+        )
+        monkeypatch.setattr(
+            module,
+            "make_render_dataloader",
+            capture_make_render_dataloader,
+        )
+
+        ds = _make_pair_dataset(tmp_path, n=4)
+        cfg = module.Config(
+            log_path=str(tmp_path),
+            beta=0.2,
+            epochs=1,
+            batch_size=2,
+        )
+        step = asyncio.run(
+            module._train_loop(
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=4),
+            )
+        )
+
+        assert step == 2
+        assert selected == {"tasks": 4, "workers": 3}
+
     def test_single_epoch_no_ref_cache_log(self, tmp_path, monkeypatch):
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
