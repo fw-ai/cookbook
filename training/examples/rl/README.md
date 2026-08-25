@@ -30,6 +30,13 @@ Each example exposes `rollout_fn_factory(setup) -> rollout_fn` (signature
 `async def rollout_fn(sample_prompt) -> RolloutRun | None`) and a `train.py`
 that wires the dataset and factory into `recipes.async_rl_loop.main`.
 
+Both dedicated and serverless async recipes pass their existing sampler as
+`setup.sampler`. Treat it as borrowed: reuse it for every training and
+evaluation trajectory, and do not close it or construct another sampler or
+adaptive-concurrency controller. The recipe closes the sampler after rollout
+production ends and before it closes the training/deployment service. Endpoint,
+model, and key fields remain available for compatibility with older factories.
+
 For the API contract and recipe knobs, see
 [`/skills/fireworks-training/references/rl-async.md`](/skills/fireworks-training/references/rl-async.md).
 

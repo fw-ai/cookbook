@@ -202,8 +202,8 @@ def _build_user_message(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
-    # Serverless callers inject a sampler bound to the saved checkpoint.
-    # Dedicated callers build the sampler from the rollout setup.
+    # Current recipes inject one borrowed sampler for dedicated and serverless
+    # runs. Keep endpoint reconstruction only for legacy/manual setups.
     sampler = setup.sampler
     if sampler is None:
         sampler = build_deployment_sampler(setup)

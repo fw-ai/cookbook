@@ -33,10 +33,10 @@ Users provide:
 - algorithm and scheduling config;
 - optional `dynamic_filter_fn` and `evaluation_fn` callbacks.
 
-The recipe owns trainer/deployment lifecycle, rollout fan-out and admission,
-group assembly, advantages, reference and old-policy forwards, GRPO/TIS/KL,
-training chunks, the optimizer, sampler hotload, version publication, metrics,
-checkpointing, and cleanup.
+The recipe owns trainer/deployment/sampler lifecycle, rollout fan-out and
+admission, group assembly, advantages, reference and old-policy forwards,
+GRPO/TIS/KL, training chunks, the optimizer, sampler hotload, version
+publication, metrics, checkpointing, and cleanup.
 
 Keep custom environment logic in the rollout function. Do not put scheduler or
 trainer lifecycle state in the rollout.
@@ -87,8 +87,14 @@ run. Each trajectory is then packed as a separate trainer datum. Thus a group
 with `R` surviving runs has `R` rewards and advantages, while its trainer datum
 count is `sum(len(run.segments) for run in runs)` and may exceed `R`.
 
-`RolloutSetup` contains the tokenizer, tokenizer ID, sampling kwargs, inference
-base URL, API key, deployment model, group size, and caller-provided `extras`.
+`RolloutSetup` contains the recipe-owned sampler, tokenizer, tokenizer ID,
+sampling kwargs, inference base URL, API key, deployment model, group size, and
+caller-provided `extras`. Treat `setup.sampler` as borrowed: reuse it for every
+training and evaluation trajectory and do not close it. The endpoint, model,
+and key fields remain available for older rollout factories and manually
+constructed setups, but a factory must not construct another sampler or
+adaptive-concurrency controller when `setup.sampler` is present.
+
 The rollout may optionally declare any of these keyword parameters when it
 needs dataset position context: `cursor_index`, `row_index`, `epoch`,
 `rollout_idx`, `sample_index`, `end_of_epoch`, and `evaluation`. Training calls
@@ -122,11 +128,31 @@ The scheduler is split by one owner per concern:
 | `OptimizerBatch` | One optimizer batch, fixed balanced chunk targets, accepted rows, and the async queue of ready `TrainingChunk`s |
 | `AsyncRLCoordinator` | The producer/batch handoff, one serialized trainer worker, failure boundaries, and publication |
 | `AsyncRLTelemetry` | Rate-limited producer snapshots, completed-batch metric reduction, and reporting |
-| `async_rl_loop.main` | Visible algorithm phases: reference/old-policy forwards, forward/backward, optimizer, hotload, telemetry handoff, and checkpoints |
+| `async_rl_loop.main` | Sampler and service lifecycle plus visible algorithm phases: reference/old-policy forwards, forward/backward, optimizer, hotload, telemetry handoff, and checkpoints |
 
 Blocking trainer calls run on the coordinator's single worker thread. The event
 loop remains free to retire rollout tasks and refill the producer while trainer
 work is active. Gradient mutation is serialized; rollout production is not.
+
+### Sampler ownership and shutdown
+
+The async loop creates one sampler and passes that exact object through
+`RolloutSetup`. All rollout trajectories and evaluation calls therefore share
+one HTTP connection pool, deployment route, and sampler concurrency controller.
+A rollout factory may own a gateway or other facade over the sampler, but the
+sampler itself remains borrowed.
+
+Shutdown follows dependency order:
+
+1. stop the coordinator and rollout production;
+2. close the rollout function and any factory-owned gateway;
+3. close the sampler;
+4. close the training/deployment service.
+
+The gateway must not close its borrowed sampler. The dedicated recipe registers
+the sampler after the service in its LIFO cleanup stack, so the sampler closes
+first even on an exception. Serverless keeps the equivalent ordering in its
+async sampling lifecycle.
 
 ## Five scheduling knobs
 

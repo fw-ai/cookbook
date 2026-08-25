@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,10 @@ from training.utils.runner import UserConfigError
 
 
 class _StopAfterProvisioning(RuntimeError):
+    pass
+
+
+class _StopAfterRolloutSetup(RuntimeError):
     pass
 
 
@@ -256,3 +261,98 @@ def test_main_requests_trainer_cleanup_for_empty_job_id(
     kwargs = _build_service_kwargs(monkeypatch, cfg)
 
     assert kwargs["cleanup_trainer_on_close"] is True
+
+
+def test_main_injects_sampler_and_closes_it_before_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    expected_tokenizer = object()
+
+    class FakeSampler:
+        model = "accounts/test/deployments/rollout"
+        base_url = "https://rollout.example"
+
+        def close(self) -> None:
+            events.append("sampler.close")
+
+    sampler = FakeSampler()
+
+    class FakeService:
+        trainer_job_id = "trainer"
+        max_context_length = 4096
+
+        def close(self) -> None:
+            events.append("service.close")
+
+        def create_training_client(self, *_args, **_kwargs):
+            return object()
+
+        def create_deployment_sampler(self, *, tokenizer):
+            assert tokenizer is expected_tokenizer
+            return sampler
+
+        def hotload_sampler_snapshot(self, path: str) -> None:
+            assert path == "checkpoint"
+
+    class FakePolicy:
+        def save_weights_for_sampler(self, *_args, **_kwargs):
+            return SimpleNamespace(path="checkpoint")
+
+    class FakeCheckpoints:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def resume(self, **_kwargs):
+            return None
+
+    service = FakeService()
+    policy = FakePolicy()
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setattr(async_rl_loop, "setup_wandb", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        async_rl_loop, "validate_config", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        async_rl_loop,
+        "resolve_router_replay_enabled",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        async_rl_loop,
+        "load_deployment_tokenizer",
+        lambda *_args, **_kwargs: expected_tokenizer,
+    )
+    monkeypatch.setattr(
+        async_rl_loop,
+        "build_service_client",
+        lambda **_kwargs: service,
+    )
+    monkeypatch.setattr(
+        async_rl_loop.ReconnectableClient,
+        "from_training_client",
+        lambda *_args, **_kwargs: policy,
+    )
+    monkeypatch.setattr(async_rl_loop, "TrainingCheckpoints", FakeCheckpoints)
+    monkeypatch.setattr(async_rl_loop, "log_metrics", lambda *_args, **_kwargs: None)
+
+    def rollout_factory(setup: async_rl_loop.RolloutSetup):
+        assert setup.sampler is sampler
+        assert setup.inference_base_url == sampler.base_url
+        assert setup.model == sampler.model
+        events.append("rollout_factory")
+        raise _StopAfterRolloutSetup
+
+    cfg = async_rl_loop.Config(
+        log_path="/tmp/async_rl_test_logs",
+        kl_beta=0,
+        deployment=async_rl_loop.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
+    )
+    with pytest.raises(_StopAfterRolloutSetup):
+        async_rl_loop.main(
+            cfg,
+            rows=[],
+            rollout_fn_factory=rollout_factory,
+        )
+
+    assert events == ["rollout_factory", "sampler.close", "service.close"]
