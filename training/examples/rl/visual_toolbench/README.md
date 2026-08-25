@@ -41,7 +41,7 @@ Use `--no-require-tool-aligned-data` only for intentional experiments.
 
 ## Launch scripts
 
-Both launchers expect the same 214-row training split and disjoint 50-row
+All launchers expect the same 214-row training split and disjoint 50-row
 evaluation split:
 
 ```bash
@@ -64,10 +64,17 @@ needed):
 bash training/examples/serverless_rl/runs/run_kimi_k3_serverless_2epoch.sh
 ```
 
-Neither script provisions a trainer, deployment, shape, or region; each
-connects to Fireworks pooled serverless training.
+Run Muse Glimmer 30B (override `MUSE_GLIMMER_TOKENIZER` with a pinned local
+snapshot when needed):
 
-Both launchers preserve sampling/training distribution alignment:
+```bash
+bash training/examples/serverless_rl/runs/run_muse_glimmer_serverless_2epoch.sh
+```
+
+No launcher provisions a trainer, deployment, shape, or region; each connects
+to Fireworks pooled serverless training.
+
+All launchers preserve sampling/training distribution alignment:
 
 - training sampling: temperature `1`, top-p `1`, top-k `0`
 - evaluation: temperature `1`, top-p `0.95`, top-k `20`
@@ -81,6 +88,7 @@ The model-specific settings are:
 | --- | --- | --- | --- |
 | Qwen3.6-27B | `qwen3_6_disable_thinking_interleaved` | 8 × 8 | `3e-5` |
 | Kimi K3 | `kimi_k3_disable_thinking` | 16 × 8 | `1e-4` |
+| Muse Glimmer 30B | `muse_glimmer` | 16 × 8 | `1e-4` |
 
 The run directory contains the exact command, input SHA-256 hashes, logs,
 metrics, eval completions, and checkpoint metadata. Override it with
