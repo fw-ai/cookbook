@@ -28,6 +28,7 @@ from training.utils.supervised import (
     render_messages_to_datum,
     render_messages_to_datums,
     renderer_supports_images,
+    renderer_supports_tool_images,
 )
 
 
@@ -1589,6 +1590,23 @@ def test_renderer_supports_images_matches_renderer_capability(
     expected: bool,
 ) -> None:
     assert renderer_supports_images(renderer_name) is expected
+
+
+@pytest.mark.parametrize(
+    ("renderer_name", "expected"),
+    [
+        ("kimi_k3", True),
+        ("kimi_k3_disable_thinking", True),
+        ("qwen3_vl_instruct", False),
+        ("muse_glimmer", False),
+        ("deepseek_v4", False),
+    ],
+)
+def test_renderer_supports_tool_images_is_explicit(
+    renderer_name: str,
+    expected: bool,
+) -> None:
+    assert renderer_supports_tool_images(renderer_name) is expected
 
 
 def test_build_renderer_resolves_minimax_m2(monkeypatch) -> None:
