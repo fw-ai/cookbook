@@ -41,6 +41,7 @@ from tinker_cookbook.renderers.qwen3_5 import (
 )
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer._think_prefill import ThinkPrefillWeightsMixin
 
 
 class Qwen3SplitRenderer(DisaggregateMultiTurnMixin, Qwen3Renderer):
@@ -198,6 +199,7 @@ class _Qwen3_5TemplateParityMixin:
 
 
 class Qwen3_5SplitRenderer(
+    ThinkPrefillWeightsMixin,
     DisaggregateMultiTurnMixin,
     Qwen3_5Renderer,
 ):
@@ -212,6 +214,7 @@ class Qwen3_5DisableThinkingSplitRenderer(
 
 
 class Qwen3_5InterleavedRenderer(
+    ThinkPrefillWeightsMixin,
     _Qwen3_5TemplateParityMixin,
     DisaggregateMultiTurnMixin,
     Qwen3_5Renderer,

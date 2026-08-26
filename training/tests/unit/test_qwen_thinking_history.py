@@ -473,12 +473,14 @@ def test_thinking_enablement_preserves_clear_history_semantics(
     disabled_trained, disabled_masked = _weighted_text(
         tokenizer, (disabled_input, disabled_weights)
     )
-    assert enabled_trained == disabled_trained
+    assert enabled_trained == disabled_trained.replace("<think>\n", "")
     if has_enablement_preamble:
-        assert enabled_masked.removeprefix(_QWEN38_XHIGH_SYSTEM) == disabled_masked
-    else:
+        enabled_masked = enabled_masked.removeprefix(_QWEN38_XHIGH_SYSTEM)
+    assert enabled_masked.replace("<think>\n", "") == disabled_masked
+    if not has_enablement_preamble:
+        # Thinking enablement changes only which think-prefill tokens carry
+        # loss; the rendered conversation remains byte-identical.
         assert list(enabled_input.to_ints()) == list(disabled_input.to_ints())
-        assert enabled_weights.tolist() == disabled_weights.tolist()
 
     enabled_text = tokenizer.decode(
         _renderer_tokens(tokenizer, enabled_renderer, messages),

@@ -19,6 +19,15 @@ turns). Serving maps ``reasoning_history="preserved"`` →
 ``nemotron3_preserve_thinking`` so SFT can match that contract: historical
 ``reasoning_content`` is replayed inside ``<think>`` and the renderer
 satisfies the sequence extension property (no per-user-turn unrolling).
+
+Think-block boundary
+--------------------
+Nemotron-3 inherits Qwen3.5's assistant split, which puts the prefilled
+``<think>`` in the trainable span and the model-generated ``</think>`` in the
+masked header. Every thinking-enabled variant therefore mixes in
+:class:`training.renderer._think_prefill.ThinkPrefillWeightsMixin`.
+``nemotron3_disable_thinking`` does not: its generation suffix prefills the
+whole ``<think></think>`` wrapper, so masking both markers is already right.
 """
 
 from __future__ import annotations
@@ -27,10 +36,12 @@ from tinker_cookbook.renderers import Message, register_renderer
 from tinker_cookbook.renderers.base import RenderContext
 from tinker_cookbook.renderers.nemotron3 import (
     Nemotron3DisableThinkingRenderer,
+    Nemotron3LowThinkingRenderer,
     Nemotron3Renderer,
 )
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer._think_prefill import ThinkPrefillWeightsMixin
 from training.renderer.message_weights import untrained_synthesized_context
 
 
@@ -42,11 +53,21 @@ class _UntrainedSynthesizedSystemMixin:
 
 
 class Nemotron3SplitRenderer(
+    ThinkPrefillWeightsMixin,
     DisaggregateMultiTurnMixin,
     _UntrainedSynthesizedSystemMixin,
     Nemotron3Renderer,
 ):
     """Default / INTERLEAVED: strip thinking before the last user turn."""
+
+
+class Nemotron3LowThinkingSplitRenderer(
+    ThinkPrefillWeightsMixin,
+    DisaggregateMultiTurnMixin,
+    _UntrainedSynthesizedSystemMixin,
+    Nemotron3LowThinkingRenderer,
+):
+    """Low-effort reasoning (Super only); thinking is still enabled."""
 
 
 class Nemotron3DisableThinkingSplitRenderer(
@@ -96,6 +117,7 @@ class _Nemotron3PreserveThinkingMixin:
 
 class Nemotron3PreserveThinkingSplitRenderer(
     _Nemotron3PreserveThinkingMixin,
+    ThinkPrefillWeightsMixin,
     DisaggregateMultiTurnMixin,
     _UntrainedSynthesizedSystemMixin,
     Nemotron3Renderer,
@@ -107,6 +129,10 @@ register_renderer("nemotron3", lambda tok, ip=None: Nemotron3SplitRenderer(tok))
 register_renderer(
     "nemotron3_interleaved",
     lambda tok, ip=None: Nemotron3SplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_low_thinking",
+    lambda tok, ip=None: Nemotron3LowThinkingSplitRenderer(tok),
 )
 register_renderer(
     "nemotron3_disable_thinking",
