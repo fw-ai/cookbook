@@ -340,9 +340,9 @@ def _native_message(message: Mapping[str, Any]) -> dict[str, Any]:
                     {"type": "text", "text": str(part.get("text", ""))}
                 )
             elif part_type in {"image", "image_url"}:
-                if role != "user":
+                if role not in {"user", "tool"}:
                     raise ValueError(
-                        "Kimi K3 structured images are supported only in user messages"
+                        "Kimi K3 structured images are supported only in user or tool messages"
                     )
                 payload = part.get(part_type)
                 if payload is None:
@@ -822,8 +822,8 @@ class KimiK3Renderer(Renderer):
         messages: list[Message],
     ) -> tuple[_KimiK3Request, list[_KimiK3ProcessedMedia]]:
         request = self._unpack_request(messages)
-        native_messages, media = self._normalize_messages_and_media(request.messages)
-        native_messages = list(self._normalize_tool_results(native_messages))
+        native_messages = list(self._normalize_tool_results(list(request.messages)))
+        native_messages, media = self._normalize_messages_and_media(native_messages)
         normalized = _KimiK3Request(
             messages=tuple(native_messages),
             tools=request.tools,

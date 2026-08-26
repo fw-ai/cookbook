@@ -197,8 +197,8 @@ class Config:
 class RolloutSetup:
     """Dependencies the recipe hands the rollout factory once at startup.
 
-    Inference endpoint, tokenizer, sampling kwargs, plus an ``extras`` dict
-    for caller state. See
+    Borrowed sampler, inference endpoint metadata, tokenizer, sampling kwargs,
+    plus an ``extras`` dict for caller state. See
     ``skills/fireworks-training/references/rl-async.md``.
     """
 
@@ -211,11 +211,13 @@ class RolloutSetup:
     completions_per_prompt: int
     extras: dict[str, Any] = field(default_factory=dict)
     sampler: Any | None = None
-    """Optional prebuilt sampler.
+    """Optional borrowed sampler owned by the recipe.
 
-    Serverless recipes use this hook because their sampling route is bound to
-    a training-session snapshot rather than a dedicated deployment URL.
-    Rollout factories should prefer it when present.
+    Current dedicated and serverless recipes inject their sampler here so every
+    rollout shares the same inference transport and concurrency controller.
+    Rollout factories must not close it. The optional type and endpoint fields
+    remain for compatibility with externally constructed setups and older
+    rollout factories.
     """
 
 
@@ -304,7 +306,8 @@ def main(
     ``completions_per_prompt`` times per dataset row (each invocation is
     one trajectory draw against the inference deployment).
 
-    Remote trainer and sampler setup is owned by the SDK-managed Tinker path.
+    Remote trainer and sampler setup and lifecycle are owned by the SDK-managed
+    Tinker path.
     """
     cfg = config
     if evaluation_interval < 1:
@@ -428,6 +431,7 @@ def main(
             lora_alpha=cfg.lora_alpha,
         )
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
+        stack.callback(sampler.close)
         rollout_model = sampler.model
         log_metrics({"rollout/step": 0}, step=0)
 
@@ -530,6 +534,7 @@ def main(
             model=rollout_model,
             completions_per_prompt=cfg.completions_per_prompt,
             extras=dict(rollout_extras or {}),
+            sampler=sampler,
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
         rollout_context_param_names = _rollout_fn_context_param_names(rollout_fn)

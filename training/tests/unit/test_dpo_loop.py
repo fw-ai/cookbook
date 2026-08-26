@@ -49,7 +49,7 @@ def test_config_uses_shared_default_weight_decay():
     cfg = module.Config(log_path="/tmp/dpo_test_logs")
 
     assert cfg.weight_decay == pytest.approx(module.DEFAULT_ADAM["weight_decay"])
-    assert cfg.render_workers == 16
+    assert cfg.render_workers is None
 
 
 def test_output_model_requires_promotable_final_checkpoint():
@@ -491,7 +491,7 @@ class _FakePolicy:
         pass
 
     def resolve_checkpoint_path(self, name, source_job_id=None):
-        return f"tinker://unit/state/{name}"
+        return name
 
 
 def _adam_params(*, weight_decay: float = 0.01) -> module.tinker.AdamParams:
@@ -514,6 +514,56 @@ def _stub_train_step_deps(monkeypatch, events: dict):
 
 
 class TestTrainLoop:
+    def test_auto_sizes_render_workers(self, tmp_path, monkeypatch):
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        selected: dict = {}
+        original_make_render_dataloader = module.make_render_dataloader
+
+        def fake_select_render_worker_count(*, available_parallel_tasks):
+            selected["tasks"] = available_parallel_tasks
+            return 3
+
+        def capture_make_render_dataloader(*args, **kwargs):
+            selected["workers"] = kwargs["num_workers"]
+            kwargs["num_workers"] = 0
+            return original_make_render_dataloader(*args, **kwargs)
+
+        monkeypatch.setattr(
+            module,
+            "select_render_worker_count",
+            fake_select_render_worker_count,
+        )
+        monkeypatch.setattr(
+            module,
+            "make_render_dataloader",
+            capture_make_render_dataloader,
+        )
+
+        ds = _make_pair_dataset(tmp_path, n=4)
+        cfg = module.Config(
+            log_path=str(tmp_path),
+            beta=0.2,
+            epochs=1,
+            batch_size=2,
+        )
+        step = asyncio.run(
+            module._train_loop(
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=4),
+            )
+        )
+
+        assert step == 2
+        assert selected == {"tasks": 4, "workers": 3}
+
     def test_single_epoch_no_ref_cache_log(self, tmp_path, monkeypatch):
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
@@ -956,6 +1006,7 @@ class TestTrainLoop:
             )
         )
         # 4 raw rows this run on top of 100 prior → cursor=104.
+        assert step == 12
         assert cursor.value == 104
         assert saves[-1] == 104
 
@@ -1201,7 +1252,7 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="score"):
+        with pytest.raises(module.DatasetError, match="score"):
             load_preference_dataset(path)
 
     def test_rejects_rows_without_both_chosen_and_rejected(self, tmp_path) -> None:
@@ -1214,7 +1265,7 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="rejected"):
+        with pytest.raises(module.DatasetError, match="rejected"):
             load_preference_dataset(path)
 
     def test_rejects_duplicate_chosen_samples(self, tmp_path) -> None:
@@ -1229,7 +1280,7 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="ambiguous|multiple"):
+        with pytest.raises(module.DatasetError, match="ambiguous|multiple"):
             load_preference_dataset(path)
 
     def test_rejects_unknown_row_format(self, tmp_path) -> None:
@@ -1239,13 +1290,13 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="supported preference format"):
+        with pytest.raises(module.DatasetError, match="supported preference format"):
             load_preference_dataset(path)
 
     def test_rejects_non_list_samples(self, tmp_path) -> None:
         path = _write_preference_jsonl(tmp_path, [{"samples": {"not": "a list"}}])
 
-        with pytest.raises(ValueError, match="list"):
+        with pytest.raises(module.DatasetError, match="list"):
             load_preference_dataset(path)
 
     def test_rejects_non_dict_sample_entry(self, tmp_path) -> None:
@@ -1259,5 +1310,19 @@ class TestLoadPreferenceDatasetValidation:
         ]
         path = _write_preference_jsonl(tmp_path, rows)
 
-        with pytest.raises(ValueError, match="dict"):
+        with pytest.raises(module.DatasetError, match="dict"):
             load_preference_dataset(path)
+
+    def test_rejects_malformed_jsonl(self, tmp_path) -> None:
+        path = tmp_path / "pref.jsonl"
+        path.write_text('{"chosen": {}, "rejected": {}}\n{"samples":\n')
+
+        with pytest.raises(module.DatasetError, match="invalid JSONL"):
+            load_preference_dataset(str(path))
+
+    def test_rejects_non_object_jsonl_row(self, tmp_path) -> None:
+        path = tmp_path / "pref.jsonl"
+        path.write_text('["not", "an", "object"]\n')
+
+        with pytest.raises(module.DatasetError, match="row must be an object"):
+            load_preference_dataset(str(path))

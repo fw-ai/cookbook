@@ -25,6 +25,12 @@ knobs are documented in [`rl-async.md`](rl-async.md):
 
 Use the async recipe when rollouts must refill while training is active.
 
+The recipe creates one sampler and injects it into `RolloutSetup`; training and
+evaluation rollouts share its HTTP pool and adaptive-concurrency controller.
+Rollout factories must reuse `setup.sampler` when present rather than creating a
+second sampler or controller. This sampler-level controller is distinct from
+the recipe's rollout-call admission cap above.
+
 ## Deployment sizing
 
 Recipe concurrency is only admission control. Deployment replicas and batch

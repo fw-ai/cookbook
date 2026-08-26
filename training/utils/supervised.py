@@ -616,6 +616,16 @@ def renderer_supports_images(renderer_name: str) -> bool:
     )
 
 
+def renderer_supports_tool_images(renderer_name: str) -> bool:
+    """Return whether a resolved renderer accepts images in tool messages.
+
+    Tool-image support is intentionally narrower than general image support.
+    Keep this allowlist explicit so managed validation cannot admit a role that
+    a vision renderer has not implemented and tested.
+    """
+    return renderer_name in {"kimi_k3", "kimi_k3_disable_thinking"}
+
+
 logger = logging.getLogger(__name__)
 
 

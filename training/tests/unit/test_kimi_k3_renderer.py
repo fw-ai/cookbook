@@ -724,6 +724,120 @@ def test_vision_multiple_images_across_turns_with_tools(
     )
 
 
+def test_vision_tool_image_matches_release_oracle_and_is_context_only(
+    tokenizer,
+    vision_renderer,
+) -> None:
+    encoded = base64.b64encode(_encoded_image("RGB", "PNG")).decode()
+    messages = [
+        {"role": "user", "content": "Inspect the screenshot."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                _call("weather-1", "get_weather", {"city": "Paris"}),
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "weather-1",
+            "content": [
+                {"type": "text", "text": "Captured result:"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                },
+            ],
+        },
+        {"role": "assistant", "content": "The screenshot is mostly red."},
+    ]
+
+    trace = vision_renderer.render_trace(messages)
+    prompts = [item.image_prompt for item in trace.processed_media]
+    assert len(prompts) == 1
+    assert list(trace.materialized_one_pad_ids) == _oracle_ids(
+        tokenizer,
+        messages,
+        add_generation_prompt=True,
+        image_prompts=prompts,
+    )
+
+    model_input, weights = vision_renderer.build_supervised_example(messages)
+    request, processed = vision_renderer._normalized_request(messages)
+    segments, labels = vision_renderer._supervised_segments_and_labels(
+        request,
+        TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    )
+    _, token_ids, _, _ = vision_renderer._materialize_segments(
+        segments,
+        processed,
+        labels,
+    )
+    media_pad_indexes = [
+        index
+        for index, token in enumerate(token_ids)
+        if token == vision_renderer.image_placeholder_token_id
+    ]
+    assert media_pad_indexes
+    assert all(float(weights[index]) == 0.0 for index in media_pad_indexes)
+    assert any(float(weight) == 1.0 for weight in weights)
+    assert (
+        sum(isinstance(chunk, tinker.types.ImageChunk) for chunk in model_input.chunks)
+        == 1
+    )
+
+
+def test_vision_reordered_tool_images_stay_with_their_tool_calls(
+    tokenizer,
+    vision_renderer,
+) -> None:
+    weather_image = Image.new("RGB", (28, 42), "red")
+    math_image = Image.new("RGB", (56, 28), "blue")
+    messages = [
+        {"role": "user", "content": "Run both tools."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                _call("weather-1", "get_weather", {"city": "Paris"}),
+                _call("math-1", "calculate", {"expression": "6 * 7"}),
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "math-1",
+            "content": [{"type": "image", "image": math_image}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "weather-1",
+            "content": [{"type": "image", "image": weather_image}],
+        },
+        {"role": "assistant", "content": "Both results are ready."},
+    ]
+
+    request, processed = vision_renderer._normalized_request(messages)
+    tool_messages = [
+        message for message in request.messages if message.get("role") == "tool"
+    ]
+    assert [message["tool_call_id"] for message in tool_messages] == [
+        "weather-1",
+        "math-1",
+    ]
+    assert [(item.media.width, item.media.height) for item in processed] == [
+        weather_image.size,
+        math_image.size,
+    ]
+
+    trace = vision_renderer.render_trace(messages)
+    assert list(trace.materialized_one_pad_ids) == _oracle_ids(
+        tokenizer,
+        messages,
+        add_generation_prompt=True,
+        image_prompts=[item.image_prompt for item in trace.processed_media],
+    )
+
+
 @pytest.mark.parametrize(
     "messages,error",
     [
@@ -734,8 +848,18 @@ def test_vision_multiple_images_across_turns_with_tools(
                     "content": [{"type": "image", "image": b"not-used"}],
                 }
             ],
-            "user messages",
-            id="non-user-image",
+            "user or tool messages",
+            id="assistant-image",
+        ),
+        pytest.param(
+            [
+                {
+                    "role": "system",
+                    "content": [{"type": "image", "image": b"not-used"}],
+                }
+            ],
+            "user or tool messages",
+            id="system-image",
         ),
         pytest.param(
             [

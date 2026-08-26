@@ -80,6 +80,7 @@ _EXTRA_TOKENIZERS = {
     # interleaved aliases are distinct registered names (not covered by the
     # matrix) and must be enrolled so the coverage guard stays honest.
     "nemotron3_interleaved": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+    "nemotron3_low_thinking": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nemotron3_preserve_thinking": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nemotron3_preserved": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "gpt_oss_high_reasoning": "openai/gpt-oss-120b",

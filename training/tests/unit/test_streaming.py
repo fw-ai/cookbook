@@ -2,7 +2,7 @@
 
 Covers the JSONL → render → DataLoader pipeline:
 
-* ``_scan_jsonl_offsets`` -- byte offsets for non-blank lines.
+* ``_scan_jsonl_offsets`` -- byte offsets for non-blank JSON object lines.
 * ``JsonlRenderDataset`` -- map-style indexing, ``max_examples`` cap,
   ``with_indices`` views, and ``None`` passthrough on filter.
 * ``make_render_dataloader`` -- single-process collate + filter.
@@ -19,6 +19,7 @@ import json
 
 import pytest
 
+from training.utils.runner import DatasetError
 from training.utils.streaming import (
     AppendOnlyPickleLog,
     DEFAULT_PREFETCH_FACTOR,
@@ -79,6 +80,35 @@ def test_scan_offsets_empty_file(tmp_path):
     path = str(tmp_path / "empty.jsonl")
     open(path, "w").close()
     assert _scan_jsonl_offsets(path) == []
+
+
+def test_scan_offsets_rejects_malformed_jsonl(tmp_path):
+    path = str(tmp_path / "data.jsonl")
+    with open(path, "w") as f:
+        f.write('{"i": 0}\n')
+        f.write('{"i":\n')
+
+    with pytest.raises(DatasetError, match="invalid JSONL"):
+        _scan_jsonl_offsets(path)
+
+
+def test_scan_offsets_rejects_non_object_rows(tmp_path):
+    path = str(tmp_path / "data.jsonl")
+    with open(path, "w") as f:
+        f.write('["not", "an", "object"]\n')
+
+    with pytest.raises(DatasetError, match="row must be an object"):
+        _scan_jsonl_offsets(path)
+
+
+def test_dataset_rejects_bad_jsonl_before_worker_rendering(tmp_path):
+    path = str(tmp_path / "data.jsonl")
+    with open(path, "w") as f:
+        f.write('{"i": 0}\n')
+        f.write('{"i":\n')
+
+    with pytest.raises(DatasetError, match="invalid JSONL"):
+        JsonlRenderDataset(path, _identity_render)
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +639,7 @@ def test_dataloader_group_by_length_overhead_is_bounded(tmp_path):
 
 
 def test_default_constants_are_sane():
-    assert DEFAULT_RENDER_WORKERS == 16
+    assert DEFAULT_RENDER_WORKERS == 4
     assert DEFAULT_PREFETCH_FACTOR >= 1
 
 

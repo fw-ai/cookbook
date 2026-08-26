@@ -444,7 +444,7 @@ def test_run_saves_dcp_every_two_successful_optimizer_updates_and_final(
         def save_state(self, name):
             saved_dcp_names.append(name)
             return SimpleNamespace(
-                result=lambda: SimpleNamespace(path=f"tinker://run/{name}")
+                result=lambda: SimpleNamespace(path=name)
             )
 
         def save_weights_for_sampler(self, _name):
@@ -588,4 +588,47 @@ def test_kimi_launcher_matches_public_demo_train_and_eval_shape():
         assert expected in script
     assert "--training-shape" not in script
     assert "--region" not in script
+    assert "validate_visual_toolbench_run" not in script
+
+
+def test_muse_glimmer_launcher_matches_public_demo_train_and_eval_shape():
+    script = (
+        Path(serverless_vtb.__file__).resolve().parent
+        / "runs"
+        / "run_muse_glimmer_serverless_2epoch.sh"
+    ).read_text()
+
+    for expected in (
+        "--base-model accounts/fireworks/models/muse-glimmer-30b",
+        'tokenizer_model="${MUSE_GLIMMER_TOKENIZER:-meta-models/Muse-Glimmer-30B}"',
+        "--renderer-name muse_glimmer",
+        "--steps 27",
+        "--prompt-groups-per-step 16",
+        "--group-size 8",
+        "--rollout-concurrency 16",
+        "--epochs 2",
+        "--lora-rank 64",
+        "--learning-rate 1e-4",
+        "--adam-beta2 0.95",
+        "--adam-eps 1e-12",
+        "--adam-weight-decay 0",
+        "--max-completion-tokens 32768",
+        "--eval-max-completion-tokens 26666",
+        "--eval-interval 5",
+        "--eval-upfront",
+        "--eval-at-end",
+        "--eval-temperature 1.0",
+        "--eval-top-p 0.95",
+        "--eval-top-k 20",
+        "--no-router-replay",
+        "--grad-accumulation-normalization num_loss_tokens",
+        "--judge-max-tokens 65536",
+        "--judge-max-concurrency 32",
+        "--dcp-save-interval 2",
+    ):
+        assert expected in script
+    assert "--training-shape" not in script
+    assert "--region" not in script
+    assert "/home/" not in script
+    assert "python-sdk/src" not in script
     assert "validate_visual_toolbench_run" not in script

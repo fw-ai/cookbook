@@ -32,10 +32,14 @@ from typing import Any, Callable, Iterator, List
 import torch
 import torch.utils.data as torch_data
 
+from training.utils.runner import DatasetError
+
 logger = logging.getLogger(__name__)
 
-# Defaults sized to keep a 16 vCPU orchestrator pod feeding the trainer.
-DEFAULT_RENDER_WORKERS = 16
+# Four workers is the large-dataset-tested safe fallback. Managed SFT and DPO
+# jobs auto-size below the runtime CPU and memory ceilings instead of treating
+# this fallback as a fixed target.
+DEFAULT_RENDER_WORKERS = 4
 DEFAULT_PREFETCH_FACTOR = 2
 JSONL_ROW_INDEX_KEY = "_fireworks_jsonl_row_index"
 
@@ -45,13 +49,30 @@ JSONL_ROW_INDEX_KEY = "_fireworks_jsonl_row_index"
 # ---------------------------------------------------------------------------
 
 
+def _validate_jsonl_object(raw_line: bytes, *, path: str, line_no: int) -> None:
+    try:
+        row = json.loads(raw_line.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise DatasetError(
+            f"{path}:{line_no}: JSONL row must be valid UTF-8."
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise DatasetError(f"{path}:{line_no}: invalid JSONL: {exc.msg}.") from exc
+    if not isinstance(row, dict):
+        raise DatasetError(
+            f"{path}:{line_no}: JSONL row must be an object, got "
+            f"{type(row).__name__}."
+        )
+
+
 def _scan_jsonl_offsets(path: str, max_examples: int | None = None) -> List[int]:
-    """Return the byte offset of every non-blank line in a JSONL file."""
+    """Return byte offsets for non-blank, valid JSON-object lines."""
     offsets: List[int] = []
     with open(path, "rb") as f:
         offset = 0
-        for line in f:
+        for line_no, line in enumerate(f, start=1):
             if line.strip():
+                _validate_jsonl_object(line, path=path, line_no=line_no)
                 offsets.append(offset)
                 if max_examples is not None and len(offsets) >= max_examples:
                     break
