@@ -27,6 +27,7 @@ from training.utils.supervised import (
 )
 
 _MODEL = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+_ULTRA_MODEL = "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
 _TOOLS = [
     {
         "type": "function",
@@ -110,6 +111,14 @@ def tokenizer():
         return AutoTokenizer.from_pretrained(_MODEL, trust_remote_code=True)
     except Exception as exc:  # noqa: BLE001 — network / gated repo / config drift
         pytest.skip(f"Nemotron tokenizer {_MODEL!r} not available: {exc}")
+
+
+@pytest.fixture(scope="module")
+def ultra_tokenizer():
+    try:
+        return AutoTokenizer.from_pretrained(_ULTRA_MODEL, trust_remote_code=True)
+    except Exception as exc:  # noqa: BLE001 — network / gated repo / config drift
+        pytest.skip(f"Nemotron Ultra tokenizer {_ULTRA_MODEL!r} not available: {exc}")
 
 
 def test_preserve_renderer_has_extension_property(tokenizer):
@@ -262,3 +271,32 @@ def test_preserve_matches_hf_truncate_history_thinking_false(tokenizer):
     )
     assert "TURN1_REASON" not in hf_inter
     assert "TURN1_REASON" in hf_text
+
+
+def test_ultra_preserve_keeps_historical_thinking(ultra_tokenizer):
+    messages = _multi_turn_tool_messages()
+    preserve = get_renderer("nemotron3_ultra_preserved", ultra_tokenizer)
+    interleaved = get_renderer("nemotron3_ultra_interleaved", ultra_tokenizer)
+
+    [p_datum] = render_messages_to_datums(
+        messages,
+        renderer=preserve,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+        tools=_TOOLS,
+    )
+    i_datums = render_messages_to_datums(
+        messages,
+        renderer=interleaved,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+        tools=_TOOLS,
+    )
+
+    p_text = ultra_tokenizer.decode(p_datum.token_ids, skip_special_tokens=False)
+    assert "TURN1_REASON" in p_text
+    assert "TURN1_ANSWER_REASON" in p_text
+    assert preserve.has_extension_property
+    assert len(i_datums) == 2
+    i_second = ultra_tokenizer.decode(i_datums[1].token_ids, skip_special_tokens=False)
+    assert "TURN1_REASON" not in i_second
+    assert "<think>\nTURN2_REASON: write test_login.py</think>" in p_text
+    assert "\n</think>\n" not in p_text

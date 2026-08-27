@@ -10,9 +10,9 @@ Nemotron-3's HF template always emits a system block, so upstream synthesizes
 an empty system message when the row has none. That message is template
 context, and under per-message weighting it has to say so.
 
-Preserve-thinking mode (Nano / Super)
--------------------------------------
-The served Nemotron-3 Nano / Super chat templates gate historical
+Preserve-thinking mode (Nano / Super / Ultra)
+---------------------------------------------
+The served Nemotron-3 Nano / Super / Ultra chat templates gate historical
 reasoning on ``truncate_history_thinking`` (default ``True`` = strip prior
 turns). Serving maps ``reasoning_history="preserved"`` →
 ``truncate_history_thinking=False`` (#40028). This module registers
@@ -26,8 +26,15 @@ Nemotron-3 inherits Qwen3.5's assistant split, which puts the prefilled
 ``<think>`` in the trainable span and the model-generated ``</think>`` in the
 masked header. Every thinking-enabled variant therefore mixes in
 :class:`training.renderer._think_prefill.ThinkPrefillWeightsMixin`.
-``nemotron3_disable_thinking`` does not: its generation suffix prefills the
-whole ``<think></think>`` wrapper, so masking both markers is already right.
+Disable-thinking variants instead mask both markers in the final weight vector
+so the whole generation-prefilled ``<think></think>`` wrapper stays untrained
+without changing official template bytes.
+
+Ultra is **not** Super's template: same ``truncate_history_thinking`` switch
+and tokenizer vocab, but wrapping differs. Super/Nano emit
+``<think>\\n{t}\\n</think>\\n{content}``; Ultra emits
+``<think>\\n{t}</think>{content}``. Preserve/interleaved Ultra SFT therefore
+uses ``nemotron3_ultra_*`` renderers, not Super's.
 """
 
 from __future__ import annotations
@@ -38,10 +45,16 @@ from tinker_cookbook.renderers.nemotron3 import (
     Nemotron3DisableThinkingRenderer,
     Nemotron3LowThinkingRenderer,
     Nemotron3Renderer,
+    Nemotron3UltraDisableThinkingRenderer,
+    Nemotron3UltraMediumThinkingRenderer,
+    Nemotron3UltraRenderer,
 )
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
-from training.renderer._think_prefill import ThinkPrefillWeightsMixin
+from training.renderer._think_prefill import (
+    DisableThinkingWeightsMixin,
+    ThinkPrefillWeightsMixin,
+)
 from training.renderer.message_weights import untrained_synthesized_context
 
 
@@ -71,6 +84,7 @@ class Nemotron3LowThinkingSplitRenderer(
 
 
 class Nemotron3DisableThinkingSplitRenderer(
+    DisableThinkingWeightsMixin,
     DisaggregateMultiTurnMixin,
     _UntrainedSynthesizedSystemMixin,
     Nemotron3DisableThinkingRenderer,
@@ -125,6 +139,43 @@ class Nemotron3PreserveThinkingSplitRenderer(
     """PRESERVED history: replay prior reasoning inside ``<think>``."""
 
 
+class Nemotron3UltraSplitRenderer(
+    ThinkPrefillWeightsMixin,
+    DisaggregateMultiTurnMixin,
+    _UntrainedSynthesizedSystemMixin,
+    Nemotron3UltraRenderer,
+):
+    """Default / INTERLEAVED Ultra: Super's history gate, Ultra think bytes."""
+
+
+class Nemotron3UltraMediumThinkingSplitRenderer(
+    ThinkPrefillWeightsMixin,
+    DisaggregateMultiTurnMixin,
+    _UntrainedSynthesizedSystemMixin,
+    Nemotron3UltraMediumThinkingRenderer,
+):
+    """Medium-effort Ultra; thinking is still enabled."""
+
+
+class Nemotron3UltraDisableThinkingSplitRenderer(
+    DisableThinkingWeightsMixin,
+    DisaggregateMultiTurnMixin,
+    _UntrainedSynthesizedSystemMixin,
+    Nemotron3UltraDisableThinkingRenderer,
+):
+    """Ultra with the complete empty think wrapper prefilled."""
+
+
+class Nemotron3UltraPreserveThinkingSplitRenderer(
+    _Nemotron3PreserveThinkingMixin,
+    ThinkPrefillWeightsMixin,
+    DisaggregateMultiTurnMixin,
+    _UntrainedSynthesizedSystemMixin,
+    Nemotron3UltraRenderer,
+):
+    """PRESERVED Ultra: keep historical thinking with Ultra ``</think>`` bytes."""
+
+
 register_renderer("nemotron3", lambda tok, ip=None: Nemotron3SplitRenderer(tok))
 register_renderer(
     "nemotron3_interleaved",
@@ -145,4 +196,28 @@ register_renderer(
 register_renderer(
     "nemotron3_preserved",
     lambda tok, ip=None: Nemotron3PreserveThinkingSplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_ultra",
+    lambda tok, ip=None: Nemotron3UltraSplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_ultra_interleaved",
+    lambda tok, ip=None: Nemotron3UltraSplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_ultra_medium_thinking",
+    lambda tok, ip=None: Nemotron3UltraMediumThinkingSplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_ultra_disable_thinking",
+    lambda tok, ip=None: Nemotron3UltraDisableThinkingSplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_ultra_preserve_thinking",
+    lambda tok, ip=None: Nemotron3UltraPreserveThinkingSplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_ultra_preserved",
+    lambda tok, ip=None: Nemotron3UltraPreserveThinkingSplitRenderer(tok),
 )

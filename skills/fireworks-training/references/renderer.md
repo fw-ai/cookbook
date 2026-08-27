@@ -81,6 +81,12 @@ The adapter must account for vendor flag polarity:
 | Qwen 3.6 | `preserve_thinking` | `false` | `true` |
 | Kimi K2.6 | `preserve_thinking` | `false` | `true` |
 | Nemotron-3 Nano / Super | `truncate_history_thinking` | `true` | `false` |
+| Nemotron-3 Ultra | `truncate_history_thinking` | `true` | `false` |
+
+Nano/Super wrap thinking as `<think>\n{t}\n</think>\n{content}`. Ultra wraps
+as `<think>\n{t}</think>{content}` and maps `medium_effort` to
+`{reasoning effort: efficient}` rather than Super's `low_effort` /
+`{reasoning effort: low}`. Use `nemotron3_ultra_*` renderers for Ultra SFT.
 
 Qwen 3.5 and Kimi K2.5 are INTERLEAVED-only; Kimi K2.7 Code is
 PRESERVED-only.

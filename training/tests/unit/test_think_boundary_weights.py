@@ -16,6 +16,7 @@ import training.renderer  # noqa: F401  (registers local renderers)
 from training.utils.supervised import normalize_messages, render_messages_to_datums
 
 _NEMOTRON = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+_NEMOTRON_ULTRA = "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
 _RENDERERS = [
     ("qwen3_5", "Qwen/Qwen3.5-9B"),
     ("qwen3_5_interleaved", "Qwen/Qwen3.5-9B"),
@@ -30,6 +31,11 @@ _RENDERERS = [
     ("nemotron3_low_thinking", _NEMOTRON),
     ("nemotron3_preserve_thinking", _NEMOTRON),
     ("nemotron3_preserved", _NEMOTRON),
+    ("nemotron3_ultra", _NEMOTRON_ULTRA),
+    ("nemotron3_ultra_interleaved", _NEMOTRON_ULTRA),
+    ("nemotron3_ultra_medium_thinking", _NEMOTRON_ULTRA),
+    ("nemotron3_ultra_preserve_thinking", _NEMOTRON_ULTRA),
+    ("nemotron3_ultra_preserved", _NEMOTRON_ULTRA),
 ]
 _PROMPT = [
     {"role": "system", "content": "Be brief."},
@@ -45,6 +51,12 @@ _WITH_REASONING = _PROMPT + [
     }
 ]
 _WITHOUT_REASONING = _PROMPT + [{"role": "assistant", "content": "6."}]
+_WITH_STRING_REASONING = _PROMPT + [
+    {
+        "role": "assistant",
+        "content": "<think>\nAdd the numbers.\n</think>\n\n6.",
+    }
+]
 
 
 def _load_tokenizer(model: str):
@@ -89,9 +101,14 @@ def test_think_open_is_masked_and_close_is_trained(renderer_name, tokenizer_mode
 
 
 _DISABLE_THINKING = [
+    ("qwen3_disable_thinking", "Qwen/Qwen3-8B"),
     ("qwen3_5_disable_thinking", "Qwen/Qwen3.5-9B"),
+    ("qwen3_5_disable_thinking_interleaved", "Qwen/Qwen3.5-9B"),
     ("qwen3_6_disable_thinking", "Qwen/Qwen3.6-27B"),
+    ("qwen3_6_disable_thinking_interleaved", "Qwen/Qwen3.6-27B"),
+    ("qwen3_8_disable_thinking_interleaved", "Qwen/Qwen3.8-27B"),
     ("nemotron3_disable_thinking", _NEMOTRON),
+    ("nemotron3_ultra_disable_thinking", _NEMOTRON_ULTRA),
 ]
 
 
@@ -103,8 +120,9 @@ def test_disable_thinking_masks_the_whole_prefilled_wrapper(
     """A marker is masked exactly when the generation prompt supplies it.
 
     Disable-thinking prefills the entire empty wrapper, so unlike the thinking
-    variants these renderers must mask ``</think>`` too — which is why they do
-    not mix in ``ThinkPrefillWeightsMixin``.
+    variants these renderers must mask ``</think>`` too. Existing assistant
+    reasoning remains byte-identical to the official template, but neither
+    marker carries loss.
     """
     tokenizer = _load_tokenizer(tokenizer_model)
     renderer = get_renderer(renderer_name, tokenizer)
@@ -117,9 +135,20 @@ def test_disable_thinking_masks_the_whole_prefilled_wrapper(
         [token_id] = tokenizer.encode(marker, add_special_tokens=False)
         assert token_id in prompt, f"{renderer_name} must prefill {marker}"
 
-    _, datum = _render(renderer_name, tokenizer_model, _WITHOUT_REASONING)
-    assert _weights_for(tokenizer, datum, "<think>") == [0.0]
-    assert _weights_for(tokenizer, datum, "</think>") == [0.0]
+    for messages, has_reasoning in (
+        (_WITHOUT_REASONING, False),
+        (_WITH_REASONING, True),
+        (_WITH_STRING_REASONING, True),
+    ):
+        tokenizer, datum = _render(renderer_name, tokenizer_model, messages)
+        assert _weights_for(tokenizer, datum, "<think>") == [0.0]
+        assert _weights_for(tokenizer, datum, "</think>") == [0.0]
+        rendered_text = tokenizer.decode(
+            datum.token_ids, skip_special_tokens=False
+        )
+        assert "6." in rendered_text
+        if has_reasoning:
+            assert "Add the numbers." in rendered_text
 
 
 _UPSTREAM_PARITY = [
@@ -166,6 +195,7 @@ def test_reweighting_does_not_change_tokens(
     [
         ("qwen3_6_preserved", "Qwen/Qwen3.6-27B"),
         ("nemotron3_preserved", _NEMOTRON),
+        ("nemotron3_ultra_preserved", _NEMOTRON_ULTRA),
     ],
 )
 def test_preserved_multi_turn_reweights_every_assistant(

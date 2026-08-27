@@ -335,6 +335,33 @@ _CAPABILITIES: tuple[ThinkingTraceModelCapability, ...] = (
             ),
         ),
     ),
+    ThinkingTraceModelCapability(
+        canonical_family="nemotron3-ultra",
+        aliases=frozenset(
+            {
+                # Ultra shares Super/Nano's tokenizer and
+                # truncate_history_thinking switch, but not the think wrapping:
+                # Super is ``<think>\\n{t}\\n</think>\\n{content}``;
+                # Ultra is ``<think>\\n{t}</think>{content}``.
+                "nvidia/nvidia-nemotron-3-ultra-550b-a55b-bf16",
+                "nvidia/nvidia-nemotron-3-ultra-550b-a55b-nvfp4",
+            }
+        ),
+        plans=(
+            _plan(
+                ThinkingTraceHistoryMode.INTERLEAVED,
+                "nemotron3_ultra_interleaved",
+                is_default=True,
+                unrolls_multi_turn=True,
+            ),
+            _plan(
+                ThinkingTraceHistoryMode.PRESERVED,
+                "nemotron3_ultra_preserved",
+                is_default=False,
+                unrolls_multi_turn=False,
+            ),
+        ),
+    ),
 )
 
 

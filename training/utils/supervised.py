@@ -233,6 +233,9 @@ def resolve_renderer_name(
         or "kimi-k2p7-code" in normalized_model_name
     ):
         return "kimi_k27_code"
+    if "nemotron-3-ultra" in normalized_model_name or "nemotron3-ultra" in normalized_model_name:
+        # Ultra's HF template uses different think wrapping than Super/Nano.
+        return "nemotron3_ultra"
     if "nemotron" in normalized_model_name:
         # Route the Nemotron family to tinker_cookbook's upstream Nemotron-3
         # renderer ("nemotron3"), which restores the prompt-prefilled <think>
