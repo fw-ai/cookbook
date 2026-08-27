@@ -15,13 +15,16 @@ set -euo pipefail
 #                       promote the final sampler checkpoint to this model id
 #                       (optional; empty means save without promotion)
 #   COUNTDOWN_DATASET   custom prepared JSONL path (optional; default auto-downloads)
+#   COUNTDOWN_EVAL_PROMPT_GROUPS / COUNTDOWN_EVAL_GROUP_SIZE /
+#   COUNTDOWN_EVAL_INTERVAL / COUNTDOWN_EVAL_SEED
+#                       fixed held-out evaluation controls (optional)
 
 : "${FIREWORKS_API_KEY:?set a Fireworks key with serverless-training access}"
 
 run_stamp="$(date -u +%Y%m%dt%H%M%Sz)-$$"
 run_dir="${COUNTDOWN_RUN_DIR:-/tmp/countdown-dsv4-flash-$run_stamp}"
 python_bin="${PYTHON_BIN:-python}"
-steps="${COUNTDOWN_STEPS:-20}"
+steps="${COUNTDOWN_STEPS:-30}"
 dcp_save_interval="${COUNTDOWN_DCP_SAVE_INTERVAL:-5}"
 
 cookbook_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
@@ -49,12 +52,19 @@ cmd=(
   --dataset "$dataset"
   --steps "$steps"
   --lora-rank "${COUNTDOWN_LORA_RANK:-32}"
-  --lora-alpha "${COUNTDOWN_LORA_ALPHA:-64}"
+  --lora-alpha "${COUNTDOWN_LORA_ALPHA:-32}"
   --max-seq-len "${COUNTDOWN_MAX_SEQ_LEN:-32768}"
   --prompt-groups-per-step "${COUNTDOWN_PROMPT_GROUPS_PER_STEP:-16}"
   --group-size "${COUNTDOWN_GROUP_SIZE:-8}"
   --prompt-concurrency "${COUNTDOWN_PROMPT_CONCURRENCY:-8}"
-  --max-sample-tokens "${COUNTDOWN_MAX_SAMPLE_TOKENS:-4096}"
+  --max-sample-tokens "${COUNTDOWN_MAX_SAMPLE_TOKENS:-32500}"
+  --eval-prompt-groups "${COUNTDOWN_EVAL_PROMPT_GROUPS:-16}"
+  --eval-group-size "${COUNTDOWN_EVAL_GROUP_SIZE:-8}"
+  --eval-interval "${COUNTDOWN_EVAL_INTERVAL:-5}"
+  --eval-seed "${COUNTDOWN_EVAL_SEED:-1}"
+  --eval-at-start
+  --eval-at-end
+  --sampling-timeout-s "${COUNTDOWN_SAMPLING_TIMEOUT_S:-3600}"
   --learning-rate "${COUNTDOWN_LEARNING_RATE:-1e-4}"
   --router-replay
   --checkpoint-name "cd-sample"

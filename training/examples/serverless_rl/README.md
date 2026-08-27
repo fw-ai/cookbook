@@ -50,6 +50,13 @@ Each optimizer step:
 5. **Train**: validate and attach Router Replay (R3) matrices for MoE datums,
    then one `forward_backward(..., "importance_sampling")` + `optim_step`.
 
+The loop deterministically carves `eval_prompt_groups` rows out of the same
+dataset before constructing the training order. It evaluates that identical
+held-out slice at step 0, every `eval_interval` completed optimizer steps, and
+at the end, with no backward or optimizer call. Use `eval/raw_reward`—not the
+changing training batch or the filtered optimizer subset—as the learning
+curve.
+
 Reward should climb as the policy learns to produce valid Countdown equations.
 
 ## Files
@@ -115,10 +122,13 @@ Optionally override the API endpoint with `FIREWORKS_BASE_URL` (the
 
 Per-step metrics (`rollout/raw_reward`, `rollout/filtered_reward`,
 `rollout/filter_ratio`, `train/loss`, `train/router_replay`,
+`train/inference_k3`, `kld/mean_k3`, completion truncation, and
 `perf/step_wall_time`) stream to
 `metrics.jsonl` and to W&B; the closing `reward_curve.png` is also logged as a
-W&B image. All artifacts live under the run directory (`--run-dir`, default
-`/tmp/countdown-k3-*` via the launcher).
+W&B image. Fixed-eval aggregates go to `eval_metrics.jsonl`, and the scored
+held-out trajectories go to `eval_completions/step-NNNN.jsonl`. All artifacts
+live under the run directory (`--run-dir`, default `/tmp/countdown-k3-*` via
+the launcher).
 
 ## Checkpoint, resume, and promote
 
@@ -192,9 +202,10 @@ checkpoint and output model id before promotion.
 - **Router Replay for MoE.** `--router-replay` is enabled by default. The loop
   reads `baseModelDetails.moe`, skips it for dense models, and requires aligned
   completion routing matrices before training an MoE datum. Use
-  `--no-router-replay` only as a diagnostic; leave it enabled for numerical
-  alignment on MoE models.
-- **Cost.** Defaults (Kimi K3, 20 steps × 16 prompts × 8 samples) are a real
+  `--no-router-replay` only for a deliberately approved diagnostic, not a
+  numerical-alignment run.
+- **Cost.** DSV4 launcher defaults (30 steps × 16 prompts × 8 samples, plus
+  fixed evaluation every 5 steps) are a real
   training run. Drop `--steps` / `--group-size` / `--max-sample-tokens` for a
   cheaper smoke run.
 

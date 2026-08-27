@@ -156,6 +156,10 @@ class Config:
     # Cycle through the dataset in a shuffled order (seeded, so reproducible).
     shuffle: bool = True
     seed: int = 0
+    # Deterministically remove this many prompts from the training pool and
+    # reuse that exact held-out slice for every evaluation.
+    eval_prompt_groups: int = 16
+    eval_seed: int = 1
 
     # --- RL loop shape ------------------------------------------------------
     steps: int = 20
@@ -173,6 +177,14 @@ class Config:
     # this automatically. The Tinker-shaped sampler returns completion routes,
     # so this example deliberately uses completion-only Router Replay.
     router_replay: bool = True
+
+    # --- Fixed held-out evaluation -----------------------------------------
+    # Evaluation samples the same carved-out prompts without backward or
+    # optimizer calls. An interval of 0 disables periodic evaluation.
+    eval_interval: int = 5
+    eval_group_size: int = 8
+    eval_at_start: bool = True
+    eval_at_end: bool = True
 
     # --- W&B ----------------------------------------------------------------
     # Set ``wandb_entity`` to stream metrics to W&B (requires WANDB_API_KEY).
@@ -210,6 +222,22 @@ def _validate_config(cfg: Config) -> None:
         raise ValueError("serverless training requires lora_rank > 0")
     if cfg.steps <= 0:
         raise ValueError("steps must be > 0")
+    if cfg.prompt_groups_per_step <= 0:
+        raise ValueError("prompt_groups_per_step must be > 0")
+    if cfg.group_size <= 0:
+        raise ValueError("group_size must be > 0")
+    if cfg.prompt_concurrency <= 0:
+        raise ValueError("prompt_concurrency must be > 0")
+    if cfg.max_sample_tokens <= 0:
+        raise ValueError("max_sample_tokens must be > 0")
+    if cfg.eval_prompt_groups < 0:
+        raise ValueError("eval_prompt_groups must be >= 0")
+    if cfg.eval_interval < 0:
+        raise ValueError("eval_interval must be >= 0")
+    if cfg.eval_group_size <= 0:
+        raise ValueError("eval_group_size must be > 0")
+    if (cfg.eval_at_start or cfg.eval_at_end or cfg.eval_interval) and not cfg.eval_prompt_groups:
+        raise ValueError("eval_prompt_groups must be > 0 when evaluation is enabled")
     if cfg.dcp_save_interval < 0:
         raise ValueError("dcp_save_interval must be >= 0 (0 disables resumable checkpoints)")
     for name in (cfg.checkpoint_name, cfg.final_checkpoint_name, cfg.training_checkpoint_name):
@@ -307,6 +335,43 @@ def _load_rows(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.open() if line.strip()]
 
 
+def _carve_out_eval_rows(
+    rows: list[dict[str, Any]],
+    eval_prompt_groups: int,
+    eval_seed: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[int]]:
+    """Return disjoint training rows and a deterministic held-out eval slice."""
+    if eval_prompt_groups == 0:
+        return list(rows), [], []
+    if eval_prompt_groups >= len(rows):
+        raise ValueError(
+            "eval_prompt_groups must leave at least one training row "
+            f"(got {eval_prompt_groups} eval rows from {len(rows)} total)"
+        )
+    order = list(range(len(rows)))
+    random.Random(eval_seed).shuffle(order)
+    eval_indices = order[:eval_prompt_groups]
+    eval_index_set = set(eval_indices)
+    train_rows = [row for index, row in enumerate(rows) if index not in eval_index_set]
+    eval_rows = [rows[index] for index in eval_indices]
+    return train_rows, eval_rows, eval_indices
+
+
+def _finish_reason(seq: Any) -> str:
+    value = getattr(seq, "finish_reason", "")
+    return str(getattr(value, "value", value)).lower()
+
+
+def _is_truncated(seq: Any, max_tokens: int | None = None) -> bool:
+    reason = _finish_reason(seq)
+    if reason == "length" or "max_token" in reason:
+        return True
+    # Serverless sampler sequences do not always expose finish_reason. Reaching
+    # the requested token cap is therefore the authoritative fallback.
+    tokens = getattr(seq, "tokens", None) or []
+    return max_tokens is not None and len(tokens) >= max_tokens
+
+
 def _group_relative_advantages(rewards: list[float], eps: float = 1e-8) -> list[float]:
     """Standardize rewards within a group (GRPO): ``(r - mean) / std``.
 
@@ -367,6 +432,36 @@ def _mean_policy_sample_logprob_gap(datums: list[Any], fb_output: Any) -> float 
     return total_gap / total_tokens if total_tokens else None
 
 
+def _mean_policy_sample_k3(datums: list[Any], fb_output: Any) -> float | None:
+    """Mean per-token k3 estimator between the policy and sampler.
+
+    For ``log_ratio = log(pi_policy) - log(pi_sample)``, Schulman's k3
+    estimator is ``exp(log_ratio) - 1 - log_ratio``. It is non-negative and
+    is computed over the same response tokens as ``kld/mean_k1``.
+    """
+    outputs = getattr(fb_output, "loss_fn_outputs", None)
+    if not outputs:
+        return None
+    total_k3 = 0.0
+    total_tokens = 0
+    for datum, out in zip(datums, outputs, strict=False):
+        raw_logprobs = (
+            out.get("logprobs") if isinstance(out, dict) else getattr(out, "logprobs", None)
+        )
+        policy_logprobs = _as_float_list(raw_logprobs)
+        if policy_logprobs is None:
+            continue
+        sample_logprobs = _as_float_list(datum.loss_fn_inputs.get("logprobs"))
+        target_tokens = _as_float_list(datum.loss_fn_inputs.get("target_tokens"))
+        n = min(len(policy_logprobs), len(sample_logprobs), len(target_tokens))
+        for i in range(n):
+            if target_tokens[i] != 0:  # response region
+                log_ratio = policy_logprobs[i] - sample_logprobs[i]
+                total_k3 += math.expm1(log_ratio) - log_ratio
+                total_tokens += 1
+    return total_k3 / total_tokens if total_tokens else None
+
+
 def _as_float_list(value: Any) -> list[float] | None:
     """Coerce a loss_fn_inputs value (plain list, or Tinker TensorData with
     ``.data`` / ``.to_torch()``) to a flat ``list[float]``. None if unavailable."""
@@ -425,6 +520,12 @@ def _maybe_init_wandb(
             "router_replay": cfg.router_replay,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
+            "eval_prompt_groups": cfg.eval_prompt_groups,
+            "eval_seed": cfg.eval_seed,
+            "eval_interval": cfg.eval_interval,
+            "eval_group_size": cfg.eval_group_size,
+            "eval_at_start": cfg.eval_at_start,
+            "eval_at_end": cfg.eval_at_end,
             "resume_from": cfg.resume_from or None,
             "start_step": start_step,
             "loss": "importance_sampling",
@@ -433,8 +534,12 @@ def _maybe_init_wandb(
     wandb.define_metric("rollout/*", step_metric="train/step")
     wandb.define_metric("train/*", step_metric="train/step")
     wandb.define_metric("kld/*", step_metric="train/step")
+    wandb.define_metric("kld/mean_k1", step_metric="train/step", summary="last")
+    wandb.define_metric("kld/mean_k3", step_metric="train/step", summary="last")
+    wandb.define_metric("eval/*", step_metric="train/step")
     wandb.define_metric("perf/*", step_metric="train/step")
     wandb.define_metric("rollout/raw_reward", step_metric="train/step", summary="max")
+    wandb.define_metric("eval/raw_reward", step_metric="train/step", summary="max")
     print(f"W&B: {run.url}", flush=True)
     return run
 
@@ -451,9 +556,31 @@ def _log_wandb_step(step: int, rec: dict[str, Any]) -> None:
             for k, v in rec.items()
             if isinstance(v, (int, float)) and not (isinstance(v, float) and math.isnan(v))
         )
-        wandb.log(payload, step=int(step))
+        # Let W&B advance its own monotonically increasing internal step. The
+        # semantic training step remains ``train/step`` and is configured as
+        # the chart axis above. Passing ``step=`` makes W&B default to
+        # ``commit=False``; with multi-minute rollouts that can hide the most
+        # recent KLD row for an entire step and collide with fixed eval rows.
+        wandb.log(payload)
     except Exception as exc:
         print(f"wandb log skipped: {exc}", flush=True)
+
+
+def _log_wandb_eval(completed_steps: int, rec: dict[str, Any]) -> None:
+    try:
+        import wandb
+
+        if wandb.run is None:
+            return
+        payload = {"train/step": completed_steps}
+        payload.update(
+            (k, v)
+            for k, v in rec.items()
+            if isinstance(v, (int, float)) and not (isinstance(v, float) and math.isnan(v))
+        )
+        wandb.log(payload)
+    except Exception as exc:
+        print(f"wandb eval log skipped: {exc}", flush=True)
 
 
 class ServerlessCountdownRL:
@@ -462,9 +589,14 @@ class ServerlessCountdownRL:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         _validate_config(cfg)
-        self.rows = _load_rows(Path(cfg.dataset))
-        if not self.rows:
+        all_rows = _load_rows(Path(cfg.dataset))
+        if not all_rows:
             raise SystemExit(f"dataset is empty: {cfg.dataset} (run with --prepare-dataset first)")
+        self.rows, self.eval_rows, self.eval_row_indices = _carve_out_eval_rows(
+            all_rows,
+            cfg.eval_prompt_groups,
+            cfg.eval_seed,
+        )
 
         # Cookbook loaders cover models the default Tinker tokenizer/renderer
         # tables do not, including DeepSeek V4 and Kimi K3.
@@ -531,6 +663,24 @@ class ServerlessCountdownRL:
         )
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_path = self.run_dir / "metrics.jsonl"
+        self.eval_metrics_path = self.run_dir / "eval_metrics.jsonl"
+        self.eval_completions_dir = self.run_dir / "eval_completions"
+        if self.eval_rows:
+            self.eval_completions_dir.mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "dataset_split.json").write_text(
+            json.dumps(
+                {
+                    "dataset": str(Path(cfg.dataset).resolve()),
+                    "total_rows": len(all_rows),
+                    "training_rows": len(self.rows),
+                    "eval_rows": len(self.eval_rows),
+                    "eval_seed": cfg.eval_seed,
+                    "eval_row_indices": self.eval_row_indices,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
 
         self.order = list(range(len(self.rows)))
         if cfg.shuffle:
@@ -551,7 +701,9 @@ class ServerlessCountdownRL:
         print(
             f"connected serverless session={self.session_name or self.session_id} run={self.run_id}\n"
             f"base_model={self.base_model} tokenizer={cfg.tokenizer_model} renderer={self.renderer_name}\n"
-            f"dataset={cfg.dataset} rows={len(self.rows)}\n"
+            f"dataset={cfg.dataset} train_rows={len(self.rows)} "
+            f"eval_rows={len(self.eval_rows)} eval_interval={cfg.eval_interval} "
+            f"eval_group_size={cfg.eval_group_size}\n"
             f"steps={cfg.steps} prompt_groups_per_step={cfg.prompt_groups_per_step} "
             f"group_size={cfg.group_size} lora_rank={cfg.lora_rank} lora_alpha={cfg.lora_alpha} "
             f"max_seq_len={cfg.max_seq_len} lr={cfg.learning_rate} "
@@ -627,6 +779,117 @@ class ServerlessCountdownRL:
         self.row_cursor += self.cfg.prompt_groups_per_step
         return [self.rows[i] for i in idx]
 
+    def _evaluate(self, completed_steps: int) -> dict[str, Any]:
+        """Sample the fixed held-out carve-out without any optimizer mutation."""
+        cfg = self.cfg
+        started = time.time()
+        save_name = f"cd-eval-{completed_steps:04d}"
+        snapshot = self.training_client.save_weights_for_sampler(save_name).result().path
+        if not snapshot:
+            raise RuntimeError(f"save_weights_for_sampler({save_name!r}) returned no path")
+
+        prompts = [self.renderer.build_generation_prompt(row["messages"]) for row in self.eval_rows]
+        for prompt in prompts:
+            _validate_length(
+                "eval prompt + max_sample_tokens",
+                prompt.length + cfg.max_sample_tokens,
+                cfg.max_seq_len,
+            )
+
+        sampler = self.service.create_sampling_client(model_path=snapshot, tokenizer=self.tokenizer)
+        try:
+            params = FiretitanSamplingParams(
+                max_tokens=cfg.max_sample_tokens,
+                temperature=cfg.temperature,
+                stop=self.renderer.get_stop_sequences(),
+            )
+            results: list[Any] = []
+            chunk = max(1, cfg.prompt_concurrency)
+            for start in range(0, len(prompts), chunk):
+                futures = [
+                    sampler.sample(
+                        prompt=prompt,
+                        num_samples=cfg.eval_group_size,
+                        sampling_params=params,
+                    )
+                    for prompt in prompts[start : start + chunk]
+                ]
+                results.extend(future.result(timeout=cfg.sampling_timeout_s) for future in futures)
+        finally:
+            sampler.close()
+
+        rewards: list[float] = []
+        response_lengths: list[int] = []
+        truncated_samples = 0
+        completions: list[dict[str, Any]] = []
+        for dataset_row_index, row, result in zip(
+            self.eval_row_indices,
+            self.eval_rows,
+            results,
+            strict=True,
+        ):
+            ground_truth = json.loads(row["ground_truth"])
+            for sample_index, seq in enumerate(getattr(result, "sequences", []) or []):
+                tokens = list(getattr(seq, "tokens", []) or [])
+                content = get_text_content(self.renderer.parse_response(tokens)[0])
+                reward = float(composite_reward(content, row["ground_truth"]))
+                truncated = _is_truncated(seq, cfg.max_sample_tokens)
+                rewards.append(reward)
+                response_lengths.append(len(tokens))
+                truncated_samples += int(truncated)
+                completions.append(
+                    {
+                        "completed_steps": completed_steps,
+                        "snapshot": snapshot,
+                        "dataset_row_index": dataset_row_index,
+                        "numbers": ground_truth["numbers"],
+                        "target": ground_truth["target"],
+                        "sample_index": sample_index,
+                        "reward": reward,
+                        "response_tokens": len(tokens),
+                        "finish_reason": _finish_reason(seq),
+                        "response": content,
+                    }
+                )
+
+        expected_samples = len(self.eval_rows) * cfg.eval_group_size
+        returned_samples = len(rewards)
+        rec = {
+            "completed_steps": completed_steps,
+            "snapshot": snapshot,
+            "eval/raw_reward": sum(rewards) / returned_samples if returned_samples else 0.0,
+            "eval/prompt_groups": len(self.eval_rows),
+            "eval/samples": returned_samples,
+            "eval/expected_samples": expected_samples,
+            "eval/return_ratio": returned_samples / expected_samples if expected_samples else 0.0,
+            "eval/mean_response_tokens": (
+                sum(response_lengths) / returned_samples if returned_samples else 0.0
+            ),
+            "eval/max_response_tokens": max(response_lengths, default=0),
+            "eval/truncated_samples": truncated_samples,
+            "eval/truncation_ratio": (
+                truncated_samples / returned_samples if returned_samples else 0.0
+            ),
+            "perf/eval_wall_time": time.time() - started,
+        }
+        with self.eval_metrics_path.open("a") as handle:
+            handle.write(json.dumps(rec) + "\n")
+        completions_path = self.eval_completions_dir / f"step-{completed_steps:04d}.jsonl"
+        with completions_path.open("w") as handle:
+            for completion in completions:
+                handle.write(json.dumps(completion) + "\n")
+        _log_wandb_eval(completed_steps, rec)
+        print(
+            f"eval after_steps={completed_steps:02d} "
+            f"reward={rec['eval/raw_reward']:.3f} "
+            f"samples={returned_samples}/{expected_samples} "
+            f"truncated={truncated_samples} "
+            f"max_tokens={rec['eval/max_response_tokens']} "
+            f"elapsed={rec['perf/eval_wall_time']:.1f}s",
+            flush=True,
+        )
+        return rec
+
     def _step(self, step: int) -> dict[str, Any]:
         t0 = time.time()
         cfg = self.cfg
@@ -671,6 +934,8 @@ class ServerlessCountdownRL:
         raw_rewards: list[float] = []
         filtered_rewards: list[float] = []
         response_token_count = 0
+        max_response_tokens = 0
+        truncated_samples = 0
 
         for result, prompt, row in zip(results, prompts, batch):
             tokens_g: list[list[int]] = []
@@ -694,6 +959,8 @@ class ServerlessCountdownRL:
                 rewards_g.append(reward)
                 raw_rewards.append(reward)
                 response_token_count += len(tokens)
+                max_response_tokens = max(max_response_tokens, len(tokens))
+                truncated_samples += int(_is_truncated(seq, cfg.max_sample_tokens))
 
             if len(set(rewards_g)) <= 1:
                 continue
@@ -742,15 +1009,17 @@ class ServerlessCountdownRL:
 
         # 4. One importance-sampling update. The forward_backward response also
         #    carries the pre-update policy's logprobs on the sampled tokens;
-        #    the mean (policy - sample) logprob gap is the per-token k1
-        #    estimator, logged as kld/mean_k1. This is logging-only -- it
-        #    does not change the loss and needs no reference forward pass.
+        #    the mean (policy - sample) logprob gap and its non-negative k3
+        #    transform are logged as kld/mean_k1 and kld/mean_k3. These are
+        #    logging-only and need no reference forward pass.
         loss = None
         kld_k1 = None
+        kld_k3 = None
         if datums:
             fb = self.training_client.forward_backward(datums, "importance_sampling").result()
             loss = _mean_loss(fb)
             kld_k1 = _mean_policy_sample_logprob_gap(datums, fb)
+            kld_k3 = _mean_policy_sample_k3(datums, fb)
             adam = tinker.AdamParams(learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-12, weight_decay=0.0)
             self.training_client.optim_step(adam).result()
 
@@ -766,10 +1035,18 @@ class ServerlessCountdownRL:
             "rollout/filtered_samples": len(filtered_rewards),
             "rollout/filter_ratio": filter_ratio,
             "rollout/mean_response_tokens": response_token_count / len(raw_rewards) if raw_rewards else 0.0,
+            "rollout/max_response_tokens": max_response_tokens,
+            "rollout/truncated_samples": truncated_samples,
+            "rollout/truncation_ratio": (
+                truncated_samples / len(raw_rewards) if raw_rewards else 0.0
+            ),
             "train/loss": loss,
             "train/trained": bool(datums),
             "train/router_replay": self.router_replay_enabled,
+            "train/inference_k1": kld_k1,
+            "train/inference_k3": kld_k3,
             "kld/mean_k1": kld_k1,
+            "kld/mean_k3": kld_k3,
             "perf/step_wall_time": time.time() - t0,
         }
         with self.metrics_path.open("a") as f:
@@ -779,8 +1056,10 @@ class ServerlessCountdownRL:
             f"step {step:02d} reward={raw_reward:.3f}/{filtered_reward:.3f} "
             f"samples={len(raw_rewards)}/{len(filtered_rewards)} "
             f"filter={filter_ratio:.1%} "
+            f"truncated={truncated_samples} "
             f"loss={'n/a' if loss is None else f'{loss:.4f}'} "
-            f"kld={'n/a' if kld_k1 is None else f'{kld_k1:+.4f}'} "
+            f"kld_k1={'n/a' if kld_k1 is None else f'{kld_k1:+.4f}'} "
+            f"kld_k3={'n/a' if kld_k3 is None else f'{kld_k3:.4f}'} "
             f"elapsed={rec['perf/step_wall_time']:.1f}s",
             flush=True,
         )
@@ -790,15 +1069,26 @@ class ServerlessCountdownRL:
         try:
             cfg = self.cfg
             records: list[dict[str, Any]] = []
+            last_eval_step: int | None = None
+            if cfg.eval_at_start:
+                self._evaluate(self.start_step)
+                last_eval_step = self.start_step
             for step in range(self.start_step, self.start_step + cfg.steps):
                 records.append(self._step(step))
                 completed_step = step + 1
                 if cfg.dcp_save_interval and completed_step % cfg.dcp_save_interval == 0:
                     self._save_dcp(completed_step)
+                if cfg.eval_interval and completed_step % cfg.eval_interval == 0:
+                    self._evaluate(completed_step)
+                    last_eval_step = completed_step
+
+            final_step = self.start_step + cfg.steps
+            if cfg.eval_at_end and last_eval_step != final_step:
+                self._evaluate(final_step)
+                last_eval_step = final_step
 
             resume_ref = ""
             if cfg.dcp_save_interval:
-                final_step = self.start_step + cfg.steps
                 final_name = f"{cfg.training_checkpoint_name}-{final_step:04d}"
                 if final_name not in self.saved_training_checkpoints:
                     final_name = self._save_dcp(final_step)
@@ -893,6 +1183,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dataset", default=str(DEFAULT_DATASET))
     parser.add_argument("--shuffle", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--eval-prompt-groups", type=int, default=Config.eval_prompt_groups)
+    parser.add_argument("--eval-seed", type=int, default=Config.eval_seed)
     parser.add_argument("--steps", type=int, default=Config.steps)
     parser.add_argument("--prompt-groups-per-step", type=int, default=Config.prompt_groups_per_step)
     parser.add_argument("--group-size", type=int, default=Config.group_size)
@@ -900,6 +1192,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-sample-tokens", type=int, default=Config.max_sample_tokens)
     parser.add_argument("--temperature", type=float, default=Config.temperature)
     parser.add_argument("--learning-rate", type=float, default=Config.learning_rate)
+    parser.add_argument("--eval-interval", type=int, default=Config.eval_interval)
+    parser.add_argument("--eval-group-size", type=int, default=Config.eval_group_size)
+    parser.add_argument(
+        "--eval-at-start",
+        action=argparse.BooleanOptionalAction,
+        default=Config.eval_at_start,
+    )
+    parser.add_argument(
+        "--eval-at-end",
+        action=argparse.BooleanOptionalAction,
+        default=Config.eval_at_end,
+    )
     parser.add_argument(
         "--router-replay",
         action=argparse.BooleanOptionalAction,
