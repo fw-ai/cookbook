@@ -31,6 +31,14 @@ Rollout factories must reuse `setup.sampler` when present rather than creating a
 second sampler or controller. This sampler-level controller is distinct from
 the recipe's rollout-call admission cap above.
 
+On a dedicated deployment, the controller uses prefill queue duration as its
+congestion signal. Serverless inference does not expose that metric, so the
+controller logs a one-time fallback warning and uses response status instead:
+HTTP 429, HTTP 503, and transport failures multiplicatively decrease the
+window, while an interval of successful responses additively increases it.
+Other HTTP failures do not cause the window to grow. Congestion reduces the
+window immediately; a short cooldown avoids repeated reductions from one burst.
+
 ## Deployment sizing
 
 Recipe concurrency is only admission control. Deployment replicas and batch
