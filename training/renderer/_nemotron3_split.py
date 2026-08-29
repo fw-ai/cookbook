@@ -1,6 +1,6 @@
 """Local Nemotron3 renderers with multi-turn SFT disaggregate support.
 
-Upstream ``tinker_cookbook.renderers.nemotron3`` ships ``Nemotron3Renderer``
+Upstream ``training._vendor.tinker_cookbook_0_4_3.renderers.nemotron3`` ships ``Nemotron3Renderer``
 (and ``Nemotron3DisableThinkingRenderer``) which inherit Qwen3_5Renderer's
 strip-from-history behavior but don't carry a ``build_supervised_examples``
 override. Re-register both upstream names with local subclasses that mix in
@@ -39,9 +39,9 @@ uses ``nemotron3_ultra_*`` renderers, not Super's.
 
 from __future__ import annotations
 
-from tinker_cookbook.renderers import Message, register_renderer
-from tinker_cookbook.renderers.base import RenderContext
-from tinker_cookbook.renderers.nemotron3 import (
+from training.renderer import Message, register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
+from training._vendor.tinker_cookbook_0_4_3.renderers.nemotron3 import (
     Nemotron3DisableThinkingRenderer,
     Nemotron3LowThinkingRenderer,
     Nemotron3Renderer,

@@ -14,7 +14,7 @@ import json
 from copy import deepcopy
 
 import pytest
-from tinker_cookbook.renderers import TrainOnWhat, get_renderer
+from training.renderer import TrainOnWhat, get_renderer
 from transformers import AutoTokenizer
 
 from training.renderer.thinking_trace import (

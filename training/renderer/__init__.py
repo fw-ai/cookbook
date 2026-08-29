@@ -1,10 +1,9 @@
-"""Cookbook-local model renderers.
+"""Fireworks-owned renderer API and cookbook-local model renderers.
 
-This package mirrors the layout of ``tinker_cookbook.renderers`` but holds
-renderers that have not yet been upstreamed. Each module exposes a
-``Renderer`` subclass and registers it under a short name via
-``tinker_cookbook.renderers.register_renderer`` so it can be obtained with
-``tinker_cookbook.renderers.get_renderer(name, tokenizer)``.
+The pinned renderer implementation and registry live in the targeted behavior
+snapshot under ``training._vendor``.  This package is the stable public owner:
+it re-exports that API, then imports each Fireworks-local renderer so all custom
+models register into the same registry.
 
 Importing this package eagerly imports every contained renderer module so
 the registrations take effect.
@@ -16,6 +15,8 @@ templates strip historical thinking but ship without a
 ``build_supervised_examples`` override. They run last so the override
 shadows the upstream registration.
 """
+
+from training._vendor.tinker_cookbook_0_4_3.renderers import *  # noqa: F403
 
 from training.renderer import deepseek_v4 as _deepseek_v4  # noqa: F401  (registers "deepseek_v4")
 from training.renderer import gemma4 as _gemma4  # noqa: F401  (registers "gemma4")

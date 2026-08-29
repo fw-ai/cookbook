@@ -11,8 +11,8 @@ import tinker
 
 import training.recipes.rl_loop as module
 from training.utils.rl.losses import PromptGroup
-from tinker_cookbook.renderers import get_text_content
-from tinker_cookbook.renderers.base import Message, Renderer
+from training.renderer import get_text_content
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, Renderer
 
 
 class _StopAfterRenderer(RuntimeError):

@@ -1,7 +1,7 @@
 """Local Qwen3 / Qwen3.5 / Qwen3.6 renderers with multi-turn SFT disaggregate support.
 
-Upstream ``tinker_cookbook.renderers.qwen3`` and
-``tinker_cookbook.renderers.qwen3_5`` ship without a
+Upstream ``training._vendor.tinker_cookbook_0_4_3.renderers.qwen3`` and
+``training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5`` ship without a
 ``build_supervised_examples`` override. Combined with
 ``has_extension_property=False`` (the default for thinking-mode
 variants), the cookbook SFT dispatcher routes multi-turn
@@ -20,8 +20,8 @@ import json
 from dataclasses import replace
 from typing import Any, Mapping, cast
 
-from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -29,13 +29,13 @@ from tinker_cookbook.renderers.base import (
     ToolCall,
     ToolSpec,
 )
-from tinker_cookbook.renderers.qwen3 import (
+from training._vendor.tinker_cookbook_0_4_3.renderers.qwen3 import (
     Qwen3DisableThinkingRenderer,
     Qwen3Renderer,
     Qwen3VLInstructRenderer,
     Qwen3VLRenderer,
 )
-from tinker_cookbook.renderers.qwen3_5 import (
+from training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5 import (
     Qwen3_5DisableThinkingRenderer,
     Qwen3_5Renderer,
 )

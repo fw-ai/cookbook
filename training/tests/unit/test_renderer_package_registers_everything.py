@@ -1,6 +1,6 @@
 """``import training.renderer`` must register every renderer in the package.
 
-Callers reach these renderers through ``tinker_cookbook.renderers.get_renderer``,
+Callers reach these renderers through ``training._vendor.tinker_cookbook_0_4_3.renderers.get_renderer``,
 whose registry is populated by ``register_renderer`` running at module import.
 Nothing else triggers it: putting the cookbook on ``sys.path``, or pip-installing
 it, registers nothing. So a renderer module the package ``__init__`` forgets to
@@ -79,7 +79,7 @@ def test_importing_the_package_registers_a_local_renderer() -> None:
     not ship. Skipped where the real tinker-cookbook is absent."""
 
     renderers = pytest.importorskip(
-        "tinker_cookbook.renderers",
+        "training.renderer",
         reason="needs the real tinker-cookbook",
     )
     import training.renderer  # noqa: F401  (registers every local renderer)

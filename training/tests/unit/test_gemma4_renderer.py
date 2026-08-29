@@ -32,8 +32,8 @@ import pytest
 import transformers
 
 import training.renderer  # noqa: F401 — installs Gemma4SplitRenderer override
-from tinker_cookbook.renderers import get_renderer
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training.renderer import get_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
 from training.renderer.gemma4 import (
     Gemma4Renderer,

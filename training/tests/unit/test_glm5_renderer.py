@@ -30,8 +30,8 @@ from training.tests.glm5_serverless_cases import (
     GLM5_SERVERLESS_STOP_TOKEN_IDS,
 )
 from training.utils.supervised import normalize_messages, render_messages_to_datums
-from tinker_cookbook.renderers import get_renderer, get_text_content
-from tinker_cookbook.renderers.base import ToolCall, TrainOnWhat
+from training.renderer import get_renderer, get_text_content
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import ToolCall, TrainOnWhat
 
 
 def _make_tool_call(name: str, arguments: dict[str, Any]) -> ToolCall:
@@ -1569,7 +1569,7 @@ def test_generation_suffix_is_role_tag(tokenizer, renderer):
     false. The renderer default matches that thinking-mode prompt so
     trained models can continue generating the reasoning block.
     """
-    from tinker_cookbook.renderers.base import RenderContext
+    from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
 
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
     suffix = renderer._get_generation_suffix("assistant", ctx)

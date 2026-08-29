@@ -9,8 +9,8 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from tinker_cookbook.renderers import get_renderer
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training.renderer import get_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
 import training.renderer  # noqa: F401  (registers local renderers)
 from training.utils.supervised import normalize_messages, render_messages_to_datums
@@ -155,13 +155,13 @@ _UPSTREAM_PARITY = [
     (
         "qwen3_6",
         "Qwen/Qwen3.6-27B",
-        "tinker_cookbook.renderers.qwen3_5",
+        "training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5",
         "Qwen3_5Renderer",
     ),
     (
         "nemotron3",
         _NEMOTRON,
-        "tinker_cookbook.renderers.nemotron3",
+        "training._vendor.tinker_cookbook_0_4_3.renderers.nemotron3",
         "Nemotron3Renderer",
     ),
 ]

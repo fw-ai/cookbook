@@ -36,7 +36,7 @@ import torch
 from PIL import Image
 from tinker_cookbook.exceptions import RendererError
 from tinker_cookbook.image_processing_utils import ImageProcessor
-from tinker_cookbook.renderers import (
+from training.renderer import (
     Message,
     ParseTermination,
     RenderContext,
@@ -48,7 +48,7 @@ from tinker_cookbook.renderers import (
     TrainOnWhat,
     register_renderer,
 )
-from tinker_cookbook.renderers.base import RenderedMessage, ToolSpec
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderedMessage, ToolSpec
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 from training.renderer.reasoning_fields import (

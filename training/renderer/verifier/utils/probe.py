@@ -25,8 +25,8 @@ import logging
 from typing import Any, Iterable, Protocol
 
 import tinker
-from tinker_cookbook.renderers import get_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import get_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     ParseTermination,
     Renderer,
     RenderContext,
@@ -36,7 +36,7 @@ from tinker_cookbook.renderers.base import (
 
 # Importing the cookbook renderer package registers all cookbook-local
 # renderers ("glm5", "gemma4", etc.) under the names exposed by
-# ``tinker_cookbook.renderers.get_renderer``.
+# ``training._vendor.tinker_cookbook_0_4_3.renderers.get_renderer``.
 import training.renderer  # noqa: F401
 from training.utils.supervised import build_tool_prefixed_messages, normalize_messages
 

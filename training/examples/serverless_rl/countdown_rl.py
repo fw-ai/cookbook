@@ -64,7 +64,7 @@ from fireworks.training.sdk import (
     FiretitanServiceClient,
     validate_output_model_id,
 )
-from tinker_cookbook.renderers import get_renderer, get_text_content
+from training.renderer import get_renderer, get_text_content
 
 # Registers the cookbook-local renderers ("kimi_k3", "kimi_k3_disable_thinking", ...).
 import training.renderer  # noqa: F401

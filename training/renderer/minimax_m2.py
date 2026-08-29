@@ -17,8 +17,8 @@ from typing import Any
 
 import tinker
 import torch
-from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -458,7 +458,7 @@ class MiniMaxM2Renderer(Renderer):
         start INSIDE the think block: they contain ``</think>`` but no opening
         ``<think>``. Without restoring the opener, ``parse_think_blocks`` can't
         split the block and the reasoning leaks into the graded content.
-        Mirrors ``tinker_cookbook.renderers.qwen3_5.Qwen3_5Renderer``.
+        Mirrors ``training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5.Qwen3_5Renderer``.
         """
         think_prefix = self.tokenizer.encode("<think>\n", add_special_tokens=False)
         if response[: len(think_prefix)] == think_prefix:

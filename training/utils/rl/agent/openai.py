@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Protocol
 
-from tinker_cookbook.renderers import Renderer, get_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import Renderer, get_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     TextPart,
     ThinkingPart,

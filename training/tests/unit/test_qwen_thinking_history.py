@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 from jinja2 import TemplateError
-from tinker_cookbook.renderers import ToolCall, TrainOnWhat, get_renderer
+from training.renderer import ToolCall, TrainOnWhat, get_renderer
 from transformers import AutoTokenizer
 
 import training.renderer._qwen3_split  # noqa: F401  (renderer registration)

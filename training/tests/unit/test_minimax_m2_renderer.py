@@ -15,8 +15,8 @@ import pytest
 import transformers
 
 from training.renderer.minimax_m2 import MiniMaxM2Renderer
-from tinker_cookbook.renderers import get_text_content
-from tinker_cookbook.renderers.base import RenderContext, ToolCall, TrainOnWhat
+from training.renderer import get_text_content
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext, ToolCall, TrainOnWhat
 
 _LOCAL_PATH = os.environ.get("MINIMAX_M2_LOCAL_TOKENIZER")
 _HF_REPO = "MiniMaxAI/MiniMax-M2"

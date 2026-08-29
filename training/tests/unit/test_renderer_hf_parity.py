@@ -384,7 +384,7 @@ def test_qwen3_5_multimodal_adapter_matches_independent_hf_ground_truth() -> Non
     """
     try:
         from tinker_cookbook.image_processing_utils import get_image_processor
-        from tinker_cookbook.renderers import get_renderer
+        from training.renderer import get_renderer
         from tinker_cookbook.tokenizer_utils import get_tokenizer
 
         import training.renderer  # noqa: F401 (register local renderer overrides)

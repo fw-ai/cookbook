@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import tinker
 import torch
-from tinker_cookbook.renderers.base import Message, RenderContext, RenderedMessage
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, RenderContext, RenderedMessage
 
 _THINK_OPEN = "<think>"
 _THINK_OPEN_PREFILL = f"{_THINK_OPEN}\n"

@@ -23,8 +23,8 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 
 import torch
 import tinker
-from tinker_cookbook.model_info import get_recommended_renderer_name
-from tinker_cookbook.renderers import (
+from training.renderer.model_info import get_recommended_renderer_name
+from training.renderer import (
     Message,
     Renderer,
     ToolCall,

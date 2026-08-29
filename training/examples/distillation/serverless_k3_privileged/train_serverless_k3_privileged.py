@@ -59,7 +59,7 @@ from fireworks.training.sdk import FiretitanServiceClient
 import training.renderer.kimi_k3  # noqa: F401
 from training.utils.distillation import build_opd_server_datums
 from training.utils.tokenizers import load_tokenizer
-from tinker_cookbook.renderers import get_renderer
+from training.renderer import get_renderer
 
 try:  # Load FIREWORKS_API_KEY / FIREWORKS_BASE_URL from a local .env if present.
     from dotenv import load_dotenv

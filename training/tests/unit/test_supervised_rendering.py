@@ -5,14 +5,14 @@ import os
 import pytest
 import torch
 import tinker
-from tinker_cookbook.renderers import (
+from training.renderer import (
     Message,
     ParseTermination,
     RenderContext,
     Renderer,
     TrainOnWhat,
 )
-from tinker_cookbook.renderers.base import RenderedMessage
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderedMessage
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.utils.losses import make_batch_weighted_sft_loss_fn

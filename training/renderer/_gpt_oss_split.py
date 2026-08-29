@@ -2,7 +2,7 @@
 history-thinking strip patch on ``render_message``.
 
 There are two layered bugs in upstream
-``tinker_cookbook.renderers.gpt_oss.GptOssRenderer``:
+``training._vendor.tinker_cookbook_0_4_3.renderers.gpt_oss.GptOssRenderer``:
 
 1. ``render_message`` (gpt_oss.py:265-268) emits the analysis channel
    for any assistant message that carries thinking content, with no
@@ -42,16 +42,16 @@ from typing import Any
 
 import tinker
 import torch
-from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     RenderContext,
     RenderedMessage,
     Renderer,
     TrainOnWhat,
 )
-from tinker_cookbook.renderers.base import Message as RenderMessage
-from tinker_cookbook.renderers.base import ensure_list
-from tinker_cookbook.renderers.gpt_oss import GptOssRenderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message as RenderMessage
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import ensure_list
+from training._vendor.tinker_cookbook_0_4_3.renderers.gpt_oss import GptOssRenderer
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.message_weights import untrained_synthesized_context

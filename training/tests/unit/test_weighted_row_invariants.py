@@ -41,8 +41,8 @@ import tinker
 import transformers
 
 import training.renderer  # noqa: F401  — registers the cookbook renderers
-from tinker_cookbook.renderers import get_registered_renderer_names, get_renderer
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training.renderer import get_registered_renderer_names, get_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 from training.renderer.deepseek_v4 import _merge_tool_messages
 from training.renderer.message_weights import (
     _rendered_positions,

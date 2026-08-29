@@ -40,8 +40,8 @@ from training.renderer.deepseek_v4 import (
 )
 from training.tests import _encoding_dsv4_oracle as oracle
 from training.utils.supervised import render_messages_to_datums
-from tinker_cookbook.renderers import get_renderer
-from tinker_cookbook.renderers.base import Renderer, ToolCall, TrainOnWhat
+from training.renderer import get_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import Renderer, ToolCall, TrainOnWhat
 
 # Public HF tokenizer. An optional local mirror can be supplied by the test
 # environment when the Hub is unavailable; otherwise this uses the public repo.
@@ -285,7 +285,7 @@ def test_registered_disable_thinking_factory_uses_chat_mode(tokenizer):
 
 def test_disable_thinking_generation_suffix_closes_think(tokenizer):
     """The disable-thinking renderer's generation suffix is ``<|Assistant|></think>``."""
-    from tinker_cookbook.renderers.base import RenderContext
+    from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
 
     r = get_renderer("deepseek_v4_disable_thinking", tokenizer)
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
@@ -328,7 +328,7 @@ def test_generation_suffix_thinking_is_assistant_plus_think(
     tokenizer,
     renderer_thinking_strip,
 ):
-    from tinker_cookbook.renderers.base import RenderContext
+    from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
 
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
     suffix = renderer_thinking_strip._get_generation_suffix("assistant", ctx)
@@ -339,7 +339,7 @@ def test_generation_suffix_chat_is_assistant_plus_close_think(
     tokenizer,
     renderer_chat,
 ):
-    from tinker_cookbook.renderers.base import RenderContext
+    from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
 
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
     suffix = renderer_chat._get_generation_suffix("assistant", ctx)

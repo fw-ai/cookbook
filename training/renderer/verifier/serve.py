@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
 from training.renderer.verifier.utils.inspect_rules import (
     load_rules as _load_inspect_rules,

@@ -14,7 +14,7 @@ the terminal assistant in each datum keeps its thought channel.
 
 from __future__ import annotations
 
-from tinker_cookbook.renderers import register_renderer
+from training.renderer import register_renderer
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.gemma4 import Gemma4Renderer

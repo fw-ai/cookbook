@@ -42,7 +42,7 @@ from typing import Any, Mapping, Sequence
 
 import tinker
 import torch
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
 # Modes whose target set is some subset of the assistant messages, ordered so
 # that the mode an unweighted row would have used wins when several of them

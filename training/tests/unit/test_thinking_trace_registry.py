@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 import training.renderer  # noqa: F401  (installs local registrations)
-from tinker_cookbook.renderers import get_renderer
+from training.renderer import get_renderer
 from training.renderer.thinking_trace import (
     ThinkingTraceHistoryMode,
     get_thinking_trace_model_capability,

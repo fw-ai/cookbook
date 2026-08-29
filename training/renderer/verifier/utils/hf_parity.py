@@ -30,13 +30,13 @@ import os
 from functools import cache
 from typing import Any
 
-from tinker_cookbook.renderers import get_renderer
+from training.renderer import get_renderer
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from transformers import AutoTokenizer
 
 # Importing the cookbook renderer package registers cookbook-local
 # renderer names (glm5, gemma4, minimax_m2, nemotron) under
-# ``tinker_cookbook.renderers.get_renderer``.
+# ``training._vendor.tinker_cookbook_0_4_3.renderers.get_renderer``.
 import training.renderer  # noqa: F401
 from training.utils.supervised import (
     build_tool_prefixed_messages,

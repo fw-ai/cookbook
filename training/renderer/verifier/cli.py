@@ -14,7 +14,7 @@ import os
 import sys
 from typing import Any
 
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
 from training.renderer.verifier.utils.inspect import run_inspect
 from training.renderer.verifier.utils.probe import (

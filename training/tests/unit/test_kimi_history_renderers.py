@@ -9,8 +9,8 @@ import pytest
 
 import training.renderer  # noqa: F401  (registers cookbook-local Kimi renderers)
 from training.utils.supervised import build_tool_prefixed_messages, normalize_messages
-from tinker_cookbook.renderers import get_renderer
-from tinker_cookbook.renderers.base import ToolCall, TrainOnWhat
+from training.renderer import get_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import ToolCall, TrainOnWhat
 
 
 class _ReversibleTokenizer:

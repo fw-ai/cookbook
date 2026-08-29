@@ -110,8 +110,8 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 import tinker
-from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -825,7 +825,7 @@ class Gemma4Renderer(Renderer):
         return self._with_render_messages(processed, _build)
 
     def build_supervised_example(self, messages, train_on_what=None):  # type: ignore[override]
-        from tinker_cookbook.renderers.base import TrainOnWhat
+        from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
         if train_on_what is None:
             train_on_what = TrainOnWhat.LAST_ASSISTANT_MESSAGE
