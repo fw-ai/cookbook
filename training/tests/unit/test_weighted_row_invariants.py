@@ -94,6 +94,8 @@ _EXTRA_TOKENIZERS = {
     "mistral": "mistralai/Ministral-3-3B-Instruct-2512",
     "glm5": "zai-org/GLM-5.1",
     "glm_moe_dsa": "zai-org/GLM-5.2",
+    "glm53_interleaved": "zai-org/GLM-5.3",
+    "glm53_preserve_thinking": "zai-org/GLM-5.3",
     "kimi_k25": "moonshotai/Kimi-K2.5",
     "kimi_k27_code": "moonshotai/Kimi-K2.7-Code",
 }

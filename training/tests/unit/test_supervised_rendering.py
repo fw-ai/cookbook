@@ -1570,6 +1570,9 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
     assert resolve_renderer_name("zai-org/GLM-5.2") == "glm_moe_dsa"
     assert resolve_renderer_name("zai-org/GLM-5.2-FP8") == "glm_moe_dsa"
     assert resolve_renderer_name("custom/glm-5p2-finetune") == "glm_moe_dsa"
+    assert resolve_renderer_name("zai-org/GLM-5.3") == "glm53"
+    assert resolve_renderer_name("accounts/fireworks/models/glm-5p3") == "glm53"
+    assert resolve_renderer_name("custom/glm-5p3-finetune") == "glm53"
 
 
 @pytest.mark.parametrize(

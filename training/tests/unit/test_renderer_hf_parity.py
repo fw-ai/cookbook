@@ -77,6 +77,8 @@ _GLM51_MODEL = "zai-org/GLM-5.1"
 _GLM51_REVISION = "26e1bd6e011feb778d25ae34b09b07074139d92d"
 _GLM52_MODEL = "zai-org/GLM-5.2"
 _GLM52_REVISION = "b4734de4facf877f85769a911abafc5283eab3d9"
+_GLM53_MODEL = "zai-org/GLM-5.3"
+_GLM53_REVISION = "935644c05e76fc198714f4cca449fd8b970ff6d7"
 _QWEN35_MODEL = "Qwen/Qwen3.5-35B-A3B"
 _QWEN35_REVISION = "59d61f3ce65a6d9863b86d2e96597125219dc754"
 _QWEN36_MODEL = "Qwen/Qwen3.6-27B"
@@ -158,6 +160,20 @@ _CASES: list[_Case] = [
         messages=_MULTI_TURN_MSGS,
         tokenizer_revision=_GLM52_REVISION,
         apply_chat_template_kwargs={"reasoning_effort": "max"},
+    ),
+    _Case(
+        case_id="glm53-single-turn",
+        renderer="glm53",
+        tokenizer_model=_GLM53_MODEL,
+        messages=_SHORT_MSGS,
+        tokenizer_revision=_GLM53_REVISION,
+    ),
+    _Case(
+        case_id="glm53-multi-turn",
+        renderer="glm53",
+        tokenizer_model=_GLM53_MODEL,
+        messages=_MULTI_TURN_MSGS,
+        tokenizer_revision=_GLM53_REVISION,
     ),
     _Case(
         case_id="qwen3-thinking-single-turn",

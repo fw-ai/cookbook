@@ -62,6 +62,13 @@ class _StringTokenizer:
             [True, False],
         ),
         (
+            "zai-org/GLM-5.3",
+            "glm5.3",
+            ["preserved", "interleaved"],
+            "glm53_preserve_thinking",
+            [False, True],
+        ),
+        (
             "Qwen/Qwen3.5-35B-A3B",
             "qwen3.5",
             ["interleaved"],
@@ -165,6 +172,7 @@ def test_legacy_concrete_names_are_not_rebound_to_corrected_adapters() -> None:
         ),
         "glm5": "GLM5Renderer",
         "glm_moe_dsa": "GLMMoeDsaRenderer",
+        "glm53": "GLM53Renderer",
         "kimi_k27_code": "KimiK27CodeRenderer",
     }
 
@@ -186,6 +194,8 @@ def test_legacy_concrete_names_are_not_rebound_to_corrected_adapters() -> None:
         )._honor_source_reasoning_fields
         is True
     )
+    assert get_renderer("glm53", tokenizer)._clear_thinking is False
+    assert get_renderer("glm53", tokenizer)._honor_source_reasoning_fields is True
 
 
 def test_registered_aliases_are_exact_and_case_insensitive() -> None:
@@ -200,6 +210,11 @@ def test_registered_aliases_are_exact_and_case_insensitive() -> None:
             "accounts/fireworks/models/qwen3p8-27b"
         ).canonical_family
         == "qwen3.8"
+    )
+    assert (
+        get_thinking_trace_model_capability("accounts/fireworks/models/glm-5p3")
+        .canonical_family
+        == "glm5.3"
     )
 
     # The legacy default resolver may understand custom/fine-tuned names, but
