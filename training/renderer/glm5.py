@@ -77,6 +77,11 @@ uses ``<think></think>`` for stripped historical reasoning. The
 ``glm_moe_dsa`` renderer id selects that template variant while sharing the
 same renderer implementation.
 
+GLM-5.3 preserves historical reasoning by default and canonicalizes a
+well-formed consecutive tool-result block into the preceding assistant turn's
+tool-call order. The ``glm53`` renderer keeps that behavior separate from the
+legacy GLM-5.2 contract.
+
 Multimodal content is left for a future extension.
 """
 
@@ -89,8 +94,8 @@ from typing import Any
 
 import tinker
 import torch
-from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -196,6 +201,76 @@ def _format_tool_declarations(tools: list[ToolSpec]) -> str:
         }
         rendered_tools.append(json.dumps(filtered, ensure_ascii=False))
     return "\n".join(rendered_tools)
+
+
+def _tool_result_id(message: Mapping[str, Any]) -> str:
+    """Return the GLM-5.3 identity for one ordinary tool-result message."""
+    value = message.get("tool_call_id") or message.get("id")
+    return str(value) if value else ""
+
+
+def _tool_call_id(tool_call: Any) -> str:
+    """Return the GLM-5.3 identity for one assistant tool call."""
+    if isinstance(tool_call, Mapping):
+        value = tool_call.get("tool_call_id") or tool_call.get("id")
+    else:
+        value = getattr(tool_call, "tool_call_id", None) or getattr(
+            tool_call, "id", None
+        )
+    return str(value) if value else ""
+
+
+def _canonicalize_glm53_tool_result_blocks(messages: list[Message]) -> list[Message]:
+    """Match GLM-5.3's ID-aware ordering for supported tool-result messages.
+
+    The official template sorts a consecutive tool-result block only when the
+    immediately preceding assistant has tool calls and every call/result ID is
+    present, unique, and mutually consistent. Otherwise it renders the block in
+    source order. Managed training's normalized schema represents one ordinary
+    result per tool message, so this helper implements that exact supported
+    subset without changing the messages themselves.
+    """
+    ordered = list(messages)
+    index = 0
+    while index < len(ordered):
+        if ordered[index].get("role") != "tool":
+            index += 1
+            continue
+
+        block_start = index
+        while index < len(ordered) and ordered[index].get("role") == "tool":
+            index += 1
+        block_end = index
+
+        if block_start == 0:
+            continue
+        assistant = ordered[block_start - 1]
+        if assistant.get("role") != "assistant":
+            continue
+        tool_calls = assistant.get("tool_calls") or []
+        if not tool_calls:
+            continue
+
+        call_ids = [_tool_call_id(tool_call) for tool_call in tool_calls]
+        result_ids = [
+            _tool_result_id(message) for message in ordered[block_start:block_end]
+        ]
+        can_sort = (
+            all(call_ids)
+            and len(set(call_ids)) == len(call_ids)
+            and all(result_ids)
+            and len(set(result_ids)) == len(result_ids)
+            and all(result_id in set(call_ids) for result_id in result_ids)
+        )
+        if not can_sort:
+            continue
+
+        result_by_id = dict(zip(result_ids, ordered[block_start:block_end]))
+        ordered[block_start:block_end] = [
+            result_by_id[call_id] for call_id in call_ids if call_id in result_by_id
+        ]
+
+    return ordered
 
 
 def _parse_arg_value(value: str) -> Any:
@@ -860,7 +935,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         tokens start INSIDE the think block: they contain ``</think>`` but no
         opening ``<think>``. Without restoring the opener, ``parse_think_blocks``
         can't split the block and the reasoning leaks into the graded content.
-        Mirrors ``tinker_cookbook.renderers.qwen3_5.Qwen3_5Renderer``.
+        Mirrors ``training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5.Qwen3_5Renderer``.
         """
         think_prefix = self.tokenizer.encode("<think>", add_special_tokens=False)
         if response[: len(think_prefix)] == think_prefix:
@@ -905,6 +980,73 @@ class GLMMoeDsaRenderer(GLM5Renderer):
     _initial_prompt_text = "<|system|>Reasoning Effort: Max"
     _historical_stripped_think_block = "<think></think>"
     _preserve_has_extension_property = True
+
+
+class GLM53Renderer(GLMMoeDsaRenderer):
+    """Renderer for the pinned ``zai-org/GLM-5.3`` chat-template contract.
+
+    GLM-5.3 shares GLM-5.2's role/tool wire format and default Max reasoning
+    prefix, but defaults ``clear_thinking`` to false and sorts well-formed
+    consecutive tool results by their preceding assistant tool-call IDs.
+    """
+
+    # Tool-result ordering depends on the surrounding consecutive block, so a
+    # verifier cannot reconstruct the whole render by calling render_message
+    # independently for each message.
+    supports_per_message_rendering = False
+
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        *,
+        clear_thinking: bool = False,
+        honor_source_reasoning_fields: bool = True,
+    ) -> None:
+        super().__init__(
+            tokenizer,
+            clear_thinking=clear_thinking,
+            honor_source_reasoning_fields=honor_source_reasoning_fields,
+        )
+
+    def build_supervised_example(
+        self,
+        messages: list[Message],
+        train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+        return super().build_supervised_example(
+            _canonicalize_glm53_tool_result_blocks(messages),
+            train_on_what=train_on_what,
+        )
+
+    def build_generation_prompt(
+        self,
+        messages: list[Message],
+        role: Role = "assistant",
+        prefill: str | None = None,
+    ) -> tinker.ModelInput:
+        return super().build_generation_prompt(
+            _canonicalize_glm53_tool_result_blocks(messages),
+            role=role,
+            prefill=prefill,
+        )
+
+    def render_message(
+        self,
+        message: Message,
+        ctx: RenderContext,
+        *,
+        user_turn_has_explicit_reasoning: bool | None = None,
+    ) -> RenderedMessage:
+        # The official GLM-5.3 template has no developer-role branch, so such
+        # messages contribute no bytes. Keep this behavior version-local; the
+        # earlier GLM renderers intentionally continue to reject the role.
+        if message["role"] == "developer":
+            return RenderedMessage(header=None, output=[])
+        return super().render_message(
+            message,
+            ctx,
+            user_turn_has_explicit_reasoning=user_turn_has_explicit_reasoning,
+        )
 
 
 def _glm5_factory(tokenizer: Tokenizer, image_processor=None) -> GLM5Renderer:
@@ -962,6 +1104,30 @@ def _glm_moe_dsa_preserve_thinking_factory(
     )
 
 
+def _glm53_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLM53Renderer:
+    del image_processor
+    return GLM53Renderer(tokenizer)
+
+
+def _glm53_interleaved_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLM53Renderer:
+    del image_processor
+    return GLM53Renderer(tokenizer, clear_thinking=True)
+
+
+def _glm53_preserve_thinking_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLM53Renderer:
+    del image_processor
+    return GLM53Renderer(tokenizer, clear_thinking=False)
+
+
 register_renderer("glm5", _glm5_factory)
 # Keep the existing concrete names above available for legacy direct callers.
 # Managed semantic modes materialize the new names below, so future
@@ -974,3 +1140,6 @@ register_renderer(
     "glm_moe_dsa_preserve_thinking",
     _glm_moe_dsa_preserve_thinking_factory,
 )
+register_renderer("glm53", _glm53_factory)
+register_renderer("glm53_interleaved", _glm53_interleaved_factory)
+register_renderer("glm53_preserve_thinking", _glm53_preserve_thinking_factory)

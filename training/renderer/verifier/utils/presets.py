@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
 PRESET_SCHEMA_VERSION = 1
 

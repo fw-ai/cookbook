@@ -212,6 +212,17 @@ RENDERER_MATRIX: list[RendererCase] = [
         supervised_hf_parity=False,
         observation_equals_generation=False,
     ),
+    RendererCase(
+        renderer="glm53",
+        tokenizer_model="zai-org/GLM-5.3",
+        tokenizer_revision="935644c05e76fc198714f4cca449fd8b970ff6d7",
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
+        # GLM training adds a synthetic terminal role stop.
+        supervised_hf_parity=False,
+        observation_equals_generation=False,
+    ),
     # -- Qwen2.5 ----------------------------------------------------------
     # Like the other matrix entries, renderer QA follows public HF main. The
     # renderer's V1-compatible template rejects multipart content.

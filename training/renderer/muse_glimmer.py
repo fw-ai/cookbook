@@ -22,8 +22,8 @@ import tinker
 import torch
 from jinja2.exceptions import TemplateError
 from tinker_cookbook.exceptions import RendererError
-from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     ParseTermination,
     RenderContext,

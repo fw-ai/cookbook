@@ -3,7 +3,7 @@
 A renderer translates a list of `Message` objects into a flat token
 sequence the trainer optimizes against. It owns the chat template, the
 stop tokens, and the loss-weight assignment. The cookbook's
-`tinker_cookbook.renderers.Renderer` base class is the contract; the
+`training.renderer.Renderer` base class is the contract; the
 concrete renderers live in `training/renderer/`.
 
 Use this reference when adding support for a new model family, or when a PR
@@ -20,7 +20,7 @@ validation half of the loop.
 | `build_supervised_example(messages, train_on_what)` | `(token sequence, loss-weight tensor)` | SFT — this is the loss target |
 | `get_stop_sequences()` | List of token-id sequences the gateway should stop on | Passed into `chat.completions.create(stop=...)` |
 
-`Renderer` is in `tinker_cookbook.renderers.base`. Subclass it and
+`Renderer` is exported by `training.renderer`. Subclass it and
 implement the four methods. The base class provides chunk
 abstractions (`bos`, `header`, `output`, `stop_overlap`,
 `generation_suffix`) — let those carry your structure rather than
@@ -81,6 +81,12 @@ The adapter must account for vendor flag polarity:
 | Qwen 3.6 | `preserve_thinking` | `false` | `true` |
 | Kimi K2.6 | `preserve_thinking` | `false` | `true` |
 | Nemotron-3 Nano / Super | `truncate_history_thinking` | `true` | `false` |
+| Nemotron-3 Ultra | `truncate_history_thinking` | `true` | `false` |
+
+Nano/Super wrap thinking as `<think>\n{t}\n</think>\n{content}`. Ultra wraps
+as `<think>\n{t}</think>{content}` and maps `medium_effort` to
+`{reasoning effort: efficient}` rather than Super's `low_effort` /
+`{reasoning effort: low}`. Use `nemotron3_ultra_*` renderers for Ultra SFT.
 
 Qwen 3.5 and Kimi K2.5 are INTERLEAVED-only; Kimi K2.7 Code is
 PRESERVED-only.
@@ -125,7 +131,7 @@ not be selected by the history-mode enum.
    `training/tests/unit/renderer_expected_divergences.py`.
 3. **Register the renderer** at module bottom:
    ```python
-   from tinker_cookbook.renderers import register_renderer
+   from training.renderer import register_renderer
    register_renderer("my_model", _my_factory)
    ```
 4. **Add a CPU HF parity test** in
@@ -176,5 +182,5 @@ not be selected by the history-mode enum.
   `training/renderer/gemma4.py` — concrete implementations covering
   next-role-tag stop, EOS-stop, and multimodal respectively.
 - `training/renderer/qwen2_5.py` — the Qwen2.5 whole-conversation renderer.
-- `tinker_cookbook.renderers.base` — the abstract `Renderer` class
+- `training.renderer.Renderer` — the abstract renderer class
   and the chunk types the audit table reports against.

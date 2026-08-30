@@ -16,19 +16,52 @@ This mixin re-splits the rendered chunks to move that boundary. Token ids and
 their order never change, so chat-template parity is untouched — only which
 side of the header/output line each marker falls on.
 
-Apply it to thinking-enabled renderers only. Disable-thinking variants prefill
-the whole ``<think></think>`` wrapper in the generation suffix, so masking both
-markers is already correct there; DeepSeek V4's chat mode masks both for the
-same reason.
+Thinking-enabled renderers use :class:`ThinkPrefillWeightsMixin` to move the
+two markers onto the correct sides of the loss boundary. Disable-thinking
+renderers use :class:`DisableThinkingWeightsMixin` instead: their generation
+suffix prefills the whole empty wrapper, so both marker tokens are removed from
+the final loss even when an input trajectory contains explicit reasoning.
 """
 
 from __future__ import annotations
 
 import tinker
-from tinker_cookbook.renderers.base import Message, RenderContext, RenderedMessage
+import torch
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, RenderContext, RenderedMessage
 
-_THINK_OPEN_PREFILL = "<think>\n"
+_THINK_OPEN = "<think>"
+_THINK_OPEN_PREFILL = f"{_THINK_OPEN}\n"
 _THINK_CLOSE = "</think>"
+
+
+class DisableThinkingWeightsMixin:
+    """Mask both markers supplied by a disable-thinking generation suffix.
+
+    Official templates retain explicit reasoning in existing assistant
+    messages even when generation thinking is disabled. Keep those bytes for
+    template parity, but never train either marker because inference supplies
+    the complete empty ``<think>...</think>`` wrapper.
+    """
+
+    def build_supervised_example(
+        self,
+        messages: list[Message],
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+        model_input, weights = super().build_supervised_example(
+            messages, *args, **kwargs
+        )
+        token_ids = list(model_input.to_ints())
+        masked = weights.clone()
+        for marker in (_THINK_OPEN, _THINK_CLOSE):
+            marker_tokens = self.tokenizer.encode(marker, add_special_tokens=False)
+            if not marker_tokens:
+                continue
+            for start in range(len(token_ids) - len(marker_tokens) + 1):
+                if token_ids[start : start + len(marker_tokens)] == marker_tokens:
+                    masked[start : start + len(marker_tokens)] = 0
+        return model_input, masked
 
 
 class ThinkPrefillWeightsMixin:

@@ -23,7 +23,7 @@ import transformers
 
 from training.renderer.mistral import MistralRenderer
 from training.utils.tokenizers import load_tokenizer
-from tinker_cookbook.renderers.base import RenderContext, ToolCall, TrainOnWhat
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext, ToolCall, TrainOnWhat
 
 
 _LOCAL_PATH = os.environ.get("MISTRAL_LOCAL_TOKENIZER")

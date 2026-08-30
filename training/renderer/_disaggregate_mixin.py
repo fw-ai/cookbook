@@ -83,7 +83,7 @@ from __future__ import annotations
 import warnings
 from typing import Any, Mapping, Sequence
 
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
 from training.renderer.message_weights import (
     equivalent_builtin_train_on_what,

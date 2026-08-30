@@ -23,8 +23,8 @@ its contract outright.
 from __future__ import annotations
 
 from tinker_cookbook.image_processing_utils import ImageProcessor
-from tinker_cookbook.renderers import Message, register_renderer
-from tinker_cookbook.renderers.kimi_k25 import KimiK25Renderer as _TinkerKimiK25Renderer
+from training.renderer import Message, register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k25 import KimiK25Renderer as _TinkerKimiK25Renderer
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin

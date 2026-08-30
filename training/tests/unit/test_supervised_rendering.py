@@ -5,14 +5,14 @@ import os
 import pytest
 import torch
 import tinker
-from tinker_cookbook.renderers import (
+from training.renderer import (
     Message,
     ParseTermination,
     RenderContext,
     Renderer,
     TrainOnWhat,
 )
-from tinker_cookbook.renderers.base import RenderedMessage
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderedMessage
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.utils.losses import make_batch_weighted_sft_loss_fn
@@ -1454,6 +1454,7 @@ def test_resolve_renderer_name_prefers_minimax_m3() -> None:
 def test_resolve_renderer_name_prefers_upstream_nemotron3() -> None:
     """Nemotron models use Tinker's upstream renderer with parse normalization."""
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-3-Super-120B") == "nemotron3"
+    assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16") == "nemotron3_ultra"
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-H-8B") == "nemotron3"
 
 
@@ -1569,6 +1570,9 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
     assert resolve_renderer_name("zai-org/GLM-5.2") == "glm_moe_dsa"
     assert resolve_renderer_name("zai-org/GLM-5.2-FP8") == "glm_moe_dsa"
     assert resolve_renderer_name("custom/glm-5p2-finetune") == "glm_moe_dsa"
+    assert resolve_renderer_name("zai-org/GLM-5.3") == "glm53"
+    assert resolve_renderer_name("accounts/fireworks/models/glm-5p3") == "glm53"
+    assert resolve_renderer_name("custom/glm-5p3-finetune") == "glm53"
 
 
 @pytest.mark.parametrize(

@@ -219,7 +219,10 @@ class TrainerConfig:
     """Skip server-side shape validation. Requires superuser API key."""
 
     use_reservation: bool = True
-    """Try reservation capacity first. Set to ``False`` to use shared capacity."""
+    """Use matching account reservation capacity when available.
+
+    Accounts without a reservation for the selected accelerator use shared capacity.
+    """
 
 
 class WeightSyncScope(Enum):

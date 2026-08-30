@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
@@ -11,10 +12,13 @@ from training.examples.serverless_rl.countdown_rl import (
     MAX_PROMOTABLE_CHECKPOINT_NAME_LEN,
     Config,
     _account_from_session,
+    _carve_out_eval_rows,
     _control_plane_base_url,
     _find_promotable,
     _group_relative_advantages,
+    _is_truncated,
     _mean_policy_sample_logprob_gap,
+    _mean_policy_sample_k3,
     _serverless_base_url,
     _step_from_checkpoint_name,
     _validate_config,
@@ -32,6 +36,9 @@ def test_serverless_defaults_use_supported_model_and_matching_tokenizer():
     assert cfg.max_seq_len > 0
     assert cfg.lora_rank > 0
     assert cfg.router_replay is True
+    assert cfg.eval_prompt_groups == 16
+    assert cfg.eval_interval == 5
+    assert cfg.eval_group_size == 8
 
 
 def test_renderer_name_auto_resolves_from_tokenizer():
@@ -63,6 +70,33 @@ def test_serverless_rejects_negative_dcp_save_interval():
 
 def test_serverless_allows_disabled_dcp_saves():
     _validate_config(Config(dcp_save_interval=0))
+
+
+def test_serverless_rejects_eval_without_carved_rows():
+    with pytest.raises(ValueError, match="eval_prompt_groups"):
+        _validate_config(Config(eval_prompt_groups=0))
+
+
+def test_carved_eval_rows_are_deterministic_and_disjoint():
+    rows = [{"id": i} for i in range(20)]
+    train_a, eval_a, indices_a = _carve_out_eval_rows(rows, 4, 7)
+    train_b, eval_b, indices_b = _carve_out_eval_rows(rows, 4, 7)
+
+    assert (train_a, eval_a, indices_a) == (train_b, eval_b, indices_b)
+    assert len(train_a) == 16
+    assert len(eval_a) == 4
+    assert {row["id"] for row in train_a}.isdisjoint(row["id"] for row in eval_a)
+    assert [rows[index] for index in indices_a] == eval_a
+
+
+def test_carved_eval_rows_must_leave_training_data():
+    with pytest.raises(ValueError, match="leave at least one training row"):
+        _carve_out_eval_rows([{"id": 0}], 1, 0)
+
+
+def test_truncation_falls_back_to_exact_token_cap_without_finish_reason():
+    assert _is_truncated(SimpleNamespace(tokens=[1, 2], finish_reason=""), 2) is True
+    assert _is_truncated(SimpleNamespace(tokens=[1], finish_reason=""), 2) is False
 
 
 def test_promotion_rejects_overlong_final_checkpoint_name():
@@ -110,7 +144,7 @@ def test_control_plane_base_url_strips_training_suffixes(base_url):
 
 @pytest.mark.parametrize(
     "reference",
-    ["example/run-abc/cd-state-0002", "cd-state-0001"],
+    ["training/run-abc/cd-state-0002", "cd-state-0001"],
 )
 def test_validate_resume_reference_accepts_numbered_dcp(reference):
     _validate_resume_reference(reference)
@@ -118,7 +152,7 @@ def test_validate_resume_reference_accepts_numbered_dcp(reference):
 
 @pytest.mark.parametrize(
     "reference",
-    ["cd-final", "cd-state", "", "run-x/", "cd-sample-0002", "example/run-abc/cd-sample-0002"],
+    ["cd-final", "cd-state", "", "run-x/", "cd-sample-0002", "training/run-abc/cd-sample-0002"],
 )
 def test_validate_resume_reference_rejects_sampler_or_unnumbered_names(reference):
     with pytest.raises(ValueError, match="numbered training checkpoint"):
@@ -126,19 +160,19 @@ def test_validate_resume_reference_rejects_sampler_or_unnumbered_names(reference
 
 
 def test_validate_config_uses_configured_training_checkpoint_prefix():
-    _validate_config(Config(resume_from="example/run-abc/custom-state-0012", training_checkpoint_name="custom-state"))
+    _validate_config(Config(resume_from="training/run-abc/custom-state-0012", training_checkpoint_name="custom-state"))
 
     with pytest.raises(ValueError, match="custom-state"):
-        _validate_config(Config(resume_from="example/run-abc/cd-state-0012", training_checkpoint_name="custom-state"))
+        _validate_config(Config(resume_from="training/run-abc/cd-state-0012", training_checkpoint_name="custom-state"))
 
 
 def test_step_from_checkpoint_name_recovers_completed_steps():
-    assert _step_from_checkpoint_name("example/run-abc/cd-state-0012") == 12
+    assert _step_from_checkpoint_name("training/run-abc/cd-state-0012") == 12
     assert _step_from_checkpoint_name("cd-final") == 0
 
 
 def test_account_from_session_parses_account():
-    assert _account_from_session("accounts/example/trainingSessions/ts-1") == "example"
+    assert _account_from_session("accounts/training/trainingSessions/ts-1") == "training"
     assert _account_from_session(None) is None
 
 
@@ -150,10 +184,10 @@ def test_resume_reference_uses_session_account_without_control_plane_lookup(monk
     monkeypatch.setattr(countdown_rl, "FireworksClient", _UnexpectedClient)
     runner = object.__new__(countdown_rl.ServerlessCountdownRL)
     runner.cfg = Config()
-    runner.session_name = "accounts/example/trainingSessions/ts-1"
+    runner.session_name = "accounts/training/trainingSessions/ts-1"
     runner.run_id = "run-abc"
 
-    assert runner._resume_reference("cd-state-0002") == "example/run-abc/cd-state-0002"
+    assert runner._resume_reference("cd-state-0002") == "training/run-abc/cd-state-0002"
 
 
 def test_resume_reference_falls_back_to_control_plane_account(monkeypatch):
@@ -184,7 +218,7 @@ def test_resume_reference_falls_back_to_control_plane_account(monkeypatch):
 def test_resume_reference_rejects_missing_run_id():
     runner = object.__new__(countdown_rl.ServerlessCountdownRL)
     runner.cfg = Config()
-    runner.session_name = "accounts/example/trainingSessions/ts-1"
+    runner.session_name = "accounts/training/trainingSessions/ts-1"
     runner.run_id = None
 
     with pytest.raises(RuntimeError, match="run_id"):
@@ -249,6 +283,46 @@ def test_k1_returns_none_when_logprobs_are_absent():
     datum = SimpleNamespace(loss_fn_inputs={"logprobs": [0.0], "target_tokens": [1.0]})
     assert _mean_policy_sample_logprob_gap([datum], SimpleNamespace(loss_fn_outputs=[{}])) is None
     assert _mean_policy_sample_logprob_gap([datum], SimpleNamespace(loss_fn_outputs=[])) is None
+
+
+def test_k3_reads_response_logprobs_and_is_non_negative():
+    datum = SimpleNamespace(
+        loss_fn_inputs={
+            "logprobs": _TensorData([-0.1, -0.2, -2.0, -3.0]),
+            "target_tokens": _TensorData([0.0, 0.0, 7.0, 8.0]),
+        }
+    )
+    fb = SimpleNamespace(loss_fn_outputs=[{"logprobs": [9.0, 9.0, -1.0, -3.5]}])
+    expected = ((math.exp(1.0) - 1.0 - 1.0) + (math.exp(-0.5) - 1.0 + 0.5)) / 2
+
+    assert _mean_policy_sample_k3([datum], fb) == pytest.approx(expected)
+    assert _mean_policy_sample_k3([datum], fb) >= 0.0
+
+
+def test_k3_returns_none_when_logprobs_are_absent():
+    datum = SimpleNamespace(loss_fn_inputs={"logprobs": [0.0], "target_tokens": [1.0]})
+    assert _mean_policy_sample_k3([datum], SimpleNamespace(loss_fn_outputs=[{}])) is None
+    assert _mean_policy_sample_k3([datum], SimpleNamespace(loss_fn_outputs=[])) is None
+
+
+@pytest.mark.parametrize(
+    ("logger", "position", "metric"),
+    [
+        (countdown_rl._log_wandb_step, 3, {"kld/mean_k3": 0.125}),
+        (countdown_rl._log_wandb_eval, 5, {"eval/raw_reward": 0.75}),
+    ],
+)
+def test_wandb_rows_commit_immediately_without_explicit_internal_step(
+    monkeypatch, logger, position, metric
+):
+    wandb = ModuleType("wandb")
+    wandb.run = object()
+    wandb.log = MagicMock()
+    monkeypatch.setitem(sys.modules, "wandb", wandb)
+
+    logger(position, metric)
+
+    wandb.log.assert_called_once_with({"train/step": position, **metric})
 
 
 def test_reward_plot_uses_checkpoint_resolved_base_model(monkeypatch, tmp_path):
@@ -385,6 +459,8 @@ def test_countdown_r3_keeps_each_route_matrix_with_its_sequence(monkeypatch, tmp
     rec = runner._step(0)
 
     assert rec["train/trained"] is True
+    assert rec["kld/mean_k3"] == rec["train/inference_k3"]
+    assert rec["rollout/truncated_samples"] == 0
     assert len(captured_datums) == 2
     assert captured_datums[0].model_input.routing_matrices == [
         "",
@@ -396,3 +472,85 @@ def test_countdown_r3_keeps_each_route_matrix_with_its_sequence(monkeypatch, tmp
         "",
         *short_seq.routing_matrices,
     ]
+
+
+def test_fixed_eval_reuses_carved_rows_without_training(monkeypatch, tmp_path):
+    class _Immediate:
+        def __init__(self, value):
+            self.value = value
+
+        def result(self, timeout=None):
+            del timeout
+            return self.value
+
+    sequences = [
+        SimpleNamespace(tokens=[1], finish_reason="stop"),
+        SimpleNamespace(tokens=[2, 2], finish_reason="length"),
+    ]
+
+    class _Sampler:
+        def sample(self, **kwargs):
+            assert kwargs["num_samples"] == 2
+            return _Immediate(SimpleNamespace(sequences=sequences))
+
+        def close(self):
+            return None
+
+    class _Service:
+        def create_sampling_client(self, **kwargs):
+            assert kwargs["model_path"] == "tinker://eval-snapshot"
+            return _Sampler()
+
+    class _TrainingClient:
+        def save_weights_for_sampler(self, name):
+            assert name == "cd-eval-0005"
+            return _Immediate(SimpleNamespace(path="tinker://eval-snapshot"))
+
+    prompt = countdown_rl.tinker.ModelInput.from_ints([7, 8, 9])
+
+    class _Renderer:
+        def build_generation_prompt(self, messages):
+            del messages
+            return prompt
+
+        def get_stop_sequences(self):
+            return []
+
+        def parse_response(self, tokens):
+            return ("correct" if tokens == [1] else "wrong", None)
+
+    monkeypatch.setattr(countdown_rl, "get_text_content", lambda content: content)
+    monkeypatch.setattr(
+        countdown_rl,
+        "composite_reward",
+        lambda content, ground_truth: 1.0 if content == "correct" else 0.0,
+    )
+
+    runner = object.__new__(countdown_rl.ServerlessCountdownRL)
+    runner.cfg = Config(
+        eval_prompt_groups=2,
+        eval_group_size=2,
+        prompt_concurrency=2,
+        max_sample_tokens=8,
+        max_seq_len=64,
+    )
+    runner.training_client = _TrainingClient()
+    runner.service = _Service()
+    runner.tokenizer = None
+    runner.renderer = _Renderer()
+    runner.eval_rows = [
+        {"messages": [], "ground_truth": '{"numbers": [1], "target": 1}'},
+        {"messages": [], "ground_truth": '{"numbers": [2], "target": 2}'},
+    ]
+    runner.eval_row_indices = [10, 11]
+    runner.eval_metrics_path = tmp_path / "eval_metrics.jsonl"
+    runner.eval_completions_dir = tmp_path / "eval_completions"
+    runner.eval_completions_dir.mkdir()
+
+    rec = runner._evaluate(5)
+
+    assert rec["eval/raw_reward"] == 0.5
+    assert rec["eval/samples"] == 4
+    assert rec["eval/truncated_samples"] == 2
+    assert rec["eval/truncation_ratio"] == 0.5
+    assert (runner.eval_completions_dir / "step-0005.jsonl").exists()

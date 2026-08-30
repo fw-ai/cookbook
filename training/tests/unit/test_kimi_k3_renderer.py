@@ -34,7 +34,7 @@ from typing import Any
 import pytest
 import tinker
 from PIL import Image
-from tinker_cookbook.renderers import TrainOnWhat, get_renderer
+from training.renderer import TrainOnWhat, get_renderer
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 from training.renderer.kimi_k3 import (

@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
 from training.renderer.verifier.utils.probe import (
     DispatchError,
@@ -127,7 +127,7 @@ def _print_preflight(
     print(_RULE)
 
     # 1. Renderer
-    from tinker_cookbook.renderers import is_renderer_registered  # noqa: PLC0415
+    from training.renderer import is_renderer_registered  # noqa: PLC0415
 
     registered_text = (
         "registered ✓"

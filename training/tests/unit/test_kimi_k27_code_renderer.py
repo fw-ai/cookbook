@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 import training.renderer  # noqa: F401  (registers "kimi_k27_code")
-from tinker_cookbook.renderers import get_renderer
+from training.renderer import get_renderer
 
 from training.utils.supervised import normalize_messages
 from training.utils.tokenizers import load_tokenizer

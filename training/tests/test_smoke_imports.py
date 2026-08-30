@@ -228,7 +228,7 @@ TINKER_COOKBOOK_MODULES = [
     "tinker_cookbook.supervised.train",
     "tinker_cookbook.supervised.data",
     "tinker_cookbook.tokenizer_utils",
-    "tinker_cookbook.renderers",
+    "training.renderer",
 ]
 
 

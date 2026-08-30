@@ -14,17 +14,17 @@ keeps a multi-turn conversation in one supervised datum.
 from __future__ import annotations
 
 from tinker_cookbook.image_processing_utils import ImageProcessor
-from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     RenderContext,
     RenderedMessage,
     ToolSpec,
 )
-from tinker_cookbook.renderers.kimi_k25 import (
+from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k25 import (
     KimiK25Renderer as _TinkerKimiK25Renderer,
 )
-from tinker_cookbook.renderers.kimi_k26 import (
+from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k26 import (
     KimiK26PreserveThinkingRenderer as _TinkerKimiK26PreserveThinkingRenderer,
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer

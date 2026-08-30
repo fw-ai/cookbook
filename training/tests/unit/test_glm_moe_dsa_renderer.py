@@ -8,7 +8,7 @@ import pytest
 import transformers
 
 import training.renderer.glm5  # noqa: F401 - registers glm_moe_dsa
-from tinker_cookbook.renderers import get_renderer
+from training.renderer import get_renderer
 
 
 _TOKENIZER = "zai-org/GLM-5.2"

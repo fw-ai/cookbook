@@ -23,8 +23,8 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 
 import torch
 import tinker
-from tinker_cookbook.model_info import get_recommended_renderer_name
-from tinker_cookbook.renderers import (
+from training.renderer.model_info import get_recommended_renderer_name
+from training.renderer import (
     Message,
     Renderer,
     ToolCall,
@@ -233,6 +233,9 @@ def resolve_renderer_name(
         or "kimi-k2p7-code" in normalized_model_name
     ):
         return "kimi_k27_code"
+    if "nemotron-3-ultra" in normalized_model_name or "nemotron3-ultra" in normalized_model_name:
+        # Ultra's HF template uses different think wrapping than Super/Nano.
+        return "nemotron3_ultra"
     if "nemotron" in normalized_model_name:
         # Route the Nemotron family to tinker_cookbook's upstream Nemotron-3
         # renderer ("nemotron3"), which restores the prompt-prefilled <think>
@@ -299,6 +302,11 @@ def resolve_renderer_name(
         or "deepseekv4" in normalized_model_name
     ):
         return "deepseek_v4"
+    # GLM-5.3 keeps the GLM-5.2 wire format but changes the default thinking
+    # history policy and adds ID-aware tool-result ordering. Keep it on a
+    # dedicated renderer so new aliases cannot silently inherit 5.2 semantics.
+    if "glm-5p3" in normalized_model_name or "glm-5.3" in normalized_model_name:
+        return "glm53"
     # ZhipuAI GLM-5.2 keeps GLM-5 role/tool tags, but its shipped template
     # adds a default Reasoning Effort system prefix and slightly different
     # stripped-thinking blocks. Route it to the dedicated variant.

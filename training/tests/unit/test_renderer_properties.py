@@ -48,9 +48,9 @@ import pytest
 
 # Importing the cookbook renderer package registers cookbook-local renderer
 # names (glm5, gemma4, minimax_m2, nemotron, deepseek_v4, mistral,
-# kimi_k27_code, ...) under tinker_cookbook.renderers.get_renderer.
+# kimi_k27_code, ...) under training._vendor.tinker_cookbook_0_4_3.renderers.get_renderer.
 import training.renderer  # noqa: F401
-from tinker_cookbook.renderers import Renderer, TrainOnWhat, get_renderer
+from training.renderer import Renderer, TrainOnWhat, get_renderer
 from tinker_cookbook.tokenizer_utils import Tokenizer, get_tokenizer
 from training.renderer.verifier.utils.hf_parity import (
     compare_renderer_to_hf,
@@ -118,7 +118,7 @@ _QA_CASES = _selected_renderer_cases()
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers (ported from tinker_cookbook.renderers.renderers_test)
+# Shared helpers (ported from training._vendor.tinker_cookbook_0_4_3.renderers.renderers_test)
 # ---------------------------------------------------------------------------
 def _content_text(content: Any) -> str:
     """Join the text parts of message content, ignoring non-text parts.

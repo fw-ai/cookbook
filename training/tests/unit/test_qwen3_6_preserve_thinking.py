@@ -178,7 +178,7 @@ def _build_renderer_tokens(renderer_name: str, tokenizer) -> list[int]:
     # names (qwen3_6, qwen3_6_preserve_thinking, ...) in tinker_cookbook's
     # registry.
     import training.renderer  # noqa: F401  (registration side-effect)
-    from tinker_cookbook.renderers import get_renderer
+    from training.renderer import get_renderer
 
     from training.utils.supervised import normalize_messages
 
@@ -255,7 +255,7 @@ def test_preserve_thinking_renderer_has_extension_property() -> None:
     tokenizer = _load_tokenizer()
 
     import training.renderer  # noqa: F401
-    from tinker_cookbook.renderers import get_renderer
+    from training.renderer import get_renderer
 
     default_renderer = get_renderer("qwen3_6", tokenizer)
     preserve_renderer = get_renderer("qwen3_6_preserve_thinking", tokenizer)
@@ -349,7 +349,7 @@ def test_preserve_thinking_matches_hf_chat_template_byte_for_byte() -> None:
 def _build_renderer_tokens_for(messages, renderer_name: str, tokenizer) -> list[int]:
     """Render a custom message list via the named renderer."""
     import training.renderer  # noqa: F401  (registration side-effect)
-    from tinker_cookbook.renderers import get_renderer
+    from training.renderer import get_renderer
 
     from training.utils.supervised import normalize_messages
 

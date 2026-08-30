@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 from jinja2 import TemplateError
-from tinker_cookbook.renderers import ToolCall, TrainOnWhat, get_renderer
+from training.renderer import ToolCall, TrainOnWhat, get_renderer
 from transformers import AutoTokenizer
 
 import training.renderer._qwen3_split  # noqa: F401  (renderer registration)
@@ -459,27 +459,18 @@ def test_thinking_enablement_preserves_clear_history_semantics(
     enabled = get_renderer(enabled_renderer, tokenizer)
     disabled = get_renderer(disabled_renderer, tokenizer)
 
-    enabled_input, enabled_weights = enabled.build_supervised_example(
+    enabled_input, _ = enabled.build_supervised_example(
         messages,
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
-    disabled_input, disabled_weights = disabled.build_supervised_example(
+    disabled_input, _ = disabled.build_supervised_example(
         messages,
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
-    enabled_trained, enabled_masked = _weighted_text(
-        tokenizer, (enabled_input, enabled_weights)
-    )
-    disabled_trained, disabled_masked = _weighted_text(
-        tokenizer, (disabled_input, disabled_weights)
-    )
-    assert enabled_trained == disabled_trained.replace("<think>\n", "")
-    if has_enablement_preamble:
-        enabled_masked = enabled_masked.removeprefix(_QWEN38_XHIGH_SYSTEM)
-    assert enabled_masked.replace("<think>\n", "") == disabled_masked
     if not has_enablement_preamble:
-        # Thinking enablement changes only which think-prefill tokens carry
-        # loss; the rendered conversation remains byte-identical.
+        # Enablement changes the terminal generation suffix and think-boundary
+        # loss, not the bytes of existing conversation messages. Boundary
+        # weights are pinned separately in test_think_boundary_weights.py.
         assert list(enabled_input.to_ints()) == list(disabled_input.to_ints())
 
     enabled_text = tokenizer.decode(

@@ -41,8 +41,8 @@ import tinker
 import transformers
 
 import training.renderer  # noqa: F401  — registers the cookbook renderers
-from tinker_cookbook.renderers import get_registered_renderer_names, get_renderer
-from tinker_cookbook.renderers.base import TrainOnWhat
+from training.renderer import get_registered_renderer_names, get_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 from training.renderer.deepseek_v4 import _merge_tool_messages
 from training.renderer.message_weights import (
     _rendered_positions,
@@ -83,11 +83,19 @@ _EXTRA_TOKENIZERS = {
     "nemotron3_low_thinking": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nemotron3_preserve_thinking": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nemotron3_preserved": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+    "nemotron3_ultra": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+    "nemotron3_ultra_disable_thinking": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+    "nemotron3_ultra_interleaved": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+    "nemotron3_ultra_medium_thinking": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+    "nemotron3_ultra_preserve_thinking": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+    "nemotron3_ultra_preserved": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
     "gpt_oss_high_reasoning": "openai/gpt-oss-120b",
     "gpt_oss_no_sysprompt": "openai/gpt-oss-120b",
     "mistral": "mistralai/Ministral-3-3B-Instruct-2512",
     "glm5": "zai-org/GLM-5.1",
     "glm_moe_dsa": "zai-org/GLM-5.2",
+    "glm53_interleaved": "zai-org/GLM-5.3",
+    "glm53_preserve_thinking": "zai-org/GLM-5.3",
     "kimi_k25": "moonshotai/Kimi-K2.5",
     "kimi_k27_code": "moonshotai/Kimi-K2.7-Code",
 }

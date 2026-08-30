@@ -166,6 +166,31 @@ _CAPABILITIES: tuple[ThinkingTraceModelCapability, ...] = (
         ),
     ),
     ThinkingTraceModelCapability(
+        canonical_family="glm5.3",
+        aliases=frozenset(
+            {
+                "zai-org/glm-5.3",
+                "accounts/fireworks/models/glm-5p3",
+            }
+        ),
+        plans=(
+            # GLM-5.3 defaults clear_thinking=false, so preserved history is
+            # the model-native default.
+            _plan(
+                ThinkingTraceHistoryMode.PRESERVED,
+                "glm53_preserve_thinking",
+                is_default=True,
+                unrolls_multi_turn=False,
+            ),
+            _plan(
+                ThinkingTraceHistoryMode.INTERLEAVED,
+                "glm53_interleaved",
+                is_default=False,
+                unrolls_multi_turn=True,
+            ),
+        ),
+    ),
+    ThinkingTraceModelCapability(
         canonical_family="qwen3.5",
         aliases=frozenset(
             {
@@ -330,6 +355,33 @@ _CAPABILITIES: tuple[ThinkingTraceModelCapability, ...] = (
             _plan(
                 ThinkingTraceHistoryMode.PRESERVED,
                 "nemotron3_preserved",
+                is_default=False,
+                unrolls_multi_turn=False,
+            ),
+        ),
+    ),
+    ThinkingTraceModelCapability(
+        canonical_family="nemotron3-ultra",
+        aliases=frozenset(
+            {
+                # Ultra shares Super/Nano's tokenizer and
+                # truncate_history_thinking switch, but not the think wrapping:
+                # Super is ``<think>\\n{t}\\n</think>\\n{content}``;
+                # Ultra is ``<think>\\n{t}</think>{content}``.
+                "nvidia/nvidia-nemotron-3-ultra-550b-a55b-bf16",
+                "nvidia/nvidia-nemotron-3-ultra-550b-a55b-nvfp4",
+            }
+        ),
+        plans=(
+            _plan(
+                ThinkingTraceHistoryMode.INTERLEAVED,
+                "nemotron3_ultra_interleaved",
+                is_default=True,
+                unrolls_multi_turn=True,
+            ),
+            _plan(
+                ThinkingTraceHistoryMode.PRESERVED,
+                "nemotron3_ultra_preserved",
                 is_default=False,
                 unrolls_multi_turn=False,
             ),

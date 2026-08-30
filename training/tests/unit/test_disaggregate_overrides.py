@@ -51,8 +51,8 @@ import pytest
 import transformers
 
 import training.renderer  # noqa: F401  — registers Split overrides
-from tinker_cookbook.renderers import get_renderer
-from tinker_cookbook.renderers.base import Renderer, TrainOnWhat
+from training.renderer import get_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import Renderer, TrainOnWhat
 from training.utils.supervised import render_messages_to_datums
 
 # (registered name, HF model id, override class name).

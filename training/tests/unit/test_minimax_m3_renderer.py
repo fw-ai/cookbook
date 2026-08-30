@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 import transformers
-from tinker_cookbook.renderers.base import ParseTermination, ToolCall, TrainOnWhat
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import ParseTermination, ToolCall, TrainOnWhat
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 
 from training.renderer.minimax_m3 import MiniMaxM3Renderer

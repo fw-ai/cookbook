@@ -38,7 +38,7 @@ from fireworks.training.sdk.training_spec import (
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
-from tinker_cookbook.renderers import get_text_content
+from training.renderer import get_text_content
 
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,

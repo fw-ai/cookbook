@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 import transformers
-from tinker_cookbook.renderers.base import Message, ParseTermination, TrainOnWhat
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, ParseTermination, TrainOnWhat
 
 from training.renderer.qwen2_5 import (
     PRODUCTION_EOS_TOKEN,

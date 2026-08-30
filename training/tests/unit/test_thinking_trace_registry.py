@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 import training.renderer  # noqa: F401  (installs local registrations)
-from tinker_cookbook.renderers import get_renderer
+from training.renderer import get_renderer
 from training.renderer.thinking_trace import (
     ThinkingTraceHistoryMode,
     get_thinking_trace_model_capability,
@@ -62,6 +62,13 @@ class _StringTokenizer:
             [True, False],
         ),
         (
+            "zai-org/GLM-5.3",
+            "glm5.3",
+            ["preserved", "interleaved"],
+            "glm53_preserve_thinking",
+            [False, True],
+        ),
+        (
             "Qwen/Qwen3.5-35B-A3B",
             "qwen3.5",
             ["interleaved"],
@@ -102,6 +109,13 @@ class _StringTokenizer:
             ["preserved"],
             "kimi_k27_code_preserved",
             [False],
+        ),
+        (
+            "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+            "nemotron3-ultra",
+            ["interleaved", "preserved"],
+            "nemotron3_ultra_interleaved",
+            [True, False],
         ),
     ],
 )
@@ -158,6 +172,7 @@ def test_legacy_concrete_names_are_not_rebound_to_corrected_adapters() -> None:
         ),
         "glm5": "GLM5Renderer",
         "glm_moe_dsa": "GLMMoeDsaRenderer",
+        "glm53": "GLM53Renderer",
         "kimi_k27_code": "KimiK27CodeRenderer",
     }
 
@@ -179,6 +194,8 @@ def test_legacy_concrete_names_are_not_rebound_to_corrected_adapters() -> None:
         )._honor_source_reasoning_fields
         is True
     )
+    assert get_renderer("glm53", tokenizer)._clear_thinking is False
+    assert get_renderer("glm53", tokenizer)._honor_source_reasoning_fields is True
 
 
 def test_registered_aliases_are_exact_and_case_insensitive() -> None:
@@ -193,6 +210,11 @@ def test_registered_aliases_are_exact_and_case_insensitive() -> None:
             "accounts/fireworks/models/qwen3p8-27b"
         ).canonical_family
         == "qwen3.8"
+    )
+    assert (
+        get_thinking_trace_model_capability("accounts/fireworks/models/glm-5p3")
+        .canonical_family
+        == "glm5.3"
     )
 
     # The legacy default resolver may understand custom/fine-tuned names, but
@@ -321,8 +343,13 @@ def test_public_semantics_select_vendor_specific_renderer_adapters() -> None:
         "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16",
         thinking_trace_history_mode="preserved",
     )
+    ultra = resolve_renderer_plan(
+        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+        thinking_trace_history_mode="preserved",
+    )
     assert nemotron_interleaved.renderer_name == "nemotron3_interleaved"
     assert nemotron.renderer_name == "nemotron3_preserved"
+    assert ultra.renderer_name == "nemotron3_ultra_preserved"
 
     qwen38_interleaved = resolve_renderer_plan(
         "Qwen/Qwen3.8-27B",

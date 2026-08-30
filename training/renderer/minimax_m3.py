@@ -10,8 +10,8 @@ from typing import Any, Literal
 
 import tinker
 import torch
-from tinker_cookbook.renderers import register_renderer
-from tinker_cookbook.renderers.base import (
+from training.renderer import register_renderer
+from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     ParseTermination,
     RenderContext,
