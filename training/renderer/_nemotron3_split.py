@@ -26,8 +26,8 @@ Nemotron-3 inherits Qwen3.5's assistant split, which puts the prefilled
 ``<think>`` in the trainable span and the model-generated ``</think>`` in the
 masked header. Every thinking-enabled variant therefore mixes in
 :class:`training.renderer._think_prefill.ThinkPrefillWeightsMixin`.
-``nemotron3_disable_thinking`` does not: its generation suffix prefills the
-whole ``<think></think>`` wrapper, so masking both markers is already right.
+Disable-thinking variants do not: their generation suffix prefills the whole
+``<think></think>`` wrapper, so masking both markers is already correct.
 """
 
 from __future__ import annotations
@@ -38,6 +38,9 @@ from tinker_cookbook.renderers.nemotron3 import (
     Nemotron3DisableThinkingRenderer,
     Nemotron3LowThinkingRenderer,
     Nemotron3Renderer,
+    Nemotron3UltraDisableThinkingRenderer,
+    Nemotron3UltraMediumThinkingRenderer,
+    Nemotron3UltraRenderer,
 )
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
@@ -76,6 +79,32 @@ class Nemotron3DisableThinkingSplitRenderer(
     Nemotron3DisableThinkingRenderer,
 ):
     pass
+
+
+class Nemotron3UltraSplitRenderer(
+    ThinkPrefillWeightsMixin,
+    DisaggregateMultiTurnMixin,
+    _UntrainedSynthesizedSystemMixin,
+    Nemotron3UltraRenderer,
+):
+    """Ultra full reasoning with Ultra-specific think-block separators."""
+
+
+class Nemotron3UltraMediumThinkingSplitRenderer(
+    ThinkPrefillWeightsMixin,
+    DisaggregateMultiTurnMixin,
+    _UntrainedSynthesizedSystemMixin,
+    Nemotron3UltraMediumThinkingRenderer,
+):
+    """Ultra medium-effort reasoning with corrected think-boundary weights."""
+
+
+class Nemotron3UltraDisableThinkingSplitRenderer(
+    DisaggregateMultiTurnMixin,
+    _UntrainedSynthesizedSystemMixin,
+    Nemotron3UltraDisableThinkingRenderer,
+):
+    """Ultra non-thinking mode; the complete empty wrapper stays masked."""
 
 
 class _Nemotron3PreserveThinkingMixin:
@@ -137,6 +166,18 @@ register_renderer(
 register_renderer(
     "nemotron3_disable_thinking",
     lambda tok, ip=None: Nemotron3DisableThinkingSplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_ultra",
+    lambda tok, ip=None: Nemotron3UltraSplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_ultra_medium_thinking",
+    lambda tok, ip=None: Nemotron3UltraMediumThinkingSplitRenderer(tok),
+)
+register_renderer(
+    "nemotron3_ultra_disable_thinking",
+    lambda tok, ip=None: Nemotron3UltraDisableThinkingSplitRenderer(tok),
 )
 register_renderer(
     "nemotron3_preserve_thinking",

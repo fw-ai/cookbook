@@ -16,6 +16,7 @@ import training.renderer  # noqa: F401  (registers local renderers)
 from training.utils.supervised import normalize_messages, render_messages_to_datums
 
 _NEMOTRON = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+_NEMOTRON_ULTRA = "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
 _RENDERERS = [
     ("qwen3_5", "Qwen/Qwen3.5-9B"),
     ("qwen3_5_interleaved", "Qwen/Qwen3.5-9B"),
@@ -30,6 +31,8 @@ _RENDERERS = [
     ("nemotron3_low_thinking", _NEMOTRON),
     ("nemotron3_preserve_thinking", _NEMOTRON),
     ("nemotron3_preserved", _NEMOTRON),
+    ("nemotron3_ultra", _NEMOTRON_ULTRA),
+    ("nemotron3_ultra_medium_thinking", _NEMOTRON_ULTRA),
 ]
 _PROMPT = [
     {"role": "system", "content": "Be brief."},
@@ -92,6 +95,7 @@ _DISABLE_THINKING = [
     ("qwen3_5_disable_thinking", "Qwen/Qwen3.5-9B"),
     ("qwen3_6_disable_thinking", "Qwen/Qwen3.6-27B"),
     ("nemotron3_disable_thinking", _NEMOTRON),
+    ("nemotron3_ultra_disable_thinking", _NEMOTRON_ULTRA),
 ]
 
 
@@ -134,6 +138,12 @@ _UPSTREAM_PARITY = [
         _NEMOTRON,
         "tinker_cookbook.renderers.nemotron3",
         "Nemotron3Renderer",
+    ),
+    (
+        "nemotron3_ultra",
+        _NEMOTRON_ULTRA,
+        "tinker_cookbook.renderers.nemotron3",
+        "Nemotron3UltraRenderer",
     ),
 ]
 
@@ -180,3 +190,88 @@ def test_preserved_multi_turn_reweights_every_assistant(
     tokenizer, datum = _render(renderer_name, tokenizer_model, messages)
     assert _weights_for(tokenizer, datum, "<think>") == [0.0, 0.0]
     assert _weights_for(tokenizer, datum, "</think>") == [1.0, 1.0]
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    ("renderer_name", "tokenizer_model"),
+    [
+        ("qwen3_6", "Qwen/Qwen3.6-27B"),
+        ("nemotron3_ultra", _NEMOTRON_ULTRA),
+    ],
+)
+def test_supervised_prefix_matches_generation_prompt(renderer_name, tokenizer_model):
+    """The complete generation prefill is an identical zero-loss prefix."""
+    tokenizer = _load_tokenizer(tokenizer_model)
+    renderer = get_renderer(renderer_name, tokenizer)
+    prompt = list(
+        renderer.build_generation_prompt(
+            normalize_messages(_PROMPT), role="assistant"
+        ).to_ints()
+    )
+    model_input, weights = renderer.build_supervised_example(
+        normalize_messages(_WITH_REASONING),
+        train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
+    )
+    tokens = list(model_input.to_ints())
+    weight_values = [float(weight) for weight in weights.tolist()]
+    assert tokens[: len(prompt)] == prompt
+    assert weight_values[: len(prompt)] == [0.0] * len(prompt)
+    [open_token] = tokenizer.encode("<think>", add_special_tokens=False)
+    [close_token] = tokenizer.encode("</think>", add_special_tokens=False)
+    assert open_token in prompt
+    assert close_token not in prompt
+    assert weight_values[tokens.index(close_token)] == 1.0
+
+
+@pytest.mark.timeout(180)
+@pytest.mark.parametrize(
+    ("renderer_name", "tokenizer_model"),
+    [
+        ("qwen3_6", "Qwen/Qwen3.6-27B"),
+        ("nemotron3_ultra", _NEMOTRON_ULTRA),
+    ],
+)
+def test_all_tokens_keeps_both_think_markers_trainable(renderer_name, tokenizer_model):
+    """ALL_TOKENS intentionally trains headers, including the prefilled opener."""
+    tokenizer = _load_tokenizer(tokenizer_model)
+    renderer = get_renderer(renderer_name, tokenizer)
+    [datum] = render_messages_to_datums(
+        _WITH_REASONING,
+        renderer=renderer,
+        train_on_what=TrainOnWhat.ALL_TOKENS,
+    )
+    assert _weights_for(tokenizer, datum, "<think>") == [1.0]
+    assert _weights_for(tokenizer, datum, "</think>") == [1.0]
+
+
+@pytest.mark.timeout(180)
+def test_ultra_tool_call_turn_uses_correct_think_boundary_weights():
+    """Thinking-only tool-call turns use the same prefill boundary."""
+    tokenizer = _load_tokenizer(_NEMOTRON_ULTRA)
+    renderer = get_renderer("nemotron3_ultra", tokenizer)
+    messages = [
+        *_PROMPT,
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "Inspect the repository before editing.",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": '{"file_path": "README.md"}',
+                    },
+                }
+            ],
+        },
+    ]
+    [datum] = render_messages_to_datums(
+        messages,
+        renderer=renderer,
+        train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
+    )
+    assert _weights_for(tokenizer, datum, "<think>") == [0.0]
+    assert _weights_for(tokenizer, datum, "</think>") == [1.0]

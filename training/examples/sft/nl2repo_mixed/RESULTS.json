@@ -1,0 +1,108 @@
+{
+  "schema": "nl2repo-mixed-sft-result/v1",
+  "status": "negative_ablation_do_not_promote",
+  "dataset": {
+    "profile": "wentao-v1",
+    "selected_tasks": 268,
+    "selected_trajectories": 692,
+    "split_rows": {
+      "train": 10215,
+      "val": 168,
+      "test": 145
+    },
+    "trial_quality_labels": {
+      "full_success": 260,
+      "partial_success": 432
+    },
+    "partial_train_window_share": 0.6386686245717083,
+    "canonical_semantic_equivalence_to_historical_rendered_set": true,
+    "historical_training_manifest_sha256": "5b60c966103dc0fff247857f675a9f60f5faf1fdff76167c57727538293a36d7",
+    "canonical_curation_artifact_sha256": {
+      "train.jsonl": "4940da51f3a8dbe756993468cec1a4bf6aa1c18a729fb63e6e36c4e5b8f4a299",
+      "val.jsonl": "92ea8bd38474df14b92dd798888e3c1f9d9b3d2b3a7db90ba765f0d7e3cd8d8c",
+      "test.jsonl": "929aa7dec19483019dcb5305d825593058f2dcb0398b0e686c0d582f3faaa1b5",
+      "manifest.jsonl": "97e698e019fb8d1c251f7340df3d97d682628436f57ae387f6875e4be8ce7729"
+    }
+  },
+  "training": {
+    "job_id": "training-api-service-1c9623db",
+    "base_model": "accounts/fireworks/models/nemotron-3-ultra-bf16",
+    "result_model": "accounts/valkyrie/models/nl2repo-nemotron-ultra-mixed-partial80-lr3e7-20260828",
+    "result_model_usage": "separately promoted for evaluation only; not recommended for production",
+    "cookbook_base_commit": "76821fa1ded720d903029381b37d3c3ea7ce9ddd",
+    "steps": 10215,
+    "first_100_mean_ce": 0.44971343787959744,
+    "last_100_mean_ce": 0.37753814880952347,
+    "final_eval_ce": 0.35066258428313607,
+    "final_eval_ppl": 1.4200081120145234,
+    "renderer_source_sha256": {
+      "_think_prefill.py": "c33d8d11b7a896f3f895ec3dce7e82c184ecfd235258d0b80cadf25fa2912c10",
+      "_qwen3_split.py": "1ef9c7b4332c33031fe7903bd5ef107e84989fc3f51895f3261b164a15b550b4",
+      "_nemotron3_split.py": "f1390ba1870d66a20308bde146102e63c6be21a6cf9b2e0ab1fb6dc92e0e01dc"
+    }
+  },
+  "evaluation": {
+    "benchmark": {
+      "name": "DeepSWE v1.1",
+      "tasks": 113,
+      "agent": "mini-swe-agent 2.4.6",
+      "temperature": 0.0,
+      "seed": 0,
+      "max_output_tokens": 32768
+    },
+    "base": {
+      "run_id": "4a3fc34a-ef57-4ef0-beb5-490647278a3f",
+      "model": "accounts/fireworks/models/nemotron-3-ultra-bf16",
+      "passes": 5,
+      "errors": 4,
+      "f2p": 0.49317846093321027,
+      "p2p": 0.9443573426801666,
+      "partial": 0.8086101566854218
+    },
+    "mixed_sft": {
+      "run_id": "c8610655-5c6a-4753-adf4-82e947049feb",
+      "model": "accounts/valkyrie/models/nl2repo-nemotron-ultra-mixed-partial80-lr3e7-20260828",
+      "deployment": "accounts/valkyrie/deployments/nl2repo-ultra-mixed-partial80-deepswe-20260828",
+      "started_at": "2026-08-28T20:53:16.184122",
+      "finished_at": "2026-08-29T23:51:59.150249",
+      "passes": 2,
+      "errors": 20,
+      "error_types": {
+        "AgentTimeoutError": 13,
+        "NonZeroAgentExitCodeError": 7
+      },
+      "f2p": 0.4264511190545348,
+      "p2p": 0.9432188177748073,
+      "partial": 0.7799453304214861
+    },
+    "paired_valid": {
+      "tasks": 91,
+      "base_passes": 5,
+      "mixed_sft_passes": 2,
+      "transitions": {
+        "0_to_0": 84,
+        "0_to_1": 2,
+        "1_to_0": 5
+      }
+    }
+  },
+  "evidence_sha256": {
+    "training_pipeline_log": "872898cf8cb75ba867f5e3220335bcf540cdcb3e6148e0e576d2a1af75041046",
+    "resolved_training_config": "ab92643f5f60c71cee5c6c0f987fec487e057907b8a6c05fb287f52a6bbc36f8",
+    "renderer_validation_report": "93f149a8728d594239b4afcb999581daace4ec6dcf0362c07b406e46b8584cd1",
+    "training_metrics_analysis": "2a5b6af7668f68b0678a7ea85794d2671088c1c2c30fb3764c15cd73d6fcafdc",
+    "base_deepswe_result": "f23e1d28fd49f6cbd896d804ead74e78ac62b17dc9604b445f6e25ef7ce8b23a",
+    "mixed_sft_deepswe_result": "a9a4e9363316b56f4d61fd6a74338dcbda1898d97e910d6e12154c1dc5e3c6da",
+    "paired_analysis": "55693917860ef238cfc2648f3088a05efc6366f516427c82dc0fafe5a0de1044",
+    "paired_analysis_script": "a1a674c52bff3302a778d99af61f01950d9fdbd63cece224d40e85beaa12348a",
+    "canonical_profile_audit": "70b97d3dd47429ac6a40e8b2cb29cf6bb03b663437c5d4df2132317bff93194a",
+    "canonical_materializer": "d3b6a9474437ee7172edba471eb4b32d80cce17d05e9fddd783c66673615e4e9",
+    "canonical_semantic_comparison": "8733da24668945c4f68457dd93aeee151676edd6b57c58646388238191d88714",
+    "canonical_semantic_comparison_script": "324dcad499bb8d0fa708ff3149acdbcc3905573a49d5271d5bfd9ce01b502aa5"
+  },
+  "limitations": [
+    "Evidence hashes bind retained internal artifacts; the full training and evaluation logs are not committed.",
+    "DeepSWE had 4 Base and 20 Mixed SFT infrastructure errors, so paired-valid results are reported separately.",
+    "The four-task validation split was adequate for numerical checks but not for predicting repository-task transfer."
+  ]
+}

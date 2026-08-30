@@ -83,6 +83,13 @@ _EXTRA_TOKENIZERS = {
     "nemotron3_low_thinking": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nemotron3_preserve_thinking": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nemotron3_preserved": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+    "nemotron3_ultra": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+    "nemotron3_ultra_disable_thinking": (
+        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
+    ),
+    "nemotron3_ultra_medium_thinking": (
+        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
+    ),
     "gpt_oss_high_reasoning": "openai/gpt-oss-120b",
     "gpt_oss_no_sysprompt": "openai/gpt-oss-120b",
     "mistral": "mistralai/Ministral-3-3B-Instruct-2512",

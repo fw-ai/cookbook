@@ -216,6 +216,7 @@ recipes/                                Training loop scripts (fork these)
 recipes/experiment/                     Experimental recipe variants, including async serverless RL
 utils/                                  Shared config, data loading, loss functions, metrics
 examples/sft/                           Worked example: SFT getting started
+examples/sft/nl2repo_mixed/             Nemotron Ultra mixed NL2Repo SFT ablation
 examples/embedding/                     Worked example: embedding (retrieval) fine-tuning
 examples/dpo/                           Worked example: DPO
 examples/orpo/ifeval/                   Worked example: IFEval with ORPO

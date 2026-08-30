@@ -86,6 +86,7 @@ EXAMPLE_MODULES_WITH_ENV = [
 
 EXAMPLE_MODULES = [
     "training.examples.rl.deepmath.prepare_data",
+    "training.examples.sft.nl2repo_mixed.train",
     "training.examples.rl.single_turn_token_in.rollout",
     "training.examples.rl.multi_turn_message_in.rollout",
     "training.examples.tools.promote_checkpoint",
