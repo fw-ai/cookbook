@@ -491,6 +491,7 @@ def main(
                     raw_inference_logprobs,
                 ) = combine_prompt_groups(prompt_groups, include_raw=True)
 
+                precomputed_forward = None
                 if cfg.anchor_logp == "old_policy":
                     with elapsed_timer("old_policy_forward"):
                         old_policy_result = policy.forward(data, "cross_entropy")
@@ -498,6 +499,7 @@ def main(
                             output["logprobs"].data
                             for output in old_policy_result.loss_fn_outputs
                         ]
+                        precomputed_forward = old_policy_result
                 else:
                     if len(rollout_logprobs) != len(data) or any(
                         not row for row in rollout_logprobs
@@ -527,6 +529,10 @@ def main(
                             tis_config=cfg.tis,
                             raw_inf_logprobs=raw_inference_logprobs,
                         ),
+                        precomputed_forward=precomputed_forward,
+                    )
+                    fwd_bwd_result.metrics["custom_forward_reused"] = float(
+                        precomputed_forward is not None
                     )
 
                 # 3. Exactly one optimizer mutation.

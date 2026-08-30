@@ -237,6 +237,27 @@ def test_forward_backward_custom_default_path_omits_embedding_kwargs():
     assert inner.calls == [("forward_backward_custom", "data", "loss-fn", {})]
 
 
+def test_forward_backward_custom_forwards_precomputed_result():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+    precomputed = object()
+
+    client.forward_backward_custom(
+        "data",
+        "loss-fn",
+        precomputed_forward=precomputed,
+    )
+
+    assert inner.calls == [
+        (
+            "forward_backward_custom",
+            "data",
+            "loss-fn",
+            {"precomputed_forward": precomputed},
+        )
+    ]
+
+
 def test_forward_backward_custom_embedding_path_forwards_kwargs():
     inner = _FakeInnerClient()
     client = _make_client(inner)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import tinker
 from tinker.lib.chunked_fwdbwd_helpers import combine_fwd_bwd_output_results
 
@@ -235,6 +236,30 @@ class TestFwdBwdResultAveraging:
         assert metrics["train/loss"] == 2.0
         assert metrics["train/inference_k3"] == 0.25
         assert not any(key.startswith("kld/") for key in metrics)
+
+    def test_inference_drift_preserves_historical_chunk_mean(self):
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=[
+                self._fake_fwd_bwd(
+                    inference_k1=1.0,
+                    inference_k3=2.0,
+                    raw_inference_logprob_coverage=1.0,
+                ),
+                self._fake_fwd_bwd(
+                    inference_k1=3.0,
+                    inference_k3=4.0,
+                    raw_inference_logprob_coverage=0.5,
+                ),
+            ],
+            optim_result=None,
+            n_accum=2,
+            timing_metrics={},
+        )
+
+        assert metrics["train/inference_k1"] == pytest.approx(2.0)
+        assert metrics["train/inference_k3"] == pytest.approx(3.0)
+        assert metrics["train/raw_inference_logprob_coverage"] == pytest.approx(0.75)
 
     def test_single_fwd_bwd_result_is_reported_directly(self):
         """Report a single forward/backward result without changing its metrics."""

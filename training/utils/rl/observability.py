@@ -87,16 +87,10 @@ def compute_inference_observability_metrics(
 
     if expected_active_tokens == 0 or compared_active_tokens == 0:
         return {}
-    metrics = {
+    return {
         "raw_inference_logprob_coverage": (
             compared_active_tokens / expected_active_tokens
         ),
+        "inference_k1": total_k1 / raw_inf_num_samples,
+        "inference_k3": total_k3 / raw_inf_num_samples,
     }
-    if raw_inf_num_samples > 0:
-        metrics.update(
-            {
-                "inference_k1": total_k1 / raw_inf_num_samples,
-                "inference_k3": total_k3 / raw_inf_num_samples,
-            }
-        )
-    return metrics

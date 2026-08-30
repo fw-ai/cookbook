@@ -99,6 +99,9 @@ def test_main_has_direct_client_grpo_customization_boundary() -> None:
     assert "make_grpo_loss_fn(" in source
     assert "policy.forward_backward_custom(" in source
     assert 'cfg.anchor_logp == "old_policy"' in source
+    assert "precomputed_forward = old_policy_fwd" in source
+    assert "precomputed_forward=precomputed_forward" in source
+    assert 'metrics["custom_forward_reused"]' in source
     assert "To switch to built-in PPO or another loss" in source
     assert "adding dispatch" in source
     assert "skills/fireworks-training/references/rl-custom-loss.md" in source

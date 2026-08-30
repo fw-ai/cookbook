@@ -71,6 +71,7 @@ from training.utils.rl import PromptGroup
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
+    OverlappedEvaluation,
     TrainingChunk,
     RolloutRow,
 )
@@ -539,27 +540,33 @@ def main(
         rollout_fn = rollout_fn_factory(rollout_setup)
         rollout_context_param_names = _rollout_fn_context_param_names(rollout_fn)
         evaluation_rollout_fn = make_evaluation_rollout_fn(rollout_fn)
-        last_evaluation_step: int | None = None
 
-        async def evaluate(step: int, *, force: bool = False) -> None:
-            nonlocal last_evaluation_step
+        async def run_evaluation(step: int) -> None:
             if evaluation_fn is None:
                 return
-            if step == last_evaluation_step:
-                return
-            if not force and step % evaluation_interval:
-                return
             with wall_timer() as span:
-                metrics = await evaluation_fn(step, evaluation_rollout_fn)
-            last_evaluation_step = step
+                try:
+                    metrics = await evaluation_fn(step, evaluation_rollout_fn)
+                except Exception:
+                    logger.exception("evaluation failed at policy step %d", step)
+                    metrics = None
+                    failed = 1.0
+                else:
+                    failed = 0.0
             log_metrics(
                 {
                     "rollout/step": step,
                     "eval/wall_time": span.elapsed,
                     **(metrics or {}),
+                    "eval/failed": failed,
                 },
                 step=step,
             )
+
+        evaluations = OverlappedEvaluation(
+            run_evaluation if evaluation_fn is not None else None,
+            interval=evaluation_interval,
+        )
 
         def make_row_requests():
             rows_per_epoch = len(rows)
@@ -627,6 +634,7 @@ def main(
             inf_lp,
             raw_inf_lp,
             old_policy_logprobs,
+            precomputed_forward,
         ):
             """Run client-side GRPO with PPO clipping, TIS, and optional reference KL.
 
@@ -648,6 +656,7 @@ def main(
                     tis_config=cfg.tis,
                     raw_inf_logprobs=raw_inf_lp,
                 ),
+                precomputed_forward=precomputed_forward,
             )
 
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
@@ -661,6 +670,7 @@ def main(
                 prompt_groups,
                 include_raw=True,
             )
+            precomputed_forward = None
             if cfg.anchor_logp == "old_policy":
                 with elapsed_timer("old_policy_forward"):
                     old_policy_fwd = policy.forward(data, "cross_entropy")
@@ -668,6 +678,7 @@ def main(
                         old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
                         for i in range(len(data))
                     ]
+                precomputed_forward = old_policy_fwd
             else:
                 if len(inf_lp) != len(data):
                     raise ValueError(
@@ -689,6 +700,10 @@ def main(
                     inf_lp,
                     raw_inf_lp,
                     old_policy_logprobs,
+                    precomputed_forward,
+                )
+                fwd_bwd_result.metrics["custom_forward_reused"] = float(
+                    precomputed_forward is not None
                 )
             return {
                 "prompt_groups": prompt_groups,
@@ -750,9 +765,9 @@ def main(
                 resolved_rows_offset=prior_rows_consumed,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
             )
-            await evaluate(step_offset, force=True)
             async with coordinator:
                 telemetry.start(coordinator.snapshot)
+                evaluations.start(step_offset, force=True)
                 try:
                     while (batch := await coordinator.next_batch()) is not None:
                         chunk_outputs: list[dict[str, Any]] = []
@@ -775,6 +790,18 @@ def main(
                             batch.batch_id,
                             optimizer_batch=batch,
                         )
+
+                        evaluation_step = evaluations.active_step
+                        if evaluation_step is not None:
+                            with wall_timer() as span:
+                                await evaluations.join()
+                            log_metrics(
+                                {
+                                    "rollout/step": evaluation_step,
+                                    "eval/weight_sync_wait_time": span.elapsed,
+                                },
+                                step=evaluation_step,
+                            )
 
                         # A producer failure here can only affect a future batch.
                         # Finish this optimizer's hotload and publication so trainer
@@ -804,7 +831,7 @@ def main(
                             weight_update_time=sync_wall_time,
                             learning_rate=optimizer["learning_rate"],
                         )
-                        await evaluate(batch.batch_id)
+                        evaluations.start(batch.batch_id)
 
                         rollouts_completed = batch.batch_id - step_offset
                         interval = cfg.dcp_save_interval
@@ -835,8 +862,11 @@ def main(
                                     batch.batch_id,
                                     error,
                                 )
-                    await evaluate(coordinator.global_step, force=True)
+                    await evaluations.join()
+                    evaluations.start(coordinator.global_step, force=True)
+                    await evaluations.join()
                 finally:
+                    await evaluations.cancel()
                     await telemetry.aclose()
 
                 return coordinator.global_step, telemetry.final_stats()

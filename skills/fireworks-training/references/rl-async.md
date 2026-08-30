@@ -118,6 +118,29 @@ aggregation. The recipe owns scheduling and supplies the evaluation-scoped
 rollout wrapper. Evaluation does not enter the producer, assemble prompt
 groups, compute advantages, or mutate optimizer state.
 
+Evaluation starts immediately after its policy version is published and shares
+the recipe-owned sampler with rollout production. The initial evaluation starts
+with the coordinator rather than delaying the first rollout cohort. Evaluation
+may overlap rollout production and trainer work for the next optimizer batch,
+but it must finish before that batch hotloads a newer sampler snapshot. This
+weight-sync barrier keeps every multi-turn evaluation on one published policy
+version. Evaluation stays off the critical path only when it finishes before
+the barrier; a slower callback blocks weight publication for its remaining
+tail, reported as `eval/weight_sync_wait_time`.
+
+`max_concurrency_rollout_sample` limits training rollout calls owned by the
+producer; evaluation fan-out does not consume those slots. Both paths share the
+sampler's adaptive inference-request controller, so size deployment capacity
+for their combined peak and let the evaluation callback bound its own fan-out.
+Do not add evaluation calls to the producer merely to reuse its admission
+budget: evaluation remains outside training groups and durability accounting.
+
+Evaluation is fail-open. If the callback raises, the recipe logs the exception,
+emits `eval/failed=1`, and continues training; cancellation still propagates
+during shutdown. Keep the async callback cooperative. Send CPU-heavy scoring or
+blocking verifier work through `asyncio.to_thread(...)` so it does not stall
+rollout completion, admission, or refill on the shared event loop.
+
 ## Architecture and ownership
 
 The scheduler is split by one owner per concern:
@@ -127,6 +150,7 @@ The scheduler is split by one owner per concern:
 | `RolloutProducer` | In-flight rollout tasks, completion-triggered refill, row-atomic admission, group assembly, failure policy, and the durable row cursor |
 | `OptimizerBatch` | One optimizer batch, fixed balanced chunk targets, accepted rows, and the async queue of ready `TrainingChunk`s |
 | `AsyncRLCoordinator` | The producer/batch handoff, one serialized trainer worker, failure boundaries, and publication |
+| `OverlappedEvaluation` | One version-scoped evaluation task, interval/deduplication, joining, and cancellation |
 | `AsyncRLTelemetry` | Rate-limited producer snapshots, completed-batch metric reduction, and reporting |
 | `async_rl_loop.main` | Sampler and service lifecycle plus visible algorithm phases: reference/old-policy forwards, forward/backward, optimizer, hotload, telemetry handoff, and checkpoints |
 
@@ -243,9 +267,12 @@ For each optimizer batch:
    chunk. Later chunks can queue while the current chunk trains.
 3. Each chunk runs reference/old-policy work and forward/backward.
 4. After the final chunk, the recipe performs one optimizer step.
-5. The recipe saves and hotloads sampler weights.
-6. `coordinator.publish(batch)` advances the policy version, commits accepted
+5. The recipe joins any evaluation of the current sampler version.
+6. The recipe saves and hotloads sampler weights.
+7. `coordinator.publish(batch)` advances the policy version, commits accepted
    rows to the durable cursor, records metrics, and wakes the producer.
+8. If the published step is an evaluation step, its evaluation starts in the
+   background alongside newly admitted rollouts.
 
 The recipe performs an unconditional initial sampler sync and one sync per
 optimizer batch. It has no `weight_sync_interval` or conditional initial-sync

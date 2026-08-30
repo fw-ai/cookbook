@@ -176,6 +176,7 @@ class ReconnectableClient:
         *,
         output: str = "logprobs",
         pooling: str = "mean",
+        precomputed_forward=None,
     ):
         """Client-side custom loss over a single forward.
 
@@ -187,14 +188,22 @@ class ReconnectableClient:
             cosine-similarity matrix.
 
         ``pooling`` only applies to the embedding outputs ("mean" or "last").
+        ``precomputed_forward`` skips the custom-loss forward when the caller
+        already has a compatible result for the same data and policy version.
         """
+        kwargs = {}
+        if precomputed_forward is not None:
+            kwargs["precomputed_forward"] = precomputed_forward
         if output == _DEFAULT_FBC_OUTPUT and pooling == _DEFAULT_FBC_POOLING:
-            # Preserve the pre-embedding call shape so older pinned SDKs and
-            # every existing SFT/ORPO/DPO recipe keep working.
-            fb = self._client.forward_backward_custom(data, loss_fn)
+            # Keep the default logprob call free of embedding-only arguments.
+            fb = self._client.forward_backward_custom(data, loss_fn, **kwargs)
         else:
             fb = self._client.forward_backward_custom(
-                data, loss_fn, output=output, pooling=pooling,
+                data,
+                loss_fn,
+                output=output,
+                pooling=pooling,
+                **kwargs,
             )
         return fb.result(timeout=self._default_timeout)
 

@@ -28,6 +28,7 @@ policy.forward_backward_custom(
         eps_clip_high=cfg.eps_clip_high,
         tis_config=cfg.tis,
     ),
+    precomputed_forward=old_policy_result,
 )
 ```
 
@@ -38,6 +39,19 @@ Both recipes default to `anchor_logp="old_policy"`: snapshot trainer logprobs fo
 PPO anchor and compute TIS against rollout behavior logprobs. Setting
 `anchor_logp="rollout"` skips the snapshot, anchors PPO directly on rollout
 logprobs, and makes the TIS ratio identity.
+
+The sync, dedicated async, and serverless async client-loss recipes reuse the
+old-policy forward result to construct the custom-loss gradients. The trainer
+still performs the differentiable forward/backward recomputation; only the
+duplicate standalone custom-loss forward is removed. Because the reused
+old-policy logprobs are exactly the PPO anchor, this makes
+`train/ppo_ratio_mean=1` and `train/ppo_clip_frac=0` for that update instead of
+values differing from identity only by a redundant forward's numerical noise.
+
+This is only a compute-path optimization. Train/inference K1 and K3 retain
+their historical definition: mean active-token drift within each sequence,
+mean across sequences within a trainer chunk, then mean across reported chunks
+at the optimizer step.
 
 ## Switching or adding a loss
 

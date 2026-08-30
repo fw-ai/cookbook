@@ -267,6 +267,7 @@ uses its own `producer/event` axis.
 | `rollout/history_wipes`, `rollout/append_token_mismatches` | Total history wipes and exact-token ancestry splits in trained logical runs. Split segments retain the same reward, group member, and advantage. |
 | `train/local_input_sequences:sum` | Trainer-reported physical input sequences, summed over forward/backward chunks. This counts packed segments, not logical trajectories. |
 | `train/inference_k1`, `train/inference_k3` | Client-loss observability over loss-masked tokens. For `d = log p_train - log p_raw_inference`, these are the per-sequence means of `d` and `exp(d) - d - 1`, averaged across sequences. They do not affect the loss. |
+| `train/custom_forward_reused` | `1` when the old-policy forward also supplies the custom-loss input, avoiding a duplicate standalone forward; otherwise `0`. This optimization does not change K1/K3 reduction semantics. |
 | `producer/*` | Coordinator counters and capacity gauges sampled while rollout production is active. |
 
 Training writes a final model-and-optimizer DCP checkpoint, sampler snapshot,

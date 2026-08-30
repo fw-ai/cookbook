@@ -126,11 +126,19 @@ utilization.
 | `perf/step_samples_per_s` / `perf/step_tokens_per_s` | Optimizer-update cadence computed with `perf/step_time`. These are not raw sampler throughput. |
 
 Post-publication evaluation and checkpoint records expose `eval/wall_time` and
-`checkpoint/wall_time` on the step that requested the operation. They
-contribute to the next publication interval's `perf/step_time`; the initial
-forced evaluation runs before the coordinator and is the exception. Phase
-metrics can overlap the broad `perf/train_wait_time` remainder, so do not add
-every metric in the table and expect the sum to equal `perf/step_time`.
+`checkpoint/wall_time` on the step that requested the operation. Evaluation
+overlaps rollout production and trainer work for the next batch. Before the
+next sampler hotload, `eval/weight_sync_wait_time` records only the remaining
+evaluation tail that the loop had to join; an evaluation that finishes during
+trainer work therefore has a near-zero wait. Checkpoint work and any remaining
+evaluation tail contribute to the next publication interval's
+`perf/step_time`. Phase metrics overlap, so do not add every metric in the table
+and expect the sum to equal `perf/step_time`.
+
+Each completed evaluation record includes `eval/failed`: `0` on success and `1`
+when the callback raised. A failed callback is logged and training continues;
+its `eval/wall_time` still records time spent before failure. Cancellation
+during shutdown is not converted into an evaluation failure.
 
 ## Compare producer gauges with optimizer steps
 
@@ -177,7 +185,8 @@ before unblocking the trainer. The cookbook unit test uses this procedure.
 
 | Evidence | Interpretation | First action |
 |---|---|---|
-| High `perf/wait_time_ratio` and high `eval/wall_time` or `checkpoint/wall_time` | Periodic work, not rollout capacity, dominates publication cadence | Change the relevant interval or workload |
+| High `eval/wall_time` but low `eval/weight_sync_wait_time` | Evaluation is hidden by rollout/trainer overlap | No scheduling change; confirm inference contention separately |
+| High `perf/wait_time_ratio` and high `eval/weight_sync_wait_time` or `checkpoint/wall_time` | Periodic work, not rollout capacity, delays publication | Change the relevant interval or workload |
 | High `perf/weight_update_time` | Weight save/hotload or serverless client draining is slow | Inspect publication latency and outstanding sampler requests |
 | High `perf/train_chunk_wait_time`; in-flight near `C` | Later chunks are rollout-bound while using the configured window | Add rollout capacity or raise `C` if deployment capacity and the off-policy budget allow it |
 | High wait; in-flight below `C`; admission capacity below `G` | Admission gate, not deployment capacity, is limiting rollout | Inspect staleness capacity and `O`; do not add replicas first |

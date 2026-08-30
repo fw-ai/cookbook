@@ -108,6 +108,9 @@ def test_main_has_direct_client_grpo_customization_boundary() -> None:
 
     assert "make_grpo_loss_fn(" in source
     assert "policy.forward_backward_custom(" in source
+    assert "precomputed_forward = old_policy_result" in source
+    assert "precomputed_forward=precomputed_forward" in source
+    assert 'metrics["custom_forward_reused"]' in source
     assert "raw_inf_logprobs=raw_inference_logprobs" in source
     assert "sampled_completion_to_rollout_run(" in source
     assert "rollout_to_prompt_group(" in source
@@ -427,14 +430,23 @@ def test_main_collects_trains_and_hotloads_before_next_batch(monkeypatch) -> Non
 
         def forward(self, data, _loss):
             events.append(f"old-policy:{len(data)}")
-            return SimpleNamespace(
+            result = SimpleNamespace(
                 loss_fn_outputs=[
                     {"logprobs": SimpleNamespace(data=[-0.1, -0.2])}
                     for _ in data
                 ]
             )
+            self.last_forward = result
+            return result
 
-        def forward_backward_custom(self, data, _loss_fn):
+        def forward_backward_custom(
+            self,
+            data,
+            _loss_fn,
+            *,
+            precomputed_forward=None,
+        ):
+            assert precomputed_forward is self.last_forward
             events.append(f"fwd-bwd:{len(data)}")
             return SimpleNamespace(metrics={})
 
