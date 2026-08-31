@@ -36,7 +36,9 @@ Users provide:
 The recipe owns trainer/deployment/sampler lifecycle, rollout fan-out and
 admission, group assembly, advantages, reference and old-policy forwards,
 GRPO/TIS/KL, training chunks, the optimizer, sampler hotload, version
-publication, metrics, checkpointing, and cleanup.
+publication, metrics, checkpointing, and cleanup. Dedicated async GRPO may opt
+into the trainer's built-in PPO kernel with `server_side_grpo=True`; this is not
+a general loss selector and requires `kl_beta=0`.
 
 Keep custom environment logic in the rollout function. Do not put scheduler or
 trainer lifecycle state in the rollout.
@@ -117,6 +119,11 @@ The callback owns evaluation rows, fan-out, environment execution, and metric
 aggregation. The recipe owns scheduling and supplies the evaluation-scoped
 rollout wrapper. Evaluation does not enter the producer, assemble prompt
 groups, compute advantages, or mutate optimizer state.
+
+Evaluation receives the same rollout object created from the training
+`RolloutSetup`. It therefore always inherits `max_completion_tokens` through
+`sample_kwargs["max_tokens"]` and the resolved total context limit through
+`sample_kwargs["max_seq_len"]`; there are no separate evaluation length knobs.
 
 Evaluation starts immediately after its policy version is published and shares
 the recipe-owned sampler with rollout production. The initial evaluation starts
@@ -360,7 +367,9 @@ replace behavior logprobs in PPO or TIS.
 
 - `training/examples/rl/single_turn_token_in/` — minimal token-in/token-out
   rollout
-- `training/examples/rl/multi_turn_message_in/` — multi-turn message rollout
+- `training/examples/rl/harbor/opencode/` — OpenCode/Harbor multi-turn TITO rollout
+- `training/examples/rl/harbor/pi/` — Pi multi-turn TITO rollout
+- `training/examples/rl/harbor/mini_swe/` — Mini-SWE-Agent multi-turn TITO rollout
 - [`rl-hotload.md`](rl-hotload.md) — sampler weight transfer
 - [`rl-sampling-timeouts.md`](rl-sampling-timeouts.md) — sampler timeout diagnosis
 - [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md) — optimizer gradient

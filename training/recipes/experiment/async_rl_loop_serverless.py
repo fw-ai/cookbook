@@ -67,6 +67,7 @@ from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import datum_target_len
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
+from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
@@ -499,7 +500,10 @@ def run_sampling_preflight(
                 )
                 return result
             finally:
-                await sampler.aclose()
+                try:
+                    await close_rollout_fn(rollout_fn)
+                finally:
+                    await sampler.aclose()
 
         return asyncio.run(evaluate())
     finally:
@@ -948,8 +952,13 @@ def main(
                         evaluations.start(coordinator.global_step, force=True)
                         await evaluations.join()
                     finally:
-                        await evaluations.cancel()
-                        await telemetry.aclose()
+                        try:
+                            await evaluations.cancel()
+                        finally:
+                            try:
+                                await telemetry.aclose()
+                            finally:
+                                await close_rollout_fn(rollout_fn)
                 return (
                     coordinator.global_step,
                     telemetry.final_stats(),

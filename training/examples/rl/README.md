@@ -1,44 +1,60 @@
-# Async RL examples
+# Reinforcement learning examples
 
-> ⚠️ **EXPERIMENTAL — `async_rl_loop` is under active development.**
-> Config/API may change without backward-compat shims.  See
-> [`/skills/fireworks-training/references/rl-async.md`](/skills/fireworks-training/references/rl-async.md).
+This directory contains two kinds of RL examples:
 
-The recipe is intentionally minimal-surface: **the only thing you customize
-is the rollout function** (`rollout_fn(sample_prompt) -> RolloutRun`).
-Gate, advantage, ref forward, weight sync, KL/TIS, PPO inner loop, and
-checkpoints are all handled by `recipes.async_rl_loop.main`.
+1. **Standalone examples** accumulated for different tasks and integrations.
+   They are useful focused references, but they do not share one directory
+   structure, rollout abstraction, or environment lifecycle.
+2. **The Harbor-based recipe set**, which is the structured starting point for
+   agentic RL. It separates the task recipe, agent harness, sandbox, token-exact
+   trajectory capture, and training loop so each layer can evolve independently.
 
-Minimal rollouts for the async recipe (`training/recipes/async_rl_loop.py`):
+## Harbor-based agentic RL
 
-- `single_turn_token_in/` — pre-tokenized rows; one `/v1/completions` call per
-  `rollout_fn` invocation (recipe invokes `rollout_fn` `completions_per_prompt`
-  times per row).
-- `multi_turn_message_in/` — OpenAI-style messages; ports AReaL's
-  `examples/multi_turn_math/` retry loop.
-- `eval_protocol_chat/` — OpenAI-style messages sent through an Eval Protocol
-  `RemoteRolloutProcessor` server; the completed chat rollout is converted
-  into the async recipe's `RolloutRun` format with a cookbook renderer.
-- `harbor/` — the shared Harbor trial and OpenCode policy adapter used by the
-  task-specific examples below.
-- `harbor_rl_opencode/` — DABstep task selection and training entrypoints over
-  the shared Harbor/OpenCode rollout function.
-- `harbor_rl_terminal_bench/` — a serverless 8x8 Terminal-Bench training
-  entrypoint over the Harbor/OpenCode rollout function.
+Start in [`harbor/`](./harbor/) when the task can be expressed as a Harbor trial.
+The same structure supports local Docker and E2B environments:
 
-Each example exposes `rollout_fn_factory(setup) -> rollout_fn` (signature
-`async def rollout_fn(sample_prompt) -> RolloutRun | None`) and a `train.py`
-that wires the dataset and factory into `recipes.async_rl_loop.main`.
+| Layer | Location | Responsibility |
+| --- | --- | --- |
+| Task recipes | [`harbor/recipes/`](./harbor/recipes/) | Select and prepare datasets, configure training, and choose a harness |
+| Harness adapters | [`harbor/pi/`](./harbor/pi/), [`harbor/opencode/`](./harbor/opencode/), [`harbor/mini_swe/`](./harbor/mini_swe/) | Run the agent and translate its lifecycle into the shared rollout contract |
+| Harbor and TITO integration | [`harbor/tito/`](./harbor/tito/) | Own the Harbor trial, environment-local sidecar, exact-token trajectory, artifacts, and cleanup |
+| Shared training recipe | [`recipes/async_rl_loop.py`](../../recipes/async_rl_loop.py) | Fan out rollouts, form prompt groups, compute advantages, and drive optimization |
 
-Both dedicated and serverless async recipes pass their existing sampler as
-`setup.sampler`. Treat it as borrowed: reuse it for every training and
-evaluation trajectory, and do not close it or construct another sampler or
-adaptive-concurrency controller. The recipe closes the sampler after rollout
-production ends and before it closes the training/deployment service. Endpoint,
-model, and key fields remain available for compatibility with older factories.
+The current task-oriented recipes include:
 
-For the API contract and recipe knobs, see
+- [`harbor/recipes/deep_swe/`](./harbor/recipes/deep_swe/) — DeepSWE task preparation.
+- [`harbor/recipes/dabstep/`](./harbor/recipes/dabstep/) — DABstep preparation and training workflows.
+- [`harbor/recipes/terminal_bench/`](./harbor/recipes/terminal_bench/) — Terminal-Bench training with Harbor and OpenCode.
+
+Pi is the default reference harness for DeepSWE. OpenCode and Mini-SWE-Agent
+are alternate adapters over the same Harbor and TITO boundaries. The sidecar is
+harness-neutral: harness-specific parsing, events, and process behavior remain
+inside the corresponding adapter.
+
+The Harbor recipes use the shared async RL loop as training infrastructure; the
+loop is not a separate family of examples or the user-facing organization of
+this directory. Most integrations should add a task recipe or harness adapter
+under `harbor/` rather than create another top-level training stack.
+
+For the ownership, exact-token, renderer, and artifact contracts, see
+[`/skills/fireworks-training/references/rl-agentic.md`](/skills/fireworks-training/references/rl-agentic.md).
+For shared training controls, see
 [`/skills/fireworks-training/references/rl-async.md`](/skills/fireworks-training/references/rl-async.md).
 
-The `train.py` files use placeholder model and tokenizer names — replace with
-your own model and tokenizer identifiers before running.
+## Standalone examples
+
+The remaining entries are independent examples with narrower goals:
+
+- [`single_turn_token_in/`](./single_turn_token_in/) — pre-tokenized,
+  single-turn completion rollouts.
+- [`deepmath/`](./deepmath/) — task-specific math RL.
+- [`frozen_lake/`](./frozen_lake/) — a controlled multi-turn environment loop.
+- [`visual_toolbench/`](./visual_toolbench/) — a custom visual tool-use loop.
+- [`eval_protocol_chat/`](./eval_protocol_chat/) — chat rollouts through an Eval
+  Protocol remote processor.
+- [`vanilla_sampler.py`](./vanilla_sampler.py) — a minimal sampler example.
+
+These examples intentionally remain useful references, but their APIs and
+layouts should not be treated as one common architecture. New agentic RL work
+should prefer the Harbor-based recipe structure above.
