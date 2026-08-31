@@ -224,6 +224,9 @@ class TrainerConfig:
     Accounts without a reservation for the selected accelerator use shared capacity.
     """
 
+    reservation_target: str | None = None
+    """Pin the trainer to a named reservation resource or reservation group."""
+
 
 class WeightSyncScope(Enum):
     """How trainer weights are synced to the inference deployment.

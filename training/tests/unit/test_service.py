@@ -260,6 +260,37 @@ def test_build_service_client_forwards_explicit_use_reservation_false(monkeypatc
     assert calls[0]["use_reservation"] is False
 
 
+def test_build_service_client_forwards_reservation_target(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_from_firetitan_config(**kwargs):
+        calls.append(kwargs)
+        return "service-sentinel"
+
+    class FakeServiceClient:
+        from_firetitan_config = staticmethod(fake_from_firetitan_config)
+
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    target = "accounts/acct/reservations/team-training"
+    build_service_client(
+        api_key="k",
+        base_url="https://api",
+        additional_headers=None,
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=0,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(
+            training_shape_id="ts-x",
+            reservation_target=target,
+        ),
+    )
+
+    assert calls[0]["reservation_target"] == target
+
+
 def test_build_service_client_defaults_speculative_decoding_enabled(monkeypatch):
     calls: list[dict] = []
 

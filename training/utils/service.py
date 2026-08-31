@@ -83,6 +83,11 @@ def _firetitan_service_kwargs(
         "hotload_timeout_s": hotload_timeout_s,
         "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
+    # Keep the default path compatible with the cookbook's declared minimum SDK,
+    # which predates reservation_target. An explicit target requires the newer SDK
+    # surface and is therefore forwarded only when the caller requests it.
+    if trainer.reservation_target is not None:
+        service_kwargs["reservation_target"] = trainer.reservation_target
     if max_lora_rank is not None and max_lora_rank < 0:
         raise ValueError("max_lora_rank must be non-negative")
     if max_lora_rank and max_lora_rank > 0:
