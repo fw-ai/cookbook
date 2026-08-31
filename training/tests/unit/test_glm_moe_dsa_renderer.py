@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 import transformers
 
+from fireworks.training.sdk import TITOChatRequest, TITOIncrementalRenderer
+from training.tito.renderer import build_sidecar_tito_renderer
 import training.renderer.glm5  # noqa: F401 - registers glm_moe_dsa
 from training.renderer import get_renderer
 
@@ -31,8 +33,7 @@ def tokenizer():
     tok = _load_tokenizer()
     if tok is None:
         pytest.skip(
-            f"GLM-5.2 tokenizer not available: "
-            f"{_TOKENIZER!r}@{_TOKENIZER_REVISION}"
+            f"GLM-5.2 tokenizer not available: {_TOKENIZER!r}@{_TOKENIZER_REVISION}"
         )
     if not getattr(tok, "chat_template", None):
         pytest.skip("Loaded GLM-5.2 tokenizer has no chat_template.")
@@ -115,6 +116,190 @@ def test_generation_prompt_user_only_matches_hf(tokenizer, renderer):
 
     assert ours == hf
     assert "Reasoning Effort: Max" in tokenizer.decode(ours)
+
+
+def test_incremental_tito_prompt_matches_full_glm52_render(tokenizer) -> None:
+    sidecar_renderer = build_sidecar_tito_renderer(
+        tokenizer,
+        "glm_moe_dsa_preserve_thinking",
+    )
+    assert isinstance(sidecar_renderer, TITOIncrementalRenderer)
+    history = [
+        {"role": "user", "content": "First question"},
+        {
+            "role": "assistant",
+            "reasoning_content": "Reasoning",
+            "content": "First answer",
+        },
+    ]
+    request = TITOChatRequest(
+        messages=tuple([*history, {"role": "user", "content": "Next question"}])
+    )
+    checkpoint = tokenizer.apply_chat_template(
+        history,
+        tokenize=True,
+        add_generation_prompt=False,
+        clear_thinking=False,
+        reasoning_effort="max",
+    )
+    if isinstance(checkpoint, Mapping):
+        checkpoint = checkpoint["input_ids"]
+    checkpoint = [*checkpoint, _encode_single(tokenizer, "<|user|>")]
+
+    prepared = sidecar_renderer.prepare_incremental_prompt(
+        request,
+        request.messages[:2],
+        request.messages[2:],
+        checkpoint,
+    )
+
+    assert prepared is not None
+    assert prepared.prompt_ids == tuple(
+        sidecar_renderer.render_conversation_tokens(request)
+    )
+    assert prepared.prompt_ids[: len(checkpoint)] == tuple(checkpoint)
+    assert prepared.checkpoint_trim_tokens == 1
+
+
+def test_incremental_tito_tool_result_matches_full_glm52_render(tokenizer) -> None:
+    sidecar_renderer = build_sidecar_tito_renderer(
+        tokenizer,
+        "glm_moe_dsa_preserve_thinking",
+    )
+    assert isinstance(sidecar_renderer, TITOIncrementalRenderer)
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "Echo text",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                },
+            },
+        }
+    ]
+    history = [
+        {"role": "user", "content": "Echo green"},
+        {
+            "role": "assistant",
+            "reasoning_content": "Use echo",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "arguments": {"text": "green"},
+                    },
+                }
+            ],
+        },
+    ]
+    request = TITOChatRequest.from_openai(
+        {
+            "messages": [
+                *history,
+                {
+                    "role": "tool",
+                    "tool_call_id": "call-1",
+                    "content": "green",
+                },
+            ],
+            "tools": tools,
+        }
+    )
+    checkpoint = tokenizer.apply_chat_template(
+        history,
+        tools=tools,
+        tokenize=True,
+        add_generation_prompt=False,
+        clear_thinking=False,
+        reasoning_effort="max",
+    )
+    if isinstance(checkpoint, Mapping):
+        checkpoint = checkpoint["input_ids"]
+    checkpoint = [*checkpoint, _encode_single(tokenizer, "<|observation|>")]
+
+    prepared = sidecar_renderer.prepare_incremental_prompt(
+        request,
+        request.messages[:2],
+        request.messages[2:],
+        checkpoint,
+    )
+
+    assert prepared is not None
+    assert prepared.junction_kind == "deduplicate_role_boundary"
+    assert prepared.checkpoint_trim_tokens == 1
+    assert prepared.prompt_ids == tuple(
+        sidecar_renderer.render_conversation_tokens(request)
+    )
+
+
+def test_incremental_tito_replaces_glm52_role_boundary(tokenizer) -> None:
+    sidecar_renderer = build_sidecar_tito_renderer(
+        tokenizer,
+        "glm_moe_dsa_preserve_thinking",
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "Echo text",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    history = [
+        {"role": "user", "content": "Use echo"},
+        {
+            "role": "assistant",
+            "reasoning_content": "Try the tool",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": {}},
+                }
+            ],
+        },
+    ]
+    request = TITOChatRequest(
+        messages=tuple(
+            [*history, {"role": "user", "content": "The tool failed; continue."}]
+        ),
+        tools=tuple(tools),
+    )
+    checkpoint = tokenizer.apply_chat_template(
+        history,
+        tools=tools,
+        tokenize=True,
+        add_generation_prompt=False,
+        clear_thinking=False,
+        reasoning_effort="max",
+    )
+    if isinstance(checkpoint, Mapping):
+        checkpoint = checkpoint["input_ids"]
+    checkpoint = [*checkpoint, _encode_single(tokenizer, "<|observation|>")]
+
+    prepared = sidecar_renderer.prepare_incremental_prompt(
+        request,
+        request.messages[:2],
+        request.messages[2:],
+        checkpoint,
+    )
+
+    assert prepared is not None
+    assert prepared.junction_kind == "replace_role_boundary"
+    assert prepared.checkpoint_trim_tokens == 1
+    assert prepared.prompt_ids[: len(checkpoint) - 1] == tuple(checkpoint[:-1])
+    assert prepared.prompt_ids[len(checkpoint) - 1] == _encode_single(
+        tokenizer, "<|user|>"
+    )
 
 
 @pytest.mark.parametrize(

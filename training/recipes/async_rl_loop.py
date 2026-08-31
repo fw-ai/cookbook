@@ -71,15 +71,18 @@ from training.utils.rl import PromptGroup
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
+    OverlappedEvaluation,
     TrainingChunk,
     RolloutRow,
 )
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
-from training.utils.rl.losses import combine_prompt_groups
+from training.utils.rl.losses import build_grpo_datums, combine_prompt_groups
+from training.utils.rl.observability import compute_server_grpo_observability_metrics
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
 from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
+from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
 logger = logging.getLogger(__name__)
@@ -151,9 +154,17 @@ class Config:
     """Max gradient norm for clipping. 0 disables clipping."""
 
     eps_clip: float = 0.2
-    """Lower/upper PPO clip epsilon used by the client-side GRPO update."""
+    """Lower/upper PPO clip epsilon used by the GRPO update."""
     eps_clip_high: float | None = None
     """Optional asymmetric upper clip epsilon; defaults to ``eps_clip``."""
+    server_side_grpo: bool = False
+    """Use the trainer's built-in PPO kernel for the GRPO policy update.
+
+    This is a narrow execution-path opt-in, not an algorithm selector. It
+    requires ``kl_beta=0`` because the built-in kernel has no reference-KL
+    input. Group-relative advantages, PPO anchoring, and TIS remain recipe
+    owned.
+    """
     pipeline_chunks_per_step: int = 1
     """Scheduler chunk cap per global optimizer batch.
 
@@ -253,7 +264,13 @@ def _rollout_fn_context_param_names(rollout_fn: RolloutFn) -> frozenset[str]:
 
 
 def make_evaluation_rollout_fn(rollout_fn: RolloutFn) -> RolloutFn:
-    """Wrap a rollout callable with the general evaluation context."""
+    """Set evaluation context without changing rollout sampling limits.
+
+    The wrapper calls the same rollout object created from the training
+    ``RolloutSetup``. Evaluation therefore inherits both ``max_tokens`` and
+    ``max_seq_len`` from ``sample_kwargs``; there is intentionally no second
+    length config.
+    """
 
     context_names = _rollout_fn_context_param_names(rollout_fn)
 
@@ -288,6 +305,52 @@ def _save_checkpoint(
     logger.info("[%s] dcp_save: done (%.1fs)", name, span.elapsed)
 
 
+def _run_server_side_grpo(
+    policy: ReconnectableClient,
+    *,
+    data,
+    advantages,
+    prompt_lens,
+    rollout_logprobs,
+    raw_inference_logprobs,
+    old_policy_logprobs,
+    config: Config,
+):
+    """Run the built-in PPO kernel with recipe-owned GRPO preparation."""
+    server_data = build_grpo_datums(
+        data,
+        advantages,
+        old_policy_logprobs,
+        rollout_logprobs,
+        prompt_lens,
+        config.tis,
+    )
+    eps_high = config.eps_clip if config.eps_clip_high is None else config.eps_clip_high
+    result = policy.forward_backward(
+        server_data,
+        "ppo",
+        loss_fn_config={
+            "clip_low_threshold": 1.0 - config.eps_clip,
+            "clip_high_threshold": 1.0 + eps_high,
+        },
+    )
+    policy_logprobs = [
+        output["logprobs"].to_torch() for output in result.loss_fn_outputs
+    ]
+    result.metrics.update(
+        compute_server_grpo_observability_metrics(
+            data,
+            policy_logprobs,
+            old_policy_logprobs,
+            raw_inference_logprobs,
+            prompt_lens,
+            eps_clip=config.eps_clip,
+            eps_clip_high=config.eps_clip_high,
+        )
+    )
+    return result
+
+
 def main(
     config: Config,
     *,
@@ -320,6 +383,8 @@ def main(
         reference_job_id=cfg.trainer.reference_job_id,
         anchor_logp=cfg.anchor_logp,
     )
+    if cfg.server_side_grpo and cfg.kl_beta != 0:
+        raise ValueError("server_side_grpo requires kl_beta=0.")
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
         "the Config / RolloutSetup API may change. See "
@@ -378,7 +443,8 @@ def main(
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
             "algorithm": "grpo",
-            "trainer_loss": "client",
+            "trainer_loss": "server_ppo" if cfg.server_side_grpo else "client",
+            "server_side_grpo": cfg.server_side_grpo,
             "kl_beta": cfg.kl_beta,
             "anchor_logp": cfg.anchor_logp,
             "lr": cfg.learning_rate,
@@ -482,7 +548,11 @@ def main(
                 checkpoint_type="base",
             )
             service.hotload_sampler_snapshot(saved.path)
-        logger.info("[step %d] initial weight sync (%.1fs)", step_offset, span.elapsed)
+        logger.info(
+            "[step %d] initial weight sync (%.1fs)",
+            step_offset,
+            span.elapsed,
+        )
         flush_timing()
 
         if rows is None:
@@ -504,7 +574,12 @@ def main(
             remaining_rows / max(1, cfg.prompt_groups_per_step)
         )
 
-        logger.info("algorithm=grpo trainer_loss=client kl_beta=%g", cfg.kl_beta)
+        trainer_loss = "server_ppo" if cfg.server_side_grpo else "client"
+        logger.info(
+            "algorithm=grpo trainer_loss=%s kl_beta=%g",
+            trainer_loss,
+            cfg.kl_beta,
+        )
 
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
@@ -515,6 +590,10 @@ def main(
             # rollouts and bias the policy-gradient estimator.
             top_p=1.0,
             top_k=0,
+            # Single total prompt-plus-output limit. Legacy rollouts pass it to
+            # the sampler's preflight/post-completion guards. TITO consumes the
+            # same field as its internal pre-inference and materialization
+            # budget, and does not forward the redundant sampler guard.
             max_seq_len=service.max_context_length,
             http_timeout=cfg.deployment.sample_timeout,
             logprobs=True,
@@ -539,27 +618,33 @@ def main(
         rollout_fn = rollout_fn_factory(rollout_setup)
         rollout_context_param_names = _rollout_fn_context_param_names(rollout_fn)
         evaluation_rollout_fn = make_evaluation_rollout_fn(rollout_fn)
-        last_evaluation_step: int | None = None
 
-        async def evaluate(step: int, *, force: bool = False) -> None:
-            nonlocal last_evaluation_step
+        async def run_evaluation(step: int) -> None:
             if evaluation_fn is None:
                 return
-            if step == last_evaluation_step:
-                return
-            if not force and step % evaluation_interval:
-                return
             with wall_timer() as span:
-                metrics = await evaluation_fn(step, evaluation_rollout_fn)
-            last_evaluation_step = step
+                try:
+                    metrics = await evaluation_fn(step, evaluation_rollout_fn)
+                except Exception:
+                    logger.exception("evaluation failed at policy step %d", step)
+                    metrics = None
+                    failed = 1.0
+                else:
+                    failed = 0.0
             log_metrics(
                 {
                     "rollout/step": step,
                     "eval/wall_time": span.elapsed,
                     **(metrics or {}),
+                    "eval/failed": failed,
                 },
                 step=step,
             )
+
+        evaluations = OverlappedEvaluation(
+            run_evaluation if evaluation_fn is not None else None,
+            interval=evaluation_interval,
+        )
 
         def make_row_requests():
             rows_per_epoch = len(rows)
@@ -627,13 +712,21 @@ def main(
             inf_lp,
             raw_inf_lp,
             old_policy_logprobs,
+            precomputed_forward,
         ):
-            """Run client-side GRPO with PPO clipping, TIS, and optional reference KL.
+            """Run GRPO through the configured client or built-in server path."""
+            if cfg.server_side_grpo:
+                return _run_server_side_grpo(
+                    policy,
+                    data=data,
+                    advantages=adv,
+                    prompt_lens=prompt_lens,
+                    rollout_logprobs=inf_lp,
+                    raw_inference_logprobs=raw_inf_lp,
+                    old_policy_logprobs=old_policy_logprobs,
+                    config=cfg,
+                )
 
-            To switch to built-in PPO or another loss, replace this call rather
-            than adding dispatch. See
-            ``skills/fireworks-training/references/rl-custom-loss.md``.
-            """
             return policy.forward_backward_custom(
                 data,
                 make_grpo_loss_fn(
@@ -648,6 +741,7 @@ def main(
                     tis_config=cfg.tis,
                     raw_inf_logprobs=raw_inf_lp,
                 ),
+                precomputed_forward=precomputed_forward,
             )
 
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
@@ -661,6 +755,7 @@ def main(
                 prompt_groups,
                 include_raw=True,
             )
+            precomputed_forward = None
             if cfg.anchor_logp == "old_policy":
                 with elapsed_timer("old_policy_forward"):
                     old_policy_fwd = policy.forward(data, "cross_entropy")
@@ -668,6 +763,7 @@ def main(
                         old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
                         for i in range(len(data))
                     ]
+                precomputed_forward = old_policy_fwd
             else:
                 if len(inf_lp) != len(data):
                     raise ValueError(
@@ -689,7 +785,12 @@ def main(
                     inf_lp,
                     raw_inf_lp,
                     old_policy_logprobs,
+                    precomputed_forward,
                 )
+                if not cfg.server_side_grpo:
+                    fwd_bwd_result.metrics["custom_forward_reused"] = float(
+                        precomputed_forward is not None
+                    )
             return {
                 "prompt_groups": prompt_groups,
                 "fwd_bwd_result": fwd_bwd_result,
@@ -750,9 +851,9 @@ def main(
                 resolved_rows_offset=prior_rows_consumed,
                 resolved_rows_fn=lambda: row_loader.data_consumed,
             )
-            await evaluate(step_offset, force=True)
             async with coordinator:
                 telemetry.start(coordinator.snapshot)
+                evaluations.start(step_offset, force=True)
                 try:
                     while (batch := await coordinator.next_batch()) is not None:
                         chunk_outputs: list[dict[str, Any]] = []
@@ -775,6 +876,18 @@ def main(
                             batch.batch_id,
                             optimizer_batch=batch,
                         )
+
+                        evaluation_step = evaluations.active_step
+                        if evaluation_step is not None:
+                            with wall_timer() as span:
+                                await evaluations.join()
+                            log_metrics(
+                                {
+                                    "rollout/step": evaluation_step,
+                                    "eval/weight_sync_wait_time": span.elapsed,
+                                },
+                                step=evaluation_step,
+                            )
 
                         # A producer failure here can only affect a future batch.
                         # Finish this optimizer's hotload and publication so trainer
@@ -804,7 +917,7 @@ def main(
                             weight_update_time=sync_wall_time,
                             learning_rate=optimizer["learning_rate"],
                         )
-                        await evaluate(batch.batch_id)
+                        evaluations.start(batch.batch_id)
 
                         rollouts_completed = batch.batch_id - step_offset
                         interval = cfg.dcp_save_interval
@@ -835,9 +948,17 @@ def main(
                                     batch.batch_id,
                                     error,
                                 )
-                    await evaluate(coordinator.global_step, force=True)
+                    await evaluations.join()
+                    evaluations.start(coordinator.global_step, force=True)
+                    await evaluations.join()
                 finally:
-                    await telemetry.aclose()
+                    try:
+                        await evaluations.cancel()
+                    finally:
+                        try:
+                            await telemetry.aclose()
+                        finally:
+                            await close_rollout_fn(rollout_fn)
 
                 return coordinator.global_step, telemetry.final_stats()
 

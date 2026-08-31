@@ -42,10 +42,11 @@ Config(anchor_logp="rollout")     # skip snapshot; TIS ratio is identity
 Treat this as an estimator choice, not a performance-only switch. Validate
 rollout-anchor rows against `target_tokens` exactly.
 
-## Switch to the trainer built-in
+## Use the trainer built-in for dedicated async GRPO
 
-Make the switch explicitly in a recipe fork. The trainer's built-in `"ppo"`
-kernel does not consume reference logprobs, so require `kl_beta=0`.
+The dedicated async recipe exposes this exact switch as
+`Config(server_side_grpo=True, kl_beta=0)`. The trainer's built-in `"ppo"`
+kernel does not consume reference logprobs.
 
 ```python
 from training.utils.rl.losses import build_grpo_datums
@@ -69,8 +70,9 @@ result = policy.forward_backward(
 )
 ```
 
-Delete the now-unused reference forward from that fork. Do not keep both paths
-behind an `if` or silently fall back to the client loss.
+The option does not silently fall back. It is the only built-in loss exposed by
+the recipe; add a different research loss in a recipe fork rather than growing
+a selector or registry.
 
 ## Add a research algorithm
 

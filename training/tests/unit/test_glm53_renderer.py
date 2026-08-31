@@ -8,7 +8,7 @@ import pytest
 import transformers
 
 import training.renderer.glm5  # noqa: F401 - registers glm53
-from tinker_cookbook.renderers import get_renderer
+from training.renderer import get_renderer
 from training.utils.supervised import (
     build_tool_prefixed_messages,
     normalize_messages,

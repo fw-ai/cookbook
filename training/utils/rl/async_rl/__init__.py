@@ -12,12 +12,14 @@ from training.utils.rl.async_rl.coordinator import (
 from training.utils.rl.async_rl.telemetry import (
     AsyncRLTelemetry,
 )
+from training.utils.rl.async_rl.evaluation import OverlappedEvaluation
 
 __all__ = [
     "AsyncRLCoordinator",
     "AsyncRLTelemetry",
     "PublishResult",
     "OptimizerBatch",
+    "OverlappedEvaluation",
     "TrainingChunk",
     "RolloutRow",
 ]

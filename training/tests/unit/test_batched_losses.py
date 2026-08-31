@@ -22,6 +22,7 @@ from training.utils.rl.common import (
     align_sample_logprobs_to_target_tokens,
 )
 from training.utils.rl.losses import build_grpo_datums
+from training.utils.rl.observability import compute_server_grpo_observability_metrics
 from training.utils.rl.tis import TISConfig
 from training.utils.supervised import build_datum_from_token_mask
 
@@ -310,13 +311,57 @@ class TestBuildGRPODatums:
             tis_config=TISConfig(cap=1.5),
         )[0]
 
-        assert datum.loss_fn_inputs["advantages"].data == pytest.approx(
-            [0.0, 3.0, 3.0]
+        assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.0, 3.0, 3.0])
+
+
+class TestServerGRPOObservability:
+    @staticmethod
+    def _datum():
+        return build_datum_from_token_mask(
+            token_ids=[10, 11, 12, 13],
+            token_mask=[0, 1, 1, 1],
+        ).datum
+
+    def test_uses_returned_policy_logprobs_without_another_forward(self):
+        policy_logprobs = [torch.tensor([-0.4, -0.2, -0.1])]
+        old_policy_logprobs = [[-0.4, -0.3, -0.1]]
+        raw_inf_logprobs = [[-0.4, -0.4, -0.2]]
+
+        metrics = compute_server_grpo_observability_metrics(
+            [self._datum()],
+            policy_logprobs,
+            old_policy_logprobs,
+            raw_inf_logprobs,
+            [2],
+            eps_clip=0.2,
+            eps_clip_high=None,
         )
+
+        expected_ratios = torch.exp(torch.tensor([0.1, 0.0]))
+        assert metrics["ppo_ratio_mean"] == pytest.approx(expected_ratios.mean().item())
+        assert metrics["ppo_clip_frac"] == 0.0
+        assert metrics["inference_k1"] == pytest.approx(0.15)
+        expected_diff = torch.tensor([0.2, 0.1])
+        assert metrics["inference_k3"] == pytest.approx(
+            (torch.exp(expected_diff) - expected_diff - 1.0).mean().item()
+        )
+        assert metrics["active_tokens"] == 2
+        assert metrics["total_resp_tokens"] == 2
+
+    def test_rejects_misaligned_trainer_outputs(self):
+        with pytest.raises(ValueError, match="policy_logprobs=0"):
+            compute_server_grpo_observability_metrics(
+                [self._datum()],
+                [],
+                [[-0.4, -0.3, -0.1]],
+                [[-0.4, -0.4, -0.2]],
+                [2],
+                eps_clip=0.2,
+                eps_clip_high=None,
+            )
 
 
 class TestBatchDPOLoss:
-
     def _make_ref_logprobs(self, seq_len: int, seed: int = 0) -> list[float]:
         torch.manual_seed(seed)
         return torch.randn(seq_len).tolist()
@@ -396,7 +441,6 @@ class TestBatchDPOLoss:
 
 
 class TestBatchORPOLoss:
-
     def test_multi_pair_preserves_pairwise_accumulation(self):
         rs0, rs1 = 2, 4
         orpo_lambda = 0.5
@@ -425,7 +469,6 @@ class TestBatchORPOLoss:
 
 
 class TestWeightedSFTLoss:
-
     def test_microbatch_sizes_preserve_accumulated_loss(self):
         datum_a = build_datum_from_token_mask(
             token_ids=[10, 11, 12, 13],
@@ -515,9 +558,9 @@ class TestDPOResponseStartOffByOne:
             [chosen_logprobs.clone(), rejected_logprobs.clone()],
         )
 
-        assert (
-            orpo_metrics["log_odds_ratio"] > 0.0
-        ), "Sanity check: ORPO should prefer chosen; if this fails, the test setup is wrong."
+        assert orpo_metrics["log_odds_ratio"] > 0.0, (
+            "Sanity check: ORPO should prefer chosen; if this fails, the test setup is wrong."
+        )
         assert dpo_metrics["accuracy"] == orpo_metrics["accuracy"], (
             f"DPO and ORPO disagree on preferred direction "
             f"(dpo_acc={dpo_metrics['accuracy']}, orpo_acc={orpo_metrics['accuracy']}). "

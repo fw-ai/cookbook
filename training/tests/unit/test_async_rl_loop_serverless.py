@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -45,6 +46,7 @@ class _TrainingClient:
         self.forward_backward_calls: list[tuple[list[tinker.Datum], str]] = []
         self.forward_calls: list[tuple[list[tinker.Datum], str]] = []
         self.forward_backward_custom_calls: list[tuple[list[tinker.Datum], object]] = []
+        self.precomputed_forward_calls: list[object | None] = []
         self.forward_backward_custom_results: list[SimpleNamespace] = []
         self.optim_calls: list[tuple[tinker.AdamParams, str | None, bool]] = []
 
@@ -74,15 +76,28 @@ class _TrainingClient:
             )
         return _Future(SimpleNamespace(loss_fn_outputs=outputs))
 
-    def forward_backward_custom(self, data, loss_fn) -> _Future:
+    def forward_backward_custom(
+        self,
+        data,
+        loss_fn,
+        *,
+        precomputed_forward=None,
+    ) -> _Future:
         self.forward_backward_custom_calls.append((data, loss_fn))
-        logprobs = [
-            torch.tensor(
-                [-0.15] * len(datum.loss_fn_inputs["target_tokens"].data),
-                requires_grad=True,
-            )
-            for datum in data
-        ]
+        self.precomputed_forward_calls.append(precomputed_forward)
+        if precomputed_forward is None:
+            logprobs = [
+                torch.tensor(
+                    [-0.15] * len(datum.loss_fn_inputs["target_tokens"].data),
+                    requires_grad=True,
+                )
+                for datum in data
+            ]
+        else:
+            logprobs = [
+                torch.tensor(output["logprobs"].data, requires_grad=True)
+                for output in precomputed_forward.loss_fn_outputs
+            ]
         _loss, metrics = loss_fn(data, logprobs)
         result = SimpleNamespace(metrics=metrics)
         self.forward_backward_custom_results.append(result)
@@ -394,6 +409,8 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
 
     async def evaluate(step, evaluation_rollout_fn):
         eval_steps.append(step)
+        if step == 0:
+            raise RuntimeError("transient evaluation failure")
         await evaluation_rollout_fn({"id": "holdout"}, sample_index=0)
         return {"eval/reward": 0.5}
 
@@ -426,6 +443,10 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
         for _, loss_fn in service.training_client.forward_calls
     )
     assert len(service.training_client.forward_backward_custom_calls) == 2
+    assert all(
+        result is not None
+        for result in service.training_client.precomputed_forward_calls
+    )
     for custom_result in service.training_client.forward_backward_custom_results:
         assert custom_result.metrics["raw_inference_logprob_coverage"] == 1.0
         assert custom_result.metrics["inference_k3"] >= 0.0
@@ -441,6 +462,7 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
     assert step_metrics["train/raw_inference_logprob_coverage"] == 1.0
     assert step_metrics["train/inference_k3"] >= 0.0
     assert "train/inference_k1" in step_metrics
+    assert step_metrics["train/custom_forward_reused"] == 1.0
     assert len(service.training_client.optim_calls) == 1
     adam = service.training_client.optim_calls[0][0]
     assert adam.beta2 == 0.95
@@ -457,9 +479,96 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
     assert result["final_training_checkpoint"] == "state-0"
     assert eval_steps == [0, 1]
     assert evaluation_modes.count(False) == 4
-    assert evaluation_modes.count(True) == 2
+    assert evaluation_modes.count(True) == 1
+    evaluation_metrics = [
+        metrics for metrics in logged_metrics if "eval/failed" in metrics
+    ]
+    assert [metrics["eval/failed"] for metrics in evaluation_metrics] == [1.0, 0.0]
+    assert "eval/reward" not in evaluation_metrics[0]
+    assert evaluation_metrics[1]["eval/reward"] == 0.5
     assert all(client.closed for client in service.sampling_clients)
     assert service.closed
+
+
+def test_evaluation_overlaps_training_and_finishes_before_snapshot_replacement(
+    monkeypatch,
+) -> None:
+    service = _Service()
+    _patch_runtime(monkeypatch, service)
+    events: list[str] = []
+    evaluation_started = threading.Event()
+    release_evaluation = threading.Event()
+    logged_metrics: list[dict] = []
+    monkeypatch.setattr(
+        loop,
+        "log_metrics",
+        lambda metrics, **_kwargs: logged_metrics.append(dict(metrics)),
+    )
+
+    original_forward = service.training_client.forward
+
+    def forward(data, loss_fn):
+        assert evaluation_started.wait(timeout=5)
+        events.append("train-forward")
+        release_evaluation.set()
+        return original_forward(data, loss_fn)
+
+    service.training_client.forward = forward
+    original_save = service.training_client.save_weights_for_sampler
+
+    def save_weights_for_sampler(name):
+        events.append(f"save-{name}")
+        return original_save(name)
+
+    service.training_client.save_weights_for_sampler = save_weights_for_sampler
+
+    def factory(_setup):
+        async def rollout(_row, *, sample_index: int, **_context) -> RolloutRun:
+            return RolloutRun(
+                segments=[
+                    RolloutSample(
+                        tokens=[10, 11, 12],
+                        logprobs=[0.0, -0.1, -0.2],
+                        raw_logprobs=[0.0, -0.3, -0.4],
+                        loss_mask=[0, 1, 1],
+                        reward=float(sample_index),
+                    )
+                ],
+                run_id=f"run-{sample_index}",
+            )
+
+        return rollout
+
+    async def evaluate(step, _rollout_fn):
+        events.append(f"eval-{step}-start")
+        if step == 0:
+            evaluation_started.set()
+            assert await asyncio.to_thread(release_evaluation.wait, 5)
+        events.append(f"eval-{step}-end")
+        return None
+
+    result = loop.main(
+        loop.Config(
+            completions_per_prompt=2,
+            prompt_groups_per_step=1,
+            pipeline_chunks_per_step=1,
+            max_completion_tokens=2,
+            max_seq_len=8,
+            max_rows=1,
+            min_group_size=2,
+            max_incomplete_group_retries=0,
+        ),
+        rollout_fn_factory=factory,
+        evaluation_fn=evaluate,
+        rows=[{"id": "a"}],
+    )
+
+    assert result["steps"] == 1
+    assert events.index("eval-0-start") < events.index("train-forward")
+    assert events.index("train-forward") < events.index("eval-0-end")
+    assert events.index("eval-0-end") < events.index("save-async-rl-step-1")
+    assert events.count("eval-1-start") == 1
+    assert any("eval/weight_sync_wait_time" in metrics for metrics in logged_metrics)
 
 
 def test_missing_raw_inference_logprobs_fail_before_optimizer(monkeypatch) -> None:

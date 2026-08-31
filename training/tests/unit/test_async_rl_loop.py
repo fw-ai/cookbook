@@ -11,6 +11,7 @@ import inspect
 from types import SimpleNamespace
 
 import pytest
+import tinker
 
 from training.recipes import async_rl_loop
 from training.utils.runner import UserConfigError
@@ -50,6 +51,28 @@ def test_evaluation_rollout_omits_unsupported_context() -> None:
     assert seen == [3]
 
 
+def test_evaluation_rollout_inherits_training_length_limits() -> None:
+    setup = SimpleNamespace(
+        sample_kwargs={"max_tokens": 1024, "max_seq_len": 4096},
+    )
+    seen: list[tuple[int, int, bool]] = []
+
+    async def rollout(_row, *, evaluation: bool = False):
+        seen.append(
+            (
+                setup.sample_kwargs["max_tokens"],
+                setup.sample_kwargs["max_seq_len"],
+                evaluation,
+            )
+        )
+        return None
+
+    evaluation_rollout = async_rl_loop.make_evaluation_rollout_fn(rollout)
+    asyncio.run(evaluation_rollout({}))
+
+    assert seen == [(1024, 4096, True)]
+
+
 class TestConfigDefaults:
     def test_config_has_no_runner_state(self) -> None:
         cfg = async_rl_loop.Config(log_path="gs://logs")
@@ -87,23 +110,110 @@ class TestConfigDefaults:
         assert cfg.eps_clip == 0.2
         assert cfg.eps_clip_high is None
         assert cfg.anchor_logp == "old_policy"
+        assert cfg.server_side_grpo is False
         assert cfg.router_replay is True
         assert cfg.router_replay_completion_only is True
         assert not hasattr(cfg, "policy_loss")
         assert not hasattr(cfg, "loss_path")
+        assert not hasattr(cfg, "eval_max_completion_tokens")
+        assert not hasattr(cfg, "eval_max_seq_len")
 
 
-def test_main_has_direct_client_grpo_customization_boundary() -> None:
+def test_main_has_explicit_client_and_server_grpo_paths() -> None:
     source = inspect.getsource(async_rl_loop.main)
 
     assert "make_grpo_loss_fn(" in source
     assert "policy.forward_backward_custom(" in source
+    assert "_run_server_side_grpo(" in source
     assert 'cfg.anchor_logp == "old_policy"' in source
-    assert "To switch to built-in PPO or another loss" in source
-    assert "adding dispatch" in source
-    assert "skills/fireworks-training/references/rl-custom-loss.md" in source
+    assert "precomputed_forward = old_policy_fwd" in source
+    assert "precomputed_forward=precomputed_forward" in source
+    assert 'metrics["custom_forward_reused"]' in source
     assert "build_loss_fn" not in source
     assert "loss_path" not in source
+
+
+def test_server_side_grpo_calls_only_builtin_ppo_and_emits_kld() -> None:
+    datum = tinker.Datum(
+        model_input=tinker.ModelInput.from_ints([10, 11, 12]),
+        loss_fn_inputs={
+            "target_tokens": tinker.TensorData(
+                data=[11, 12, 13],
+                dtype="int64",
+                shape=[3],
+            ),
+            "weights": tinker.TensorData(
+                data=[0.0, 1.0, 1.0],
+                dtype="float32",
+                shape=[3],
+            ),
+        },
+    )
+    calls = []
+
+    class FakePolicy:
+        def forward_backward(self, data, loss_fn, loss_fn_config=None):
+            calls.append((data, loss_fn, loss_fn_config))
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {
+                        "logprobs": tinker.TensorData(
+                            data=[-0.4, -0.2, -0.1],
+                            dtype="float32",
+                            shape=[3],
+                        )
+                    }
+                ],
+                metrics={"loss:sum": 1.0},
+            )
+
+        def forward_backward_custom(self, *_args, **_kwargs):
+            raise AssertionError("server-side GRPO must not call a custom loss")
+
+    result = async_rl_loop._run_server_side_grpo(
+        FakePolicy(),
+        data=[datum],
+        advantages=[1.0],
+        prompt_lens=[2],
+        rollout_logprobs=[[-0.4, -0.3, -0.1]],
+        raw_inference_logprobs=[[-0.4, -0.4, -0.2]],
+        old_policy_logprobs=[[-0.4, -0.3, -0.1]],
+        config=async_rl_loop.Config(
+            log_path="gs://logs",
+            kl_beta=0,
+            server_side_grpo=True,
+        ),
+    )
+
+    assert len(calls) == 1
+    server_data, loss_fn, loss_config = calls[0]
+    assert loss_fn == "ppo"
+    assert loss_config == {
+        "clip_low_threshold": 0.8,
+        "clip_high_threshold": 1.2,
+    }
+    assert set(server_data[0].loss_fn_inputs) == {
+        "target_tokens",
+        "logprobs",
+        "advantages",
+    }
+    assert result.metrics["inference_k3"] >= 0
+    assert result.metrics["raw_inference_logprob_coverage"] == 1.0
+
+
+def test_main_rejects_server_side_grpo_with_reference_kl() -> None:
+    cfg = async_rl_loop.Config(
+        log_path="gs://logs",
+        server_side_grpo=True,
+        kl_beta=0.1,
+    )
+
+    with pytest.raises(ValueError, match="server_side_grpo requires kl_beta=0"):
+        async_rl_loop.main(
+            cfg,
+            rows=[],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
 
 
 @pytest.mark.parametrize(
@@ -294,9 +404,11 @@ def test_main_injects_sampler_and_closes_it_before_service(
 
         def hotload_sampler_snapshot(self, path: str) -> None:
             assert path == "checkpoint"
+            events.append("hotload")
 
     class FakePolicy:
         def save_weights_for_sampler(self, *_args, **_kwargs):
+            events.append("save")
             return SimpleNamespace(path="checkpoint")
 
     class FakeCheckpoints:
@@ -340,6 +452,8 @@ def test_main_injects_sampler_and_closes_it_before_service(
         assert setup.sampler is sampler
         assert setup.inference_base_url == sampler.base_url
         assert setup.model == sampler.model
+        assert not hasattr(setup, "max_context_tokens")
+        assert setup.sample_kwargs["max_seq_len"] == 4096
         events.append("rollout_factory")
         raise _StopAfterRolloutSetup
 
@@ -355,4 +469,10 @@ def test_main_injects_sampler_and_closes_it_before_service(
             rollout_fn_factory=rollout_factory,
         )
 
-    assert events == ["rollout_factory", "sampler.close", "service.close"]
+    assert events == [
+        "save",
+        "hotload",
+        "rollout_factory",
+        "sampler.close",
+        "service.close",
+    ]

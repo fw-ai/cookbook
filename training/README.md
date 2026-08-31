@@ -222,7 +222,10 @@ examples/orpo/ifeval/                   Worked example: IFEval with ORPO
 examples/rl/deepmath/                   GRPO on DeepMath (rl_loop)
 examples/rl/frozen_lake/                Frozen Lake tool-use RL (custom loop)
 examples/rl/single_turn_token_in/       Async RL single-turn, token-in rollout
-examples/rl/multi_turn_message_in/      Async RL multi-turn, message-in rollout
+examples/rl/harbor/opencode/            Multi-turn OpenCode through a TITO sidecar
+examples/rl/harbor/pi/                  Multi-turn Pi through a TITO sidecar
+examples/rl/harbor/mini_swe/            Multi-turn Mini-SWE-Agent through a TITO sidecar
+examples/rl/harbor/recipes/             DABstep and Terminal-Bench RL recipes
 examples/serverless_rl/                 Serverless (Tinker-style) RL on Countdown -- no provisioning
 examples/serverless_dpo/                Serverless DPO preference training -- no provisioning
 examples/distillation/                  Distillation examples, including routed MOPD

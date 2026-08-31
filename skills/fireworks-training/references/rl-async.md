@@ -36,7 +36,9 @@ Users provide:
 The recipe owns trainer/deployment/sampler lifecycle, rollout fan-out and
 admission, group assembly, advantages, reference and old-policy forwards,
 GRPO/TIS/KL, training chunks, the optimizer, sampler hotload, version
-publication, metrics, checkpointing, and cleanup.
+publication, metrics, checkpointing, and cleanup. Dedicated async GRPO may opt
+into the trainer's built-in PPO kernel with `server_side_grpo=True`; this is not
+a general loss selector and requires `kl_beta=0`.
 
 Keep custom environment logic in the rollout function. Do not put scheduler or
 trainer lifecycle state in the rollout.
@@ -118,6 +120,34 @@ aggregation. The recipe owns scheduling and supplies the evaluation-scoped
 rollout wrapper. Evaluation does not enter the producer, assemble prompt
 groups, compute advantages, or mutate optimizer state.
 
+Evaluation receives the same rollout object created from the training
+`RolloutSetup`. It therefore always inherits `max_completion_tokens` through
+`sample_kwargs["max_tokens"]` and the resolved total context limit through
+`sample_kwargs["max_seq_len"]`; there are no separate evaluation length knobs.
+
+Evaluation starts immediately after its policy version is published and shares
+the recipe-owned sampler with rollout production. The initial evaluation starts
+with the coordinator rather than delaying the first rollout cohort. Evaluation
+may overlap rollout production and trainer work for the next optimizer batch,
+but it must finish before that batch hotloads a newer sampler snapshot. This
+weight-sync barrier keeps every multi-turn evaluation on one published policy
+version. Evaluation stays off the critical path only when it finishes before
+the barrier; a slower callback blocks weight publication for its remaining
+tail, reported as `eval/weight_sync_wait_time`.
+
+`max_concurrency_rollout_sample` limits training rollout calls owned by the
+producer; evaluation fan-out does not consume those slots. Both paths share the
+sampler's adaptive inference-request controller, so size deployment capacity
+for their combined peak and let the evaluation callback bound its own fan-out.
+Do not add evaluation calls to the producer merely to reuse its admission
+budget: evaluation remains outside training groups and durability accounting.
+
+Evaluation is fail-open. If the callback raises, the recipe logs the exception,
+emits `eval/failed=1`, and continues training; cancellation still propagates
+during shutdown. Keep the async callback cooperative. Send CPU-heavy scoring or
+blocking verifier work through `asyncio.to_thread(...)` so it does not stall
+rollout completion, admission, or refill on the shared event loop.
+
 ## Architecture and ownership
 
 The scheduler is split by one owner per concern:
@@ -127,6 +157,7 @@ The scheduler is split by one owner per concern:
 | `RolloutProducer` | In-flight rollout tasks, completion-triggered refill, row-atomic admission, group assembly, failure policy, and the durable row cursor |
 | `OptimizerBatch` | One optimizer batch, fixed balanced chunk targets, accepted rows, and the async queue of ready `TrainingChunk`s |
 | `AsyncRLCoordinator` | The producer/batch handoff, one serialized trainer worker, failure boundaries, and publication |
+| `OverlappedEvaluation` | One version-scoped evaluation task, interval/deduplication, joining, and cancellation |
 | `AsyncRLTelemetry` | Rate-limited producer snapshots, completed-batch metric reduction, and reporting |
 | `async_rl_loop.main` | Sampler and service lifecycle plus visible algorithm phases: reference/old-policy forwards, forward/backward, optimizer, hotload, telemetry handoff, and checkpoints |
 
@@ -243,9 +274,12 @@ For each optimizer batch:
    chunk. Later chunks can queue while the current chunk trains.
 3. Each chunk runs reference/old-policy work and forward/backward.
 4. After the final chunk, the recipe performs one optimizer step.
-5. The recipe saves and hotloads sampler weights.
-6. `coordinator.publish(batch)` advances the policy version, commits accepted
+5. The recipe joins any evaluation of the current sampler version.
+6. The recipe saves and hotloads sampler weights.
+7. `coordinator.publish(batch)` advances the policy version, commits accepted
    rows to the durable cursor, records metrics, and wakes the producer.
+8. If the published step is an evaluation step, its evaluation starts in the
+   background alongside newly admitted rollouts.
 
 The recipe performs an unconditional initial sampler sync and one sync per
 optimizer batch. It has no `weight_sync_interval` or conditional initial-sync
@@ -333,7 +367,9 @@ replace behavior logprobs in PPO or TIS.
 
 - `training/examples/rl/single_turn_token_in/` — minimal token-in/token-out
   rollout
-- `training/examples/rl/multi_turn_message_in/` — multi-turn message rollout
+- `training/examples/rl/harbor/opencode/` — OpenCode/Harbor multi-turn TITO rollout
+- `training/examples/rl/harbor/pi/` — Pi multi-turn TITO rollout
+- `training/examples/rl/harbor/mini_swe/` — Mini-SWE-Agent multi-turn TITO rollout
 - [`rl-hotload.md`](rl-hotload.md) — sampler weight transfer
 - [`rl-sampling-timeouts.md`](rl-sampling-timeouts.md) — sampler timeout diagnosis
 - [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md) — optimizer gradient

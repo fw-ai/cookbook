@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import Any, Sequence
 
 import tinker
@@ -29,6 +30,180 @@ _LOOP_STAT_PASSTHROUGH_KEYS = (
 )
 
 _CANONICAL_OPTIMIZER_METRICS = ("grad_norm", "grad_norm_rms", "lr")
+_TITO_METRIC_ROOT = "tito/"
+_TITO_DEBUG_METRIC_ROOT = "tito/debug/"
+_DISTRIBUTION_SUFFIXES = ("_count", "_sum", "_mean", "_min", "_max")
+
+_TITO_PUBLIC_DISTRIBUTIONS = {
+    "tito/turn/request_wall_seconds": "tito/turn/runtime_seconds",
+    "tito/turn/prompt_tokens": "tito/turn/input_tokens",
+    "tito/turn/completion_tokens": "tito/turn/output_tokens",
+}
+
+
+def _finite_metric(value: Any, *, name: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise ValueError(f"TITO sidecar metric {name!r} must be finite numeric data")
+    return float(value)
+
+
+def merge_tito_sidecar_metrics(
+    metrics: dict[str, Any],
+    summaries: Sequence[Mapping[str, Any]],
+) -> None:
+    """Merge trajectory summaries without averaging per-trajectory means."""
+    if not summaries:
+        return
+    for value in summaries:
+        invalid = sorted(
+            str(name)
+            for name in value
+            if not isinstance(name, str) or not name.startswith(_TITO_METRIC_ROOT)
+        )
+        if invalid:
+            raise ValueError(
+                "TITO sidecar metrics must use only the canonical root: "
+                + ", ".join(invalid)
+            )
+
+    distribution_bases = {
+        name[: -len(suffix)]
+        for summary in summaries
+        for name in summary
+        for suffix in _DISTRIBUTION_SUFFIXES
+        if name.endswith(suffix)
+    }
+    distribution_keys = {
+        f"{base}{suffix}"
+        for base in distribution_bases
+        for suffix in _DISTRIBUTION_SUFFIXES
+    }
+
+    counter_totals: dict[str, float] = {}
+    for summary in summaries:
+        for name, value in summary.items():
+            if name in distribution_keys:
+                continue
+            counter_totals[name] = counter_totals.get(name, 0.0) + _finite_metric(
+                value,
+                name=name,
+            )
+    metrics.update(counter_totals)
+
+    for base in sorted(distribution_bases):
+        base_keys = {f"{base}{suffix}" for suffix in _DISTRIBUTION_SUFFIXES}
+        count = 0.0
+        total = 0.0
+        minimum: float | None = None
+        maximum: float | None = None
+        for summary in summaries:
+            count_name = f"{base}_count"
+            sum_name = f"{base}_sum"
+            if base_keys.isdisjoint(summary):
+                continue
+            if count_name not in summary or sum_name not in summary:
+                raise ValueError(f"TITO distribution {base!r} lacks count or sum")
+            item_count = _finite_metric(summary[count_name], name=count_name)
+            item_sum = _finite_metric(summary[sum_name], name=sum_name)
+            if item_count < 0 or not item_count.is_integer():
+                raise ValueError(f"TITO distribution {base!r} has invalid count")
+            count += item_count
+            total += item_sum
+            if item_count == 0:
+                continue
+            min_name = f"{base}_min"
+            max_name = f"{base}_max"
+            if min_name not in summary or max_name not in summary:
+                raise ValueError(f"TITO distribution {base!r} lacks min or max")
+            item_min = _finite_metric(summary[min_name], name=min_name)
+            item_max = _finite_metric(summary[max_name], name=max_name)
+            minimum = item_min if minimum is None else min(minimum, item_min)
+            maximum = item_max if maximum is None else max(maximum, item_max)
+        metrics[f"{base}_count"] = count
+        metrics[f"{base}_sum"] = total
+        if count:
+            metrics[f"{base}_mean"] = total / count
+            metrics[f"{base}_min"] = minimum
+            metrics[f"{base}_max"] = maximum
+
+
+def publish_tito_sidecar_metrics(
+    metrics: dict[str, Any],
+    summaries: Sequence[Mapping[str, Any]],
+    *,
+    debug_enabled: bool = False,
+) -> None:
+    """Publish a compact TITO dashboard, with full internals only in debug mode."""
+    merged: dict[str, Any] = {}
+    merge_tito_sidecar_metrics(merged, summaries)
+    if not merged:
+        return
+
+    turn_count = float(merged.get("tito/turn/completion_tokens_count", 0.0))
+    metrics["tito/turn/count"] = turn_count
+    for source, destination in _TITO_PUBLIC_DISTRIBUTIONS.items():
+        count = merged.get(f"{source}_count")
+        if count is None:
+            continue
+        for suffix in ("_mean", "_min", "_max"):
+            value = merged.get(f"{source}{suffix}")
+            if value is not None:
+                metrics[f"{destination}{suffix}"] = value
+
+    trajectory_count = float(merged.get("tito/trajectory/policy_turns_count", 0.0))
+    metrics["tito/trajectory/count"] = trajectory_count
+    new_segments = float(merged.get("tito/lineage/new_segment", 0.0))
+    splits = max(0.0, new_segments - trajectory_count)
+    eligible_boundaries = max(0.0, turn_count - trajectory_count)
+    metrics["tito/lineage/splits"] = splits
+    metrics["tito/lineage/split_ratio"] = (
+        splits / eligible_boundaries if eligible_boundaries else 0.0
+    )
+    metrics["tito/lineage/realigns"] = float(merged.get("tito/lineage/realign", 0.0))
+    metrics["tito/parser/model_malformed"] = float(
+        merged.get("tito/parser/model_malformed", 0.0)
+    )
+    metrics["tito/calls/errors"] = float(merged.get("tito/calls/failed", 0.0)) + float(
+        merged.get("tito/calls/rejected", 0.0)
+    )
+    metrics["tito/calls/upstream_retries"] = float(
+        merged.get("tito/calls/upstream_retry_attempts", 0.0)
+    )
+
+    if debug_enabled:
+        for name, value in merged.items():
+            detail_name = name.removeprefix(_TITO_METRIC_ROOT)
+            if detail_name.startswith("debug/"):
+                detail_name = f"artifact/{detail_name.removeprefix('debug/')}"
+            metrics[f"{_TITO_DEBUG_METRIC_ROOT}{detail_name}"] = value
+
+
+def add_tito_sidecar_metrics(
+    metrics: dict[str, Any],
+    prompt_groups: Sequence[PromptGroup],
+) -> None:
+    summaries: list[Mapping[str, Any]] = []
+    debug_values: set[bool] = set()
+    for group in prompt_groups:
+        for metadata in group.run_metadata:
+            value = metadata.get("tito_metrics")
+            if value is None:
+                continue
+            if not isinstance(value, Mapping):
+                raise ValueError("run_metadata.tito_metrics must be a mapping")
+            summaries.append(value)
+            debug_values.add(bool(metadata.get("tito_debug_enabled", False)))
+    if len(debug_values) > 1:
+        raise ValueError("a batch cannot mix TITO debug modes")
+    publish_tito_sidecar_metrics(
+        metrics,
+        summaries,
+        debug_enabled=debug_values == {True},
+    )
 
 
 def datum_target_len(datum: tinker.Datum) -> int:
@@ -142,6 +317,7 @@ def compute_step_metrics(
 
     for pg in prompt_groups:
         all_rewards.extend(pg.rewards)
+    add_tito_sidecar_metrics(metrics, prompt_groups)
     filtered_samples = len(all_rewards)
     completion_tokens = sum(
         completion_len for pg in prompt_groups for completion_len in pg.completion_lens
@@ -162,18 +338,6 @@ def compute_step_metrics(
                 "rollout/trainable_tokens_min": min(trainable_tokens),
             }
         )
-
-    for key in (
-        "history_wipes",
-        "append_token_mismatches",
-    ):
-        values = [
-            int(metadata.get(key) or 0)
-            for pg in prompt_groups
-            for metadata in pg.run_metadata
-        ]
-        if values:
-            metrics[f"rollout/{key}"] = sum(values)
 
     if loop_stats:
         raw_rewards = loop_stats["all_raw_rewards"]

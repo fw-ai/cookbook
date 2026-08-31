@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.observability import compute_inference_observability_metrics
 
 
 class TestGRPOMetrics:
@@ -176,3 +177,19 @@ class TestGRPOMetrics:
         assert torch.equal(loss_a, loss_b)
         assert torch.equal(grad_a, grad_b)
         assert metrics_a["inference_k3"] != metrics_b["inference_k3"]
+
+    def test_inference_drift_preserves_per_sequence_macro_average(self):
+        metrics = compute_inference_observability_metrics(
+            data=[],
+            logprobs_list=[torch.tensor([1.0]), torch.tensor([0.0, 0.0, 0.0])],
+            raw_inf_logprobs=[[0.0], [0.0, 0.0, 0.0]],
+            prompt_lens=[1, 1],
+            policy_loss="grpo",
+        )
+
+        # The one-token and three-token sequences have equal weight. A
+        # token-weighted reduction would return 0.25 instead of 0.5.
+        assert metrics["inference_k1"] == pytest.approx(0.5)
+        assert metrics["inference_k3"] == pytest.approx(
+            (torch.exp(torch.tensor(1.0)).item() - 2.0) / 2.0
+        )

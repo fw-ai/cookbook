@@ -15,7 +15,7 @@ For the user-facing contract (`rollout_fn(sample_prompt) -> RolloutRun`,
 | --- | --- |
 | `rollout/types.py` | `Rollout`, `RolloutRun`, `RolloutSample`, `rollout_to_prompt_group` (trainer packing). |
 | `rollout/assembler.py` | Token-native multi-turn assembly with prefix checks. |
-| `rollout/message.py` | Generic message-in TITO bridge that preserves prior assistant tokens. |
+| `rollout/message.py` | Frozen legacy public-import surface; retained for compatibility, not new integrations. |
 | `rollout/renderer.py` | Optional renderer-backed single-turn helper. |
 | `rollout/remote.py` | Optional service payload packer. |
 
@@ -23,12 +23,11 @@ The correctness-critical path is `TrajectoryAssembler`: every next model
 request must extend the accumulated token sequence, except for an explicit
 generic boundary trim passed by the caller.
 
-`MessageTrajectoryAssembler` wraps it for OpenAI-style message loops:
-preserves prior assistant token IDs exactly; tokenizes only appended `tool` /
-`user` / `system` messages; appends the next assistant generation prompt;
-rejects edits to prior messages; supports bounded rollback to an earlier
-assistant checkpoint.  No model-specific TITO subclasses live here — keep
-tokenizer-specific boundary policy in user code.
+New message-based multi-turn integrations use an SDK `TITOSidecar` inside each
+agent environment through a cookbook harness adapter. The legacy
+`MessageTrajectoryAssembler` and agent utilities remain byte-for-byte stable
+because they are public imports, but no production example depends on them and
+new callers must not extend that island.
 
 ## Tests
 

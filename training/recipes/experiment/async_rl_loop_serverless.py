@@ -59,6 +59,7 @@ from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
+    OverlappedEvaluation,
     RolloutRow,
     TrainingChunk,
 )
@@ -66,6 +67,7 @@ from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import datum_target_len
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
+from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.rl.tis import TISConfig
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
@@ -498,7 +500,10 @@ def run_sampling_preflight(
                 )
                 return result
             finally:
-                await sampler.aclose()
+                try:
+                    await close_rollout_fn(rollout_fn)
+                finally:
+                    await sampler.aclose()
 
         return asyncio.run(evaluate())
     finally:
@@ -627,8 +632,6 @@ def main(
         )
         rollout_context_names = _rollout_context_param_names(rollout_fn)
         evaluation_rollout_fn = make_evaluation_rollout_fn(rollout_fn)
-        last_evaluation_step: int | None = None
-
         if rows is None:
             rows = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         else:
@@ -710,6 +713,7 @@ def main(
                 raw_inference_logprobs,
                 source="raw inference logprob",
             )
+            precomputed_forward = None
             if cfg.anchor_logp == "old_policy":
                 with elapsed_timer("old_policy_forward"):
                     old_policy_result = training_client.forward(
@@ -725,6 +729,7 @@ def main(
                     old_policy_logprobs,
                     source="old-policy logprob",
                 )
+                precomputed_forward = old_policy_result
             else:
                 old_policy_logprobs = rollout_logprobs
             with elapsed_timer("fwd_bwd"):
@@ -742,7 +747,11 @@ def main(
                         tis_config=cfg.tis,
                         raw_inf_logprobs=raw_inference_logprobs,
                     ),
+                    precomputed_forward=precomputed_forward,
                 ).result()
+                result.metrics["custom_forward_reused"] = float(
+                    precomputed_forward is not None
+                )
             _require_inference_metrics(result)
             return {"prompt_groups": groups, "fwd_bwd_result": result}
 
@@ -789,26 +798,33 @@ def main(
             logger.info("[step %d] saved serverless DCP checkpoint: %s", step, path)
             return str(path)
 
-        async def evaluate(step: int, *, force: bool = False) -> None:
-            nonlocal last_evaluation_step
+        async def run_evaluation(step: int) -> None:
             if evaluation_fn is None:
                 return
-            if step == last_evaluation_step:
-                return
-            if not force and step % evaluation_interval:
-                return
             with wall_timer() as span:
-                metrics = await evaluation_fn(step, evaluation_rollout_fn)
-            last_evaluation_step = step
+                try:
+                    metrics = await evaluation_fn(step, evaluation_rollout_fn)
+                except Exception:
+                    logger.exception("evaluation failed at policy step %d", step)
+                    metrics = None
+                    failed = 1.0
+                else:
+                    failed = 0.0
             log_metrics(
                 {
                     "rollout/step": step,
                     "eval/wall_time": span.elapsed,
                     **(metrics or {}),
+                    "eval/failed": failed,
                 },
                 step=step,
                 metrics_file=cfg.metrics_file,
             )
+
+        evaluations = OverlappedEvaluation(
+            run_evaluation if evaluation_fn is not None else None,
+            interval=evaluation_interval,
+        )
 
         async def run_training() -> tuple[int, dict[str, Any], str, list[str]]:
             periodic_checkpoints: list[str] = []
@@ -841,9 +857,9 @@ def main(
                     resolved_rows_fn=lambda: row_loader.data_consumed,
                 )
                 latest_snapshot = initial_snapshot
-                await evaluate(cfg.step_offset, force=True)
                 async with coordinator:
                     telemetry.start(coordinator.snapshot)
+                    evaluations.start(cfg.step_offset, force=True)
                     try:
                         while (batch := await coordinator.next_batch()) is not None:
                             chunk_outputs: list[dict[str, Any]] = []
@@ -864,6 +880,20 @@ def main(
                                 batch.batch_id,
                                 optimizer_batch=batch,
                             )
+                            evaluation_step = evaluations.active_step
+                            if evaluation_step is not None:
+                                with wall_timer() as evaluation_wait_span:
+                                    await evaluations.join()
+                                log_metrics(
+                                    {
+                                        "rollout/step": evaluation_step,
+                                        "eval/weight_sync_wait_time": (
+                                            evaluation_wait_span.elapsed
+                                        ),
+                                    },
+                                    step=evaluation_step,
+                                    metrics_file=cfg.metrics_file,
+                                )
                             with wall_timer() as update_span:
                                 (
                                     next_client,
@@ -895,6 +925,7 @@ def main(
                                 weight_update_time=update_span.elapsed,
                                 learning_rate=optimizer["learning_rate"],
                             )
+                            evaluations.start(batch.batch_id)
                             interval = cfg.dcp_save_interval
                             completed_steps = batch.batch_id - cfg.step_offset
                             if (
@@ -917,10 +948,17 @@ def main(
                                     step=batch.batch_id,
                                     metrics_file=cfg.metrics_file,
                                 )
-                            await evaluate(batch.batch_id)
-                        await evaluate(coordinator.global_step, force=True)
+                        await evaluations.join()
+                        evaluations.start(coordinator.global_step, force=True)
+                        await evaluations.join()
                     finally:
-                        await telemetry.aclose()
+                        try:
+                            await evaluations.cancel()
+                        finally:
+                            try:
+                                await telemetry.aclose()
+                            finally:
+                                await close_rollout_fn(rollout_fn)
                 return (
                     coordinator.global_step,
                     telemetry.final_stats(),

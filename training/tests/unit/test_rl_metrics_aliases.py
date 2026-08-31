@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import tinker
 from tinker.lib.chunked_fwdbwd_helpers import combine_fwd_bwd_output_results
 
@@ -102,8 +103,6 @@ class TestComputeStepMetrics:
             {
                 "segment_count": 2,
                 "trainable_tokens": 3,
-                "history_wipes": 1,
-                "append_token_mismatches": 2,
             }
         ]
 
@@ -121,8 +120,153 @@ class TestComputeStepMetrics:
         assert metrics["rollout/raw_samples"] == 1
         assert metrics["rollout/filtered_samples"] == 1
         assert metrics["rollout/trainable_tokens_mean"] == 3
-        assert metrics["rollout/history_wipes"] == 1
-        assert metrics["rollout/append_token_mismatches"] == 2
+        assert "rollout/history_wipes" not in metrics
+        assert "rollout/append_token_mismatches" not in metrics
+
+    def test_tito_sidecar_summaries_merge_with_weighted_distributions(self):
+        left = _make_prompt_group()
+        right = _make_prompt_group()
+        left.run_metadata = [
+            {
+                "tito_metrics": {
+                    "tito/calls/total": 2.0,
+                    "tito/lineage/new_segment": 2.0,
+                    "tito/lineage/prefix_check": 1.0,
+                    "tito/trajectory/policy_turns_count": 1.0,
+                    "tito/trajectory/policy_turns_sum": 2.0,
+                    "tito/trajectory/policy_turns_mean": 2.0,
+                    "tito/trajectory/policy_turns_min": 2.0,
+                    "tito/trajectory/policy_turns_max": 2.0,
+                    "tito/turn/completion_tokens_count": 2.0,
+                    "tito/turn/completion_tokens_sum": 6.0,
+                    "tito/turn/completion_tokens_mean": 3.0,
+                    "tito/turn/completion_tokens_min": 2.0,
+                    "tito/turn/completion_tokens_max": 4.0,
+                }
+            }
+        ]
+        right.run_metadata = [
+            {
+                "tito_metrics": {
+                    "tito/calls/total": 1.0,
+                    "tito/lineage/new_segment": 1.0,
+                    "tito/lineage/prefix_check": 3.0,
+                    "tito/trajectory/policy_turns_count": 1.0,
+                    "tito/trajectory/policy_turns_sum": 1.0,
+                    "tito/trajectory/policy_turns_mean": 1.0,
+                    "tito/trajectory/policy_turns_min": 1.0,
+                    "tito/trajectory/policy_turns_max": 1.0,
+                    "tito/turn/completion_tokens_count": 1.0,
+                    "tito/turn/completion_tokens_sum": 12.0,
+                    "tito/turn/completion_tokens_mean": 12.0,
+                    "tito/turn/completion_tokens_min": 12.0,
+                    "tito/turn/completion_tokens_max": 12.0,
+                }
+            }
+        ]
+
+        metrics = compute_step_metrics(
+            prompt_groups=[left, right],
+            fwd_bwd_results=[],
+            optim_result=None,
+            n_accum=1,
+            timing_metrics={},
+        )
+
+        assert metrics["tito/turn/count"] == 3
+        assert metrics["tito/turn/output_tokens_mean"] == 6
+        assert metrics["tito/turn/output_tokens_min"] == 2
+        assert metrics["tito/turn/output_tokens_max"] == 12
+        assert metrics["tito/trajectory/count"] == 2
+        assert metrics["tito/lineage/splits"] == 1
+        assert metrics["tito/lineage/split_ratio"] == 1
+        assert "tito/calls/total" not in metrics
+        assert not any(name.startswith("tito/debug/") for name in metrics)
+
+    def test_tito_sidecar_metric_root_is_fail_closed(self):
+        group = _make_prompt_group()
+        group.run_metadata = [{"tito_metrics": {"rollout/tito/calls/total": 1.0}}]
+
+        with pytest.raises(ValueError, match="canonical root"):
+            compute_step_metrics(
+                prompt_groups=[group],
+                fwd_bwd_results=[],
+                optim_result=None,
+                n_accum=1,
+                timing_metrics={},
+            )
+
+    def test_tito_sidecar_distribution_schema_is_fail_closed(self):
+        group = _make_prompt_group()
+        group.run_metadata = [
+            {
+                "tito_metrics": {
+                    "tito/turn/completion_tokens_count": 1.0,
+                }
+            }
+        ]
+
+        with pytest.raises(ValueError, match="lacks count or sum"):
+            compute_step_metrics(
+                prompt_groups=[group],
+                fwd_bwd_results=[],
+                optim_result=None,
+                n_accum=1,
+                timing_metrics={},
+            )
+
+    def test_tito_sidecar_zero_count_distribution_has_no_fabricated_stats(self):
+        group = _make_prompt_group()
+        group.run_metadata = [
+            {
+                "tito_metrics": {
+                    "tito/turn/completion_tokens_count": 0.0,
+                    "tito/turn/completion_tokens_sum": 0.0,
+                }
+            }
+        ]
+
+        metrics = compute_step_metrics(
+            prompt_groups=[group],
+            fwd_bwd_results=[],
+            optim_result=None,
+            n_accum=1,
+            timing_metrics={},
+        )
+
+        base = "tito/turn/output_tokens"
+        assert metrics["tito/turn/count"] == 0
+        assert f"{base}_mean" not in metrics
+        assert f"{base}_min" not in metrics
+        assert f"{base}_max" not in metrics
+
+    def test_tito_debug_mode_publishes_full_internal_metrics(self):
+        group = _make_prompt_group()
+        group.run_metadata = [
+            {
+                "tito_debug_enabled": True,
+                "tito_metrics": {
+                    "tito/calls/total": 2.0,
+                    "tito/turn/completion_tokens_count": 1.0,
+                    "tito/turn/completion_tokens_sum": 4.0,
+                    "tito/turn/completion_tokens_mean": 4.0,
+                    "tito/turn/completion_tokens_min": 4.0,
+                    "tito/turn/completion_tokens_max": 4.0,
+                },
+            }
+        ]
+
+        metrics = compute_step_metrics(
+            prompt_groups=[group],
+            fwd_bwd_results=[],
+            optim_result=None,
+            n_accum=1,
+            timing_metrics={},
+        )
+
+        assert metrics["tito/turn/output_tokens_mean"] == 4
+        assert metrics["tito/debug/calls/total"] == 2
+        assert metrics["tito/debug/turn/completion_tokens_count"] == 1
 
     def test_optimizer_metrics_drop_remote_aliases(self):
         metrics = compute_step_metrics(
@@ -235,6 +379,30 @@ class TestFwdBwdResultAveraging:
         assert metrics["train/loss"] == 2.0
         assert metrics["train/inference_k3"] == 0.25
         assert not any(key.startswith("kld/") for key in metrics)
+
+    def test_inference_drift_preserves_historical_chunk_mean(self):
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=[
+                self._fake_fwd_bwd(
+                    inference_k1=1.0,
+                    inference_k3=2.0,
+                    raw_inference_logprob_coverage=1.0,
+                ),
+                self._fake_fwd_bwd(
+                    inference_k1=3.0,
+                    inference_k3=4.0,
+                    raw_inference_logprob_coverage=0.5,
+                ),
+            ],
+            optim_result=None,
+            n_accum=2,
+            timing_metrics={},
+        )
+
+        assert metrics["train/inference_k1"] == pytest.approx(2.0)
+        assert metrics["train/inference_k3"] == pytest.approx(3.0)
+        assert metrics["train/raw_inference_logprob_coverage"] == pytest.approx(0.75)
 
     def test_single_fwd_bwd_result_is_reported_directly(self):
         """Report a single forward/backward result without changing its metrics."""

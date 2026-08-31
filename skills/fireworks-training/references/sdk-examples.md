@@ -10,7 +10,9 @@ When the user wants "something that just runs", point them at `training/examples
 | GRPO on DeepMath | `training/examples/rl/deepmath/` |
 | Tool-use RL (Frozen Lake) | `training/examples/rl/frozen_lake/` |
 | Async RL single-turn (token-in rollout) | `training/examples/rl/single_turn_token_in/` |
-| Async RL multi-turn (message-in rollout) | `training/examples/rl/multi_turn_message_in/` |
+| Async RL multi-turn (OpenCode/TITO) | `training/examples/rl/harbor/opencode/` |
+| Async RL multi-turn (Pi/TITO) | `training/examples/rl/harbor/pi/` |
+| Async RL multi-turn (Mini-SWE-Agent/TITO) | `training/examples/rl/harbor/mini_swe/` |
 | Multi-hop QA async RL (+ optional IGPO) | `training/examples/multihop_qa/` |
 | Manual hotload-scope tests (PER_TRAINER re-attach, PER_DEPLOYMENT) | `training/examples/manual/` |
 
