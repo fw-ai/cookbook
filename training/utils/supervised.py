@@ -33,7 +33,7 @@ from training.renderer import (
 )
 
 from training.renderer.image_processing import get_image_processor
-from tinker_cookbook.supervised.common import datum_from_model_input_weights
+from training.renderer.supervised import datum_from_model_input_weights
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.minimax_m3 as _minimax_m3_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.muse_glimmer as _muse_glimmer_renderer  # noqa: F401 — triggers register_renderer

@@ -24,13 +24,13 @@ legacy_renderers = importlib.import_module("tinker_cookbook.renderers")
 _DEPENDENCY_OWNED_IMPORT = re.compile(
     r"(?m)^[ \t]*(?:"
     r"from[ \t]+tinker_cookbook\."
-    r"(?:exceptions|image_processing_utils|model_info|renderers|tokenizer_utils)"
+    r"(?:exceptions|image_processing_utils|model_info|renderers|supervised\.common|tokenizer_utils)"
     r"(?:\.[A-Za-z_]\w*)*[ \t]+import\b"
     r"|import[ \t]+tinker_cookbook\."
-    r"(?:exceptions|image_processing_utils|model_info|renderers|tokenizer_utils)"
+    r"(?:exceptions|image_processing_utils|model_info|renderers|supervised\.common|tokenizer_utils)"
     r"(?:\.[A-Za-z_]\w*)*\b"
     r"|from[ \t]+tinker_cookbook[ \t]+import[ \t]+[^#\n]*\b"
-    r"(?:exceptions|image_processing_utils|model_info|renderers|tokenizer_utils)\b"
+    r"(?:exceptions|image_processing_utils|model_info|renderers|supervised\.common|tokenizer_utils)\b"
     r")"
 )
 

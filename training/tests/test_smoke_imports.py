@@ -226,9 +226,11 @@ def test_utils_rl_all_resolvable():
 
 TINKER_COOKBOOK_MODULES = [
     "tinker_cookbook.rl.train",
-    "tinker_cookbook.supervised.train",
-    "tinker_cookbook.supervised.data",
+]
+
+FIREWORKS_OWNED_MODULES = [
     "training.renderer.tokenizer",
+    "training.renderer.supervised",
     "training.renderer",
 ]
 
@@ -236,4 +238,9 @@ TINKER_COOKBOOK_MODULES = [
 @pytest.mark.parametrize("module", TINKER_COOKBOOK_MODULES)
 def test_tinker_cookbook_imports(module: str):
     pytest.importorskip("tinker_cookbook")
+    importlib.import_module(module)
+
+
+@pytest.mark.parametrize("module", FIREWORKS_OWNED_MODULES)
+def test_fireworks_owned_training_imports(module: str):
     importlib.import_module(module)
