@@ -191,6 +191,31 @@ _CAPABILITIES: tuple[ThinkingTraceModelCapability, ...] = (
         ),
     ),
     ThinkingTraceModelCapability(
+        canonical_family="glm5.3-flash",
+        aliases=frozenset(
+            {
+                "zai-org/glm-5.3-flash",
+                "accounts/fireworks/models/glm-5p3-flash",
+            }
+        ),
+        plans=(
+            # Flash changes only the multimodal branches of the template; its
+            # model-native thinking-history default is the same as GLM-5.3.
+            _plan(
+                ThinkingTraceHistoryMode.PRESERVED,
+                "glm53_flash_preserve_thinking",
+                is_default=True,
+                unrolls_multi_turn=False,
+            ),
+            _plan(
+                ThinkingTraceHistoryMode.INTERLEAVED,
+                "glm53_flash_interleaved",
+                is_default=False,
+                unrolls_multi_turn=True,
+            ),
+        ),
+    ),
+    ThinkingTraceModelCapability(
         canonical_family="qwen3.5",
         aliases=frozenset(
             {

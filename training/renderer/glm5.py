@@ -80,21 +80,29 @@ same renderer implementation.
 GLM-5.3 preserves historical reasoning by default and canonicalizes a
 well-formed consecutive tool-result block into the preceding assistant turn's
 tool-call order. The ``glm53`` renderer keeps that behavior separate from the
-legacy GLM-5.2 contract.
+legacy GLM-5.2 contract. GLM-5.3-Flash shares that text contract and adds real
+multimodal branches: its dedicated renderer preserves interleaved images in
+user and tool messages as Tinker ``ImageChunk`` objects. The training backend
+expands each chunk to GLM's begin/image/end token envelope after pixel
+preprocessing.
 
-Multimodal content is left for a future extension.
+Video content is left for a future extension because the public training
+request schema does not yet carry a self-contained video or sampled-frame
+unit.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from typing import Any
 
 import tinker
 import torch
-from training.renderer import register_renderer
+from transformers.image_processing_utils import BaseImageProcessor
+from training.renderer import RendererError, register_renderer
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     RenderContext,
@@ -105,12 +113,13 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     ToolSpec,
     TrainOnWhat,
     UnparsedToolCall,
+    image_to_chunk,
     parse_think_blocks,
 )
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.reasoning_fields import original_reasoning_content
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training.renderer.tokenizer import Tokenizer
 
 _BOS_TEXT = "[gMASK]<sop>"
 _USER_TEXT = "<|user|>"
@@ -139,6 +148,114 @@ For each function call, output the function name and arguments within the follow
     "<arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key>"
     "<arg_value>{arg-value-2}</arg_value>...</tool_call>"
 )
+
+
+class Glm53FlashImageTokenCounter:
+    """Count GLM-5.3-Flash image tokens from the released processor config.
+
+    Transformers 5.5.4 can read the nested config but does not yet register
+    ``Glm5NextImageProcessor``. FireTitan owns pixel preprocessing; rendering
+    only needs the exact patch count declared on each wire ``ImageChunk``.
+    """
+
+    def __init__(
+        self,
+        *,
+        patch_size: int = 14,
+        temporal_patch_size: int = 2,
+        merge_size: int = 2,
+        min_image_tokens: int = 16,
+        max_image_tokens: int = 8000,
+    ) -> None:
+        self.patch_size = int(patch_size)
+        self.temporal_patch_size = int(temporal_patch_size)
+        self.merge_size = int(merge_size)
+        self.min_image_tokens = int(min_image_tokens)
+        self.max_image_tokens = int(max_image_tokens)
+        if min(
+            self.patch_size,
+            self.temporal_patch_size,
+            self.merge_size,
+            self.min_image_tokens,
+        ) <= 0:
+            raise ValueError(
+                "GLM-5.3-Flash image processor dimensions must be positive"
+            )
+        if self.max_image_tokens < self.min_image_tokens:
+            raise ValueError(
+                "GLM-5.3-Flash max_image_tokens must be at least min_image_tokens"
+            )
+
+    @classmethod
+    def from_pretrained(cls, model_name: str) -> "Glm53FlashImageTokenCounter":
+        config, _ = BaseImageProcessor.get_image_processor_dict(model_name)
+        return cls(
+            patch_size=config.get("patch_size", 14),
+            temporal_patch_size=config.get("temporal_patch_size", 2),
+            merge_size=config.get("merge_size", 2),
+            min_image_tokens=config.get("min_image_tokens", 16),
+            max_image_tokens=config.get("max_image_tokens", 8000),
+        )
+
+    def get_number_of_image_patches(
+        self,
+        height: int,
+        width: int,
+        images_kwargs: Mapping[str, Any] | None = None,
+    ) -> int:
+        """Match the official processor's aligned-canvas patch count."""
+        if height <= 0 or width <= 0:
+            raise ValueError(
+                f"Image dimensions must be positive, got {height}x{width}"
+            )
+        images_kwargs = images_kwargs or {}
+        patch_size = int(images_kwargs.get("patch_size", self.patch_size))
+        temporal_factor = int(
+            images_kwargs.get("temporal_patch_size", self.temporal_patch_size)
+        )
+        merge_size = int(images_kwargs.get("merge_size", self.merge_size))
+        min_tokens = int(
+            images_kwargs.get("min_image_tokens", self.min_image_tokens)
+        )
+        max_tokens = int(
+            images_kwargs.get("max_image_tokens", self.max_image_tokens)
+        )
+        factor = patch_size * merge_size
+        min_pixels = min_tokens * temporal_factor * factor**2
+        max_pixels = max_tokens * temporal_factor * factor**2
+
+        def align(value: int) -> int:
+            return math.ceil(value / factor) * factor
+
+        target_height, target_width = align(height), align(width)
+        budget = temporal_factor * target_height * target_width
+        if budget < min_pixels:
+            scale = math.sqrt(min_pixels / (temporal_factor * height * width))
+            target_height = align(max(1, math.ceil(height * scale)))
+            target_width = align(max(1, math.ceil(width * scale)))
+            budget = temporal_factor * target_height * target_width
+
+        if budget > max_pixels:
+            minimum_pixels = temporal_factor * factor**2
+            if max_pixels < minimum_pixels:
+                raise ValueError(
+                    f"max_image_tokens permits {max_pixels} pixels, but "
+                    f"at least {minimum_pixels} are required"
+                )
+            low, high = 1, height
+            target_height = target_width = factor
+            while low <= high:
+                content_height = (low + high) // 2
+                content_width = max(1, math.floor(width * content_height / height))
+                candidate_height = align(content_height)
+                candidate_width = align(content_width)
+                if temporal_factor * candidate_height * candidate_width <= max_pixels:
+                    target_height, target_width = candidate_height, candidate_width
+                    low = content_height + 1
+                else:
+                    high = content_height - 1
+
+        return (target_height // patch_size) * (target_width // patch_size)
 
 
 def _visible_text(content: Any) -> str:
@@ -571,6 +688,12 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
     ) -> None:
         for output_part in output_parts:
             if not output_part:
+                continue
+
+            if isinstance(output_part, tinker.types.ImageChunk):
+                # Image embeddings are context, never token targets, even for
+                # ALL_TOKENS or a trainable tool message.
+                model_input_chunks_weights.append((output_part, 0.0))
                 continue
 
             if (
@@ -1049,6 +1172,126 @@ class GLM53Renderer(GLMMoeDsaRenderer):
         )
 
 
+class GLM53FlashRenderer(GLM53Renderer):
+    """GLM-5.3 text semantics plus the Flash multimodal template branches."""
+
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        *,
+        image_processor: Any | None = None,
+        clear_thinking: bool = False,
+        honor_source_reasoning_fields: bool = True,
+    ) -> None:
+        super().__init__(
+            tokenizer,
+            clear_thinking=clear_thinking,
+            honor_source_reasoning_fields=honor_source_reasoning_fields,
+        )
+        self.image_processor = image_processor
+
+    @staticmethod
+    def _has_image_content(content: Any) -> bool:
+        return isinstance(content, list) and any(
+            isinstance(part, Mapping) and part.get("type") == "image"
+            for part in content
+        )
+
+    def _render_image_content(
+        self,
+        content: Any,
+        *,
+        prefix: str = "",
+        suffix: str = "",
+    ) -> list[tinker.ModelInputChunk]:
+        if self.image_processor is None:
+            raise RendererError(
+                "GLM-5.3-Flash image content requires an image processor; "
+                "build the renderer with image loading enabled."
+            )
+
+        chunks: list[tinker.ModelInputChunk] = []
+        pending_text = prefix
+
+        def flush_text() -> None:
+            nonlocal pending_text
+            if pending_text:
+                chunks.append(
+                    tinker.types.EncodedTextChunk(
+                        tokens=self.tokenizer.encode(
+                            pending_text,
+                            add_special_tokens=False,
+                        )
+                    )
+                )
+                pending_text = ""
+
+        for part in content:
+            if not isinstance(part, Mapping):
+                continue
+            if part.get("type") == "text":
+                pending_text += str(part.get("text", ""))
+            elif part.get("type") == "image":
+                flush_text()
+                image = part.get("image")
+                if image is None:
+                    raise RendererError(
+                        "GLM-5.3-Flash image content is missing the 'image' payload."
+                    )
+                chunks.append(image_to_chunk(image, self.image_processor))
+            # Match the template by dropping unknown content-part types.
+        pending_text += suffix
+        flush_text()
+        return chunks
+
+    def render_message(
+        self,
+        message: Message,
+        ctx: RenderContext,
+        *,
+        user_turn_has_explicit_reasoning: bool | None = None,
+    ) -> RenderedMessage:
+        content = message.get("content")
+        if self._has_image_content(content):
+            if message["role"] not in {"user", "tool"}:
+                raise RendererError(
+                    "GLM-5.3-Flash images are supported only in user or tool messages"
+                )
+            if message["role"] == "user":
+                return RenderedMessage(
+                    header=tinker.types.EncodedTextChunk(
+                        tokens=self.tokenizer.encode(
+                            "<|user|>", add_special_tokens=False
+                        )
+                    ),
+                    output=self._render_image_content(content),
+                )
+
+            prev_is_tool = (
+                ctx.prev_message is not None
+                and ctx.prev_message.get("role") == "tool"
+            )
+            return RenderedMessage(
+                header=tinker.types.EncodedTextChunk(
+                    tokens=self.tokenizer.encode(
+                        "" if prev_is_tool else "<|observation|>",
+                        add_special_tokens=False,
+                    )
+                ),
+                output=self._render_image_content(
+                    content,
+                    prefix="<tool_response>",
+                    suffix="</tool_response>",
+                ),
+            )
+
+        return super().render_message(
+            message,
+            ctx,
+            user_turn_has_explicit_reasoning=user_turn_has_explicit_reasoning,
+        )
+
+
 def _glm5_factory(tokenizer: Tokenizer, image_processor=None) -> GLM5Renderer:
     del image_processor
     return GLM5Renderer(tokenizer)
@@ -1128,6 +1371,35 @@ def _glm53_preserve_thinking_factory(
     return GLM53Renderer(tokenizer, clear_thinking=False)
 
 
+def _glm53_flash_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLM53FlashRenderer:
+    return GLM53FlashRenderer(tokenizer, image_processor=image_processor)
+
+
+def _glm53_flash_interleaved_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLM53FlashRenderer:
+    return GLM53FlashRenderer(
+        tokenizer,
+        image_processor=image_processor,
+        clear_thinking=True,
+    )
+
+
+def _glm53_flash_preserve_thinking_factory(
+    tokenizer: Tokenizer,
+    image_processor=None,
+) -> GLM53FlashRenderer:
+    return GLM53FlashRenderer(
+        tokenizer,
+        image_processor=image_processor,
+        clear_thinking=False,
+    )
+
+
 register_renderer("glm5", _glm5_factory)
 # Keep the existing concrete names above available for legacy direct callers.
 # Managed semantic modes materialize the new names below, so future
@@ -1143,3 +1415,9 @@ register_renderer(
 register_renderer("glm53", _glm53_factory)
 register_renderer("glm53_interleaved", _glm53_interleaved_factory)
 register_renderer("glm53_preserve_thinking", _glm53_preserve_thinking_factory)
+register_renderer("glm53_flash", _glm53_flash_factory)
+register_renderer("glm53_flash_interleaved", _glm53_flash_interleaved_factory)
+register_renderer(
+    "glm53_flash_preserve_thinking",
+    _glm53_flash_preserve_thinking_factory,
+)

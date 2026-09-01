@@ -14,7 +14,7 @@ from typing import cast
 
 import tinker
 
-from tinker_cookbook.image_processing_utils import ImageProcessor
+from training._vendor.tinker_cookbook_0_4_3.image_processing_utils import ImageProcessor
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     ImagePart,
     ImageProcessorProtocol,
@@ -33,7 +33,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     parse_response_for_stop_token,
     remove_thinking,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
 
 
 def _merge_consecutive_text_parts(

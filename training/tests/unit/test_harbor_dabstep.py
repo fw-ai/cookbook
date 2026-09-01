@@ -17,7 +17,7 @@ from training.examples.rl.harbor.recipes.dabstep.manifest import (
 from training.examples.rl.harbor.recipes.dabstep import (
     prepare_tasks as prepare_dabstep_tasks,
 )
-from training.examples.rl.harbor.recipes.dabstep.service import (
+from training.examples.rl.harbor.recipes.dabstep.dataset import (
     DEFAULT_WAVE_SIZE,
     FrozenDABstepDataset,
     ProgressiveDABstepTasks,
@@ -25,6 +25,7 @@ from training.examples.rl.harbor.recipes.dabstep.service import (
     make_progressive_rollout_factory,
     shuffle_dataset_for_run,
 )
+from training.examples.rl.harbor.recipes.dabstep import train_pi as dabstep_train
 from training.examples.rl.harbor.tito.evaluate import (
     evaluate_rows,
     make_fixed_evaluation,
@@ -186,7 +187,7 @@ def test_prepare_dabstep_tasks_rejects_unknown_scorer(tmp_path):
         )
 
 
-def test_service_dataset_freezes_complete_snapshot_order(tmp_path, monkeypatch):
+def test_dabstep_dataset_freezes_complete_snapshot_order(tmp_path, monkeypatch):
     names = ("task-2", "task-1", "task-4", "task-3")
     tasks = tmp_path / "tasks"
     tasks.mkdir()
@@ -209,12 +210,12 @@ def test_service_dataset_freezes_complete_snapshot_order(tmp_path, monkeypatch):
         json.dumps(snapshot), encoding="utf-8"
     )
     monkeypatch.setattr(
-        "training.examples.rl.harbor.recipes.dabstep.service."
+        "training.examples.rl.harbor.recipes.dabstep.dataset."
         "EXPECTED_DEFAULT_SPLIT_TASKS",
         4,
     )
     monkeypatch.setattr(
-        "training.examples.rl.harbor.recipes.dabstep.service._directory_sha256",
+        "training.examples.rl.harbor.recipes.dabstep.dataset._directory_sha256",
         lambda path: f"hash-{path.name}",
     )
 
@@ -226,7 +227,7 @@ def test_service_dataset_freezes_complete_snapshot_order(tmp_path, monkeypatch):
     assert json.loads(dataset.manifest_path.read_text())["task_names"] == list(names)
 
 
-def test_service_dataset_persists_seeded_run_order(tmp_path):
+def test_dabstep_dataset_persists_seeded_run_order(tmp_path):
     names = tuple(f"task-{index}" for index in range(8))
     dataset = FrozenDABstepDataset(
         task_root=tmp_path,
@@ -254,7 +255,80 @@ def test_service_dataset_persists_seeded_run_order(tmp_path):
     assert DEFAULT_WAVE_SIZE == 64
 
 
-def test_progressive_service_prepares_only_sequential_training_waves(tmp_path):
+def test_dabstep_pi_recipe_uses_sdk_managed_resources_and_offpolicy_two(tmp_path):
+    args = dabstep_train.parse_args(
+        [
+            "--base-model",
+            "accounts/example/models/policy",
+            "--tokenizer-model",
+            "example/tokenizer",
+            "--renderer-name",
+            "example-renderer",
+            "--harbor-dataset",
+            str(tmp_path / "dataset"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--shuffle-seed",
+            "17",
+        ]
+    )
+
+    config = dabstep_train._build_config(args, run_dir=tmp_path, row_count=450)
+
+    assert config.completions_per_prompt == 8
+    assert config.prompt_groups_per_step == 8
+    assert config.pipeline_chunks_per_step == 2
+    assert config.max_head_offpolicy_versions == 2
+    assert config.server_side_grpo is True
+    assert config.trainer.job_id is None
+    assert config.trainer.training_shape_id is None
+    assert config.deployment.deployment_id is None
+    assert config.deployment.deployment_shape is None
+    assert config.deployment.hot_load_trainer_job is None
+    assert config.cleanup_on_exit is True
+    assert not hasattr(args, "training_shape_id")
+    assert not hasattr(args, "deployment_shape")
+
+
+def test_dabstep_launch_manifest_records_automatic_resource_selection(tmp_path):
+    args = dabstep_train.parse_args(
+        [
+            "--base-model",
+            "accounts/example/models/policy",
+            "--tokenizer-model",
+            "example/tokenizer",
+            "--renderer-name",
+            "example-renderer",
+            "--harbor-dataset",
+            str(tmp_path / "dataset"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--shuffle-seed",
+            "17",
+        ]
+    )
+    output = tmp_path / "launch.json"
+
+    dabstep_train._write_launch_manifest(
+        output,
+        args=args,
+        task_names=("task-a", "task-b"),
+        evaluation_tasks=("task-a",),
+        dataset_manifest_sha256="a" * 64,
+    )
+
+    document = json.loads(output.read_text())
+    assert document["harness"] == "pi"
+    assert document["environment"] == "e2b"
+    assert document["resources"] == {
+        "cleanup_on_exit": True,
+        "replica_count": 4,
+        "selection": "automatic",
+    }
+    assert document["training"]["max_head_offpolicy_versions"] == 2
+
+
+def test_progressive_dabstep_prepares_only_sequential_training_waves(tmp_path):
     names = tuple(f"task-{index}" for index in range(6))
     dataset = FrozenDABstepDataset(
         task_root=tmp_path,

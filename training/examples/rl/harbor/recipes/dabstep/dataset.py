@@ -1,4 +1,4 @@
-"""First-class DABstep rows and progressive Harbor environment preparation."""
+"""DABstep dataset verification and progressive Harbor preparation."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def _directory_sha256(path: Path) -> str:
         from dirhash import dirhash
     except ImportError as exc:
         raise RuntimeError(
-            "DABstep service preparation requires the example-only 'dirhash' dependency"
+            "DABstep preparation requires the example-only 'dirhash' dependency"
         ) from exc
     return str(dirhash(str(path), "sha256"))
 
@@ -137,7 +137,7 @@ def freeze_default_split(
         or len(set(resolved_evaluation_tasks)) != 4
         or not set(resolved_evaluation_tasks) <= set(names)
     ):
-        raise ValueError("DABstep service evaluation requires four dataset tasks")
+        raise ValueError("DABstep evaluation requires four dataset tasks")
     if hash_workers < 1:
         raise ValueError("hash_workers must be positive")
 

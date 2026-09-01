@@ -32,11 +32,12 @@ from training.renderer import (
     get_renderer,
 )
 
-from tinker_cookbook.image_processing_utils import get_image_processor
+from training.renderer.image_processing import get_image_processor
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.minimax_m3 as _minimax_m3_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.muse_glimmer as _muse_glimmer_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.glm5 as _glm5_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 — split override
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
@@ -302,9 +303,18 @@ def resolve_renderer_name(
         or "deepseekv4" in normalized_model_name
     ):
         return "deepseek_v4"
+    # GLM-5.3-Flash shares GLM-5.3's text/tool contract but replaces the
+    # text-only model's unsupported-media reminder with real image/video/audio
+    # branches. Resolve it first so image capability cannot leak to GLM-5.3.
+    if (
+        "glm-5p3-flash" in normalized_model_name
+        or "glm-5.3-flash" in normalized_model_name
+    ):
+        return "glm53_flash"
     # GLM-5.3 keeps the GLM-5.2 wire format but changes the default thinking
     # history policy and adds ID-aware tool-result ordering. Keep it on a
-    # dedicated renderer so new aliases cannot silently inherit 5.2 semantics.
+    # dedicated text-only renderer so new aliases cannot silently inherit 5.2
+    # semantics or Flash's multimodal behavior.
     if "glm-5p3" in normalized_model_name or "glm-5.3" in normalized_model_name:
         return "glm53"
     # ZhipuAI GLM-5.2 keeps GLM-5 role/tool tags, but its shipped template
@@ -588,6 +598,15 @@ def _get_image_processor_with_remote_code_default(
             tokenizer_model
         )
 
+    if renderer_name in {
+        "glm53_flash",
+        "glm53_flash_interleaved",
+        "glm53_flash_preserve_thinking",
+    }:
+        return _glm5_renderer.Glm53FlashImageTokenCounter.from_pretrained(
+            tokenizer_model
+        )
+
     if "HF_TRUST_REMOTE_CODE" in os.environ:
         return get_image_processor(tokenizer_model)
 
@@ -620,6 +639,7 @@ def renderer_supports_images(renderer_name: str) -> bool:
             "kimi_k27",
             "kimi_k3",
             "muse_glimmer",
+            "glm53_flash",
         )
     )
 
@@ -631,7 +651,13 @@ def renderer_supports_tool_images(renderer_name: str) -> bool:
     Keep this allowlist explicit so managed validation cannot admit a role that
     a vision renderer has not implemented and tested.
     """
-    return renderer_name in {"kimi_k3", "kimi_k3_disable_thinking"}
+    return renderer_name in {
+        "glm53_flash",
+        "glm53_flash_interleaved",
+        "glm53_flash_preserve_thinking",
+        "kimi_k3",
+        "kimi_k3_disable_thinking",
+    }
 
 
 logger = logging.getLogger(__name__)

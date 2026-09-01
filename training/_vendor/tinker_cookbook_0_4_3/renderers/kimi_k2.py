@@ -26,7 +26,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     parse_response_for_stop_token,
     parse_think_blocks,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
 
 _TOOL_CALLS_SECTION_RE = re.compile(
     r"<\|tool_calls_section_begin\|>(.*?)<\|tool_calls_section_end\|>"

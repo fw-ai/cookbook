@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from tinker_cookbook.image_processing_utils import ImageProcessor
+from training.renderer.image_processing import ImageProcessor
 from training.renderer import register_renderer
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, ToolSpec
 from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k2_5_tool_declaration_ts import (
@@ -29,7 +29,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k2_5_tool_declaration
 from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k26 import (
     KimiK26PreserveThinkingRenderer as _UpstreamKimiK26PreserveThinkingRenderer,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training.renderer.tokenizer import Tokenizer
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.kimi_k26 import (

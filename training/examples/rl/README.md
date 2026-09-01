@@ -24,11 +24,12 @@ The same structure supports local Docker and E2B environments:
 The current task-oriented recipes include:
 
 - [`harbor/recipes/deep_swe/`](./harbor/recipes/deep_swe/) — DeepSWE task preparation.
-- [`harbor/recipes/dabstep/`](./harbor/recipes/dabstep/) — DABstep preparation and training workflows.
+- [`harbor/recipes/dabstep/`](./harbor/recipes/dabstep/) — DABstep training through either the OpenCode serverless loop or Pi with E2B and SDK-managed resources.
 - [`harbor/recipes/terminal_bench/`](./harbor/recipes/terminal_bench/) — Terminal-Bench training with Harbor and OpenCode.
 
-Pi is the default reference harness for DeepSWE. OpenCode and Mini-SWE-Agent
-are alternate adapters over the same Harbor and TITO boundaries. The sidecar is
+Pi is the default reference harness for DeepSWE and the managed DABstep recipe.
+OpenCode drives the DABstep serverless recipe and Terminal-Bench; Mini-SWE-Agent
+is another adapter over the same Harbor and TITO boundaries. The sidecar is
 harness-neutral: harness-specific parsing, events, and process behavior remain
 inside the corresponding adapter.
 

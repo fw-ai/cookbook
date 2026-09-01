@@ -383,9 +383,9 @@ def test_qwen3_5_multimodal_adapter_matches_independent_hf_ground_truth() -> Non
     production regression by appending a different thinking prefix.
     """
     try:
-        from tinker_cookbook.image_processing_utils import get_image_processor
+        from training.renderer.image_processing import get_image_processor
         from training.renderer import get_renderer
-        from tinker_cookbook.tokenizer_utils import get_tokenizer
+        from training.renderer.tokenizer import get_tokenizer
 
         import training.renderer  # noqa: F401 (register local renderer overrides)
         from training.utils.supervised import normalize_messages

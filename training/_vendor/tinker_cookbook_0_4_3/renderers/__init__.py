@@ -9,7 +9,7 @@ from collections.abc import Callable
 from typing import Any
 
 from training._vendor.tinker_cookbook_0_4_3.exceptions import RendererError
-from tinker_cookbook.image_processing_utils import ImageProcessor
+from training._vendor.tinker_cookbook_0_4_3.image_processing_utils import ImageProcessor
 
 # Types and utilities used by external code
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
@@ -39,7 +39,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     get_text_content,
     parse_content_blocks,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
 
 # Global registry for custom renderer factories
 _CUSTOM_RENDERER_REGISTRY: dict[str, Callable[[Tokenizer, Any], Renderer]] = {}
@@ -164,7 +164,7 @@ def get_renderer(
     Example::
 
         from tinker_cookbook import renderers
-        from tinker_cookbook.tokenizer_utils import get_tokenizer
+        from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import get_tokenizer
 
         tokenizer = get_tokenizer("Qwen/Qwen3-8B")
         renderer = renderers.get_renderer("qwen3", tokenizer)

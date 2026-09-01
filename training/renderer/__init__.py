@@ -16,6 +16,7 @@ templates strip historical thinking but ship without a
 shadows the upstream registration.
 """
 
+from training._vendor.tinker_cookbook_0_4_3.exceptions import RendererError as RendererError
 from training._vendor.tinker_cookbook_0_4_3.renderers import *  # noqa: F403
 
 from training.renderer import deepseek_v4 as _deepseek_v4  # noqa: F401  (registers "deepseek_v4")

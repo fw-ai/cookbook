@@ -157,7 +157,7 @@ _CODE_REVIEW_HF_INPUT = [
 def _load_tokenizer():
     """Try to load the Qwen3.6-27B tokenizer; skip cleanly if unreachable."""
     try:
-        from tinker_cookbook.tokenizer_utils import get_tokenizer
+        from training.renderer.tokenizer import get_tokenizer
 
         tokenizer = get_tokenizer(_TOKENIZER_MODEL)
     except (OSError, ValueError, RuntimeError) as exc:

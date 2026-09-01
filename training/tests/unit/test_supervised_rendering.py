@@ -1137,6 +1137,46 @@ def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
     assert calls == [("qwen3_vl_instruct", "image-processor")]
 
 
+def test_build_renderer_uses_glm53_flash_token_counter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object | None]] = []
+
+    def fake_from_pretrained(model_name: str) -> str:
+        assert model_name == "zai-org/GLM-5.3-Flash"
+        return "glm53-flash-image-token-counter"
+
+    def fake_get_renderer(
+        name: str,
+        _tokenizer: object,
+        image_processor: object | None = None,
+    ) -> str:
+        calls.append((name, image_processor))
+        return "renderer"
+
+    monkeypatch.setattr(
+        "training.utils.supervised._glm5_renderer.Glm53FlashImageTokenCounter.from_pretrained",
+        fake_from_pretrained,
+    )
+    monkeypatch.setattr(
+        "training.utils.supervised.get_renderer",
+        fake_get_renderer,
+    )
+
+    renderer = build_renderer(
+        tokenizer="tok",
+        tokenizer_model="zai-org/GLM-5.3-Flash",
+    )
+
+    assert renderer == "renderer"
+    assert calls == [
+        (
+            "glm53_flash_preserve_thinking",
+            "glm53-flash-image-token-counter",
+        )
+    ]
+
+
 def test_build_renderer_from_resolved_name_loads_image_processor_by_default(
     monkeypatch,
 ):
@@ -1573,6 +1613,11 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
     assert resolve_renderer_name("zai-org/GLM-5.3") == "glm53"
     assert resolve_renderer_name("accounts/fireworks/models/glm-5p3") == "glm53"
     assert resolve_renderer_name("custom/glm-5p3-finetune") == "glm53"
+    assert resolve_renderer_name("zai-org/GLM-5.3-Flash") == "glm53_flash"
+    assert (
+        resolve_renderer_name("accounts/fireworks/models/glm-5p3-flash")
+        == "glm53_flash"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1585,6 +1630,12 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
         ("qwen3_8", True),
         ("kimi_k25", True),
         ("muse_glimmer", True),
+        ("glm53", False),
+        ("glm53_interleaved", False),
+        ("glm53_preserve_thinking", False),
+        ("glm53_flash", True),
+        ("glm53_flash_interleaved", True),
+        ("glm53_flash_preserve_thinking", True),
         ("glm_moe_dsa", False),
         ("deepseek_v4", False),
     ],
@@ -1603,6 +1654,12 @@ def test_renderer_supports_images_matches_renderer_capability(
         ("kimi_k3_disable_thinking", True),
         ("qwen3_vl_instruct", False),
         ("muse_glimmer", False),
+        ("glm53", False),
+        ("glm53_interleaved", False),
+        ("glm53_preserve_thinking", False),
+        ("glm53_flash", True),
+        ("glm53_flash_interleaved", True),
+        ("glm53_flash_preserve_thinking", True),
         ("deepseek_v4", False),
     ],
 )

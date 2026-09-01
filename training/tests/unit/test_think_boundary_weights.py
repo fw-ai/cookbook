@@ -61,7 +61,7 @@ _WITH_STRING_REASONING = _PROMPT + [
 
 def _load_tokenizer(model: str):
     try:
-        from tinker_cookbook.tokenizer_utils import get_tokenizer
+        from training.renderer.tokenizer import get_tokenizer
 
         return get_tokenizer(model)
     except (OSError, ValueError, RuntimeError) as exc:

@@ -69,6 +69,13 @@ class _StringTokenizer:
             [False, True],
         ),
         (
+            "zai-org/GLM-5.3-Flash",
+            "glm5.3-flash",
+            ["preserved", "interleaved"],
+            "glm53_flash_preserve_thinking",
+            [False, True],
+        ),
+        (
             "Qwen/Qwen3.5-35B-A3B",
             "qwen3.5",
             ["interleaved"],
@@ -173,6 +180,7 @@ def test_legacy_concrete_names_are_not_rebound_to_corrected_adapters() -> None:
         "glm5": "GLM5Renderer",
         "glm_moe_dsa": "GLMMoeDsaRenderer",
         "glm53": "GLM53Renderer",
+        "glm53_flash": "GLM53FlashRenderer",
         "kimi_k27_code": "KimiK27CodeRenderer",
     }
 
@@ -215,6 +223,12 @@ def test_registered_aliases_are_exact_and_case_insensitive() -> None:
         get_thinking_trace_model_capability("accounts/fireworks/models/glm-5p3")
         .canonical_family
         == "glm5.3"
+    )
+    assert (
+        get_thinking_trace_model_capability(
+            "accounts/fireworks/models/glm-5p3-flash"
+        ).canonical_family
+        == "glm5.3-flash"
     )
 
     # The legacy default resolver may understand custom/fine-tuned names, but
