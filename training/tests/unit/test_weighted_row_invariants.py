@@ -96,6 +96,9 @@ _EXTRA_TOKENIZERS = {
     "glm_moe_dsa": "zai-org/GLM-5.2",
     "glm53_interleaved": "zai-org/GLM-5.3",
     "glm53_preserve_thinking": "zai-org/GLM-5.3",
+    "glm53_flash": "zai-org/GLM-5.3-Flash",
+    "glm53_flash_interleaved": "zai-org/GLM-5.3-Flash",
+    "glm53_flash_preserve_thinking": "zai-org/GLM-5.3-Flash",
     "kimi_k25": "moonshotai/Kimi-K2.5",
     "kimi_k27_code": "moonshotai/Kimi-K2.7-Code",
 }
