@@ -56,7 +56,7 @@ from typing import Any
 import tinker
 from fireworks.training.sdk import FireworksClient, FiretitanServiceClient
 from training.renderer import get_text_content
-from tinker_cookbook.tokenizer_utils import get_tokenizer
+from training.renderer.tokenizer import get_tokenizer
 
 try:  # Load FIREWORKS_API_KEY / FIREWORKS_BASE_URL from a local .env if present.
     from dotenv import load_dotenv

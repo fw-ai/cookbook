@@ -31,7 +31,7 @@ from functools import cache
 from typing import Any
 
 from training.renderer import get_renderer
-from tinker_cookbook.tokenizer_utils import get_tokenizer
+from training.renderer.tokenizer import get_tokenizer
 from transformers import AutoTokenizer
 
 # Importing the cookbook renderer package registers cookbook-local

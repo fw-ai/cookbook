@@ -30,7 +30,7 @@ import torch
 from PIL import Image
 
 from training._vendor.tinker_cookbook_0_4_3.exceptions import RendererError
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -1146,12 +1146,12 @@ def _unpickle_renderer(
     so reconstruction cost is negligible after first call.
     """
     from training._vendor.tinker_cookbook_0_4_3.renderers import get_renderer
-    from tinker_cookbook.tokenizer_utils import get_tokenizer
+    from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import get_tokenizer
 
     tokenizer = get_tokenizer(model_name)
     image_processor = None
     if has_image_processor:
-        from tinker_cookbook.image_processing_utils import get_image_processor
+        from training._vendor.tinker_cookbook_0_4_3.image_processing_utils import get_image_processor
 
         image_processor = get_image_processor(model_name)
     return get_renderer(renderer_name, tokenizer, image_processor, model_name=model_name)

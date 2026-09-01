@@ -101,9 +101,8 @@ from typing import Any
 
 import tinker
 import torch
-from tinker_cookbook.exceptions import RendererError
 from transformers.image_processing_utils import BaseImageProcessor
-from training.renderer import register_renderer
+from training.renderer import RendererError, register_renderer
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
     RenderContext,
@@ -120,7 +119,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.reasoning_fields import original_reasoning_content
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training.renderer.tokenizer import Tokenizer
 
 _BOS_TEXT = "[gMASK]<sop>"
 _USER_TEXT = "<|user|>"

@@ -5,7 +5,7 @@ from typing import cast
 import tinker
 
 from training._vendor.tinker_cookbook_0_4_3.exceptions import RendererError
-from tinker_cookbook.image_processing_utils import ImageProcessor
+from training._vendor.tinker_cookbook_0_4_3.image_processing_utils import ImageProcessor
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     ContentPart,
     ImageProcessorProtocol,
@@ -16,7 +16,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
 )
 from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k2 import KimiK2Renderer
 from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k2_5_tool_declaration_ts import encode_tools_to_typescript_style
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
 
 
 class KimiK25Renderer(KimiK2Renderer):

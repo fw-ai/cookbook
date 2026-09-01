@@ -24,7 +24,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     UnparsedToolCall,
     parse_response_for_stop_token,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training.renderer.tokenizer import Tokenizer
 
 ThinkingMode = Literal["enabled", "disabled", "adaptive"]
 

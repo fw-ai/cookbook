@@ -55,7 +55,7 @@ from typing import Any
 
 import tinker
 from fireworks.training.sdk import FiretitanServiceClient
-from tinker_cookbook.tokenizer_utils import get_tokenizer
+from training.renderer.tokenizer import get_tokenizer
 
 try:  # Load env vars from a local .env if present.
     from dotenv import load_dotenv

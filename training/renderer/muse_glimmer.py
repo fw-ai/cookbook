@@ -21,7 +21,7 @@ from typing import Any
 import tinker
 import torch
 from jinja2.exceptions import TemplateError
-from tinker_cookbook.exceptions import RendererError
+from training.renderer import RendererError
 from training.renderer import register_renderer
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
@@ -36,7 +36,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     UnparsedToolCall,
     image_to_chunk,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training.renderer.tokenizer import Tokenizer
 
 from training.renderer.message_weights import untrained_synthesized_context
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin

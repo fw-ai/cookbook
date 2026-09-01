@@ -10,10 +10,9 @@ import pytest
 import tinker
 import transformers
 from PIL import Image
-from tinker_cookbook.exceptions import RendererError
 
 import training.renderer.glm5  # noqa: F401 - registers glm53
-from training.renderer import get_renderer
+from training.renderer import RendererError, get_renderer
 from training.renderer.glm5 import Glm53FlashImageTokenCounter
 from training.utils.supervised import (
     build_tool_prefixed_messages,

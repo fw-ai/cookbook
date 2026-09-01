@@ -26,7 +26,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     ensure_list,
     ensure_text,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
 
 # =============================================================================
 # TypeScript formatting utilities (stateless, used for Harmony tool definitions)

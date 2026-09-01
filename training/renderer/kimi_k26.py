@@ -13,7 +13,7 @@ keeps a multi-turn conversation in one supervised datum.
 
 from __future__ import annotations
 
-from tinker_cookbook.image_processing_utils import ImageProcessor
+from training.renderer.image_processing import ImageProcessor
 from training.renderer import register_renderer
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
@@ -27,7 +27,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k25 import (
 from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k26 import (
     KimiK26PreserveThinkingRenderer as _TinkerKimiK26PreserveThinkingRenderer,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training.renderer.tokenizer import Tokenizer
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.reasoning_fields import original_reasoning

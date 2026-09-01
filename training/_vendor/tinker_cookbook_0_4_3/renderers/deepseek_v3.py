@@ -27,7 +27,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     parse_response_for_stop_token,
     parse_think_blocks,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
 
 
 class _DeepSeekV3BaseRenderer(Renderer):

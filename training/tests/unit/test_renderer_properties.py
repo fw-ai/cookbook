@@ -51,7 +51,7 @@ import pytest
 # kimi_k27_code, ...) under training._vendor.tinker_cookbook_0_4_3.renderers.get_renderer.
 import training.renderer  # noqa: F401
 from training.renderer import Renderer, TrainOnWhat, get_renderer
-from tinker_cookbook.tokenizer_utils import Tokenizer, get_tokenizer
+from training.renderer.tokenizer import Tokenizer, get_tokenizer
 from training.renderer.verifier.utils.hf_parity import (
     compare_renderer_to_hf,
     format_divergence,

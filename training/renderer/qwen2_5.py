@@ -24,7 +24,7 @@ from typing import Any, cast
 
 import tinker
 import torch
-from tinker_cookbook.exceptions import RendererError
+from training.renderer import RendererError
 from training.renderer import register_renderer
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
@@ -39,7 +39,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     parse_content_blocks,
     parse_response_for_stop_token,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training.renderer.tokenizer import Tokenizer
 
 
 DEFAULT_SYSTEM_PROMPT = (

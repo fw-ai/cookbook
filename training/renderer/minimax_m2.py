@@ -30,7 +30,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     parse_response_for_stop_token,
     parse_think_blocks,
 )
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training.renderer.tokenizer import Tokenizer
 
 from training.renderer.message_weights import untrained_synthesized_context
 

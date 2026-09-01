@@ -23,9 +23,14 @@ legacy_renderers = importlib.import_module("tinker_cookbook.renderers")
 
 _DEPENDENCY_OWNED_IMPORT = re.compile(
     r"(?m)^[ \t]*(?:"
-    r"from[ \t]+tinker_cookbook\.(?:model_info|renderers)(?:\.[A-Za-z_]\w*)*[ \t]+import\b"
-    r"|import[ \t]+tinker_cookbook\.(?:model_info|renderers)(?:\.[A-Za-z_]\w*)*\b"
-    r"|from[ \t]+tinker_cookbook[ \t]+import[ \t]+[^#\n]*\b(?:model_info|renderers)\b"
+    r"from[ \t]+tinker_cookbook\."
+    r"(?:exceptions|image_processing_utils|model_info|renderers|tokenizer_utils)"
+    r"(?:\.[A-Za-z_]\w*)*[ \t]+import\b"
+    r"|import[ \t]+tinker_cookbook\."
+    r"(?:exceptions|image_processing_utils|model_info|renderers|tokenizer_utils)"
+    r"(?:\.[A-Za-z_]\w*)*\b"
+    r"|from[ \t]+tinker_cookbook[ \t]+import[ \t]+[^#\n]*\b"
+    r"(?:exceptions|image_processing_utils|model_info|renderers|tokenizer_utils)\b"
     r")"
 )
 
@@ -174,7 +179,7 @@ def test_model_routing_matches_pinned_package() -> None:
     ]
 
 
-def test_no_consumer_imports_dependency_owned_renderer_or_routing_modules() -> None:
+def test_no_consumer_imports_migrated_dependency_owned_modules() -> None:
     repository_root = Path(
         subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -208,7 +213,7 @@ def test_no_consumer_imports_dependency_owned_renderer_or_routing_modules() -> N
             line_number = source.count("\n", 0, match.start()) + 1
             forbidden.append(f"{relative_path}:{line_number}")
 
-    assert not forbidden, "dependency-owned renderer/routing imports remain: " + ", ".join(forbidden)
+    assert not forbidden, "dependency-owned migrated imports remain: " + ", ".join(forbidden)
 
 
 @pytest.mark.parametrize("name", ["not-a-renderer", "", "qwen-unknown"])

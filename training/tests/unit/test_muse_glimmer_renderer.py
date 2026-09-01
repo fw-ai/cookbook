@@ -9,7 +9,7 @@ import tinker
 from jinja2.exceptions import TemplateError
 from tinker._compat import model_dump
 from tinker.lib._pydantic_conv import to_pydantic_request
-from tinker_cookbook.exceptions import RendererError
+from training.renderer import RendererError
 
 from training.renderer.muse_glimmer import (
     _TOOL_ARGUMENT_ERROR,

@@ -8,9 +8,9 @@ therefore dispatch directly to ``KimiK25Renderer`` /
 preserve-thinking variant lives here as a thin subclass.
 """
 
-from tinker_cookbook.image_processing_utils import ImageProcessor
+from training._vendor.tinker_cookbook_0_4_3.image_processing_utils import ImageProcessor
 from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k25 import KimiK25Renderer
-from tinker_cookbook.tokenizer_utils import Tokenizer
+from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
 
 
 class KimiK26PreserveThinkingRenderer(KimiK25Renderer):
