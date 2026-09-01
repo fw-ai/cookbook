@@ -6,8 +6,9 @@ This package keeps two independent DABstep execution paths:
   `async_rl_loop_serverless`. It uses the pinned 67-task training manifest,
   eight holdouts, and optional six-task sampling preflight described in the
   [OpenCode guide](../../opencode/README.md#pinned-dabstep-reproduction).
-- `train_pi.py` runs the complete 450-task default split through Pi, Harbor
-  E2B, an environment-local TITO sidecar, and the managed `async_rl_loop`.
+- [`../train_pi.py`](../train_pi.py) is the top-level Pi entrypoint and defaults
+  to the complete 450-task DABstep split through Harbor E2B, an
+  environment-local TITO sidecar, and the managed `async_rl_loop`.
   The SDK creates compatible trainer and hot-load deployment resources; this
   command accepts no resource IDs or shape arguments.
 
@@ -39,7 +40,7 @@ export FIREWORKS_API_KEY=...
 export E2B_API_KEY=...
 export WANDB_API_KEY=...  # only when --wandb-entity is set
 
-uv run python -m training.examples.rl.harbor.recipes.dabstep.train_pi \
+uv run python -m training.examples.rl.harbor.recipes.train_pi \
   --harbor-dataset ./datasets/dabstep \
   --run-dir ./runs/dabstep-pi \
   --shuffle-seed 42 \

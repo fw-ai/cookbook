@@ -21,6 +21,11 @@ The same structure supports local Docker and E2B environments:
 | Harbor and TITO integration | [`harbor/tito/`](./harbor/tito/) | Own the Harbor trial, environment-local sidecar, exact-token trajectory, artifacts, and cleanup |
 | Shared training recipe | [`recipes/async_rl_loop.py`](../../recipes/async_rl_loop.py) | Fan out rollouts, form prompt groups, compute advantages, and drive optimization |
 
+The Pi and OpenCode entrypoints live together under `harbor/recipes/`:
+[`train_pi.py`](./harbor/recipes/train_pi.py) defaults to DABstep, while
+[`train_opencode.py`](./harbor/recipes/train_opencode.py) accepts any supported
+Harbor dataset.
+
 The current task-oriented recipes include:
 
 - [`harbor/recipes/deep_swe/`](./harbor/recipes/deep_swe/) — DeepSWE task preparation.

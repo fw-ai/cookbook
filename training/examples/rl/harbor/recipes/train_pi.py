@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train Pi on the complete DABstep split with SDK-managed resources."""
+"""Harbor/Pi RL entrypoint, using DABstep as its default task recipe."""
 
 from __future__ import annotations
 

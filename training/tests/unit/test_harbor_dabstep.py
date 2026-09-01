@@ -25,7 +25,7 @@ from training.examples.rl.harbor.recipes.dabstep.dataset import (
     make_progressive_rollout_factory,
     shuffle_dataset_for_run,
 )
-from training.examples.rl.harbor.recipes.dabstep import train_pi as dabstep_train
+from training.examples.rl.harbor.recipes import train_pi as pi_train
 from training.examples.rl.harbor.tito.evaluate import (
     evaluate_rows,
     make_fixed_evaluation,
@@ -256,7 +256,7 @@ def test_dabstep_dataset_persists_seeded_run_order(tmp_path):
 
 
 def test_dabstep_pi_recipe_uses_sdk_managed_resources_and_offpolicy_two(tmp_path):
-    args = dabstep_train.parse_args(
+    args = pi_train.parse_args(
         [
             "--base-model",
             "accounts/example/models/policy",
@@ -273,7 +273,7 @@ def test_dabstep_pi_recipe_uses_sdk_managed_resources_and_offpolicy_two(tmp_path
         ]
     )
 
-    config = dabstep_train._build_config(args, run_dir=tmp_path, row_count=450)
+    config = pi_train._build_config(args, run_dir=tmp_path, row_count=450)
 
     assert config.completions_per_prompt == 8
     assert config.prompt_groups_per_step == 8
@@ -291,7 +291,7 @@ def test_dabstep_pi_recipe_uses_sdk_managed_resources_and_offpolicy_two(tmp_path
 
 
 def test_dabstep_launch_manifest_records_automatic_resource_selection(tmp_path):
-    args = dabstep_train.parse_args(
+    args = pi_train.parse_args(
         [
             "--base-model",
             "accounts/example/models/policy",
@@ -309,7 +309,7 @@ def test_dabstep_launch_manifest_records_automatic_resource_selection(tmp_path):
     )
     output = tmp_path / "launch.json"
 
-    dabstep_train._write_launch_manifest(
+    pi_train._write_launch_manifest(
         output,
         args=args,
         task_names=("task-a", "task-b"),
