@@ -21,7 +21,7 @@ healthbench-professional = "healthbench_professional.cli:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4,<9",
+    "pytest>=9.0.3,<10",
     "pytest-asyncio>=1.2,<2",
 ]
 
