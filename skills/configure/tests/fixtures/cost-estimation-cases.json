@@ -1,0 +1,34 @@
+[
+  {
+    "name": "managed-sft",
+    "expected_action": "calculate"
+  },
+  {
+    "name": "managed-dpo",
+    "expected_action": "calculate"
+  },
+  {
+    "name": "serverless-sft",
+    "expected_action": "calculate"
+  },
+  {
+    "name": "serverless-dpo",
+    "expected_action": "calculate-with-reference-sampler"
+  },
+  {
+    "name": "dedicated-sft",
+    "expected_action": "not-calculated"
+  },
+  {
+    "name": "dedicated-dpo",
+    "expected_action": "not-calculated"
+  },
+  {
+    "name": "training-api-rl",
+    "expected_action": "contact-training"
+  },
+  {
+    "name": "managed-rft",
+    "expected_action": "excluded"
+  }
+]

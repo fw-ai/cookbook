@@ -2,8 +2,12 @@
 
 Ready-to-run Training API recipes built on the [Fireworks Python SDK](https://github.com/fw-ai-external/python-sdk) (`fireworks.training.sdk`). Only `training/` is relevant -- ignore other top-level directories.
 
-**Skills:**
-- [`skills/fireworks-training/`](skills/fireworks-training/SKILL.md) — the single training skill for managed SFT/DPO/ORPO/RFT and Training API serverless or dedicated workflows. The root skill owns routing, confirmation, and lifecycle; progressive references cover cookbook recipes, SDK internals, resume, deployment, and debugging.
+**Skills (v2.2.0):** Start here → [`skills/GETTING-STARTED.md`](skills/GETTING-STARTED.md)
+
+- [`skills/research/`](skills/research/SKILL.md) — interview-driven planning: method, data, eval, cookbook
+- [`skills/configure/`](skills/configure/SKILL.md) — plan, run, monitor, evaluate, deploy, and tear down training
+- [`skills/debug/`](skills/debug/SKILL.md) — triage stuck, failed, or low-quality runs
+- [`skills/discover/`](skills/discover/SKILL.md) and [`skills/fireworks-training/`](skills/fireworks-training/SKILL.md) — redirect stubs for older installs
 
 **Protocol changes:** Any change to the Training API SDK, Tinker protocol, trainer/deployment payloads, checkpoint semantics, hotload flow, optimizer-step semantics, or recipe/SDK compatibility contract must update the relevant skill docs in `skills/`. Update or delete stale guidance so agents do not preserve outdated protocol behavior.
 

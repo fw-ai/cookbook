@@ -513,7 +513,7 @@ def main(
                 # 2. One GRPO forward/backward.
                 # To switch to built-in PPO or another loss, replace this
                 # direct call. See
-                # skills/fireworks-training/references/rl-custom-loss.md.
+                # skills/configure/references/rl-custom-loss.md.
                 with elapsed_timer("fwd_bwd"):
                     fwd_bwd_result = policy.forward_backward_custom(
                         data,

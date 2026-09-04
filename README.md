@@ -17,7 +17,17 @@ See [`training/README.md`](./training/README.md) for configuration, recipes, and
 
 ## For AI Agents
 
-One canonical skill covers the full training product: **[`skills/fireworks-training/SKILL.md`](skills/fireworks-training/SKILL.md)**. It routes managed SFT/DPO/ORPO/RFT and Training API serverless or dedicated workflows, then progressively loads the relevant cookbook, operations, or troubleshooting references.
+**Just installed?** → **[`skills/GETTING-STARTED.md`](skills/GETTING-STARTED.md)** — open a new chat and paste a smoke-test prompt (no spend).
+
+Three skills ship with one plugin install — **research**, **configure**, and **debug**:
+
+| Skill | Role |
+|---|---|
+| [`skills/research/SKILL.md`](skills/research/SKILL.md) | Interview-driven planning: method, data, eval, cookbook entry |
+| [`skills/configure/SKILL.md`](skills/configure/SKILL.md) | Plan, run, monitor, evaluate, deploy, and tear down training |
+| [`skills/debug/SKILL.md`](skills/debug/SKILL.md) | Triage stuck, failed, or low-quality runs |
+
+[`skills/discover/SKILL.md`](skills/discover/SKILL.md) and [`skills/fireworks-training/SKILL.md`](skills/fireworks-training/SKILL.md) are redirect stubs for older installs.
 
 ### Claude Code
 
@@ -29,13 +39,13 @@ claude plugin install fireworks-training@fw-ai-cookbook
 ### Cursor
 
 ```bash
-npx --yes skills add fw-ai/cookbook -g -s fireworks-training -a cursor -y
+npx --yes skills add fw-ai/cookbook -g -s research -s configure -s debug -a cursor -y
 ```
 
 ### Codex
 
 ```bash
-npx --yes skills add fw-ai/cookbook -g -s fireworks-training -a codex -y
+npx --yes skills add fw-ai/cookbook -g -s research -s configure -s debug -a codex -y
 ```
 
 The repository also includes [`.codex-plugin/plugin.json`](.codex-plugin/plugin.json)
@@ -45,12 +55,23 @@ CLI and is not limited to the Claude compact interface. `firectl` may still
 require mutating commands to be run manually in the user's terminal when its
 AI-agent safety guard is active.
 
+### After install — try this
+
+Open a **new chat** in Cursor, Claude Code, or Codex. You do not @-mention skills.
+
+| You say | Entry |
+|---|---|
+| *"Which cookbook entry fits prompt routing to small vs big models?"* | research |
+| *"SFT qwen3-8b on my JSONL — show the plan, don't start yet"* | configure |
+| *"My job is stuck RUNNING at 0%"* | debug |
+
+Full walkthrough: [`skills/GETTING-STARTED.md`](skills/GETTING-STARTED.md).
+
 ## Repository Structure
 
 `training/` is the primary development surface. `eval/` contains reproducible
-evaluation packages, and `partners/` holds recipes for partner models served on
-Fireworks. Legacy integrations, standalone customer scripts, multimedia
-examples, and earlier cookbook content live under `archived/`.
+evaluation packages. Legacy integrations, standalone customer scripts,
+multimedia examples, and earlier cookbook content live under `archived/`.
 
 ```
 training/           Training API recipes, utilities, and examples
@@ -60,8 +81,7 @@ training/           Training API recipes, utilities, and examples
   renderer/         Local renderers and correctness verifier
   tests/            Unit and end-to-end tests
 eval/               Reproducible evaluation packages and benchmark adapters
-partners/           Recipes for partner models served on Fireworks
-skills/             One Fireworks training skill and progressive references
+skills/             research, configure, debug (+ discover/fireworks-training redirects)
 archived/           Legacy integrations, multimedia, and cookbook content
   tools/            Archived standalone customer scripts
 ```
@@ -72,12 +92,6 @@ archived/           Legacy integrations, multimedia, and cookbook content
   OpenAI's HealthBench Professional through Harbor, preserve exact Fireworks
   input/output token IDs and behavior-policy logprobs, and export validated
   trajectories for RL workflows.
-
-## Partners
-
-- [`partners/voyage-ai/`](./partners/voyage-ai/) — two-stage retrieval with
-  Voyage AI embeddings and reranking on Fireworks dedicated deployments, backed
-  by MongoDB vector search.
 
 ## Contributing
 

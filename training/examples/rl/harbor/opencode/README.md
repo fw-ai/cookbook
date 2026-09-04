@@ -7,7 +7,7 @@ and the sidecar calls Fireworks inference. Harbor resolves the task, runs the
 verifier, collects the compact/debug artifacts, and returns the reward.
 
 The shared TITO/Harbor/harness/sandbox ownership rules are documented in
-[`/skills/fireworks-training/references/rl-agentic.md`](/skills/fireworks-training/references/rl-agentic.md).
+[`/skills/configure/references/rl-agentic.md`](/skills/configure/references/rl-agentic.md).
 OpenCode owns only its agent adapter and event conventions; the sidecar contains
 no OpenCode-specific logic.
 

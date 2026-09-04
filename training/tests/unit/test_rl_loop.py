@@ -115,7 +115,7 @@ def test_main_has_direct_client_grpo_customization_boundary() -> None:
     assert "sampled_completion_to_rollout_run(" in source
     assert "rollout_to_prompt_group(" in source
     assert "To switch to built-in PPO or another loss" in source
-    assert "skills/fireworks-training/references/rl-custom-loss.md" in source
+    assert "skills/configure/references/rl-custom-loss.md" in source
     assert "build_loss_fn" not in source
     assert "loss_path" not in source
 
