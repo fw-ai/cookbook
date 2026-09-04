@@ -90,8 +90,12 @@ Useful flags: `--steps`, `--batch-size`, `--learning-rate`, `--dpo-beta`,
 ## Notes
 
 - **Pool capacity.** `create_lora_training_client` attaches to a pooled LoRA
-  trainer for `base_model`; if none serves it you get
-  `no eligible shared trainer found for base model ...`.
+  trainer for `base_model`; if none is admitting you get
+  `no eligible shared trainer found for base model ...` (a transient capacity
+  gap — retry with the same config). If `base_model` is not on the
+  shared/serverless menu at all, you instead get
+  `base model ... is not available for serverless training` — that is a
+  model-availability problem, not capacity; use dedicated training.
 - **Account-scoped keys.** Serverless training rejects keys with access to
   multiple accounts (`create_session: account not found`).
 - **LoRA only**, and set `max_seq_len` explicitly — there is no training
