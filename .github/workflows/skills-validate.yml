@@ -1,7 +1,8 @@
 name: Skills Validate
 
 # Gate for the canonical training skill, cookbook routes, confirmation contract,
-# plugin packaging, references, and relative links.
+# plugin packaging, references, and relative links. Live recipe behavior remains
+# covered by training-smoke.yml.
 
 on:
   pull_request:
@@ -35,4 +36,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Validate skill structure, routing, and links
-        run: python skills/validate_skills.py
+        run: |
+          python skills/validate_skills.py
+          python skills/test_entry_points.py
+          python skills/test_research_configure_handoff.py
+          python -m unittest skills.configure.tests.test_cost_estimation_contract -v

@@ -1,5 +1,9 @@
 # Reinforcement learning examples
 
+> **EXPERIMENTAL — `async_rl_loop` is under active development.** Config/API may
+> change without backward-compat shims. See
+> [`/skills/configure/references/rl-async.md`](/skills/configure/references/rl-async.md).
+
 This directory contains two kinds of RL examples:
 
 1. **Standalone examples** accumulated for different tasks and integrations.
@@ -44,9 +48,9 @@ this directory. Most integrations should add a task recipe or harness adapter
 under `harbor/` rather than create another top-level training stack.
 
 For the ownership, exact-token, renderer, and artifact contracts, see
-[`/skills/fireworks-training/references/rl-agentic.md`](/skills/fireworks-training/references/rl-agentic.md).
+[`/skills/configure/references/rl-agentic.md`](/skills/configure/references/rl-agentic.md).
 For shared training controls, see
-[`/skills/fireworks-training/references/rl-async.md`](/skills/fireworks-training/references/rl-async.md).
+[`/skills/configure/references/rl-async.md`](/skills/configure/references/rl-async.md).
 
 ## Standalone examples
 

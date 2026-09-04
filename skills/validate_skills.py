@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the canonical Fireworks training skill and its routed references."""
+"""Validate Fireworks training skills (research, configure, debug) and redirect stubs."""
 
 from __future__ import annotations
 
@@ -10,9 +10,14 @@ from pathlib import Path
 
 SKILLS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SKILLS_DIR.parent
-CANONICAL_SKILL = "fireworks-training"
+PLUGIN_NAME = "fireworks-training"
+ACTIVE_SKILLS = ("research", "configure", "debug")
+REDIRECT_STUBS = ("fireworks-training", "discover")
+EXPECTED_SKILLS = (*ACTIVE_SKILLS, *REDIRECT_STUBS)
+SKILL_VERSION = "2.2.0"
 
-REF_RE = re.compile(r"references/[\w./-]+\.md")
+REF_RE = re.compile(r"(?:\.\./configure/)?references/[\w./-]+\.md")
+LOCAL_REF_RE = re.compile(r"references/[\w./-]+\.md")
 LINK_RE = re.compile(r"\]\((?!https?://|mailto:)([^)#]+\.md)(?:#[^)]+)?\)")
 COOKBOOK_LINK_RE = re.compile(r"\]\(([^)]+(?:training/(?:recipes|examples|utils)/)[^)]+)\)")
 FORBIDDEN_PRODUCT_TERMS = (
@@ -60,36 +65,15 @@ def check_frontmatter(skill_md: Path, errors: list[str]) -> None:
         )
 
 
-def check_skill(skill_dir: Path, errors: list[str]) -> None:
-    skill_md = skill_dir / "SKILL.md"
-    check_frontmatter(skill_md, errors)
-    root_text = skill_md.read_text(encoding="utf-8")
-    references_dir = skill_dir / "references"
-    reference_files = sorted(references_dir.rglob("*.md"))
+def resolve_reference(skill_dir: Path, ref: str) -> Path:
+    if ref.startswith("../configure/"):
+        return (skill_dir / ref).resolve()
+    return (skill_dir / ref).resolve()
 
-    for ref_file in reference_files:
-        if ref_file.parent != references_dir:
-            errors.append(
-                "SKILL.md: references must stay one level deep: "
-                f"`{ref_file.relative_to(skill_dir)}`"
-            )
 
-    if (skill_dir / ".claude-plugin").exists():
-        errors.append(
-            "fireworks-training: plugin metadata belongs at the repository root"
-        )
-
-    mentioned = set(REF_RE.findall(root_text))
-    for ref in sorted(mentioned):
-        if not (skill_dir / ref).exists():
-            errors.append(f"SKILL.md: routed reference is missing: `{ref}`")
-
-    for ref_file in reference_files:
-        rel = ref_file.relative_to(skill_dir).as_posix()
-        if rel not in mentioned:
-            errors.append(f"SKILL.md: reference is not routed: `{rel}`")
-
-    markdown_files = [skill_md, *reference_files]
+def check_markdown_files(
+    markdown_files: list[Path], skill_dir: Path, errors: list[str]
+) -> None:
     for markdown_file in markdown_files:
         text = markdown_file.read_text(encoding="utf-8")
         for link in LINK_RE.findall(text):
@@ -128,6 +112,103 @@ def check_skill(skill_dir: Path, errors: list[str]) -> None:
                     f"must point to public main: `{cookbook_url.group(0)}`"
                 )
 
+
+def check_skill_references(skill_dir: Path, root_text: str, errors: list[str]) -> None:
+    references_dir = skill_dir / "references"
+    if not references_dir.exists():
+        return
+
+    reference_files = sorted(references_dir.rglob("*.md"))
+    for ref_file in reference_files:
+        if ref_file.parent != references_dir:
+            errors.append(
+                f"{skill_dir.name}/SKILL.md: references must stay one level deep: "
+                f"`{ref_file.relative_to(skill_dir)}`"
+            )
+
+    mentioned_local = set(LOCAL_REF_RE.findall(root_text))
+    for ref in sorted(mentioned_local):
+        if (skill_dir / ref).exists():
+            continue
+        if (SKILLS_DIR / ref).exists():
+            continue
+        errors.append(f"{skill_dir.name}/SKILL.md: routed reference missing `{ref}`")
+
+    for ref_file in reference_files:
+        rel = ref_file.relative_to(skill_dir).as_posix()
+        if rel not in mentioned_local:
+            errors.append(f"{skill_dir.name}/SKILL.md: reference is not routed: `{rel}`")
+
+    for ref in REF_RE.findall(root_text):
+        if ref.startswith("../configure/"):
+            if not resolve_reference(skill_dir, ref).exists():
+                errors.append(
+                    f"{skill_dir.name}/SKILL.md: cross-skill reference missing `{ref}`"
+                )
+
+    markdown_files = [skill_dir / "SKILL.md", *reference_files]
+    check_markdown_files(markdown_files, skill_dir, errors)
+
+
+def check_redirect_stub(skill_dir: Path, errors: list[str]) -> None:
+    skill_md = skill_dir / "SKILL.md"
+    check_frontmatter(skill_md, errors)
+    root_text = skill_md.read_text(encoding="utf-8")
+    for marker in ("**research**", "**configure**", "**debug**", SKILL_VERSION, "redirect"):
+        if marker not in root_text:
+            errors.append(f"{skill_dir.name} stub: missing redirect marker `{marker}`")
+    if (skill_dir / "references").exists():
+        errors.append(f"{skill_dir.name} stub: must not ship a references/ directory")
+    check_markdown_files([skill_md], skill_dir, errors)
+
+
+def check_lightweight_skill(skill_dir: Path, errors: list[str]) -> None:
+    skill_md = skill_dir / "SKILL.md"
+    check_frontmatter(skill_md, errors)
+    root_text = skill_md.read_text(encoding="utf-8")
+
+    if (skill_dir / ".claude-plugin").exists():
+        errors.append(f"{skill_dir.name}: plugin metadata belongs at the repository root")
+
+    for marker in ("FIREWORKS_CLIENT_SOURCE", f"fireworks-training-skill/{SKILL_VERSION}", "AskQuestion"):
+        if marker not in root_text:
+            errors.append(f"{skill_dir.name}/SKILL.md: missing `{marker}`")
+
+    if skill_dir.name == "research":
+        for marker in (
+            "telemetry-schema.md",
+            "Journey telemetry",
+            "research_intake_answered",
+            "interview-questions.md",
+            "cookbook-catalog.md",
+            "telemetry-notice.md",
+        ):
+            if marker not in root_text:
+                errors.append(f"research/SKILL.md: missing `{marker}`")
+
+    check_skill_references(skill_dir, root_text, errors)
+
+
+def check_configure_skill(skill_dir: Path, errors: list[str]) -> None:
+    skill_md = skill_dir / "SKILL.md"
+    check_frontmatter(skill_md, errors)
+    root_text = skill_md.read_text(encoding="utf-8")
+
+    if (skill_dir / ".claude-plugin").exists():
+        errors.append("configure: plugin metadata belongs at the repository root")
+
+    for marker in (
+        "cost-estimation.md",
+        "models-shapes-and-cost.md",
+        "Do not calculate Dedicated SFT or DPO",
+        "docs.fireworks.ai/fine-tuning/cost-estimator",
+        "api-key-setup.md",
+        "Never ask for the key in chat",
+    ):
+        if marker not in root_text:
+            errors.append(f"configure/SKILL.md: missing `{marker}`")
+
+    check_skill_references(skill_dir, root_text, errors)
     check_training_contract(skill_dir, root_text, errors)
 
 
@@ -140,7 +221,6 @@ def check_training_contract(
         "training/recipes/orpo_loop.py",
         "training/recipes/rl_loop.py",
         "training/recipes/async_rl_loop.py",
-        "training/recipes/experiment/async_rl_loop_serverless.py",
         "training/recipes/igpo_loop.py",
         "training/recipes/distillation_loop.py",
         "training/examples/serverless_rl/countdown_rl.py",
@@ -152,11 +232,14 @@ def check_training_contract(
     plan_marker = "## Mandatory final-plan confirmation"
     first_create = "firectl sftj create"
     if plan_marker not in root_text or first_create not in root_text:
-        errors.append("SKILL.md: missing final-plan gate or managed create commands")
+        errors.append("configure/SKILL.md: missing final-plan gate or managed create commands")
     elif root_text.index(plan_marker) > root_text.index(first_create):
-        errors.append("SKILL.md: create command appears before the confirmation gate")
+        errors.append("configure/SKILL.md: create command appears before the confirmation gate")
 
     required_markers = (
+        "## Entry routing",
+        "entry_skill: configure",
+        "always monitoring",
         "every parameter the user set",
         "every default",
         "--dry-run -o json",
@@ -168,7 +251,7 @@ def check_training_contract(
         "must never configure",
         "https://docs.fireworks.ai/llms.txt",
         "https://docs.fireworks.ai/fine-tuning/training-api/serverless.md",
-        "https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md",
+        "https://docs.fireworks.ai/fine-tuning/training-api/dedicated#training-and-sampling.md",
         "git rev-parse HEAD",
         "training/pyproject.toml",
         "training/recipes/sft_loop.py",
@@ -176,7 +259,6 @@ def check_training_contract(
         "training/recipes/orpo_loop.py",
         "training/recipes/rl_loop.py",
         "training/recipes/async_rl_loop.py",
-        "training/recipes/experiment/async_rl_loop_serverless.py",
         "training/recipes/distillation_loop.py",
         "training/examples/serverless_rl/",
         "--job-id <run-id>",
@@ -189,17 +271,22 @@ def check_training_contract(
         "firectl rftj create --evaluator <resource>",
         "FIREWORKS_CLIENT_SOURCE",
         "FIREWORKS_SESSION_ID",
+        f"fireworks-training-skill/{SKILL_VERSION}",
         "Do not create a separate telemetry file",
         "Never use `PURPOSE_PILOT`",
+        "telemetry-schema.md",
+        "telemetry-notice.md",
+        "configure_path_answered",
+        "session_outcome",
     )
     for marker in required_markers:
         if marker not in root_text:
-            errors.append(f"SKILL.md: required training contract missing `{marker}`")
+            errors.append(f"configure/SKILL.md: required training contract missing `{marker}`")
 
     if re.search(r"under\s+~?\$5.*proceed", root_text, re.IGNORECASE):
-        errors.append("SKILL.md: small-run auto-proceed exception is forbidden")
+        errors.append("configure/SKILL.md: small-run auto-proceed exception is forbidden")
     if re.search(r"(?m)^\s*firectl sftj export-metrics\b", root_text):
-        errors.append("SKILL.md: nonexistent `sftj export-metrics` command")
+        errors.append("configure/SKILL.md: nonexistent `sftj export-metrics` command")
 
     choose = (skill_dir / "references/choose-method.md").read_text(encoding="utf-8")
     for marker in (
@@ -244,6 +331,13 @@ def check_training_contract(
         "sdk_version:",
         "skill_session_id:",
         "skill_client_source:",
+        "## Journey telemetry",
+        "journey_schema_version:",
+        "intake_responses",
+        "task_summary:",
+        "telemetry_opt_out:",
+        "handoff_choice:",
+        "session_outcome:",
     ):
         if marker not in state:
             errors.append(f"run-state-and-reporting.md: missing `{marker}`")
@@ -263,27 +357,38 @@ def check_training_contract(
                 f"missing `{marker}`"
             )
 
+
+def check_plugin_metadata(errors: list[str]) -> None:
     marketplace_path = REPO_ROOT / ".claude-plugin/marketplace.json"
     marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
     plugins = marketplace.get("plugins", [])
     if len(plugins) != 1:
         errors.append(".claude-plugin/marketplace.json: expected exactly one plugin")
-    elif plugins[0].get("name") != CANONICAL_SKILL:
+    elif plugins[0].get("name") != PLUGIN_NAME:
         errors.append(
-            ".claude-plugin/marketplace.json: plugin must be `fireworks-training`"
+            f".claude-plugin/marketplace.json: plugin must be `{PLUGIN_NAME}`"
         )
     elif plugins[0].get("source") != "./":
         errors.append(
             ".claude-plugin/marketplace.json: plugin source must be repository root"
         )
+    else:
+        description = plugins[0].get("description", "")
+        for skill in ACTIVE_SKILLS:
+            if skill not in description:
+                errors.append(
+                    f".claude-plugin/marketplace.json: description must mention `{skill}`"
+                )
 
     plugin_path = REPO_ROOT / ".claude-plugin/plugin.json"
     if not plugin_path.exists():
         errors.append(".claude-plugin/plugin.json: missing")
     else:
         plugin = json.loads(plugin_path.read_text(encoding="utf-8"))
-        if plugin.get("name") != CANONICAL_SKILL:
-            errors.append("plugin.json: name must be `fireworks-training`")
+        if plugin.get("name") != PLUGIN_NAME:
+            errors.append(f"plugin.json: name must be `{PLUGIN_NAME}`")
+        if plugin.get("version") != SKILL_VERSION:
+            errors.append(f"plugin.json: version must be `{SKILL_VERSION}`")
 
     codex_plugin_path = REPO_ROOT / ".codex-plugin/plugin.json"
     if not codex_plugin_path.exists():
@@ -298,6 +403,10 @@ def check_training_contract(
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     for marker in (
         "claude plugin install fireworks-training@fw-ai-cookbook",
+        "skills/research/",
+        "skills/configure/",
+        "skills/debug/",
+        "skills/GETTING-STARTED.md",
         "-a cursor -y",
         "-a codex -y",
         ".codex-plugin/plugin.json",
@@ -328,6 +437,98 @@ def check_repository_legacy_terms(errors: list[str]) -> None:
                 )
 
 
+def check_telemetry_schema(errors: list[str]) -> None:
+    schema = SKILLS_DIR / "references" / "telemetry-schema.md"
+    if not schema.exists():
+        errors.append("skills/references/telemetry-schema.md: missing")
+        return
+    text = schema.read_text(encoding="utf-8")
+    for marker in (
+        "journey_schema_version",
+        "welcome_choice",
+        "intake_q1_task_shape",
+        "intake_q_eval",
+        "handoff_choice",
+        "session_outcome",
+        "research_only",
+        "intake_responses",
+        "task_summary",
+        "user_choice",
+        "response_source",
+        "telemetry-notice.md",
+        "research_intake_answered",
+        "discover_intake_answered",
+        "telemetry/journey-api-spec.md",
+    ):
+        if marker not in text:
+            errors.append(f"telemetry-schema.md: missing `{marker}`")
+
+    interview = (
+        SKILLS_DIR / "research" / "references" / "interview-questions.md"
+    ).read_text(encoding="utf-8")
+    for option_id in (
+        "structured_output",
+        "plan_configure",
+        "intake_q1_task_shape",
+        "research-q-eval",
+        "Option ID",
+    ):
+        if option_id not in interview:
+            errors.append(f"interview-questions.md: missing `{option_id}`")
+
+    welcome = (SKILLS_DIR / "references" / "welcome.md").read_text(encoding="utf-8")
+    if "welcome_choice" not in welcome:
+        errors.append("welcome.md: missing `welcome_choice` telemetry")
+    if "telemetry-notice.md" not in welcome:
+        errors.append("welcome.md: missing telemetry-notice.md reference")
+
+    notice = (SKILLS_DIR / "references" / "telemetry-notice.md")
+    if not notice.exists():
+        errors.append("skills/references/telemetry-notice.md: missing")
+
+    api_key_setup = SKILLS_DIR / "references" / "api-key-setup.md"
+    if not api_key_setup.exists():
+        errors.append("skills/references/api-key-setup.md: missing")
+    else:
+        setup_text = api_key_setup.read_text(encoding="utf-8")
+        for marker in ("read -s FIREWORKS_API_KEY", "Never ask the user to paste"):
+            if marker not in setup_text:
+                errors.append(f"api-key-setup.md: missing `{marker}`")
+
+    for rel in (
+        "references/telemetry/journey-api-spec.md",
+        "references/telemetry/jarvis-funnel-tiles.md",
+        "references/telemetry/sdk-firectl-helpers.md",
+    ):
+        if not (SKILLS_DIR / rel).exists():
+            errors.append(f"skills/{rel}: missing Phase 2 spec")
+
+
+def check_welcome_shared(errors: list[str]) -> None:
+    welcome = SKILLS_DIR / "references" / "welcome.md"
+    if not welcome.exists():
+        errors.append("skills/references/welcome.md: missing shared welcome file")
+        return
+    text = welcome.read_text(encoding="utf-8")
+    for marker in (
+        "**Fireworks Training**",
+        "three ways I can help",
+        "Entry AskQuestion",
+        "research",
+        "configure",
+        "debug",
+    ):
+        if marker not in text:
+            errors.append(f"welcome.md: missing `{marker}`")
+    for slug in ACTIVE_SKILLS:
+        skill_md = SKILLS_DIR / slug / "SKILL.md"
+        if not skill_md.exists():
+            continue
+        root = skill_md.read_text(encoding="utf-8")
+        if "welcome.md" not in root:
+            errors.append(f"{slug}/SKILL.md: missing welcome.md reference")
+
+
 def check_serverless_example(errors: list[str]) -> None:
     example = (
         REPO_ROOT / "training/examples/serverless_rl/countdown_rl.py"
@@ -347,24 +548,38 @@ def check_serverless_example(errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     skill_mds = sorted(SKILLS_DIR.glob("*/SKILL.md"))
-    active = []
-    for skill_md in skill_mds:
-        slug = skill_md.parent.name
-        active.append(slug)
-        if slug != CANONICAL_SKILL:
-            errors.append(f"unexpected installable skill: `{slug}`")
+    active = [skill_md.parent.name for skill_md in skill_mds]
 
-    canonical_dir = SKILLS_DIR / CANONICAL_SKILL
-    if not canonical_dir.exists():
-        errors.append("canonical skill directory is missing")
-    else:
-        check_skill(canonical_dir, errors)
+    unexpected = sorted(set(active) - set(EXPECTED_SKILLS))
+    missing = sorted(set(EXPECTED_SKILLS) - set(active))
+    for slug in unexpected:
+        errors.append(f"unexpected skill directory: `{slug}`")
+    for slug in missing:
+        errors.append(f"missing expected skill directory: `{slug}`")
+
+    for slug in ACTIVE_SKILLS:
+        skill_dir = SKILLS_DIR / slug
+        if not skill_dir.exists():
+            continue
+        if slug == "configure":
+            check_configure_skill(skill_dir, errors)
+        else:
+            check_lightweight_skill(skill_dir, errors)
+
+    for slug in REDIRECT_STUBS:
+        stub_dir = SKILLS_DIR / slug
+        if stub_dir.exists():
+            check_redirect_stub(stub_dir, errors)
+
+    check_plugin_metadata(errors)
+    check_welcome_shared(errors)
+    check_telemetry_schema(errors)
     check_repository_legacy_terms(errors)
     check_serverless_example(errors)
 
-    if active != [CANONICAL_SKILL]:
+    if sorted(active) != sorted(EXPECTED_SKILLS):
         errors.append(
-            f"expected only `{CANONICAL_SKILL}` as active skill, found {active}"
+            f"expected skills {sorted(EXPECTED_SKILLS)}, found {sorted(active)}"
         )
 
     if errors:
@@ -372,7 +587,10 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print("OK: validated one canonical Fireworks training skill.")
+    print(
+        "OK: validated Fireworks training skills "
+        "(research, configure, debug) and redirect stubs (discover, fireworks-training)."
+    )
     return 0
 
 
