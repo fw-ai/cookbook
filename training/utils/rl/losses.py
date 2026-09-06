@@ -227,10 +227,11 @@ def build_grpo_datums(
             tis_weight = torch.ones(resp_len, dtype=torch.float32)
 
         per_token_adv = [0.0] * response_start
-        for r in range(resp_len):
-            per_token_adv.append(
-                float(advantage * tis_weight[r].item() * loss_mask[r].item())
-            )
+        # Bulk extraction avoids per-token tensor calls while retaining Python-float arithmetic.
+        per_token_adv.extend(
+            float(advantage * weight * mask)
+            for weight, mask in zip(tis_weight.tolist(), loss_mask.tolist(), strict=True)
+        )
 
         new_datum = tinker.Datum(
             model_input=datum.model_input,
