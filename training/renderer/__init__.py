@@ -39,3 +39,10 @@ from training.renderer import _kimi_k25_split as _kimi_k25_split  # noqa: F401
 from training.renderer import _nemotron3_split as _nemotron3_split  # noqa: F401
 from training.renderer import _gpt_oss_split as _gpt_oss_split  # noqa: F401
 from training.renderer import _gemma4_split as _gemma4_split  # noqa: F401
+
+# Optional extensions run after built-in/local registrations are complete. This
+# import is intentionally model-agnostic so public cookbook sources never need
+# to know which extension renderer packages are installed.
+from training.renderer.plugins import load_renderer_plugins as _load_renderer_plugins
+
+_load_renderer_plugins()

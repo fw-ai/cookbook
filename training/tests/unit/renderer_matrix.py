@@ -113,6 +113,10 @@ class RendererCase:
     trailing_hard_append_tokens: int = 0
     unsupported_scenarios: frozenset[str] = frozenset()
     local_fixture_env: str | None = None
+    # Some protocols emit a complete reasoning message without ending the turn.
+    # Still assert the parsed payload and loss mask for these scenarios.
+    nonterminal_scenarios: frozenset[str] = frozenset()
+    allow_supervised_trailing_whitespace: bool = True
 
     def resolved_tokenizer_model(self) -> str:
         """Resolve optional local fixtures when the case actually runs."""
