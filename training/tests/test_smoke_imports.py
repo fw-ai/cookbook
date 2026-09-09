@@ -1,8 +1,8 @@
 """Smoke tests: verify that every cookbook module imports cleanly.
 
-These tests catch breaking changes in tinker, tinker_cookbook, or
-fireworks.training.sdk before they reach users.  Each test is a plain
-import -- no API keys, no network, no GPU required.
+These tests catch breaking changes in tinker, the Fireworks-owned training
+package, or fireworks.training.sdk before they reach users. Each test is a
+plain import -- no API keys, no network, no GPU required.
 
 Run with:
     pytest training/tests/test_smoke_imports.py -v
@@ -222,23 +222,11 @@ def test_utils_rl_all_resolvable():
         )
 
 
-# ── tinker_cookbook (optional — only runs if installed) ──────────────────────
-
-TINKER_COOKBOOK_MODULES = [
-    "tinker_cookbook.rl.train",
-]
-
 FIREWORKS_OWNED_MODULES = [
     "training.renderer.tokenizer",
     "training.renderer.supervised",
     "training.renderer",
 ]
-
-
-@pytest.mark.parametrize("module", TINKER_COOKBOOK_MODULES)
-def test_tinker_cookbook_imports(module: str):
-    pytest.importorskip("tinker_cookbook")
-    importlib.import_module(module)
 
 
 @pytest.mark.parametrize("module", FIREWORKS_OWNED_MODULES)
