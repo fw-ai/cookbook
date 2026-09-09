@@ -223,6 +223,57 @@ def compare_renderer_to_hf(
     )
 
     renderer = get_renderer(renderer_name, tokenizer)
+    # The July 2026 Gemma 4 and MiniMax M3 templates require deserialized
+    # arguments. Preserve the production JSON-string representation for other
+    # renderer families.
+    hf_messages = _hf_messages_with_normalized_tool_args(
+        messages,
+        require_mapping=renderer_name
+        in {
+            "gemma4",
+            "gemma4_thinking",
+            "minimax_m3",
+            "muse_glimmer",
+            "qwen2_5",
+            "qwen3_5_interleaved",
+            "qwen3_5_disable_thinking_interleaved",
+            "qwen3_6_interleaved",
+            "qwen3_6_disable_thinking_interleaved",
+            "qwen3_6_preserved",
+            "qwen3_8_interleaved",
+            "qwen3_8_disable_thinking_interleaved",
+            "qwen3_8_preserved",
+        },
+    )
+    return compare_renderer_to_reference(
+        renderer=renderer,
+        tokenizer=tokenizer,
+        messages=messages,
+        reference_messages=_hf_messages_with_reasoning_parts(
+            hf_messages,
+            renderer_name=renderer_name,
+        ),
+        add_generation_prompt=add_generation_prompt,
+        apply_chat_template_kwargs=apply_chat_template_kwargs,
+        tools=tools,
+    )
+
+
+def compare_renderer_to_reference(
+    *,
+    renderer: Any,
+    tokenizer: Any,
+    messages: list[dict],
+    reference_messages: list[dict],
+    add_generation_prompt: bool = True,
+    apply_chat_template_kwargs: dict[str, Any] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+) -> HFParityResult:
+    """Compare an injected renderer to its independent tokenizer template.
+
+    Model adapters own construction, pinned assets, and reference input shape.
+    All renderer adapters use this production assembly and token comparison.
+    """
     # Assemble the renderer input through the SAME production path SFT uses
     # (build_tool_prefixed_messages), so the tool-declaration prefix is applied
     # exactly as training does — no harness-local reimplementation to drift from.
@@ -248,33 +299,8 @@ def compare_renderer_to_hf(
         hf_kwargs["tools"] = tools
     else:
         hf_kwargs.pop("tools", None)
-    # The July 2026 Gemma 4 and MiniMax M3 templates require deserialized
-    # arguments. Preserve the production JSON-string representation for other
-    # renderer families.
-    hf_messages = _hf_messages_with_normalized_tool_args(
-        messages,
-        require_mapping=renderer_name
-        in {
-            "gemma4",
-            "gemma4_thinking",
-            "minimax_m3",
-            "muse_glimmer",
-            "qwen2_5",
-            "qwen3_5_interleaved",
-            "qwen3_5_disable_thinking_interleaved",
-            "qwen3_6_interleaved",
-            "qwen3_6_disable_thinking_interleaved",
-            "qwen3_6_preserved",
-            "qwen3_8_interleaved",
-            "qwen3_8_disable_thinking_interleaved",
-            "qwen3_8_preserved",
-        },
-    )
     hf_result = tokenizer.apply_chat_template(
-        _hf_messages_with_reasoning_parts(
-            hf_messages,
-            renderer_name=renderer_name,
-        ),
+        reference_messages,
         tokenize=True,
         add_generation_prompt=add_generation_prompt,
         **hf_kwargs,

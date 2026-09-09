@@ -13,7 +13,8 @@ Before any upload or create:
 - Probe the evaluator on at least five rows and require non-identical scores.
 - Check authentication, account, billing readiness, and `firectl quota list`.
 - Use full resource names such as `accounts/fireworks/models/<id>`.
-- Run `firectl rftj create --help` and resolve every user-set or defaulted value before the confirmation gate in `SKILL.md`.
+- Run `firectl rftj create --help` and resolve every user-set or defaulted value
+  before the confirmation gate in `../../configure/SKILL.md`.
 
 ## Launch surfaces
 

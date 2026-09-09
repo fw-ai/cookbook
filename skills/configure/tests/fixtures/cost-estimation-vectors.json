@@ -1,0 +1,65 @@
+[
+  {
+    "name": "managed-sft",
+    "items": 50000,
+    "epochs": 2,
+    "prompt_tokens": 400,
+    "response_tokens": 100,
+    "rate_per_million": 3,
+    "expected_tokens": 50000000,
+    "expected_center": 150,
+    "expected_low": 105,
+    "expected_high": 195
+  },
+  {
+    "name": "managed-dpo",
+    "items": 10000,
+    "epochs": 3,
+    "prompt_tokens": 200,
+    "chosen_tokens": 100,
+    "rejected_tokens": 150,
+    "rate_per_million": 1,
+    "expected_tokens": 19500000,
+    "expected_center": 19.5,
+    "expected_low": 13.65,
+    "expected_high": 25.35
+  },
+  {
+    "name": "serverless-sft",
+    "items": 10000,
+    "epochs": 2,
+    "prompt_tokens": 400,
+    "response_tokens": 100,
+    "train_rate_per_million": 4.103,
+    "expected_tokens": 10000000,
+    "expected_center": 41.03,
+    "expected_low": 28.721,
+    "expected_high": 53.339
+  },
+  {
+    "name": "serverless-dpo",
+    "prompt_tokens": 400,
+    "chosen_tokens": 150,
+    "rejected_tokens": 150,
+    "policy_pair_occurrences": 50000,
+    "unique_reference_pairs": 50000,
+    "train_rate_per_million": 32.55,
+    "prefill_rate_per_million": 10.87,
+    "expected_policy_tokens": 55000000,
+    "expected_reference_tokens": 55000000,
+    "expected_unpadded_baseline": 2388.1
+  },
+  {
+    "name": "serverless-dpo-repeated-subset",
+    "prompt_tokens": 400,
+    "chosen_tokens": 150,
+    "rejected_tokens": 150,
+    "policy_pair_occurrences": 60,
+    "unique_reference_pairs": 40,
+    "train_rate_per_million": 32.55,
+    "prefill_rate_per_million": 10.87,
+    "expected_policy_tokens": 66000,
+    "expected_reference_tokens": 44000,
+    "expected_unpadded_baseline": 2.62658
+  }
+]

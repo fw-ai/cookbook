@@ -18,6 +18,11 @@ Use this reference when selecting a loss path, constructing datums, or forking a
 
 Prefer a maintained recipe over a blank loop. A direct SDK call is appropriate only when the reviewed task needs a contract the recipes do not expose.
 
+The `embedding`, `cos_similarity_matrix`, and `contrastive_loss` output modes
+require a base model registered as `EMBEDDING_MODEL`. The backend checks the
+registered kind before execution and returns `request_validation` for these
+modes on non-embedding models. Use `logprobs` for custom losses on language models.
+
 ## Datum invariants
 
 - Preserve exact token IDs produced by the selected renderer.

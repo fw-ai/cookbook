@@ -24,7 +24,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 _TOKENIZER = "zai-org/GLM-5.3"
 _TOKENIZER_REVISION = "935644c05e76fc198714f4cca449fd8b970ff6d7"
 _FLASH_TOKENIZER = "zai-org/GLM-5.3-Flash"
-_FLASH_TOKENIZER_REVISION = "03eb5366286afd40d2221b1d9c63a6dd1ba4832e"
+_FLASH_TOKENIZER_REVISION = "690b705278a3a58e538fcb37c2ca8b5f9511213c"
 _TOOLS = [
     {
         "type": "function",
@@ -531,6 +531,57 @@ def test_supervised_example_matches_hf_modulo_training_stop(tokenizer, renderer)
     )
 
 
+@pytest.mark.parametrize(
+    ("tool_calls", "expected_stop"),
+    [
+        (None, "<|user|>"),
+        (
+            [
+                {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                        "name": "weather",
+                        "arguments": {"city": "Paris"},
+                    },
+                }
+            ],
+            "<|observation|>",
+        ),
+    ],
+)
+def test_flash_supervised_stop_uses_posttraining_role_sentinel_not_eot(
+    flash_tokenizer: Any,
+    flash_renderer: Any,
+    tool_calls: list[dict[str, Any]] | None,
+    expected_stop: str,
+) -> None:
+    assistant: dict[str, Any] = {
+        "role": "assistant",
+        "reasoning_content": "work",
+        "content": "answer",
+    }
+    if tool_calls is not None:
+        assistant["tool_calls"] = tool_calls
+    messages = [{"role": "user", "content": "question"}, assistant]
+
+    model_input, weights = flash_renderer.build_supervised_example(
+        normalize_messages(messages)
+    )
+    ours = list(model_input.to_ints())
+    expected_stop_id = flash_tokenizer.convert_tokens_to_ids(expected_stop)
+    eot_id = flash_tokenizer.convert_tokens_to_ids("<|endoftext|>")
+
+    assert ours[-1] == expected_stop_id
+    assert int(weights[-1]) == 1
+    assert eot_id not in ours
+    assert ours[:-1] == _hf_tokens(
+        flash_tokenizer,
+        messages,
+        add_generation_prompt=False,
+    )
+
+
 def test_parallel_tool_results_follow_call_order(tokenizer, renderer):
     messages = _parallel_tool_messages(
         [("call_time", "12:00"), ("call_weather", "sunny")]
@@ -558,4 +609,23 @@ def test_duplicate_tool_result_ids_fall_back_to_source_order(tokenizer, renderer
         tools=_TOOLS,
     )
     rendered = tokenizer.decode(ours)
+    assert rendered.index("first") < rendered.index("second")
+
+
+def test_flash_invalid_tool_result_block_matches_current_hf(
+    flash_tokenizer: Any,
+    flash_renderer: Any,
+) -> None:
+    messages = _parallel_tool_messages(
+        [("call_time", "first"), ("call_time", "second")]
+    )
+    ours = _generation_tokens(flash_renderer, messages, tools=_TOOLS)
+
+    assert ours == _hf_tokens(
+        flash_tokenizer,
+        messages,
+        add_generation_prompt=True,
+        tools=_TOOLS,
+    )
+    rendered = flash_tokenizer.decode(ours)
     assert rendered.index("first") < rendered.index("second")

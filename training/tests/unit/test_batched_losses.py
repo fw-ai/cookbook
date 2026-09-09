@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+import struct
 import sys
 from types import SimpleNamespace
 
 import pytest
+import tinker
 import torch
 
 from training.utils.losses import (
@@ -23,7 +25,7 @@ from training.utils.rl.common import (
 )
 from training.utils.rl.losses import build_grpo_datums
 from training.utils.rl.observability import compute_server_grpo_observability_metrics
-from training.utils.rl.tis import TISConfig
+from training.utils.rl.tis import TISConfig, compute_tis_weight
 from training.utils.supervised import build_datum_from_token_mask
 
 
@@ -312,6 +314,76 @@ class TestBuildGRPODatums:
         )[0]
 
         assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.0, 3.0, 3.0])
+
+    @pytest.mark.parametrize("advantage", [0.0, -0.0, 1.0 / 3, -1.23456789])
+    @pytest.mark.parametrize(
+        "tis_config",
+        [
+            TISConfig(),
+            TISConfig(cap=1.5, level="sequence"),
+            TISConfig(cap=2.0, icepop_threshold=2.0),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("prefix", "response_len", "all_masked"),
+        [(0, 0, False), (4, 0, False), (0, 17, False), (3, 17, True), (5, 4097, False)],
+    )
+    def test_preserves_scalar_advantage_arithmetic_exactly(
+        self,
+        advantage: float,
+        tis_config: TISConfig,
+        prefix: int,
+        response_len: int,
+        all_masked: bool,
+    ) -> None:
+        # Masked spans represent intervening tool/user turns; fractional masks
+        # also exercise the existing active-token threshold and final weighting.
+        masks = (
+            [0.0] * response_len if all_masked else [0.0, 1.0, 1.0, 0.25, 0.0, 1.0, 0.75] * ((response_len + 6) // 7)
+        )
+        masks = masks[:response_len]
+        count = prefix + response_len
+        source = tinker.Datum(
+            model_input=tinker.ModelInput.from_ints(list(range(count))),
+            loss_fn_inputs={
+                "target_tokens": tinker.TensorData(data=list(range(count)), dtype="int64", shape=[count]),
+                "weights": tinker.TensorData(data=[0.0] * prefix + masks, dtype="float32", shape=[count]),
+            },
+        )
+        old_lp = [0.0] * prefix + [-0.13 * (i % 7 + 1) for i in range(response_len)]
+        rollout_lp = [0.0] * prefix + [
+            None if mask <= 0.5 else old_lp[prefix + i] - [-3.0, -0.3, 0.7, 3.0][i % 4] for i, mask in enumerate(masks)
+        ]
+        tensor_mask = torch.tensor(masks, dtype=torch.float32)
+        weights = torch.ones(response_len, dtype=torch.float32)
+        active = tensor_mask > 0.5
+        if active.any():
+            active_old = torch.tensor(old_lp[prefix:], dtype=torch.float32)[active]
+            active_rollout = torch.tensor(
+                [value for value, mask in zip(rollout_lp[prefix:], masks) if mask > 0.5],
+                dtype=torch.float32,
+            )
+            weights[active], _ = compute_tis_weight(active_old, active_rollout, tis_config)
+        expected = [0.0] * prefix + [
+            float(advantage * weights[i].item() * tensor_mask[i].item()) for i in range(response_len)
+        ]
+
+        result = build_grpo_datums(
+            [source],
+            [advantage],
+            [old_lp],
+            [rollout_lp],
+            [prefix + 1],
+            tis_config,
+        )[0]
+
+        actual = result.loss_fn_inputs["advantages"]
+        assert actual.shape == [count] and actual.dtype == "float32"
+        # TensorData stores float32; compare its exact bits, including signed zero.
+        assert struct.pack(f"{count}f", *actual.data) == struct.pack(f"{count}f", *expected)
+        assert result.model_input is source.model_input
+        assert result.loss_fn_inputs["target_tokens"].data == list(range(count))
+        assert struct.pack(f"{count}f", *result.loss_fn_inputs["logprobs"].data) == struct.pack(f"{count}f", *old_lp)
 
 
 class TestServerGRPOObservability:

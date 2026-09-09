@@ -62,8 +62,13 @@ from training.renderer.reasoning_fields import (
     ORIGINAL_REASONING,
     ORIGINAL_REASONING_CONTENT,
 )
+from training.renderer.plugins import (
+    renderer_image_processor_loader,
+    renderer_plugin_supports_images,
+    renderer_plugin_supports_tool_images,
+    resolve_renderer_name_from_plugins,
+)
 from training.utils.tokenizers import load_tokenizer
-
 
 @dataclass(frozen=True)
 class RenderedSupervisedDatum:
@@ -199,6 +204,8 @@ def resolve_renderer_name(
     """Choose the existing/default renderer for message -> token rendering."""
     if renderer_name:
         return renderer_name
+    if plugin_renderer_name := resolve_renderer_name_from_plugins(tokenizer_model):
+        return plugin_renderer_name
     normalized_model_name = tokenizer_model.lower()
     if normalized_model_name in {
         "qwen/qwen2.5-32b-instruct",
@@ -480,7 +487,10 @@ def build_renderer_from_resolved_name(
     if (
         load_image_processor
         and get_image_processor is not None
-        and renderer_supports_images(renderer_name)
+        and (
+            renderer_supports_images(renderer_name)
+            or renderer_image_processor_loader(renderer_name) is not None
+        )
     ):
         return get_renderer(
             renderer_name,
@@ -589,6 +599,9 @@ def _get_image_processor_with_remote_code_default(
     # renderer names: managed jobs stage tokenizer artifacts under opaque paths,
     # and new image renderers should not require a second trust allowlist update.
     # Preserve any explicit caller policy, including HF_TRUST_REMOTE_CODE=0.
+    if plugin_loader := renderer_image_processor_loader(renderer_name):
+        return plugin_loader(tokenizer_model)
+
     if renderer_name == "muse_glimmer":
         # The pinned Transformers release can resolve Muse's processor config
         # but does not register its image processor class yet. Only token
@@ -627,6 +640,9 @@ def renderer_supports_images(renderer_name: str) -> bool:
     image processor. Managed dataset validation also consumes it so image
     inputs fail before rendering when the selected renderer is text-only.
     """
+    plugin_capability = renderer_plugin_supports_images(renderer_name)
+    if plugin_capability is not None:
+        return plugin_capability
     return any(
         marker in renderer_name
         for marker in (
@@ -651,6 +667,9 @@ def renderer_supports_tool_images(renderer_name: str) -> bool:
     Keep this allowlist explicit so managed validation cannot admit a role that
     a vision renderer has not implemented and tested.
     """
+    plugin_capability = renderer_plugin_supports_tool_images(renderer_name)
+    if plugin_capability is not None:
+        return plugin_capability
     return renderer_name in {
         "glm53_flash",
         "glm53_flash_interleaved",

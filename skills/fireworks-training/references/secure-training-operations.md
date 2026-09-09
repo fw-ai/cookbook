@@ -13,7 +13,9 @@ firectl dataset create <dataset-id> \
   --external-url gs://<bucket>/<prefix>/data.jsonl
 ```
 
-Use the equivalent `s3://` or Azure URL only when the live docs confirm support for the selected workflow. Dataset registration is protected work and requires the final-plan confirmation in `SKILL.md`.
+Use the equivalent `s3://` or Azure URL only when live docs confirm support for
+the selected workflow. Dataset registration is protected work and requires the
+final-plan confirmation in `../../configure/SKILL.md`.
 
 ### GCS
 
