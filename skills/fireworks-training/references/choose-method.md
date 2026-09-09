@@ -73,7 +73,10 @@ If `ground_truth` is a separate field rather than the final assistant turn, map 
 
 ## Hyperparameter sweep + promotion gate
 
-For anything past a smoke run, don't hand-pick one config: run the small grid below as **separate jobs**, compare on a held-out split, and promote the winner. The coding agent runs the method-specific sweep through the common workflow in `SKILL.md`.
+For anything past a smoke run, do not hand-pick one config: run the small grid
+below as separate jobs, compare on a held-out split, and promote the winner.
+The coding agent runs the method-specific sweep through
+`../../configure/SKILL.md`.
 
 ## LoRA vs full-parameter
 

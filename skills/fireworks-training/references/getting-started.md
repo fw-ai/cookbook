@@ -35,7 +35,8 @@ Managed fine-tuning is **GA**; the **Training API is private preview** ([request
 | **Training API serverless** | Custom LoRA SFT or RL loop on a shared pooled trainer | Fast iteration on supported models with no provisioning |
 | **Training API dedicated** | Custom loop with provisioned trainer and deployment resources | Full-parameter, DPO, sustained RL, explicit resume/deployment control; subject to quota and availability |
 
-The coding agent, UI, CLI, REST API, and Python SDK are interaction surfaces. This skill can guide any of the three workflows; use the root `SKILL.md` decision tables.
+The coding agent, UI, CLI, REST API, and Python SDK are interaction surfaces.
+Use the path and method routing in `../../configure/SKILL.md`.
 
 ## 4. Preflight — verify before you create a job
 

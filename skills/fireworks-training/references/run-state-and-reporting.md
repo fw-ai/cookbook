@@ -8,11 +8,11 @@ The coding-agent flow preserves its plan, approvals, resources, progress, and re
 
 At the start of the skill run, generate one random UUID and export it as
 `FIREWORKS_SESSION_ID`; export
-`FIREWORKS_CLIENT_SOURCE=fireworks-training-skill/2.0.0`. Preserve those values
+`FIREWORKS_CLIENT_SOURCE=fireworks-training-skill/2.2.0`. Preserve those values
 for all firectl, Training API Python, direct REST, retry, resume, and blocked
 manual terminal handoff calls in this run. Do not use `PURPOSE_PILOT`.
 
-Before the first protected action, create `fireworks-training-runs/<run-id>/run.md` in the current workspace. Use a stable, human-readable `<run-id>` such as `<method>-<output-model>-<UTC timestamp>`. Keep datasets and generated evaluation files beside it unless the user chooses another location. Record the UUID only in this private manifest. Do not create a telemetry file or standalone beacon.
+Before the first protected action, create `fireworks-training-runs/<run-id>/run.md` in the current workspace. Use a stable, human-readable `<run-id>` such as `<method>-<output-model>-<UTC timestamp>`. Keep datasets and generated evaluation files beside it unless the user chooses another location. Record the UUID only in this private manifest. Do not create a separate telemetry file. When a structured intake flow is active, bounded journey events use the authenticated command described in [`telemetry.md`](telemetry.md).
 
 Do not write API keys, environment values, raw customer data, or secret-bearing command output into the manifest. Resource names, configs, commands, metrics, and explicit user decisions are allowed, but treat the file as customer-private.
 
@@ -23,12 +23,13 @@ status: planned
 phase: awaiting_plan_approval
 updated_at_utc:
 skill_session_id:
-skill_client_source: fireworks-training-skill/2.0.0
+skill_client_source: fireworks-training-skill/2.2.0
 
 ## Intent
 task:
 success_metric:
-method: sft | dpo | managed-rft | training-api-serverless | training-api-dedicated
+method: sft | dpo | orpo | rft | igpo | distillation | embedding
+workflow_path: managed_firectl | managed_sdk | serverless | dedicated
 
 ## Inputs
 account:
@@ -187,7 +188,8 @@ Always distinguish:
 - **Cost** from authoritative usage or billing evidence. If unavailable, say unavailable.
 - **ETA** from an explicit platform estimate. Do not invent one from elapsed time.
 
-For method-specific commands use the common workflow in `SKILL.md`; for no-progress handling use `references/error-reference.md`.
+For method-specific commands use the execution workflow in
+`../../configure/SKILL.md`; for no-progress handling use `error-reference.md`.
 
 ## Required final report
 

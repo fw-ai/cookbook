@@ -8,7 +8,7 @@
     {
       "name": "fireworks-training",
       "source": "./",
-      "description": "Managed SFT/DPO/ORPO/RFT and Training API serverless or dedicated workflows from one coding-agent skill."
+      "description": "Three skills for coding agents: research (method, data, eval, cookbook), configure (train and monitor), debug (triage failures). Managed SFT/DPO/ORPO/RFT and Training API workflows."
     }
   ]
 }

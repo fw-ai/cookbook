@@ -1,7 +1,7 @@
 {
   "name": "cookbook",
-  "version": "2.0.0",
-  "description": "Train on Fireworks with one coding-agent skill for managed jobs and Training API workflows.",
+  "version": "2.2.0",
+  "description": "Research, configure, and debug Fireworks training from a coding agent.",
   "author": {
     "name": "Fireworks AI",
     "url": "https://fireworks.ai"
@@ -14,7 +14,7 @@
   "interface": {
     "displayName": "Fireworks Training",
     "shortDescription": "Plan, run, and debug Fireworks training.",
-    "longDescription": "Use one Fireworks training skill for managed fine-tuning and custom Training API workflows, including evaluation, deployment, resume, and troubleshooting.",
+    "longDescription": "Use focused research, configure, and debug skills for managed fine-tuning and custom Training API workflows.",
     "developerName": "Fireworks AI",
     "category": "Developer Tools",
     "capabilities": ["Training", "Evaluation", "Deployment"],
