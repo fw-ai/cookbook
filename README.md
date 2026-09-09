@@ -17,17 +17,17 @@ See [`training/README.md`](./training/README.md) for configuration, recipes, and
 
 ## For AI Agents
 
-**Just installed?** → **[`skills/GETTING-STARTED.md`](skills/GETTING-STARTED.md)** — open a new chat and paste a smoke-test prompt (no spend).
+These skills bring Fireworks training know-how into compatible AI agents through
+progressive disclosure. Each entry point loads only the workflow guidance
+needed for the task, then follows linked Fireworks documentation and runnable
+cookbook examples when deeper detail is needed. The skill set provides three
+task-specific skills: **research**, **configure**, and **debug**.
 
-Three skills ship with one plugin install — **research**, **configure**, and **debug**:
-
-| Skill | Role |
-|---|---|
-| [`skills/research/SKILL.md`](skills/research/SKILL.md) | Interview-driven planning: method, data, eval, cookbook entry |
-| [`skills/configure/SKILL.md`](skills/configure/SKILL.md) | Plan, run, monitor, evaluate, deploy, and tear down training |
-| [`skills/debug/SKILL.md`](skills/debug/SKILL.md) | Triage stuck, failed, or low-quality runs |
-
-[`skills/discover/SKILL.md`](skills/discover/SKILL.md) and [`skills/fireworks-training/SKILL.md`](skills/fireworks-training/SKILL.md) are redirect stubs for older installs.
+| Skill | What it does | Try |
+|---|---|---|
+| [Research](skills/research/SKILL.md) | Helps decide whether training is the right intervention. It gathers the task, data, evaluation criteria, and constraints, then recommends a method and the closest runnable cookbook entry. It does not launch training. | *"Which cookbook entry fits prompt routing to small vs big models?"* |
+| [Configure](skills/configure/SKILL.md) | Turns a training goal into an executable plan for managed SFT, DPO, ORPO, or RFT, as well as serverless or dedicated Training API setups. It validates inputs, estimates cost, and supports running, monitoring, evaluation, deployment, resume, and teardown. It shows the complete plan and asks for approval before spend or mutation. | *"SFT qwen3-8b on my JSONL. Show the plan, but do not start yet."* |
+| [Debug](skills/debug/SKILL.md) | Diagnoses stuck, failed, slow, or low-quality training runs. It gathers runtime evidence, classifies the failure, suggests the safest next action, and does not retry or mutate resources without approval. | *"My job is stuck RUNNING at 0%."* |
 
 ### Claude Code
 
@@ -51,23 +51,11 @@ npx --yes skills add fw-ai/cookbook -g \
 ```
 
 The repository also includes [`.codex-plugin/plugin.json`](.codex-plugin/plugin.json)
-for packaging the same skill as a Codex plugin. The skill is portable Agent
-Skills Markdown; Cursor and Codex installation is validated with the `skills`
-CLI and is not limited to the Claude compact interface. `firectl` may still
-require mutating commands to be run manually in the user's terminal when its
-AI-agent safety guard is active.
-
-### After install — try this
-
-Open a **new chat** in Cursor, Claude Code, or Codex. You do not @-mention skills.
-
-| You say | Entry |
-|---|---|
-| *"Which cookbook entry fits prompt routing to small vs big models?"* | research |
-| *"SFT qwen3-8b on my JSONL — show the plan, don't start yet"* | configure |
-| *"My job is stuck RUNNING at 0%"* | debug |
-
-Full walkthrough: [`skills/GETTING-STARTED.md`](skills/GETTING-STARTED.md).
+for packaging the skill set as a Codex plugin. The skills use portable Agent
+Skills Markdown and can be consumed by other compatible agents. The commands
+above cover the three validated installation paths. `firectl` may still require
+mutating commands to be run manually in the user's terminal when its AI-agent
+safety guard is active.
 
 ## Repository Structure
 
@@ -83,7 +71,7 @@ training/           Training API recipes, utilities, and examples
   renderer/         Local renderers and correctness verifier
   tests/            Unit and end-to-end tests
 eval/               Reproducible evaluation packages and benchmark adapters
-skills/             research, configure, debug (+ discover/fireworks-training redirects)
+skills/             Research, configure, and debug agent workflows
 archived/           Legacy integrations, multimedia, and cookbook content
   tools/            Archived standalone customer scripts
 ```
