@@ -45,6 +45,7 @@ import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.qwen2_5 as _qwen2_5_renderer  # noqa: F401 — triggers register_renderer
+from training.utils.runner import DatasetError
 from training.renderer.thinking_trace import (
     ResolvedThinkingTraceRendererPlan,
     ThinkingTraceHistoryMode,
@@ -685,9 +686,11 @@ logger = logging.getLogger(__name__)
 def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
     """Normalize common tool-call shapes into Tinker's structured ToolCall form."""
     normalized: list[ToolCall] = []
-    for tool_call in tool_calls or []:
+    for index, tool_call in enumerate(tool_calls or []):
         if not isinstance(tool_call, Mapping):
-            raise TypeError(f"Unsupported tool call type: {type(tool_call)!r}")
+            raise DatasetError(
+                f"tool_calls[{index}] must be an object; got {type(tool_call).__name__}."
+            )
 
         if isinstance(tool_call.get("name"), str) and isinstance(
             tool_call.get("args"), Mapping
@@ -707,12 +710,19 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
         if isinstance(function, Mapping) and isinstance(function.get("name"), str):
             raw_args = function.get("arguments", {})
             if isinstance(raw_args, str):
-                parsed_args = json.loads(raw_args) if raw_args else {}
+                try:
+                    parsed_args = json.loads(raw_args) if raw_args else {}
+                except json.JSONDecodeError as exc:
+                    raise DatasetError(
+                        f"tool_calls[{index}].function.arguments must be valid JSON: "
+                        f"{exc.msg} at line {exc.lineno} column {exc.colno}."
+                    ) from exc
             elif isinstance(raw_args, Mapping):
                 parsed_args = dict(raw_args)
             else:
-                raise TypeError(
-                    f"Unsupported tool call arguments type: {type(raw_args)!r}"
+                raise DatasetError(
+                    f"tool_calls[{index}].function.arguments must be a JSON object string "
+                    f"or object; got {type(raw_args).__name__}."
                 )
             normalized.append(
                 ToolCall(
@@ -725,7 +735,10 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
             )
             continue
 
-        raise ValueError(f"Unsupported tool call shape: {tool_call}")
+        raise DatasetError(
+            f"tool_calls[{index}] must contain either a string 'name' with object 'args' "
+            "or an object 'function' with a string 'name'."
+        )
     return normalized
 
 
