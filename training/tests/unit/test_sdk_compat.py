@@ -133,3 +133,21 @@ def test_to_deployment_config_leaves_hot_load_transition_type_unset_by_default()
     )
 
     assert deployment_config.hot_load_transition_type is None
+
+
+def test_to_deployment_config_preserves_fields_missing_from_sdk():
+    deploy_cfg = config_module.DeployConfig(
+        deployment_id="dep-123",
+        draft_model="mtp",
+        draft_token_count=3,
+        enable_session_affinity=False,
+    )
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-35b",
+        config_module.InfraConfig(),
+    )
+
+    assert deployment_config.draft_model == "mtp"
+    assert deployment_config.draft_token_count == 3
+    assert deployment_config.enable_session_affinity is False

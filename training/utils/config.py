@@ -298,6 +298,15 @@ class DeployConfig:
     Increase for R3 + long completions where responses can be very large."""
     disable_speculative_decoding: bool = False
     """When true, disable the base model's default draft/EAGLE speculation."""
+    wait_for_trainer_before_deployment: bool = False
+    """For ``PER_TRAINER``, wait for trainer capacity before rollout allocation.
+    Avoids idle rollout GPUs while queued, but serializes trainer/deployment boot."""
+    draft_model: str | None = None
+    """Speculative-decoding draft model at deploy create (e.g. ``\"mtp\"``)."""
+    draft_token_count: int | None = None
+    """Tokens drafted per step (paired with ``draft_model``)."""
+    enable_session_affinity: bool | None = None
+    """If set, configure session affinity at deploy create time."""
     replica_count: int | None = None
     """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None
@@ -314,24 +323,39 @@ class DeployConfig:
         skip_validation = False
         accel = None if self.deployment_shape else self.deployment_accelerator_type
         replica_count = 1 if self.replica_count is None else self.replica_count
-        return DeploymentConfig(
-            deployment_id=self.deployment_id,
-            base_model=base_model,
-            region=infra.region,
-            deployment_shape=self.deployment_shape,
-            hot_load_bucket_type=self.hot_load_bucket_type if self.enable_hot_load else None,
-            hot_load_trainer_job=self.hot_load_trainer_job if self.enable_hot_load else None,
-            hot_load_transition_type=self.hot_load_transition_type if self.enable_hot_load else None,
-            enable_hot_load=self.enable_hot_load,
-            skip_shape_validation=skip_validation,
-            extra_args=self.deployment_extra_args,
-            min_replica_count=replica_count,
-            max_replica_count=replica_count,
-            accelerator_type=accel,
-            disable_speculative_decoding=self.disable_speculative_decoding,
-            extra_values=self.extra_values,
-            preemptible=self.preemptible or getattr(infra, "preemptible", False),
-        )
+        kwargs = {
+            "deployment_id": self.deployment_id,
+            "base_model": base_model,
+            "region": infra.region,
+            "deployment_shape": self.deployment_shape,
+            "hot_load_bucket_type": self.hot_load_bucket_type if self.enable_hot_load else None,
+            "hot_load_trainer_job": self.hot_load_trainer_job if self.enable_hot_load else None,
+            "hot_load_transition_type": self.hot_load_transition_type if self.enable_hot_load else None,
+            "enable_hot_load": self.enable_hot_load,
+            "skip_shape_validation": skip_validation,
+            "extra_args": self.deployment_extra_args,
+            "min_replica_count": replica_count,
+            "max_replica_count": replica_count,
+            "accelerator_type": accel,
+            "disable_speculative_decoding": self.disable_speculative_decoding,
+            "draft_model": self.draft_model,
+            "draft_token_count": self.draft_token_count,
+            "enable_session_affinity": self.enable_session_affinity,
+            "extra_values": self.extra_values,
+            "preemptible": self.preemptible or getattr(infra, "preemptible", False),
+        }
+        supported = getattr(DeploymentConfig, "__dataclass_fields__", {})
+        passthrough = {"draft_model", "draft_token_count", "enable_session_affinity"}
+        lost = {
+            key: value for key, value in kwargs.items()
+            if key not in supported and key not in passthrough and value is not None
+        }
+        if lost:
+            raise TypeError(f"SDK DeploymentConfig cannot express settings: {lost}")
+        config = DeploymentConfig(**{key: value for key, value in kwargs.items() if key in supported})
+        for key in passthrough - supported.keys():
+            setattr(config, key, kwargs[key])
+        return config
 
 
 @dataclass

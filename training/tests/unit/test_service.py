@@ -7,8 +7,10 @@ import inspect
 
 import pytest
 
+from types import SimpleNamespace
+
 from training.utils import service
-from training.utils.config import DeployConfig, TrainerConfig
+from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 from training.utils.service import build_service_client, resolve_router_replay_enabled
 
 
@@ -458,6 +460,90 @@ def test_trainer_config_rejects_removed_accelerator_fields(field_name, value):
         ),
     ):
         TrainerConfig(**{field_name: value})
+
+
+def test_build_service_client_rejects_trainer_wait_without_per_trainer():
+    with pytest.raises(ValueError, match="wait_for_trainer_before_deployment"):
+        build_service_client(
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+            tokenizer_model=None,
+            max_lora_rank=None,
+            max_context_length=None,
+            learning_rate=1e-5,
+            trainer=TrainerConfig(training_shape_id="ts-x"),
+            deployment=DeployConfig(
+                deployment_id="dep-1",
+                wait_for_trainer_before_deployment=True,
+                weight_sync_scope=WeightSyncScope.PER_DEPLOYMENT,
+            ),
+        )
+
+
+def test_build_service_client_forwards_trainer_wait_when_sdk_declares_it(monkeypatch):
+    calls: list[dict] = []
+
+    def fake_from_firetitan_config(**kwargs):
+        calls.append(kwargs)
+        return "service-sentinel"
+
+    class FakeServiceClient:
+        from_firetitan_config = staticmethod(fake_from_firetitan_config)
+
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+    monkeypatch.setattr(
+        service,
+        "fields",
+        lambda _cls: (
+            SimpleNamespace(name="wait_for_trainer_before_deployment"),
+            SimpleNamespace(name="draft_model"),
+            SimpleNamespace(name="draft_token_count"),
+            SimpleNamespace(name="enable_session_affinity"),
+        ),
+    )
+
+    build_service_client(
+        api_key="k",
+        base_url="https://api",
+        additional_headers=None,
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=None,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-x"),
+        deployment=DeployConfig(
+            deployment_id="dep-1",
+            wait_for_trainer_before_deployment=True,
+            draft_model="mtp",
+            draft_token_count=3,
+            enable_session_affinity=False,
+        ),
+    )
+
+    assert calls[0]["wait_for_trainer_before_deployment"] is True
+    assert calls[0]["draft_model"] == "mtp"
+    assert calls[0]["draft_token_count"] == 3
+    assert calls[0]["enable_session_affinity"] is False
+
+
+def test_build_service_client_errors_when_mtp_requested_on_old_sdk(monkeypatch):
+    monkeypatch.setattr(service, "fields", lambda _cls: ())
+    with pytest.raises(RuntimeError, match="draft_model"):
+        build_service_client(
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+            tokenizer_model=None,
+            max_lora_rank=None,
+            max_context_length=None,
+            learning_rate=1e-5,
+            trainer=TrainerConfig(training_shape_id="ts-x"),
+            deployment=DeployConfig(deployment_id="dep-1", draft_model="mtp"),
+        )
 
 
 def test_trainer_config_does_not_advertise_removed_accelerator_fields():

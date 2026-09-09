@@ -30,6 +30,8 @@ DeployConfig(weight_sync_scope=WeightSyncScope.PER_TRAINER, ...)
 
 Bucket path: `gs://.../rl-checkpoints/{account}/trainer-{trainer_id}/`. Good when one trainer feeds multiple deployments, or for clean per-run isolation.
 
+The managed SDK path overlaps trainer readiness with deployment creation. Set `DeployConfig.wait_for_trainer_before_deployment=True` to wait for trainer capacity before allocating rollout GPUs (requires an SDK that honors the flag). `draft_model` / `draft_token_count` / `enable_session_affinity` are create-time speculation and affinity knobs; they are forwarded when the SDK declares them.
+
 ### PER_DEPLOYMENT
 
 ```python
