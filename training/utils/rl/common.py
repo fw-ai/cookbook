@@ -38,7 +38,9 @@ def _get_loss_mask(
     ``{"target_tokens", "weights"}`` for ``forward_backward_custom``, so
     new producers MUST write the per-token mask under ``"weights"``.
     """
-    mask_td = datum.loss_fn_inputs.get("weights") or datum.loss_fn_inputs.get("loss_mask")
+    mask_td = datum.loss_fn_inputs.get("weights") or datum.loss_fn_inputs.get(
+        "loss_mask"
+    )
     if mask_td is not None:
         mask_vals = mask_td.data[response_start : response_start + resp_len]
         if len(mask_vals) < resp_len:
@@ -68,7 +70,9 @@ def _coerce_logprobs_to_float(
             f"expected {expected_len} {coordinates} logprobs."
         )
     if any(value is None for value in values):
-        raise RuntimeError(f"{source} for sample {sample_idx} has null {coordinates} logprob.")
+        raise RuntimeError(
+            f"{source} for sample {sample_idx} has null {coordinates} logprob."
+        )
     return [float(value) for value in values]
 
 
@@ -212,6 +216,8 @@ class SampleContext:
     """Scalar advantage value (as a 0-d tensor)."""
     tis_weight: torch.Tensor
     """TIS importance weight per token."""
+    resp_teacher: torch.Tensor | None = None
+    """Privileged-teacher logprobs for response tokens, when configured."""
 
 
 @dataclass
@@ -247,6 +253,7 @@ def run_loss_loop(
     logprobs_list: List[torch.Tensor],
     policy_loss: str,
     policy_fn: PolicyFn,
+    teacher_logprobs: List[List[float]] | None = None,
 ) -> LossLoopResult:
     """Shared loss loop: tensor setup, TIS weight, loss metrics, KL.
 
@@ -289,7 +296,12 @@ def run_loss_loop(
         ref_lp = ref_logprobs[i] if ref_logprobs else []
         resp_ref = (
             torch.tensor(
-                [ref_lp[response_start + j] if (response_start + j) < len(ref_lp) else 0.0 for j in range(resp_len)],
+                [
+                    ref_lp[response_start + j]
+                    if (response_start + j) < len(ref_lp)
+                    else 0.0
+                    for j in range(resp_len)
+                ],
                 dtype=resp_pi.dtype,
                 device=resp_pi.device,
             )
@@ -320,7 +332,12 @@ def run_loss_loop(
         )
         old_policy_lp = old_policy_logprobs[i]
         resp_old_policy = torch.tensor(
-            [old_policy_lp[response_start + j] if (response_start + j) < len(old_policy_lp) else 0.0 for j in range(resp_len)],
+            [
+                old_policy_lp[response_start + j]
+                if (response_start + j) < len(old_policy_lp)
+                else 0.0
+                for j in range(resp_len)
+            ],
             dtype=resp_pi.dtype,
             device=resp_pi.device,
         )
@@ -340,7 +357,9 @@ def run_loss_loop(
             ref_num_samples += 1
         behavior_num_samples += 1
 
-        tis_weight_active, bm = compute_tis_weight(active_old_policy, active_inf, tis_config)
+        tis_weight_active, bm = compute_tis_weight(
+            active_old_policy, active_inf, tis_config
+        )
         # Identity (1.0) at masked positions: zeroes under ``resp_mask`` for
         # masked-multiplied losses, no-op weight for ``dro``.
         tis_weight = torch.ones(resp_len, dtype=resp_pi.dtype, device=resp_pi.device)
@@ -348,7 +367,26 @@ def run_loss_loop(
         for k, v in bm.items():
             tis_metrics_agg[k] = tis_metrics_agg.get(k, 0.0) + v
 
-        adv_t = torch.as_tensor(advantages[i], dtype=resp_pi.dtype, device=resp_pi.device)
+        adv_t = torch.as_tensor(
+            advantages[i], dtype=resp_pi.dtype, device=resp_pi.device
+        )
+        resp_teacher = None
+        if teacher_logprobs is not None:
+            if i >= len(teacher_logprobs):
+                raise ValueError(
+                    f"{policy_loss} requires teacher logprobs for sample {i}."
+                )
+            teacher_lp = teacher_logprobs[i]
+            if len(teacher_lp) != len(pi_logprobs):
+                raise ValueError(
+                    f"{policy_loss} teacher logprobs for sample {i} must align "
+                    f"with target tokens ({len(teacher_lp)} != {len(pi_logprobs)})."
+                )
+            resp_teacher = torch.tensor(
+                teacher_lp[response_start : response_start + resp_len],
+                dtype=resp_pi.dtype,
+                device=resp_pi.device,
+            )
 
         ctx = SampleContext(
             resp_pi=resp_pi,
@@ -359,6 +397,7 @@ def run_loss_loop(
             resp_mask=resp_mask,
             adv=adv_t,
             tis_weight=tis_weight,
+            resp_teacher=resp_teacher,
         )
         per_token_loss, extra = policy_fn(ctx)
 
