@@ -1093,9 +1093,10 @@ def test_teacher_model_resource_detection() -> None:
 
 
 class _FakeTeacherRuntimeService:
-    def __init__(self) -> None:
+    def __init__(self, deployment_shape: str | None = None) -> None:
         self.direct_calls: list[dict] = []
         self.deployment_calls: list[dict] = []
+        self.deployment_shape = deployment_shape
 
     def create_deployment_sampler_for_model(
         self,
@@ -1177,7 +1178,7 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
         teacher_replica_count=2,
         teacher_deployment_timeout_s=123,
     )
-    service = _FakeTeacherRuntimeService()
+    service = _FakeTeacherRuntimeService(deployment_shape="shape-student")
 
     runtime = _resolve_teacher_runtime(
         cfg=cfg,
@@ -1200,6 +1201,7 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
     assert call["config"].enable_hot_load is False
     assert call["config"].hot_load_bucket_type is None
     assert call["config"].for_training is True
+    assert call["config"].deployment_shape == "shape-student"
     assert runtime.is_multi_teacher
     assert runtime.route_key == "teacher_route"
     assert sorted(runtime.route_to_entry) == ["code", "math"]
@@ -1375,7 +1377,7 @@ def test_teacher_deployment_shape_uses_run_level_override() -> None:
     )
 
 
-def test_teacher_deployment_shape_leaves_same_base_default_to_sdk() -> None:
+def test_teacher_deployment_shape_defaults_to_student_shape() -> None:
     cfg = Config(log_path="/tmp/opd", base_model="accounts/fireworks/models/student")
     spec = TeacherConfig(model="accounts/fireworks/models/student")
 
@@ -1383,12 +1385,13 @@ def test_teacher_deployment_shape_leaves_same_base_default_to_sdk() -> None:
         _teacher_deployment_shape_for_spec(
             spec,
             cfg,
+            student_deployment_shape="shape-student",
         )
-        is None
+        == "shape-student"
     )
 
 
-def test_teacher_deployment_shape_lets_api_choose_for_heterogeneous_teacher() -> None:
+def test_teacher_deployment_shape_falls_back_to_none_when_student_unresolved() -> None:
     cfg = Config(log_path="/tmp/opd", base_model="accounts/fireworks/models/student")
     spec = TeacherConfig(model="accounts/fireworks/models/teacher")
 
@@ -1396,6 +1399,7 @@ def test_teacher_deployment_shape_lets_api_choose_for_heterogeneous_teacher() ->
         _teacher_deployment_shape_for_spec(
             spec,
             cfg,
+            student_deployment_shape=None,
         )
         is None
     )
