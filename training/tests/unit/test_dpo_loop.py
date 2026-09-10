@@ -598,8 +598,8 @@ class TestTrainLoop:
             for pair in batch:
                 assert "ref_chosen" in pair and "ref_rejected" in pair
 
-    def test_periodic_dcp_checkpoint_uses_top_level_interval(self, tmp_path, monkeypatch):
-        """DPO saves resumable checkpoints from Config.dcp_save_interval."""
+    def test_periodic_dcp_and_sampler_intervals_are_independent(self, tmp_path, monkeypatch):
+        """DPO saves each checkpoint type on its own configured cadence."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
@@ -613,7 +613,8 @@ class TestTrainLoop:
         ds = _make_pair_dataset(tmp_path, n=4)
         cfg = module.Config(
             log_path=str(tmp_path), beta=0.2, epochs=1, batch_size=2,
-            dcp_save_interval=1, render_workers=0,
+            dcp_save_interval=2, sampler_save_interval=1,
+            render_workers=0,
         )
         ckpt = FakeCheckpoints()
 
@@ -631,8 +632,8 @@ class TestTrainLoop:
 
         assert step == 2
         assert ckpt.saves == [
-            ("step-1", {"resumable": True, "promotable": False, "data_consumed": 2}),
-            ("step-2", {"resumable": True, "promotable": False, "data_consumed": 4}),
+            ("step-1", {"resumable": False, "promotable": True, "data_consumed": 2}),
+            ("step-2", {"resumable": True, "promotable": True, "data_consumed": 4}),
         ]
 
     def test_multi_epoch_uses_ref_cache_log(self, tmp_path, monkeypatch):

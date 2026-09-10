@@ -10,7 +10,7 @@ The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/ch
 - `promotable=True` → sampler write (HF safetensors). Eligible for `promote_checkpoint`.
 - Both → DCP + sampler in one call.
 
-Periodic mid-training saves are usually `resumable=True, promotable=False`. The final save is `resumable=True, promotable=True`. RL weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves.
+Periodic dedicated recipe saves evaluate DCP and sampler cadences independently. Managed SFT/DPO/ORPO uses a server-managed DCP interval and forwards the customer's optional sampler interval separately. When both are due on the same step, one call writes both checkpoint types. The final save is `resumable=True, promotable=True`. RL weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves.
 
 ### Snapshot type is part of the contract
 
@@ -44,11 +44,26 @@ Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has 
 
 ## When each axis is used
 
-- `cfg.dcp_save_interval` > 0 → recipe calls `ckpt.save(resumable=True, promotable=False, ...)` every N steps.
+- `cfg.dcp_save_interval` > 0 → recipe writes resumable DCP checkpoints every N steps.
+- `cfg.sampler_save_interval` > 0 → recipe writes promotable sampler checkpoints every N steps.
+- Managed SFT/DPO/ORPO fixes `dcp_save_interval` at 20 and sets `sampler_save_interval` only when `sampler_checkpoint_save_interval_steps` is positive.
 - End of training → recipe calls `ckpt.save(resumable=True, promotable=True, ...)`.
 - `cfg.output_model_id` set → recipe also calls `ckpt.promote_latest(output_model_id, base_model)`.
 
-If `dcp_save_interval` is `0` (the default), mid-training saves are off — training cannot be resumed from intermediate steps. Set it in the recipe's `Config`.
+Standalone recipes default both intervals to `0`, so periodic saves are opt-in outside managed SFT/DPO/ORPO.
+
+Managed job checkpoints are listed through the control-plane parent job APIs:
+
+- `FireworksClient.list_training_job_checkpoints(parent)`
+- `FireworksClient.promote_training_job_checkpoint(name=..., output_model_id=..., base_model=...)`
+
+Both use the common `TrainingJobCheckpoint` API. Set `parent` to
+`accounts/<account>/supervisedFineTuningJobs/<job>` for SFT or
+`accounts/<account>/dpoJobs/<job>` for DPO/ORPO. Pass the returned checkpoint
+`name` unchanged when promoting. Existing RLOR and training-session APIs
+retain their own messages and methods.
+
+Filter on `promotable` before promoting, as with `list_checkpoints(job_id)`.
 
 ## Delta chain (sampler `checkpoint_type`)
 

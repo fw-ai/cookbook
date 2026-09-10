@@ -16,21 +16,15 @@ import training.renderer as fireworks_renderers
 import training.renderer.model_info as fireworks_model_info
 
 # The pinned package is loaded dynamically only as the temporary differential
-# oracle. Static imports from its renderer/routing surface are forbidden below
-# and this oracle goes away when the final package dependency is removed.
+# oracle. Static imports from the installed package are forbidden below, and
+# this oracle goes away when the final package dependency is removed.
 legacy_model_info = importlib.import_module("tinker_cookbook.model_info")
 legacy_renderers = importlib.import_module("tinker_cookbook.renderers")
 
-_DEPENDENCY_OWNED_IMPORT = re.compile(
+_INSTALLED_PACKAGE_IMPORT = re.compile(
     r"(?m)^[ \t]*(?:"
-    r"from[ \t]+tinker_cookbook\."
-    r"(?:exceptions|image_processing_utils|model_info|renderers|supervised\.common|tokenizer_utils)"
-    r"(?:\.[A-Za-z_]\w*)*[ \t]+import\b"
-    r"|import[ \t]+tinker_cookbook\."
-    r"(?:exceptions|image_processing_utils|model_info|renderers|supervised\.common|tokenizer_utils)"
-    r"(?:\.[A-Za-z_]\w*)*\b"
-    r"|from[ \t]+tinker_cookbook[ \t]+import[ \t]+[^#\n]*\b"
-    r"(?:exceptions|image_processing_utils|model_info|renderers|supervised\.common|tokenizer_utils)\b"
+    r"from[ \t]+tinker_cookbook(?:\.[A-Za-z_]\w*)*[ \t]+import\b"
+    r"|import[ \t]+tinker_cookbook(?:\.[A-Za-z_]\w*)*\b"
     r")"
 )
 
@@ -179,7 +173,7 @@ def test_model_routing_matches_pinned_package() -> None:
     ]
 
 
-def test_no_consumer_imports_migrated_dependency_owned_modules() -> None:
+def test_no_consumer_imports_installed_tinker_cookbook() -> None:
     repository_root = Path(
         subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -209,11 +203,11 @@ def test_no_consumer_imports_migrated_dependency_owned_modules() -> None:
                 for cell in notebook.get("cells", [])
                 if cell.get("cell_type") == "code"
             )
-        for match in _DEPENDENCY_OWNED_IMPORT.finditer(source):
+        for match in _INSTALLED_PACKAGE_IMPORT.finditer(source):
             line_number = source.count("\n", 0, match.start()) + 1
             forbidden.append(f"{relative_path}:{line_number}")
 
-    assert not forbidden, "dependency-owned migrated imports remain: " + ", ".join(forbidden)
+    assert not forbidden, "installed tinker-cookbook imports remain: " + ", ".join(forbidden)
 
 
 @pytest.mark.parametrize("name", ["not-a-renderer", "", "qwen-unknown"])

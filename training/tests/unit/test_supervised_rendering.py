@@ -17,6 +17,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderedMessag
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.data import prepare_sampling_messages
+from training.utils.runner import DatasetError
 from training.utils.supervised import (
     build_renderer,
     build_renderer_from_resolved_name,
@@ -679,6 +680,34 @@ def test_normalize_messages_supports_openai_tool_call_shape():
     tool_call = normalized[0]["tool_calls"][0]
     assert tool_call.function.name == "lake_move"
     assert tool_call.function.arguments == '{"action": "RIGHT"}'
+
+
+def test_normalize_messages_rejects_invalid_tool_call_arguments_as_dataset_error():
+    with pytest.raises(
+        DatasetError,
+        match=r"tool_calls\[0\]\.function\.arguments must be valid JSON",
+    ) as exc_info:
+        normalize_messages(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "lake_move",
+                                "arguments": '{"action": "RIGHT}',
+                            },
+                        }
+                    ],
+                }
+            ]
+        )
+
+    assert "Unterminated string" in str(exc_info.value)
+    assert '{"action"' not in str(exc_info.value)
 
 
 def test_normalize_messages_keeps_tool_metadata_and_thinking_parts():

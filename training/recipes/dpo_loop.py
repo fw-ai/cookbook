@@ -172,6 +172,8 @@ class Config:
     deployment: DeployConfig = field(default_factory=DeployConfig)
     dcp_save_interval: int = 0
     """Save DCP checkpoints every N steps. 0 disables."""
+    sampler_save_interval: int = 0
+    """Save promotable sampler checkpoints every N steps. 0 disables."""
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     init_from_checkpoint: str | None = None
     warm_start_from_adapter: str | None = None
@@ -445,12 +447,23 @@ async def _train_loop(
             for k, v in optim_result.metrics.items():
                 step_metrics[f"train/{k}"] = v
 
-        if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
-            with timer("dcp_save"):
+        dcp_due = cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0
+        sampler_due = (
+            cfg.sampler_save_interval > 0
+            and step % cfg.sampler_save_interval == 0
+        )
+        if dcp_due or sampler_due:
+            with timer("checkpoint_save"):
+                logger.info(
+                    "Saving intermediate checkpoint at step %d (dcp=%s, sampler=%s)",
+                    step,
+                    dcp_due,
+                    sampler_due,
+                )
                 ckpt.save(
                     f"step-{step}",
-                    resumable=True,
-                    promotable=False,
+                    resumable=dcp_due,
+                    promotable=sampler_due,
                     data_consumed=(
                         cursor.value if data_consumed is None else data_consumed
                     ),

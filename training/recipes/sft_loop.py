@@ -707,6 +707,8 @@ class Config:
     save_final_checkpoint: bool = True
 
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+    sampler_save_interval: int = 0
+    """Save promotable sampler checkpoints every N steps. 0 disables."""
 
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
@@ -1197,13 +1199,26 @@ def main(
             pipe_total_tokens += tokens
             tps = pipe_total_tokens / max(1e-9, time.time() - pipe_started)
 
-            if cfg.dcp_save_interval > 0 and s % cfg.dcp_save_interval == 0:
-                with timer("dcp_save"):
-                    logger.info("Saving DCP checkpoint at step %d", s)
+            dcp_due = (
+                cfg.dcp_save_interval > 0
+                and s % cfg.dcp_save_interval == 0
+            )
+            sampler_due = (
+                cfg.sampler_save_interval > 0
+                and s % cfg.sampler_save_interval == 0
+            )
+            if dcp_due or sampler_due:
+                with timer("checkpoint_save"):
+                    logger.info(
+                        "Saving intermediate checkpoint at step %d (dcp=%s, sampler=%s)",
+                        s,
+                        dcp_due,
+                        sampler_due,
+                    )
                     ckpt.save(
                         f"step-{s}",
-                        resumable=True,
-                        promotable=False,
+                        resumable=dcp_due,
+                        promotable=sampler_due,
                         data_consumed=data_consumed,
                     )
 
@@ -1297,8 +1312,14 @@ def main(
                     epoch_valid_examples += len(batch)
                     step = _pipe_submit(batch, step, cursor.value)
                     checkpoint_step = (
-                        cfg.dcp_save_interval > 0
-                        and step % cfg.dcp_save_interval == 0
+                        (
+                            cfg.dcp_save_interval > 0
+                            and step % cfg.dcp_save_interval == 0
+                        )
+                        or (
+                            cfg.sampler_save_interval > 0
+                            and step % cfg.sampler_save_interval == 0
+                        )
                     )
                     if len(in_flight) >= cfg.pipeline_depth or checkpoint_step:
                         _pipe_collect()

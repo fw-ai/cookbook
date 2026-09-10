@@ -82,6 +82,8 @@ def test_throughput_defaults_keep_trainer_fed():
 
     assert cfg.pipeline_depth == 4
     assert cfg.render_workers is None
+    assert cfg.dcp_save_interval == 0
+    assert cfg.sampler_save_interval == 0
 
 
 def test_batch_loss_metrics_separate_weight_from_token_count():

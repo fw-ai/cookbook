@@ -14,6 +14,9 @@ from PIL import Image
 import training.renderer.glm5  # noqa: F401 - registers glm53
 from training.renderer import RendererError, get_renderer
 from training.renderer.glm5 import Glm53FlashImageTokenCounter
+from training.utils.rl.rollout.renderer import (
+    build_multimodal_completions_prompt_token_ids,
+)
 from training.utils.supervised import (
     build_tool_prefixed_messages,
     normalize_messages,
@@ -166,17 +169,13 @@ def _expand_image_chunks(
     tokenizer: Any,
     model_input: tinker.ModelInput,
 ) -> list[int]:
-    begin_image = tokenizer.convert_tokens_to_ids("<|begin_of_image|>")
     image = tokenizer.convert_tokens_to_ids("<|image|>")
-    end_image = tokenizer.convert_tokens_to_ids("<|end_of_image|>")
     expanded: list[int] = []
     for chunk in model_input.chunks:
         if isinstance(chunk, tinker.types.EncodedTextChunk):
             expanded.extend(int(token) for token in chunk.tokens)
         elif isinstance(chunk, tinker.types.ImageChunk):
-            expanded.append(begin_image)
             expanded.extend([image] * int(chunk.expected_tokens))
-            expanded.append(end_image)
         else:  # pragma: no cover - renderer emits only these two chunk types
             raise TypeError(type(chunk))
     return expanded
@@ -257,6 +256,54 @@ def test_registered_glm53_flash_renderer(flash_tokenizer, flash_renderer):
     assert type(flash_renderer).__name__ == "GLM53FlashRenderer"
     assert flash_renderer.has_extension_property is True
     assert flash_renderer.supports_per_message_rendering is False
+    assert flash_renderer.image_placeholder_token_id == int(
+        flash_tokenizer.convert_tokens_to_ids("<|image|>")
+    )
+    assert flash_renderer._begin_of_image_token_id == int(
+        flash_tokenizer.convert_tokens_to_ids("<|begin_of_image|>")
+    )
+    assert flash_renderer._end_of_image_token_id == int(
+        flash_tokenizer.convert_tokens_to_ids("<|end_of_image|>")
+    )
+
+
+def test_glm53_flash_token_in_rl_uses_native_image_placeholder(
+    flash_tokenizer: Any,
+    image_renderer: Any,
+) -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "inspect "},
+                {"type": "image", "image": Image.new("RGB", (32, 32))},
+            ],
+        }
+    ]
+    model_input = image_renderer.build_generation_prompt(
+        normalize_messages(messages)
+    )
+    prompt_token_ids, images = build_multimodal_completions_prompt_token_ids(
+        messages,
+        model_input,
+        flash_tokenizer,
+        renderer=image_renderer,
+    )
+
+    assert prompt_token_ids.count(image_renderer.image_placeholder_token_id) == 1
+    image_pos = prompt_token_ids.index(image_renderer.image_placeholder_token_id)
+    assert prompt_token_ids[image_pos - 1] == int(
+        flash_tokenizer.convert_tokens_to_ids("<|begin_of_image|>")
+    )
+    assert prompt_token_ids[image_pos + 1] == int(
+        flash_tokenizer.convert_tokens_to_ids("<|end_of_image|>")
+    )
+    assert prompt_token_ids == _hf_tokens(
+        flash_tokenizer,
+        messages,
+        add_generation_prompt=True,
+    )
+    assert len(images) == 1
 
 
 def test_flash_and_text_only_templates_share_text_wire_contract(
