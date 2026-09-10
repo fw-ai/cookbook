@@ -85,7 +85,7 @@ clean up the supplied resources when interrupted.
 ```bash
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --base-model accounts/fireworks/models/kimi-k3 \
-  --tokenizer-model accounts/fireworks/models/kimi-k3 \
+  --tokenizer-model moonshotai/Kimi-K3 \
   --renderer-name kimi_k3 \
   --trainer-job-id <trainer-job-id> \
   --deployment-id <deployment-id> \
@@ -141,7 +141,8 @@ from the same shape versions if those resources have expired.
 
 | Input | Value |
 | --- | --- |
-| Base and tokenizer model | `accounts/fireworks/models/kimi-k3` |
+| Base model | `accounts/fireworks/models/kimi-k3` |
+| Tokenizer model | `moonshotai/Kimi-K3` |
 | Training shape | `accounts/fireworks/trainingShapes/kimi-k3-262k-gb300/versions/rbb16rr5` |
 | Rollout shape | `accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz` |
 | Trainer | `accounts/training/rlorTrainerJobs/k3-convergence-rbb16rr5-20260909-230155` |
@@ -167,7 +168,7 @@ RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/medium3-b64-lr1e6-1epoch-rbb1
 
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --base-model accounts/fireworks/models/kimi-k3 \
-  --tokenizer-model accounts/fireworks/models/kimi-k3 \
+  --tokenizer-model moonshotai/Kimi-K3 \
   --renderer-name kimi_k3 \
   --trainer-job-id k3-convergence-rbb16rr5-20260909-230155 \
   --deployment-id k3-convergence-rbb16rr5-20260909-230155 \
