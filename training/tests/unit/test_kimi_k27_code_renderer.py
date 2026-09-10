@@ -191,3 +191,38 @@ def test_supervised_example_matches_hf_chat_template(tokenizer, renderer, messag
     expected = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
     actual = _renderer_supervised_tokens(renderer, messages)
     _assert_tokens_match(tokenizer, expected, actual)
+
+
+def test_image_placeholder_token_id_resolves_media_pad(tokenizer, renderer):
+    """Rollout multimodal rendering needs this to encode image chunks.
+
+    K2.7 inherits a text-only renderer lineage from K2.6, so nothing up the MRO
+    supplies it. Without it a vision-capable K2.7 checkpoint samples zero
+    multimodal prompt groups and RL fails on the "no trained multimodal prompt
+    group" gate.
+    """
+    expected = tokenizer.convert_tokens_to_ids("<|media_pad|>")
+    assert isinstance(expected, int)
+    assert expected != tokenizer.unk_token_id
+    assert renderer.image_placeholder_token_id == expected
+
+
+def test_image_placeholder_token_id_is_none_without_media_pad():
+    """A tokenizer lacking the token must yield None, never its ``unk`` id.
+
+    ``convert_tokens_to_ids`` maps an unknown token to ``unk`` instead of
+    failing, and encoding that id would silently render an image chunk as
+    ordinary text.
+    """
+
+    class _NoMediaPadTokenizer:
+        unk_token_id = 7
+
+        def convert_tokens_to_ids(self, token: str) -> int:
+            return self.unk_token_id
+
+    from training.renderer.kimi_k27_code import KimiK27CodeRenderer
+
+    stub = object.__new__(KimiK27CodeRenderer)
+    stub.tokenizer = _NoMediaPadTokenizer()
+    assert stub.image_placeholder_token_id is None

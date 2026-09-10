@@ -49,6 +49,10 @@ _KIMI_TOOL_STYLE_PROBE = [
 ]
 
 
+# Distinguishes "not resolved yet" from a resolved ``None``.
+_UNRESOLVED = object()
+
+
 def _tokenizer_tools_branch_uses_typescript(tokenizer: Any) -> bool:
     apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
     if apply_chat_template is None:
@@ -69,6 +73,44 @@ def _tokenizer_tools_branch_uses_typescript(tokenizer: Any) -> bool:
 
 class _KimiK27CodeMixin:
     """K2.7-specific system/tool declaration behavior."""
+
+    @property
+    def image_placeholder_token_id(self) -> int | None:
+        """Token id standing in for one image chunk, or ``None`` when text-only.
+
+        K2.7 inherits a text-only renderer lineage from K2.6, so nothing up the
+        MRO resolves this. Rollout multimodal rendering needs it to encode image
+        chunks for token-in completions, and without it a vision-capable K2.7
+        checkpoint samples zero multimodal prompt groups. Resolve it the way
+        ``KimiK3VisionRenderer`` does -- from the tokenizer's ``<|media_pad|>``
+        special token -- and stay ``None`` for tokenizers that lack it rather
+        than returning an ``unk`` id that would silently render as text.
+        """
+        cached = getattr(self, "_image_placeholder_token_id_cache", _UNRESOLVED)
+        if cached is not _UNRESOLVED:
+            return cached
+
+        # Imported lazily: ``renderer/__init__`` loads this module before
+        # ``kimi_k3``, so a module-level import would close a cycle.
+        from training.renderer.kimi_k3 import MEDIA_PAD_TOKEN
+
+        resolved: int | None = None
+        convert = getattr(self.tokenizer, "convert_tokens_to_ids", None)
+        if callable(convert):
+            try:
+                candidate = convert(MEDIA_PAD_TOKEN)
+            except (KeyError, ValueError):
+                candidate = None
+            if isinstance(candidate, int) and not isinstance(candidate, bool):
+                # A tokenizer without the token maps it to ``unk`` rather than
+                # failing, and encoding that id would render the image chunk as
+                # ordinary text instead of a placeholder.
+                unk_id = getattr(self.tokenizer, "unk_token_id", None)
+                if not (isinstance(unk_id, int) and candidate == unk_id):
+                    resolved = candidate
+
+        self._image_placeholder_token_id_cache = resolved
+        return resolved
 
     def _ensure_system_message(self, messages: list[Message]) -> list[Message]:
         return list(messages)
