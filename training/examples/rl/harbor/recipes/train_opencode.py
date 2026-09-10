@@ -158,8 +158,8 @@ def parse_args() -> argparse.Namespace:
         "--cycle-selected-tasks",
         action="store_true",
         help=(
-            "Shuffle the explicitly selected --harbor-task rows once, then cycle "
-            "them to --max-rows. Intended for small, controlled overfit tests."
+            "Shuffle the selected --harbor-task rows once, then cycle them to "
+            "--max-rows. When no task is selected, cycle every discovered task."
         ),
     )
     parser.add_argument(
@@ -378,8 +378,6 @@ def run() -> None:
         raise ValueError("--evaluation-concurrency must be positive")
     if args.evaluation_repeats < 1:
         raise ValueError("--evaluation-repeats must be positive")
-    if args.cycle_selected_tasks and not args.harbor_task:
-        raise ValueError("--cycle-selected-tasks requires --harbor-task")
     manifest = (
         DABstepManifest.load(args.dabstep_manifest) if args.dabstep_manifest else None
     )

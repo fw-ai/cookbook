@@ -366,7 +366,7 @@ def test_sampling_entry_uses_existing_deployment_without_training_shape(
     assert args.harbor_task == ["task-a", "task-b"]
 
 
-def test_dedicated_full_param_entry_preserves_reproducible_config(
+def test_dedicated_full_param_entry_cycles_all_tasks_with_aligned_config(
     monkeypatch, tmp_path
 ) -> None:
     rows = [
@@ -397,12 +397,6 @@ def test_dedicated_full_param_entry_preserves_reproducible_config(
             str(tmp_path),
             "--harbor-trials-dir",
             str(tmp_path / "trials"),
-            "--harbor-task",
-            "count",
-            "--harbor-task",
-            "extract",
-            "--harbor-task",
-            "polyglot",
             "--evaluation-task",
             "count",
             "--evaluation-task",
@@ -425,14 +419,15 @@ def test_dedicated_full_param_entry_preserves_reproducible_config(
             "--max-completion-tokens",
             "32768",
             "--learning-rate",
-            "2e-6",
+            "1e-6",
             "--policy-loss",
             "gspo",
             "--grad-accumulation-normalization",
             "num_sequences",
+            "--grad-clip-norm",
+            "1.0",
             "--dcp-save-interval",
             "10",
-            "--no-shuffle",
             "--no-cleanup-on-exit",
         ],
     )
@@ -463,8 +458,10 @@ def test_dedicated_full_param_entry_preserves_reproducible_config(
     assert config.gspo.clip_ratio_low == 0.2
     assert config.gspo.clip_ratio_high == 0.2
     assert config.grad_accumulation_normalization == "num_sequences"
+    assert config.grad_clip_norm == 1.0
+    assert config.learning_rate == 1e-6
     assert config.tis.cap == 5.0
-    assert config.shuffle is False
+    assert config.shuffle is True
     assert len(captured["rows"]) == 16
     assert {row["task_name"] for row in captured["rows"]} == {
         "count",
