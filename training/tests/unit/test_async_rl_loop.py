@@ -135,6 +135,7 @@ def test_main_has_explicit_client_and_server_grpo_paths() -> None:
     assert 'metrics["custom_forward_reused"]' in source
     assert "build_loss_fn" not in source
     assert "loss_path" not in source
+    assert '"algorithm": cfg.policy_loss' in source
 
 
 def test_client_policy_loss_dispatches_gspo(monkeypatch) -> None:

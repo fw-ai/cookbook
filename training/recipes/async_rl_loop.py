@@ -492,7 +492,7 @@ def main(
             "tokenizer_id": cfg.deployment.tokenizer_model,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
-            "algorithm": "grpo",
+            "algorithm": cfg.policy_loss,
             "trainer_loss": "server_ppo" if cfg.server_side_grpo else "client",
             "server_side_grpo": cfg.server_side_grpo,
             "kl_beta": cfg.kl_beta,
