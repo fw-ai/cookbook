@@ -76,7 +76,7 @@ coverage is rejected before creating a Harbor trial.
 ## Dedicated Kimi-K3 full-parameter convergence test
 
 The generic OpenCode recipe can attach to an existing full-parameter trainer
-and rollout deployment. The following command runs the synchronous three-task
+and rollout deployment. The following command runs the synchronous full-corpus
 convergence workload: 8 prompt groups x 8 rollouts per optimizer step, shuffled
 training rows, completion-only Router Replay, 262K total context, 32K maximum
 output per model call, and a fixed evaluation every five steps. It does not
