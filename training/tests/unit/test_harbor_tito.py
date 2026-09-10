@@ -426,8 +426,10 @@ def test_dedicated_full_param_entry_preserves_reproducible_config(
             "32768",
             "--learning-rate",
             "2e-6",
+            "--policy-loss",
+            "gspo",
             "--grad-accumulation-normalization",
-            "num_loss_tokens",
+            "num_sequences",
             "--dcp-save-interval",
             "10",
             "--no-shuffle",
@@ -457,7 +459,10 @@ def test_dedicated_full_param_entry_preserves_reproducible_config(
     assert config.max_head_offpolicy_versions == 0
     assert config.router_replay is True
     assert config.router_replay_completion_only is True
-    assert config.grad_accumulation_normalization == "num_loss_tokens"
+    assert config.policy_loss == "gspo"
+    assert config.gspo.clip_ratio_low == 0.2
+    assert config.gspo.clip_ratio_high == 0.2
+    assert config.grad_accumulation_normalization == "num_sequences"
     assert config.tis.cap == 5.0
     assert config.shuffle is False
     assert len(captured["rows"]) == 16
@@ -952,8 +957,8 @@ def test_opencode_disables_unrelated_remote_bootstrap_requests(tmp_path) -> None
         logs_dir=tmp_path,
         sidecar_bundle_path=str(tmp_path / "bundle"),
         sidecar_launch_spec="{}",
-        context_limit=4096,
-        output_limit=1024,
+        context_limit=262144,
+        output_limit=32768,
         tool_timeout_seconds=600,
         extra_env={"CUSTOM": "preserved"},
         version=DEFAULT_OPENCODE_VERSION,
@@ -963,12 +968,14 @@ def test_opencode_disables_unrelated_remote_bootstrap_requests(tmp_path) -> None
     env = agent._agent_env()
     assert env["OPENCODE_DISABLE_MODELS_FETCH"] == "1"
     assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    assert env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] == "1000000"
     assert env["CUSTOM"] == "preserved"
     assert agent._policy_config()["snapshot"] is False
     assert agent._policy_config()["agent"]["title"]["disable"] is True
     assert agent._policy_config()["tools"] == {"task": False}
     model = agent._policy_config()["provider"]["fireworks-rl"]["models"]["policy"]
     assert model["interleaved"] == {"field": "reasoning_content"}
+    assert model["limit"] == {"context": 262144, "output": 32768}
 
 
 def test_pi_preserves_empty_reasoning_on_assistant_replay(tmp_path) -> None:

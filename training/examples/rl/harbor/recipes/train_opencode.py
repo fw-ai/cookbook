@@ -34,6 +34,7 @@ from training.examples.rl.harbor.tito.trial import (
 )
 from training.recipes.async_rl_loop import Config, RolloutSetup, main
 from training.utils import DeployConfig, TrainerConfig, WandBConfig
+from training.utils.rl.gspo import GSPOConfig
 from training.utils.rl.tis import TISConfig
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.tokenizers import load_tokenizer
@@ -202,11 +203,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grad-clip-norm", type=float, default=0.0)
     parser.add_argument("--eps-clip", type=float, default=0.2)
     parser.add_argument("--eps-clip-high", type=float, default=None)
+    parser.add_argument(
+        "--policy-loss",
+        choices=("grpo", "gspo"),
+        default="grpo",
+        help="PPO ratio granularity: per-token GRPO or sequence-level GSPO",
+    )
     parser.add_argument("--tis-cap", type=float, default=5.0)
     parser.add_argument("--tis-icepop-threshold", type=float, default=None)
     parser.add_argument(
         "--grad-accumulation-normalization",
-        choices=("none", "num_loss_tokens"),
+        choices=("none", "num_loss_tokens", "num_sequences"),
         default="none",
     )
     parser.add_argument(
@@ -456,6 +463,13 @@ def run() -> None:
         grad_clip_norm=args.grad_clip_norm,
         eps_clip=args.eps_clip,
         eps_clip_high=args.eps_clip_high,
+        policy_loss=args.policy_loss,
+        gspo=GSPOConfig(
+            clip_ratio_low=args.eps_clip,
+            clip_ratio_high=(
+                args.eps_clip if args.eps_clip_high is None else args.eps_clip_high
+            ),
+        ),
         tis=TISConfig(
             cap=args.tis_cap,
             icepop_threshold=args.tis_icepop_threshold,

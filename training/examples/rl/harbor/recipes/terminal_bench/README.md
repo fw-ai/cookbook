@@ -112,7 +112,8 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --learning-rate 1e-6 \
   --kl-beta 0 \
   --max-head-offpolicy-versions 0 \
-  --grad-accumulation-normalization num_loss_tokens \
+  --policy-loss gspo \
+  --grad-accumulation-normalization num_sequences \
   --grad-clip-norm 0 \
   --eps-clip 0.2 \
   --tis-cap 5 \
@@ -152,8 +153,8 @@ from the same shape versions if those resources have expired.
 | Training and evaluation tasks | `count-dataset-tokens`, `extract-elf`, `polyglot-rust-c` |
 | Training rows | 1,600 cycled rows; selected-task order seeded with `20260808`, then shuffled by the RL loop |
 | Optimizer batch | 8 prompt groups x 8 rollouts = 64 trajectories; 2 pipeline chunks |
-| Optimization | full parameter; LR `1e-6`; Adam beta2 `0.95`; Adam epsilon `1e-12`; no gradient clipping; token-count gradient normalization |
-| Policy objective | GRPO; `kl_beta=0`; PPO clip `0.2`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
+| Optimization | full parameter; LR `1e-6`; Adam beta2 `0.95`; Adam epsilon `1e-12`; no gradient clipping; sequence-count gradient normalization |
+| Policy objective | GSPO sequence-level importance ratio; `kl_beta=0`; clip `0.2`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
 | Routing | Router Replay enabled for completion tokens |
 | Token limits | 262,144 total tokens; 32,768 generated tokens per model call |
 | Evaluation/checkpointing | the same three fixed tasks every 5 steps; DCP every 10 steps |
@@ -195,7 +196,8 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --learning-rate 1e-6 \
   --kl-beta 0 \
   --max-head-offpolicy-versions 0 \
-  --grad-accumulation-normalization num_loss_tokens \
+  --policy-loss gspo \
+  --grad-accumulation-normalization num_sequences \
   --grad-clip-norm 0 \
   --eps-clip 0.2 \
   --tis-cap 5 \

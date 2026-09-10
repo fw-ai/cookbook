@@ -103,7 +103,7 @@ class TestConfigDefaults:
 
         assert cfg.pipeline_chunks_per_step == 1
 
-    def test_config_exposes_only_grpo_knobs(self) -> None:
+    def test_config_defaults_to_grpo(self) -> None:
         cfg = async_rl_loop.Config(log_path="gs://logs")
 
         assert cfg.kl_beta == 0.001
@@ -113,7 +113,9 @@ class TestConfigDefaults:
         assert cfg.server_side_grpo is False
         assert cfg.router_replay is True
         assert cfg.router_replay_completion_only is True
-        assert not hasattr(cfg, "policy_loss")
+        assert cfg.policy_loss == "grpo"
+        assert cfg.gspo.clip_ratio_low == 0.2
+        assert cfg.gspo.clip_ratio_high == 0.2
         assert not hasattr(cfg, "loss_path")
         assert not hasattr(cfg, "eval_max_completion_tokens")
         assert not hasattr(cfg, "eval_max_seq_len")
@@ -121,8 +123,10 @@ class TestConfigDefaults:
 
 def test_main_has_explicit_client_and_server_grpo_paths() -> None:
     source = inspect.getsource(async_rl_loop.main)
+    client_loss_source = inspect.getsource(async_rl_loop._make_client_policy_loss)
 
-    assert "make_grpo_loss_fn(" in source
+    assert "make_grpo_loss_fn(" in client_loss_source
+    assert "make_gspo_loss_fn(" in client_loss_source
     assert "policy.forward_backward_custom(" in source
     assert "_run_server_side_grpo(" in source
     assert 'cfg.anchor_logp == "old_policy"' in source
@@ -131,6 +135,55 @@ def test_main_has_explicit_client_and_server_grpo_paths() -> None:
     assert 'metrics["custom_forward_reused"]' in source
     assert "build_loss_fn" not in source
     assert "loss_path" not in source
+
+
+def test_client_policy_loss_dispatches_gspo(monkeypatch) -> None:
+    captured = {}
+    expected = object()
+
+    def fake_make_gspo_loss_fn(**kwargs):
+        captured.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(async_rl_loop, "make_gspo_loss_fn", fake_make_gspo_loss_fn)
+    cfg = async_rl_loop.Config(log_path="gs://logs", policy_loss="gspo", kl_beta=0)
+
+    result = async_rl_loop._make_client_policy_loss(
+        cfg,
+        advantages=[1.0],
+        ref_logprobs=[],
+        prompt_lens=[2],
+        inf_logprobs=[[0.0]],
+        raw_inf_logprobs=[[0.0]],
+        old_policy_logprobs=[[0.0]],
+    )
+
+    assert result is expected
+    assert captured["advantages"] == [1.0]
+    assert captured["gspo_config"] is cfg.gspo
+    assert captured["tis_config"] is cfg.tis
+
+
+@pytest.mark.parametrize(
+    "config_overrides, error",
+    [
+        ({"policy_loss": "unknown"}, "Unknown policy_loss"),
+        ({"policy_loss": "gspo", "kl_beta": 0.1}, "requires kl_beta=0"),
+        (
+            {"policy_loss": "gspo", "kl_beta": 0, "server_side_grpo": True},
+            "only supports policy_loss='grpo'",
+        ),
+    ],
+)
+def test_main_rejects_invalid_policy_loss_config(config_overrides, error) -> None:
+    cfg = async_rl_loop.Config(log_path="gs://logs", **config_overrides)
+
+    with pytest.raises(ValueError, match=error):
+        async_rl_loop.main(
+            cfg,
+            rows=[],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
 
 
 def test_server_side_grpo_calls_only_builtin_ppo_and_emits_kld() -> None:
