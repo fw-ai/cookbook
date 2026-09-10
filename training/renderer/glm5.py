@@ -1189,6 +1189,19 @@ class GLM53FlashRenderer(GLM53Renderer):
             honor_source_reasoning_fields=honor_source_reasoning_fields,
         )
         self.image_processor = image_processor
+        image_special_tokens = {
+            "image_placeholder_token_id": "<|image|>",
+            "_begin_of_image_token_id": "<|begin_of_image|>",
+            "_end_of_image_token_id": "<|end_of_image|>",
+        }
+        for attribute, token in image_special_tokens.items():
+            token_ids = list(tokenizer.encode(token, add_special_tokens=False))
+            if len(token_ids) != 1:
+                raise RendererError(
+                    f"GLM-5.3-Flash expected {token!r} to encode as one special "
+                    f"token, got {token_ids}"
+                )
+            setattr(self, attribute, int(token_ids[0]))
 
     @staticmethod
     def _has_image_content(content: Any) -> bool:
@@ -1238,7 +1251,21 @@ class GLM53FlashRenderer(GLM53Renderer):
                     raise RendererError(
                         "GLM-5.3-Flash image content is missing the 'image' payload."
                     )
+                # Keep model-specific hard tokens in the renderer-owned wire
+                # contract, just like Qwen's vision_start/ImageChunk/vision_end
+                # layout. Both SFT and token-in rollout therefore see the same
+                # sequence; FireTitan expands only the soft ImageChunk slots.
+                chunks.append(
+                    tinker.types.EncodedTextChunk(
+                        tokens=[self._begin_of_image_token_id]
+                    )
+                )
                 chunks.append(image_to_chunk(image, self.image_processor))
+                chunks.append(
+                    tinker.types.EncodedTextChunk(
+                        tokens=[self._end_of_image_token_id]
+                    )
+                )
             # Match the template by dropping unknown content-part types.
         pending_text += suffix
         flush_text()
