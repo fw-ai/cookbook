@@ -76,11 +76,11 @@ coverage is rejected before creating a Harbor trial.
 ## Dedicated Kimi-K3 full-parameter convergence test
 
 The generic OpenCode recipe can attach to an existing full-parameter trainer
-and rollout deployment. The following command reproduces the synchronous
-three-task convergence workload: 8 prompt groups x 8 rollouts per optimizer
-step, deterministic task order, completion-only Router Replay, 262K total
-context, 32K maximum output per model call, and a fixed evaluation every five
-steps. It does not clean up the supplied resources when interrupted.
+and rollout deployment. The following command runs the synchronous three-task
+convergence workload: 8 prompt groups x 8 rollouts per optimizer step, shuffled
+training rows, completion-only Router Replay, 262K total context, 32K maximum
+output per model call, and a fixed evaluation every five steps. It does not
+clean up the supplied resources when interrupted.
 
 ```bash
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
@@ -109,7 +109,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --min-group-size 8 \
   --max-incomplete-group-retries 2 \
   --lora-rank 0 \
-  --learning-rate 2e-6 \
+  --learning-rate 1e-6 \
   --kl-beta 0 \
   --max-head-offpolicy-versions 0 \
   --grad-accumulation-normalization num_loss_tokens \
@@ -118,12 +118,12 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --tis-cap 5 \
   --max-seq-len 262144 \
   --max-completion-tokens 32768 \
-  --sample-timeout 2400 \
+  --sample-timeout 7200 \
   --harness-tool-timeout-seconds 7200 \
   --evaluation-every 5 \
   --evaluation-concurrency 24 \
   --dcp-save-interval 10 \
-  --no-shuffle \
+  --shuffle \
   --no-cleanup-on-exit \
   --wandb-entity <entity> \
   --wandb-project <project> \
@@ -135,12 +135,11 @@ Set `FIREWORKS_API_KEY` and, when W&B logging is enabled,
 the run directory. Use `--init-from-checkpoint step-N` to resume the trainer's
 weights and optimizer without recreating the trainer or rollout deployment.
 
-### Concrete inputs from the validated run
+### Concrete inputs for the next run
 
-The long-running validation referenced in this PR used the following immutable
-shape versions and concrete inputs. The trainer and deployment IDs are recorded
-for provenance; create replacements from the same shape versions if those
-resources have expired.
+The next run uses the following immutable shape versions and concrete inputs.
+The trainer and deployment IDs are recorded for provenance; create replacements
+from the same shape versions if those resources have expired.
 
 | Input | Value |
 | --- | --- |
@@ -151,21 +150,21 @@ resources have expired.
 | Deployment | `accounts/training/deployments/k3-convergence-rbb16rr5-20260909-230155` |
 | Prepared dataset | `/shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode` |
 | Training and evaluation tasks | `count-dataset-tokens`, `extract-elf`, `polyglot-rust-c` |
-| Training rows | 1,600 deterministic cycled rows, seed `20260808`, no shuffle |
+| Training rows | 1,600 cycled rows; selected-task order seeded with `20260808`, then shuffled by the RL loop |
 | Optimizer batch | 8 prompt groups x 8 rollouts = 64 trajectories; 2 pipeline chunks |
-| Optimization | full parameter; LR `2e-6`; Adam beta2 `0.95`; Adam epsilon `1e-12`; no gradient clipping; token-count gradient normalization |
+| Optimization | full parameter; LR `1e-6`; Adam beta2 `0.95`; Adam epsilon `1e-12`; no gradient clipping; token-count gradient normalization |
 | Policy objective | GRPO; `kl_beta=0`; PPO clip `0.2`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
 | Routing | Router Replay enabled for completion tokens |
 | Token limits | 262,144 total tokens; 32,768 generated tokens per model call |
 | Evaluation/checkpointing | the same three fixed tasks every 5 steps; DCP every 10 steps |
-| W&B run | [`9a13a8f5`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/9a13a8f5) |
+| Prior-run evidence | [`9a13a8f5`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/9a13a8f5); it used LR `2e-6` and no shuffle |
 
-This is the credential-safe command for the run. The original process began
-with a 2,400-second sample timeout, which was extended in place to 7,200 seconds
-for long-tail Harbor tasks; use 7,200 seconds when reproducing it.
+This is the credential-safe command for the next run. The SDK/model-request
+timeout and the per-tool Harbor timeout are separate controls, so both are set
+to 7,200 seconds for long-tail tasks.
 
 ```bash
-RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/medium3-b64-lr2e6-1epoch-rbb16rr5-20260910-010305
+RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/medium3-b64-lr1e6-1epoch-rbb16rr5
 
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --base-model accounts/fireworks/models/kimi-k3 \
@@ -193,7 +192,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --min-group-size 8 \
   --max-incomplete-group-retries 2 \
   --lora-rank 0 \
-  --learning-rate 2e-6 \
+  --learning-rate 1e-6 \
   --kl-beta 0 \
   --max-head-offpolicy-versions 0 \
   --grad-accumulation-normalization num_loss_tokens \
@@ -207,11 +206,11 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --evaluation-every 5 \
   --evaluation-concurrency 24 \
   --dcp-save-interval 10 \
-  --no-shuffle \
+  --shuffle \
   --no-cleanup-on-exit \
   --wandb-entity myh97 \
   --wandb-project kimi-k3-fullparam-harbor \
-  --wandb-run-name medium3-b64-lr2e6-1epoch-rbb16rr5-20260910-010305
+  --wandb-run-name medium3-b64-lr1e6-1epoch-rbb16rr5
 ```
 
 OpenCode title and summary requests do not carry tools and are logged as
