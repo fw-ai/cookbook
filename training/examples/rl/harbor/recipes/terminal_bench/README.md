@@ -98,7 +98,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --evaluation-task polyglot-rust-c \
   --cycle-selected-tasks \
   --task-seed 20260808 \
-  --max-rows 1600 \
+  --max-rows 264 \
   --epochs 1 \
   --completions-per-prompt 8 \
   --prompt-groups-per-step 8 \
@@ -150,8 +150,9 @@ from the same shape versions if those resources have expired.
 | Prepared dataset | `/shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode` |
 | Training tasks | All tasks discovered in the prepared dataset (89 in the pinned Terminal-Bench dataset) |
 | Evaluation tasks | `count-dataset-tokens`, `extract-elf`, `polyglot-rust-c` |
-| Training rows | 1,600 rows cycled across all tasks; task order seeded with `20260808`, then shuffled by the RL loop |
+| Training rows | 264 prompt groups cycled across all 89 tasks (2.97 corpus passes); task order seeded with `20260808`, then shuffled by the RL loop |
 | Optimizer batch | 8 prompt groups x 8 rollouts = 64 trajectories; 2 pipeline chunks |
+| Training length | 33 complete optimizer steps; 2,112 sampled trajectories |
 | Optimization | full parameter; LR `1e-6`; Adam beta2 `0.95`; Adam epsilon `1e-12`; gradient clipping at `1.0`; sequence-count gradient normalization |
 | Policy objective | GSPO sequence-level importance ratio; `kl_beta=0`; clip `0.2`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
 | Routing | Router Replay enabled for completion tokens |
@@ -181,7 +182,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --evaluation-task polyglot-rust-c \
   --cycle-selected-tasks \
   --task-seed 20260808 \
-  --max-rows 1600 \
+  --max-rows 264 \
   --epochs 1 \
   --completions-per-prompt 8 \
   --prompt-groups-per-step 8 \
