@@ -169,13 +169,17 @@ cfg.multi_teacher = MultiTeacherConfig(
   region used by the SDK-managed student sampler and auto-created teacher
   deployments.
 - `teacher_replica_count` controls replicas for auto-created frozen teacher
-  deployments. `teacher_deployment_shape` sets the run-level default; individual
-  `TeacherConfig.deployment_shape` can override it. When neither is set,
-  teachers default to the resolved student deployment shape — set one
-  explicitly for heterogeneous teachers on a different model than the student.
-  Do not create teacher deployments without a shape: shapeless deployments are
-  the most common cause of failed deployment creations, and the unshaped path
-  may be deprecated in the future.
+  deployments. Shape resolution for auto-created teacher deployments (this is
+  enforced by the recipe code in `training/recipes/distillation_loop.py`, not
+  a user action): per-teacher `TeacherConfig.deployment_shape` wins, then the
+  run-level `teacher_deployment_shape`, and when neither is set the recipe
+  resolves the teacher's `deployment_shape` to the student deployment's shape
+  (`service.deployment_shape`) rather than leaving it unset. Heterogeneous
+  teachers on a different model than the student need an explicit shape —
+  pick one with `firectl deployment-shape list`. The recipe never creates
+  teacher deployments without a shape: shapeless deployments are the most
+  common cause of failed deployment creations, and the unshaped path may be
+  deprecated in the future.
 - Per-teacher metrics use `teacher_route/<slug>/scored` and
   `teacher_route/<slug>/inflight`; skewed datasets can leave some teacher
   deployments underused.
