@@ -166,6 +166,8 @@ class Config:
     """
     save_final_checkpoint: bool = True
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+    sampler_save_interval: int = 0
+    """Save promotable sampler checkpoints every N steps. 0 disables."""
 
     step_timeout: int = 0
     """Timeout in seconds for forward_backward / optim_step calls.
@@ -472,12 +474,25 @@ def main(
             client.optim_step(adam_params)
             step += 1
 
-            if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
-                logger.info("Saving DCP checkpoint at step %d", step)
+            dcp_due = (
+                cfg.dcp_save_interval > 0
+                and step % cfg.dcp_save_interval == 0
+            )
+            sampler_due = (
+                cfg.sampler_save_interval > 0
+                and step % cfg.sampler_save_interval == 0
+            )
+            if dcp_due or sampler_due:
+                logger.info(
+                    "Saving intermediate checkpoint at step %d (dcp=%s, sampler=%s)",
+                    step,
+                    dcp_due,
+                    sampler_due,
+                )
                 ckpt.save(
                     f"step-{step}",
-                    resumable=True,
-                    promotable=False,
+                    resumable=dcp_due,
+                    promotable=sampler_due,
                     data_consumed=(step - step_offset) * cfg.batch_size,
                 )
 
