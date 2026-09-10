@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Callable, List
+from typing import Any, Callable, List
 
 import tinker
 
@@ -95,6 +95,8 @@ class RolloutSample:
     """
     teacher_logprobs: List[float] | None = None
     """Optional privileged-teacher logprobs aligned with ``tokens``."""
+    teacher_topk: List[Any] | None = None
+    """Optional sparse teacher distributions aligned with ``tokens``."""
 
 
 @dataclass
@@ -274,6 +276,8 @@ def _validate_segment(
         _validate_optional_logprobs(
             segment.teacher_logprobs, n=n, source="teacher_logprobs"
         )
+        if segment.teacher_topk is not None:
+            raise ValueError("teacher_topk is unsupported for multimodal segments.")
         if n < 2:
             raise ValueError(
                 f"Run {run_index} segment {segment_index}: tokens must have "
@@ -303,6 +307,11 @@ def _validate_segment(
     _validate_optional_logprobs(
         segment.teacher_logprobs, n=n, source="teacher_logprobs"
     )
+    if segment.teacher_topk is not None and len(segment.teacher_topk) != n:
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: teacher_topk length "
+            f"mismatch ({len(segment.teacher_topk)} / {n})."
+        )
     if n < 2:
         raise ValueError(
             f"Run {run_index} segment {segment_index}: tokens must have length >= 2.",
@@ -375,6 +384,7 @@ def rollout_to_prompt_group(
     inf_logprobs_aligned: List[List[float]] = []
     raw_inf_logprobs_aligned: List[List[float]] = []
     teacher_logprobs_aligned: List[List[float]] = []
+    teacher_topk_aligned: List[List[Any]] = []
     completion_lens: List[int] = []
     truncated: List[bool] = []
     per_sample_prompt_lens: List[int] = []
@@ -476,6 +486,7 @@ def rollout_to_prompt_group(
                 inf_logprobs_aligned.append(target_logprobs)
                 raw_inf_logprobs_aligned.append(target_raw_logprobs)
                 teacher_logprobs_aligned.append(target_teacher_logprobs)
+                teacher_topk_aligned.append([])
                 completion_lens.append(sum(1 for w in target_mask if w > 0))
                 truncated.append(s.finish_reason == "length")
                 continue
@@ -491,6 +502,9 @@ def rollout_to_prompt_group(
             )
             target_teacher_logprobs = (
                 s.teacher_logprobs[1:] if s.teacher_logprobs is not None else []
+            )
+            target_teacher_topk = (
+                s.teacher_topk[1:] if s.teacher_topk is not None else []
             )
 
             # Per-segment prompt boundary: index of the first assistant
@@ -555,6 +569,7 @@ def rollout_to_prompt_group(
             inf_logprobs_aligned.append(target_logprobs)
             raw_inf_logprobs_aligned.append(target_raw_logprobs)
             teacher_logprobs_aligned.append(target_teacher_logprobs)
+            teacher_topk_aligned.append(target_teacher_topk)
             completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
             truncated.append(s.finish_reason == "length")
 
@@ -570,6 +585,7 @@ def rollout_to_prompt_group(
         inf_logprobs=inf_logprobs_aligned,
         raw_inf_logprobs=raw_inf_logprobs_aligned,
         teacher_logprobs=teacher_logprobs_aligned,
+        teacher_topk=teacher_topk_aligned,
         completion_lens=completion_lens,
         truncated=truncated,
         prompt=None,

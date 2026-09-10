@@ -67,6 +67,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.dataloader import CursorDataLoader
+from training.utils.distillation import build_rl_topk_forward_kl_datums
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_rl import (
@@ -205,6 +206,8 @@ class Config:
     """Promote the final checkpoint to this 4-segment model id on clean exit."""
     opd_beta: float = 0.0
     """Sampled reverse-KL weight for a privileged lagged teacher."""
+    opd_top_k: int = 0
+    """Use sparse forward-KL over this many teacher candidates; 0 uses sampled KL."""
     opd_teacher_sync_every: int = 10
     opd_teacher_deployment_id: str | None = None
     opd_teacher_replica_count: int = 1
@@ -397,6 +400,10 @@ def main(
         raise ValueError("server_side_grpo does not support OPD.")
     if cfg.opd_beta < 0:
         raise ValueError("opd_beta must be non-negative.")
+    if not 0 <= cfg.opd_top_k <= 5:
+        raise ValueError("opd_top_k must be between 0 and 5.")
+    if cfg.opd_top_k > 0 and cfg.opd_beta <= 0:
+        raise ValueError("opd_top_k > 0 requires opd_beta > 0.")
     if cfg.opd_beta > 0:
         if not cfg.opd_teacher_deployment_id:
             raise ValueError("opd_beta > 0 requires opd_teacher_deployment_id.")
@@ -469,6 +476,7 @@ def main(
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
             "opd_beta": cfg.opd_beta,
+            "opd_top_k": cfg.opd_top_k,
             "opd_teacher_sync_every": cfg.opd_teacher_sync_every,
         },
         metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
@@ -772,6 +780,7 @@ def main(
             inf_lp,
             raw_inf_lp,
             teacher_lp,
+            teacher_topk,
             old_policy_logprobs,
             precomputed_forward,
         ):
@@ -788,8 +797,17 @@ def main(
                     config=cfg,
                 )
 
-            return policy.forward_backward_custom(
-                data,
+            train_data = data
+            topk_metrics = {}
+            if cfg.opd_top_k > 0:
+                train_data, topk_metrics = build_rl_topk_forward_kl_datums(
+                    data,
+                    teacher_topk,
+                    top_k=cfg.opd_top_k,
+                )
+                precomputed_forward = None
+            result = policy.forward_backward_custom(
+                train_data,
                 make_grpo_loss_fn(
                     advantages=adv,
                     ref_logprobs=ref_lp,
@@ -803,9 +821,12 @@ def main(
                     raw_inf_logprobs=raw_inf_lp,
                     teacher_logprobs=teacher_lp,
                     opd_beta=cfg.opd_beta,
+                    opd_top_k=cfg.opd_top_k,
                 ),
                 precomputed_forward=precomputed_forward,
             )
+            result.metrics.update(topk_metrics)
+            return result
 
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
             """Run the visible GRPO forward/backward phase for one chunk."""
@@ -817,10 +838,14 @@ def main(
             combined = combine_prompt_groups(
                 prompt_groups,
                 include_raw=True,
-                include_teacher=cfg.opd_beta > 0,
+                include_teacher=cfg.opd_beta > 0 and cfg.opd_top_k == 0,
+                include_teacher_topk=cfg.opd_top_k > 0,
             )
             data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combined[:6]
-            teacher_lp = combined[6] if cfg.opd_beta > 0 else []
+            teacher_lp = (
+                combined[6] if cfg.opd_beta > 0 and cfg.opd_top_k == 0 else []
+            )
+            teacher_topk = combined[6] if cfg.opd_top_k > 0 else []
             precomputed_forward = None
             if cfg.anchor_logp == "old_policy":
                 with elapsed_timer("old_policy_forward"):
@@ -841,6 +866,8 @@ def main(
                         "anchor_logp='rollout' requires non-empty rollout_logprobs."
                     )
                 old_policy_logprobs = inf_lp
+            if cfg.opd_top_k > 0:
+                precomputed_forward = None
 
             with elapsed_timer("fwd_bwd"):
                 fwd_bwd_result = fwd_bwd_batch(
@@ -851,6 +878,7 @@ def main(
                     inf_lp,
                     raw_inf_lp,
                     teacher_lp,
+                    teacher_topk,
                     old_policy_logprobs,
                     precomputed_forward,
                 )

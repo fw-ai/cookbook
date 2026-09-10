@@ -56,6 +56,7 @@ def make_gspo_loss_fn(
     tis_config: TISConfig | None = None,
     teacher_logprobs: List[List[float]] | None = None,
     opd_beta: float = 0.0,
+    opd_top_k: int = 0,
 ) -> ...:
     """Build a GSPO loss closure with sequence-level PPO ratio and behavioral TIS weight."""
     if gspo_config is None:
@@ -84,7 +85,7 @@ def make_gspo_loss_fn(
         surr2 = -clipped_seq_ratio * ctx.adv
         per_token_loss = torch.maximum(surr1, surr2) * ctx.tis_weight * ctx.resp_mask
         per_token_loss, opd_metrics = add_sampled_reverse_kl(
-            per_token_loss, ctx, opd_beta
+            per_token_loss, ctx, opd_beta, top_k=opd_top_k
         )
         return per_token_loss, {
             "clip_frac": clip_frac,
@@ -107,7 +108,10 @@ def make_gspo_loss_fn(
             logprobs_list,
             "gspo",
             policy_fn,
-            teacher_logprobs=teacher_logprobs if opd_beta > 0 else None,
+            teacher_logprobs=(
+                teacher_logprobs if opd_beta > 0 and opd_top_k == 0 else None
+            ),
+            teacher_top_k=opd_top_k if opd_beta > 0 else 0,
         )
         metrics = dict(result.base_metrics)
         ns = result.n_samples

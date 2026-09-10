@@ -42,7 +42,17 @@ def _get_loss_mask(
         "loss_mask"
     )
     if mask_td is not None:
-        mask_vals = mask_td.data[response_start : response_start + resp_len]
+        shape = list(getattr(mask_td, "shape", []))
+        if len(shape) == 2:
+            rows, width = shape
+            mask_vals = [
+                mask_td.data[row * width]
+                for row in range(
+                    response_start, min(response_start + resp_len, rows)
+                )
+            ]
+        else:
+            mask_vals = mask_td.data[response_start : response_start + resp_len]
         if len(mask_vals) < resp_len:
             mask_vals = list(mask_vals) + [0.0] * (resp_len - len(mask_vals))
         return torch.tensor(mask_vals, dtype=dtype, device=device)
@@ -218,6 +228,10 @@ class SampleContext:
     """TIS importance weight per token."""
     resp_teacher: torch.Tensor | None = None
     """Privileged-teacher logprobs for response tokens, when configured."""
+    resp_teacher_topk_probs: torch.Tensor | None = None
+    """Renormalized privileged-teacher probabilities with shape [N, K]."""
+    resp_student_topk_logprobs: torch.Tensor | None = None
+    """Current student logprobs at teacher-selected tokens, shape [N, K]."""
 
 
 @dataclass
@@ -254,6 +268,7 @@ def run_loss_loop(
     policy_loss: str,
     policy_fn: PolicyFn,
     teacher_logprobs: List[List[float]] | None = None,
+    teacher_top_k: int = 0,
 ) -> LossLoopResult:
     """Shared loss loop: tensor setup, TIS weight, loss metrics, KL.
 
@@ -271,14 +286,42 @@ def run_loss_loop(
     tis_metrics_agg: Dict[str, float] = {}
     extra_sums: Dict[str, float] = {}
 
-    for i, pi_logprobs in enumerate(logprobs_list):
+    for i, raw_pi_logprobs in enumerate(logprobs_list):
+        teacher_probs = None
+        student_topk_logprobs = None
+        pi_logprobs = raw_pi_logprobs
+        if teacher_top_k > 0:
+            if raw_pi_logprobs.ndim != 2 or raw_pi_logprobs.shape[1] != teacher_top_k + 1:
+                raise ValueError(
+                    f"{policy_loss} expected [N, {teacher_top_k + 1}] logprobs "
+                    f"for top-K OPD, got {tuple(raw_pi_logprobs.shape)}."
+                )
+            pi_logprobs = raw_pi_logprobs[:, 0]
+            student_topk_logprobs = raw_pi_logprobs[:, 1:]
         response_start = max(0, prompt_lens[i] - 1)
         resp_pi = pi_logprobs[response_start:]
         resp_len = len(resp_pi)
         if resp_len == 0:
             continue
 
-        if i < len(data):
+        if teacher_top_k > 0 and i < len(data):
+            weights = data[i].loss_fn_inputs.get("weights")
+            expected_shape = [len(pi_logprobs), teacher_top_k + 1]
+            if weights is None or list(weights.shape) != expected_shape:
+                actual = None if weights is None else list(weights.shape)
+                raise ValueError(
+                    f"{policy_loss} expected top-K OPD weights shape "
+                    f"{expected_shape}, got {actual}."
+                )
+            weight_matrix = torch.tensor(
+                weights.data,
+                dtype=resp_pi.dtype,
+                device=resp_pi.device,
+            ).reshape(expected_shape)
+            resp_mask = weight_matrix[response_start:, 0]
+            teacher_probs = weight_matrix[response_start:, 1:]
+            student_topk_logprobs = student_topk_logprobs[response_start:]
+        elif i < len(data):
             resp_mask = _get_loss_mask(
                 data[i],
                 response_start,
@@ -398,6 +441,8 @@ def run_loss_loop(
             adv=adv_t,
             tis_weight=tis_weight,
             resp_teacher=resp_teacher,
+            resp_teacher_topk_probs=teacher_probs,
+            resp_student_topk_logprobs=student_topk_logprobs,
         )
         per_token_loss, extra = policy_fn(ctx)
 

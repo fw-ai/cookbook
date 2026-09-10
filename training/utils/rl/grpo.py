@@ -62,6 +62,7 @@ def make_grpo_loss_fn(
     raw_inf_logprobs: List[List[float]] | None = None,
     teacher_logprobs: List[List[float]] | None = None,
     opd_beta: float = 0.0,
+    opd_top_k: int = 0,
 ) -> ...:
     """GRPO loss with PPO-clipped ratio and behavioral TIS weight.
 
@@ -126,7 +127,7 @@ def make_grpo_loss_fn(
             extra["kl_term"] = (kl_penalty * ctx.resp_mask).sum().item()
 
         per_token_loss, opd_metrics = add_sampled_reverse_kl(
-            per_token_loss, ctx, opd_beta
+            per_token_loss, ctx, opd_beta, top_k=opd_top_k
         )
         extra.update(opd_metrics)
         return per_token_loss * ctx.resp_mask, extra
@@ -146,7 +147,10 @@ def make_grpo_loss_fn(
             logprobs_list,
             "grpo",
             policy_fn,
-            teacher_logprobs=teacher_logprobs if opd_beta > 0 else None,
+            teacher_logprobs=(
+                teacher_logprobs if opd_beta > 0 and opd_top_k == 0 else None
+            ),
+            teacher_top_k=opd_top_k if opd_beta > 0 else 0,
         )
         ns = result.n_samples
         nt = result.num_tokens
@@ -185,10 +189,15 @@ def make_grpo_loss_fn(
             )
             metrics["policy_gradient/sample_count"] = pg_count
         if raw_inf_logprobs is not None:
+            observed_logprobs = (
+                [values[:, 0] for values in logprobs_list]
+                if opd_top_k > 0
+                else logprobs_list
+            )
             metrics.update(
                 compute_inference_observability_metrics(
                     data,
-                    logprobs_list,
+                    observed_logprobs,
                     raw_inf_logprobs,
                     prompt_lens,
                     "grpo",

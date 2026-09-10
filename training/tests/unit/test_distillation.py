@@ -68,6 +68,7 @@ from training.utils.distillation.sampling import (
     _extract_teacher_topk,
     _extract_scored_token_logprobs,
     _score_teacher_topk,
+    _score_teacher_topk_with_logprobs,
     _slice_response_logprobs,
     _teacher_messages_for_row,
     _tokenize_teacher_prompt,
@@ -677,6 +678,31 @@ def test_score_teacher_topk_requests_top_logprobs_and_aligns_response_window() -
         TopKDist(token_ids=[30, 31], logprobs=[-0.3, -1.3]),
     ]
     assert sampler.calls[0][1]["top_logprobs"] == 2
+
+
+def test_score_teacher_topk_returns_token_scores_from_one_echo() -> None:
+    sampler = _FakeScoringSampler(
+        response_logprobs_by_token={2: -0.4, 3: -0.7},
+        top_logprobs_by_token={
+            2: [{"token_id": 20, "logprob": -0.2}, {"token_id": 21, "logprob": -1.2}],
+            3: [{"token_id": 30, "logprob": -0.3}, {"token_id": 31, "logprob": -1.3}],
+        },
+    )
+    scored = asyncio.run(
+        _score_teacher_topk_with_logprobs(
+            sampler,
+            [1, 2, 3],
+            prompt_len=1,
+            response_len=2,
+            top_logprobs=2,
+            http_timeout=30,
+        )
+    )
+    assert scored is not None
+    token_logprobs, topk_by_pos = scored
+    assert token_logprobs == [-0.4, -0.7]
+    assert topk_by_pos[0].token_ids == [20, 21]
+    assert len(sampler.calls) == 1
 
 
 def test_score_teacher_topk_fails_when_inference_returns_too_few_candidates() -> None:

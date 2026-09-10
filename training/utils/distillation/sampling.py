@@ -341,6 +341,29 @@ async def _score_teacher_topk(
     tokenizer: Any | None = None,
 ) -> list[TopKDist] | None:
     """Return teacher candidates from inference ``top_logprobs``."""
+    scored = await _score_teacher_topk_with_logprobs(
+        sampler,
+        token_ids,
+        prompt_len=prompt_len,
+        response_len=response_len,
+        top_logprobs=top_logprobs,
+        http_timeout=http_timeout,
+        tokenizer=tokenizer,
+    )
+    return scored[1] if scored is not None else None
+
+
+async def _score_teacher_topk_with_logprobs(
+    sampler: DeploymentSampler,
+    token_ids: list[int],
+    *,
+    prompt_len: int,
+    response_len: int,
+    top_logprobs: int,
+    http_timeout: int,
+    tokenizer: Any | None = None,
+) -> tuple[list[float], list[TopKDist]] | None:
+    """Return sampled-token and top-K scores from one teacher echo."""
     target_len = max(0, len(token_ids) - 1)
     if target_len == 0 or response_len <= 0:
         return None
@@ -354,6 +377,16 @@ async def _score_teacher_topk(
     if response is None:
         return None
 
+    token_logprobs = _extract_scored_token_logprobs(response, target_len=target_len)
+    response_logprobs = (
+        _slice_response_logprobs(
+            token_logprobs,
+            prompt_len=prompt_len,
+            response_len=response_len,
+        )
+        if token_logprobs is not None
+        else None
+    )
     topk_by_pos = _extract_teacher_topk(
         response,
         prompt_len=prompt_len,
@@ -361,10 +394,10 @@ async def _score_teacher_topk(
         target_len=target_len,
         tokenizer=tokenizer,
     )
-    if topk_by_pos is None:
+    if response_logprobs is None or topk_by_pos is None:
         raise ValueError(
-            "Teacher inference response did not include usable top_logprobs "
-            "for every response token."
+            "Teacher inference response did not include usable token and "
+            "top_logprobs scores for every response token."
         )
     for pos, dist in enumerate(topk_by_pos):
         if len(dist.token_ids) < top_logprobs:
@@ -372,4 +405,4 @@ async def _score_teacher_topk(
                 "Teacher inference top_logprobs returned fewer candidates than requested "
                 f"at response position {pos}: got {len(dist.token_ids)}, requested {top_logprobs}."
             )
-    return topk_by_pos
+    return response_logprobs, topk_by_pos

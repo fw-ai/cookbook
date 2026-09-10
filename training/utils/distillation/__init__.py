@@ -598,6 +598,87 @@ class _TopKForwardKLMetrics:
         }
 
 
+def build_rl_topk_forward_kl_datums(
+    student_data: Sequence[tinker.Datum],
+    teacher_topk: Sequence[Sequence[TopKDist | None]],
+    *,
+    top_k: int,
+) -> tuple[list[tinker.Datum], dict[str, float]]:
+    """Augment RL targets with sparse teacher candidates for one custom loss."""
+    if top_k <= 0:
+        raise ValueError("top_k must be positive.")
+    teacher_values = _require_lengths_match(
+        "teacher_topk", teacher_topk, len(student_data)
+    )
+    datums: list[tinker.Datum] = []
+    metrics = _TopKForwardKLMetrics()
+    for datum_idx, (datum, topk_by_pos) in enumerate(
+        zip(student_data, teacher_values, strict=True)
+    ):
+        target = datum.loss_fn_inputs.get("target_tokens")
+        if target is None:
+            raise ValueError(
+                f"Datum {datum_idx} is missing loss_fn_inputs['target_tokens']."
+            )
+        target_tokens = [int(value) for value in target.data]
+        target_len = len(target_tokens)
+        mask = _loss_mask_for_datum(datum, target_len)
+        positions = list(topk_by_pos)
+        if len(positions) != target_len:
+            raise ValueError(
+                f"Datum {datum_idx}: teacher_topk has {len(positions)} positions, "
+                f"expected {target_len}."
+            )
+
+        target_rows: list[list[int]] = []
+        weight_rows: list[list[float]] = []
+        for pos, (sampled_token, active, dist) in enumerate(
+            zip(target_tokens, mask, positions, strict=True)
+        ):
+            candidate_ids = [0] * top_k
+            candidate_probs = [0.0] * top_k
+            if active > 0:
+                if dist is None or len(dist.token_ids) < top_k:
+                    count = 0 if dist is None else len(dist.token_ids)
+                    raise ValueError(
+                        f"Datum {datum_idx}, active position {pos}: teacher top-K "
+                        f"returned {count} candidates, expected {top_k}."
+                    )
+                ranked = sorted(
+                    zip(dist.token_ids, dist.logprobs, strict=True),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )[:top_k]
+                limited = TopKDist(
+                    token_ids=[token_id for token_id, _ in ranked],
+                    logprobs=[logprob for _, logprob in ranked],
+                )
+                candidate_ids, candidate_probs = _renormalize_topk(limited)
+                metrics.add_position(limited.logprobs, candidate_probs)
+            target_rows.append([sampled_token, *candidate_ids])
+            weight_rows.append([float(active), *candidate_probs])
+
+        width = top_k + 1
+        datums.append(
+            tinker.Datum(
+                model_input=datum.model_input,
+                loss_fn_inputs={
+                    "target_tokens": tinker.TensorData(
+                        data=[value for row in target_rows for value in row],
+                        dtype="int64",
+                        shape=[target_len, width],
+                    ),
+                    "weights": tinker.TensorData(
+                        data=[value for row in weight_rows for value in row],
+                        dtype="float32",
+                        shape=[target_len, width],
+                    ),
+                },
+            )
+        )
+    return datums, metrics.as_dict(top_k=top_k)
+
+
 def build_topk_forward_kl_datums(
     student_data: Sequence[tinker.Datum],
     teacher_topk: Sequence[Sequence[TopKDist]],
