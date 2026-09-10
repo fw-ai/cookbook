@@ -121,7 +121,9 @@ class Config:
     """Deployment ID to create/reuse when ``teacher_model`` is a base model."""
 
     teacher_deployment_shape: str | None = None
-    """Optional teacher deployment shape. Defaults to the resolved student deployment shape."""
+    """Optional teacher deployment shape. When unset, teachers default to the
+    resolved student deployment shape (see ``service.deployment_shape``).
+    Set this for heterogeneous teachers on a different model than the student."""
 
     teacher_replica_count: int = 1
     """Replica count for an auto-created teacher inference deployment."""
@@ -314,11 +316,15 @@ def _validate_teacher_tokenizers(
 def _teacher_deployment_shape_for_spec(
     spec: TeacherConfig,
     cfg: Config,
+    *,
+    student_deployment_shape: str | None = None,
 ) -> str | None:
     if spec.deployment_shape is not None:
         return spec.deployment_shape
     if cfg.teacher_deployment_shape is not None:
         return cfg.teacher_deployment_shape
+    if student_deployment_shape is not None:
+        return student_deployment_shape
     return None
 
 
@@ -336,6 +342,10 @@ def _resolve_teacher_runtime(
     resolved_models: dict[str, str] = {}
     samplers: dict[str, Any] = {}
     deployment_id_to_teacher_model: dict[str, str] = {}
+    # Shapeless deployments skip validated configuration and fail far more
+    # often at creation. Default teachers to the student deployment's shape so
+    # heterogeneous multi-teacher runs are the only ones that must override.
+    student_deployment_shape = getattr(service, "deployment_shape", None)
 
     for spec in teacher_specs:
         if spec.model in samplers:
@@ -368,7 +378,11 @@ def _resolve_teacher_runtime(
             DeploymentConfig(
                 deployment_id=teacher_deployment_id,
                 base_model=spec.model,
-                deployment_shape=_teacher_deployment_shape_for_spec(spec, cfg),
+                deployment_shape=_teacher_deployment_shape_for_spec(
+                    spec,
+                    cfg,
+                    student_deployment_shape=student_deployment_shape,
+                ),
                 min_replica_count=cfg.teacher_replica_count,
                 max_replica_count=cfg.teacher_replica_count,
                 hot_load_bucket_type=None,

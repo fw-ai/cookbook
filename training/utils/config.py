@@ -262,10 +262,6 @@ class DeployConfig:
     (e.g. ``accounts/fw/deploymentShapes/ds-x/versions/abc123``) to pin the
     exact shape config.  Recipes populate this from
     ``profile.deployment_shape`` which returns the versioned path."""
-    deployment_accelerator_type: str | None = None
-    """DEPRECATED and ignored on the SDK-managed path. The deployment shape
-    owns accelerator selection; set the accelerator via ``deployment_shape``.
-    Retained only for the legacy ``to_deployment_config`` path."""
     hot_load_bucket_type: str = "FW_HOSTED"
     hot_load_trainer_job: str | None = None
     """Trainer job name whose hot-load bucket this deployment should use.
@@ -311,8 +307,15 @@ class DeployConfig:
         infra: InfraConfig,
     ) -> DeploymentConfig:
         """Produce an SDK-level DeploymentConfig from cookbook settings."""
-        skip_validation = False
-        accel = None if self.deployment_shape else self.deployment_accelerator_type
+        if not self.deployment_shape:
+            raise ValueError(
+                "DeployConfig.deployment_shape is required. Cookbook clients "
+                "cannot create deployments without a deployment shape; "
+                "shapeless deployments skip validated configuration and fail "
+                "far more often at creation. Resolve one from the training "
+                "shape profile (``profile.deployment_shape``) or list shapes "
+                "with ``firectl deployment-shape list``."
+            )
         replica_count = 1 if self.replica_count is None else self.replica_count
         return DeploymentConfig(
             deployment_id=self.deployment_id,
@@ -323,11 +326,10 @@ class DeployConfig:
             hot_load_trainer_job=self.hot_load_trainer_job if self.enable_hot_load else None,
             hot_load_transition_type=self.hot_load_transition_type if self.enable_hot_load else None,
             enable_hot_load=self.enable_hot_load,
-            skip_shape_validation=skip_validation,
+            skip_shape_validation=False,
             extra_args=self.deployment_extra_args,
             min_replica_count=replica_count,
             max_replica_count=replica_count,
-            accelerator_type=accel,
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
             preemptible=self.preemptible or getattr(infra, "preemptible", False),

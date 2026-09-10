@@ -316,8 +316,8 @@ class TeacherConfig:
         deployment_id: Optional explicit frozen-teacher deployment id.
         deployment_shape: Optional deployment shape for this teacher. When
             unset, the recipe uses the run-level teacher deployment shape, or
-            lets the deployment API choose a compatible shape for heterogeneous
-            teachers.
+            the resolved student deployment shape. Set it explicitly for
+            heterogeneous teachers on a different model than the student.
         blend_weight: Non-negative SDFT blend weight. Only used by
             ``TOPK_FORWARD_KL`` multi-teacher blending; sampled reverse-KL OPD
             still routes each prompt to one teacher.

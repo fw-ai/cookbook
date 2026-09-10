@@ -149,6 +149,15 @@ When `training_shape_id` is not set, the SDK selects validated runtime
 defaults. Explicit `training_shape_id`, `reference_training_shape_id`, and
 deployment-shape overrides still take precedence.
 
+**Always use deployment shapes.** Every dedicated deployment must use one of
+the model's verified [deployment shapes](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape).
+Deployments created without a shape skip validated configuration and fail far
+more often at creation (wrong GPU count, incompatible context length,
+unsupported quantization). The cookbook resolves the deployment shape from the
+training shape profile automatically; list available shapes with
+`firectl deployment-shape list`. Hand-set accelerator fields are not
+supported — the shape owns accelerator selection.
+
 To launch trainers with replicated HSDP, set the run-level replica count on
 `TrainerConfig`; it is not part of the validated training shape:
 

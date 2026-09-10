@@ -34,6 +34,7 @@ def test_legacy_infra_config_does_not_expose_removed_accelerator_fields():
 def test_to_deployment_config_includes_extra_values():
     deploy_cfg = config_module.DeployConfig(
         deployment_id="dep-123",
+        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
         extra_values={"priorityClass": "deployment"},
     )
 
@@ -50,7 +51,10 @@ def test_to_deployment_config_includes_extra_values():
 
 
 def test_to_deployment_config_omits_region():
-    deploy_cfg = config_module.DeployConfig(deployment_id="dep-123")
+    deploy_cfg = config_module.DeployConfig(
+        deployment_id="dep-123",
+        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
+    )
 
     deployment_config = deploy_cfg.to_deployment_config(
         "accounts/test/models/qwen3-4b",
@@ -62,7 +66,10 @@ def test_to_deployment_config_omits_region():
 
 
 def test_to_deployment_config_uses_explicit_trainer_region():
-    deploy_cfg = config_module.DeployConfig(deployment_id="dep-123")
+    deploy_cfg = config_module.DeployConfig(
+        deployment_id="dep-123",
+        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
+    )
 
     deployment_config = deploy_cfg.to_deployment_config(
         "accounts/test/models/qwen3-4b",
@@ -76,6 +83,7 @@ def test_to_deployment_config_uses_explicit_trainer_region():
 def test_to_deployment_config_sets_fixed_replica_count():
     deploy_cfg = config_module.DeployConfig(
         deployment_id="dep-123",
+        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
         replica_count=3,
     )
 
@@ -92,6 +100,7 @@ def test_to_deployment_config_sets_fixed_replica_count():
 def test_to_deployment_config_drops_hotload_fields_when_disabled():
     deploy_cfg = config_module.DeployConfig(
         deployment_id="dep-123",
+        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
         enable_hot_load=False,
         hot_load_bucket_type="FW_HOSTED",
         hot_load_trainer_job="accounts/test/rlorTrainerJobs/job-123",
@@ -113,6 +122,7 @@ def test_to_deployment_config_drops_hotload_fields_when_disabled():
 def test_to_deployment_config_forwards_hot_load_transition_type():
     deploy_cfg = config_module.DeployConfig(
         deployment_id="dep-123",
+        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
         hot_load_transition_type="sync",
     )
 
@@ -125,7 +135,10 @@ def test_to_deployment_config_forwards_hot_load_transition_type():
 
 
 def test_to_deployment_config_leaves_hot_load_transition_type_unset_by_default():
-    deploy_cfg = config_module.DeployConfig(deployment_id="dep-123")
+    deploy_cfg = config_module.DeployConfig(
+        deployment_id="dep-123",
+        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
+    )
 
     deployment_config = deploy_cfg.to_deployment_config(
         "accounts/test/models/qwen3-4b",
@@ -133,3 +146,40 @@ def test_to_deployment_config_leaves_hot_load_transition_type_unset_by_default()
     )
 
     assert deployment_config.hot_load_transition_type is None
+
+
+def test_to_deployment_config_rejects_missing_deployment_shape():
+    deploy_cfg = config_module.DeployConfig(deployment_id="dep-123")
+
+    with pytest.raises(ValueError, match="deployment_shape is required"):
+        deploy_cfg.to_deployment_config(
+            "accounts/test/models/qwen3-4b",
+            config_module.InfraConfig(),
+        )
+
+
+def test_to_deployment_config_no_longer_exposes_accelerator_field():
+    field_names = {
+        field.name for field in dataclasses.fields(config_module.DeployConfig)
+    }
+
+    assert "deployment_accelerator_type" not in field_names
+
+
+def test_to_deployment_config_forwards_deployment_shape():
+    deploy_cfg = config_module.DeployConfig(
+        deployment_id="dep-123",
+        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
+    )
+
+    deployment_config = deploy_cfg.to_deployment_config(
+        "accounts/test/models/qwen3-4b",
+        config_module.InfraConfig(),
+    )
+
+    assert (
+        deployment_config.deployment_shape
+        == "accounts/test/deploymentShapes/ds-x/versions/abc123"
+    )
+    # Accelerator selection is owned by the shape (the SDK may resolve it
+    # server-side); the cookbook never hand-sets it.

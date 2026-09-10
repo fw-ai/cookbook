@@ -170,7 +170,11 @@ cfg.multi_teacher = MultiTeacherConfig(
   deployments.
 - `teacher_replica_count` controls replicas for auto-created frozen teacher
   deployments. `teacher_deployment_shape` sets the run-level default; individual
-  `TeacherConfig.deployment_shape` can override it.
+  `TeacherConfig.deployment_shape` can override it. When neither is set,
+  teachers default to the resolved student deployment shape — set one
+  explicitly for heterogeneous teachers on a different model than the student,
+  since a shapeless teacher deployment skips validated configuration and fails
+  far more often at creation.
 - Per-teacher metrics use `teacher_route/<slug>/scored` and
   `teacher_route/<slug>/inflight`; skewed datasets can leave some teacher
   deployments underused.

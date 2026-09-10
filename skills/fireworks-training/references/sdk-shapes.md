@@ -37,6 +37,12 @@ trainer/deployment provisioning path.
 
 ## Deployment shape
 
+**Every dedicated deployment must use a deployment shape** — shapeless
+deployments skip validated configuration and fail far more often at creation
+(wrong GPU count, incompatible context length, unsupported quantization).
+See the user-facing docs:
+[What is a deployment shape?](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape)
+
 Do not set `cfg.deployment.deployment_shape` manually. The SDK resolves it from
 the requested deployment shape or the selected training profile, and recipes read
 the resolved value from the service:
@@ -48,8 +54,9 @@ deployment_shape = service.deployment_shape
 ```
 
 That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123`).
-The `to_deployment_config` helper in `training/utils/config.py` auto-clears
-manual accelerator fields whenever a shape is present.
+The `to_deployment_config` helper in `training/utils/config.py` **rejects
+deployments with no shape** and never forwards manual accelerator fields —
+the shape owns accelerator selection.
 
 ## Reference-model shape (RL / DPO)
 
@@ -71,6 +78,11 @@ The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 el
 firectl training-shape list      # alias: firectl ts list
 firectl deployment-shape list    # alias: firectl ds list
 ```
+
+When a customer needs a serving deployment shape for a model, list the
+model's verified shapes first (firectl is gaining richer per-model shape
+visibility) rather than guessing a GPU count — always create deployments
+against a listed shape.
 
 Or programmatically via `FireworksClient` — see the SDK docs linked from the repo README.
 
