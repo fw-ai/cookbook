@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Callable, List
+from typing import Any, Callable, List
 
 import tinker
 
@@ -93,6 +93,10 @@ class RolloutSample:
     ``PromptGroup.raw_inf_logprobs`` for optional train/inference drift metrics.
     It never replaces behavior logprobs in the loss or TIS.
     """
+    teacher_logprobs: List[float] | None = None
+    """Optional privileged-teacher logprobs aligned with ``tokens``."""
+    teacher_topk: List[Any] | None = None
+    """Optional sparse teacher distributions aligned with ``tokens``."""
 
 
 @dataclass
@@ -182,6 +186,12 @@ def _completion_logprobs_from_sample(sample: RolloutSample) -> List[float]:
     return [float(lp) for lp, m in zip(sample.logprobs, sample.loss_mask) if m > 0]
 
 
+def _completion_logprobs_from_values(
+    values: List[float], loss_mask: List[int]
+) -> List[float]:
+    return [float(lp) for lp, m in zip(values, loss_mask) if m > 0]
+
+
 def _completion_raw_logprobs_from_sample(sample: RolloutSample) -> List[float] | None:
     """Return per-completion raw logprobs when present."""
     if sample.raw_logprobs is None:
@@ -243,12 +253,14 @@ def _validate_segment(
     segment_index: int,
     segment: RolloutSample,
 ) -> None:
-    def _validate_optional_logprobs(values: List[float] | None, *, n: int) -> None:
+    def _validate_optional_logprobs(
+        values: List[float] | None, *, n: int, source: str
+    ) -> None:
         if values is not None and len(values) != n:
             raise ValueError(
                 f"Run {run_index} segment {segment_index}: "
-                "raw_logprobs length mismatch "
-                f"({len(values)} / {n}). When set, raw_logprobs must align "
+                f"{source} length mismatch "
+                f"({len(values)} / {n}). When set, {source} must align "
                 "with tokens."
             )
 
@@ -260,7 +272,12 @@ def _validate_segment(
                 "tokens/logprobs/loss_mask mismatch "
                 f"({n} / {len(segment.logprobs)} / {len(segment.loss_mask)})."
             )
-        _validate_optional_logprobs(segment.raw_logprobs, n=n)
+        _validate_optional_logprobs(segment.raw_logprobs, n=n, source="raw_logprobs")
+        _validate_optional_logprobs(
+            segment.teacher_logprobs, n=n, source="teacher_logprobs"
+        )
+        if segment.teacher_topk is not None:
+            raise ValueError("teacher_topk is unsupported for multimodal segments.")
         if n < 2:
             raise ValueError(
                 f"Run {run_index} segment {segment_index}: tokens must have "
@@ -286,7 +303,15 @@ def _validate_segment(
             f"({n} / {len(segment.logprobs)} / {len(segment.loss_mask)}). "
             "All three lists must be the same length.",
         )
-    _validate_optional_logprobs(segment.raw_logprobs, n=n)
+    _validate_optional_logprobs(segment.raw_logprobs, n=n, source="raw_logprobs")
+    _validate_optional_logprobs(
+        segment.teacher_logprobs, n=n, source="teacher_logprobs"
+    )
+    if segment.teacher_topk is not None and len(segment.teacher_topk) != n:
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: teacher_topk length "
+            f"mismatch ({len(segment.teacher_topk)} / {n})."
+        )
     if n < 2:
         raise ValueError(
             f"Run {run_index} segment {segment_index}: tokens must have length >= 2.",
@@ -358,6 +383,8 @@ def rollout_to_prompt_group(
     reference_data: List[tinker.Datum] = []
     inf_logprobs_aligned: List[List[float]] = []
     raw_inf_logprobs_aligned: List[List[float]] = []
+    teacher_logprobs_aligned: List[List[float]] = []
+    teacher_topk_aligned: List[List[Any]] = []
     completion_lens: List[int] = []
     truncated: List[bool] = []
     per_sample_prompt_lens: List[int] = []
@@ -396,6 +423,16 @@ def rollout_to_prompt_group(
                 target_raw_logprobs = (
                     _align_multimodal_inf_logprobs(completion_raw_logprobs, target_mask)
                     if completion_raw_logprobs is not None
+                    else []
+                )
+                target_teacher_logprobs = (
+                    _align_multimodal_inf_logprobs(
+                        _completion_logprobs_from_values(
+                            s.teacher_logprobs, s.loss_mask
+                        ),
+                        target_mask,
+                    )
+                    if s.teacher_logprobs is not None
                     else []
                 )
 
@@ -448,6 +485,8 @@ def rollout_to_prompt_group(
 
                 inf_logprobs_aligned.append(target_logprobs)
                 raw_inf_logprobs_aligned.append(target_raw_logprobs)
+                teacher_logprobs_aligned.append(target_teacher_logprobs)
+                teacher_topk_aligned.append([])
                 completion_lens.append(sum(1 for w in target_mask if w > 0))
                 truncated.append(s.finish_reason == "length")
                 continue
@@ -460,6 +499,12 @@ def rollout_to_prompt_group(
             target_logprobs = s.logprobs[1:]
             target_raw_logprobs = (
                 s.raw_logprobs[1:] if s.raw_logprobs is not None else []
+            )
+            target_teacher_logprobs = (
+                s.teacher_logprobs[1:] if s.teacher_logprobs is not None else []
+            )
+            target_teacher_topk = (
+                s.teacher_topk[1:] if s.teacher_topk is not None else []
             )
 
             # Per-segment prompt boundary: index of the first assistant
@@ -523,6 +568,8 @@ def rollout_to_prompt_group(
 
             inf_logprobs_aligned.append(target_logprobs)
             raw_inf_logprobs_aligned.append(target_raw_logprobs)
+            teacher_logprobs_aligned.append(target_teacher_logprobs)
+            teacher_topk_aligned.append(target_teacher_topk)
             completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
             truncated.append(s.finish_reason == "length")
 
@@ -537,6 +584,8 @@ def rollout_to_prompt_group(
         rewards=rewards,
         inf_logprobs=inf_logprobs_aligned,
         raw_inf_logprobs=raw_inf_logprobs_aligned,
+        teacher_logprobs=teacher_logprobs_aligned,
+        teacher_topk=teacher_topk_aligned,
         completion_lens=completion_lens,
         truncated=truncated,
         prompt=None,

@@ -19,6 +19,7 @@ import torch
 import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
+from training.utils.rl.opd import add_opd_metrics, add_sampled_reverse_kl
 from training.utils.rl.tis import TISConfig
 
 
@@ -53,6 +54,9 @@ def make_gspo_loss_fn(
     old_policy_logprobs: List[List[float]],
     gspo_config: GSPOConfig | None = None,
     tis_config: TISConfig | None = None,
+    teacher_logprobs: List[List[float]] | None = None,
+    opd_beta: float = 0.0,
+    opd_top_k: int = 0,
 ) -> ...:
     """Build a GSPO loss closure with sequence-level PPO ratio and behavioral TIS weight."""
     if gspo_config is None:
@@ -71,27 +75,49 @@ def make_gspo_loss_fn(
         log_seq_ratio = torch.clamp(log_seq_ratio, max=gspo_config.seq_ratio_log_cap)
         seq_ratio = torch.exp(log_seq_ratio)
 
-        clipped_seq_ratio = torch.clamp(seq_ratio, min=1.0 - clip_low, max=1.0 + clip_high)
+        clipped_seq_ratio = torch.clamp(
+            seq_ratio, min=1.0 - clip_low, max=1.0 + clip_high
+        )
         clip_frac = (clipped_seq_ratio != seq_ratio).float().mean().item()
         ratio_mean = seq_ratio.detach().mean().item()
 
         surr1 = -seq_ratio * ctx.adv
         surr2 = -clipped_seq_ratio * ctx.adv
         per_token_loss = torch.maximum(surr1, surr2) * ctx.tis_weight * ctx.resp_mask
-        return per_token_loss, {"clip_frac": clip_frac, "ratio_mean": ratio_mean}
+        per_token_loss, opd_metrics = add_sampled_reverse_kl(
+            per_token_loss, ctx, opd_beta, top_k=opd_top_k
+        )
+        return per_token_loss, {
+            "clip_frac": clip_frac,
+            "ratio_mean": ratio_mean,
+            **opd_metrics,
+        }
 
     def loss_fn(
         data: List[tinker.Datum],
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
-            advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            old_policy_logprobs, tis_config, data, logprobs_list, "gspo", policy_fn,
+            advantages,
+            ref_logprobs,
+            inf_logprobs,
+            prompt_lens,
+            old_policy_logprobs,
+            tis_config,
+            data,
+            logprobs_list,
+            "gspo",
+            policy_fn,
+            teacher_logprobs=(
+                teacher_logprobs if opd_beta > 0 and opd_top_k == 0 else None
+            ),
+            teacher_top_k=opd_top_k if opd_beta > 0 else 0,
         )
         metrics = dict(result.base_metrics)
         ns = result.n_samples
         metrics["gspo_clip_frac"] = result.extra_sums.get("clip_frac", 0.0) / ns
         metrics["ppo_ratio_mean"] = result.extra_sums.get("ratio_mean", 0.0) / ns
+        add_opd_metrics(metrics, result.extra_sums)
         return result.total_loss, metrics
 
     return loss_fn

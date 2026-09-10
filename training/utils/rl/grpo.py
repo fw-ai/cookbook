@@ -16,6 +16,7 @@ import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
 from training.utils.rl.observability import compute_inference_observability_metrics
+from training.utils.rl.opd import add_opd_metrics, add_sampled_reverse_kl
 from training.utils.rl.tis import SAFETY_CLAMP, TISConfig
 
 
@@ -44,8 +45,7 @@ def validate_grpo_config(
         raise ValueError("eps_clip and eps_clip_high must be non-negative.")
     if anchor_logp is not None and anchor_logp not in {"old_policy", "rollout"}:
         raise ValueError(
-            "anchor_logp must be 'old_policy' or 'rollout', got "
-            f"{anchor_logp!r}."
+            f"anchor_logp must be 'old_policy' or 'rollout', got {anchor_logp!r}."
         )
 
 
@@ -60,6 +60,9 @@ def make_grpo_loss_fn(
     eps_clip_high: float | None = None,
     tis_config: TISConfig | None = None,
     raw_inf_logprobs: List[List[float]] | None = None,
+    teacher_logprobs: List[List[float]] | None = None,
+    opd_beta: float = 0.0,
+    opd_top_k: int = 0,
 ) -> ...:
     """GRPO loss with PPO-clipped ratio and behavioral TIS weight.
 
@@ -79,7 +82,9 @@ def make_grpo_loss_fn(
     _eps_high = eps_clip if eps_clip_high is None else eps_clip_high
 
     def policy_fn(ctx):
-        log_ratio = torch.clamp(ctx.resp_pi - ctx.resp_old_policy, min=-SAFETY_CLAMP, max=SAFETY_CLAMP)
+        log_ratio = torch.clamp(
+            ctx.resp_pi - ctx.resp_old_policy, min=-SAFETY_CLAMP, max=SAFETY_CLAMP
+        )
         ratio = torch.exp(log_ratio)
         clipped_ratio = torch.clamp(ratio, min=1.0 - eps_clip, max=1.0 + _eps_high)
 
@@ -121,6 +126,10 @@ def make_grpo_loss_fn(
             per_token_loss = per_token_loss + kl_penalty
             extra["kl_term"] = (kl_penalty * ctx.resp_mask).sum().item()
 
+        per_token_loss, opd_metrics = add_sampled_reverse_kl(
+            per_token_loss, ctx, opd_beta, top_k=opd_top_k
+        )
+        extra.update(opd_metrics)
         return per_token_loss * ctx.resp_mask, extra
 
     def loss_fn(
@@ -128,8 +137,20 @@ def make_grpo_loss_fn(
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
-            advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            old_policy_logprobs, tis_config, data, logprobs_list, "grpo", policy_fn,
+            advantages,
+            ref_logprobs,
+            inf_logprobs,
+            prompt_lens,
+            old_policy_logprobs,
+            tis_config,
+            data,
+            logprobs_list,
+            "grpo",
+            policy_fn,
+            teacher_logprobs=(
+                teacher_logprobs if opd_beta > 0 and opd_top_k == 0 else None
+            ),
+            teacher_top_k=opd_top_k if opd_beta > 0 else 0,
         )
         ns = result.n_samples
         nt = result.num_tokens
@@ -138,10 +159,13 @@ def make_grpo_loss_fn(
         metrics = dict(result.base_metrics)
         metrics["ppo_clip_frac"] = result.extra_sums.get("clip_frac", 0.0) / ns
         metrics["ppo_ratio_mean"] = result.extra_sums.get("ratio_mean", 0.0) / ns
+        add_opd_metrics(metrics, result.extra_sums)
         metrics["active_tokens"] = nt
         metrics["total_resp_tokens"] = total_resp
         metrics["mask_ratio"] = nt / total_resp if total_resp > 0 else 0.0
-        metrics["mean_adv_loss"] = result.extra_sums.get("adv_term", 0.0) / nt if nt > 0 else 0.0
+        metrics["mean_adv_loss"] = (
+            result.extra_sums.get("adv_term", 0.0) / nt if nt > 0 else 0.0
+        )
         if "kl_term" in result.extra_sums:
             metrics["mean_kl_penalty"] = (
                 result.extra_sums["kl_term"] / nt if nt > 0 else 0.0
@@ -165,10 +189,15 @@ def make_grpo_loss_fn(
             )
             metrics["policy_gradient/sample_count"] = pg_count
         if raw_inf_logprobs is not None:
+            observed_logprobs = (
+                [values[:, 0] for values in logprobs_list]
+                if opd_top_k > 0
+                else logprobs_list
+            )
             metrics.update(
                 compute_inference_observability_metrics(
                     data,
-                    logprobs_list,
+                    observed_logprobs,
                     raw_inf_logprobs,
                     prompt_lens,
                     "grpo",

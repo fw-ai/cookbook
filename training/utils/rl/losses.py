@@ -7,7 +7,7 @@ forks that intentionally switch to the trainer's built-in PPO kernel can use
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, List
 from dataclasses import field, dataclass
 
 import tinker
@@ -44,6 +44,10 @@ class PromptGroup:
     The direct client GRPO builder uses them only for drift metrics. They must
     never replace behavior logprobs in TIS.
     """
+    teacher_logprobs: List[List[float]] = field(default_factory=list)
+    """Privileged-teacher logprobs aligned to ``target_tokens``."""
+    teacher_topk: List[List[Any]] = field(default_factory=list)
+    """Privileged-teacher sparse distributions aligned to ``target_tokens``."""
     completion_lens: List[int] = field(default_factory=list)
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
@@ -74,6 +78,8 @@ def combine_prompt_groups(
     groups: List[PromptGroup],
     *,
     include_raw: bool = False,
+    include_teacher: bool = False,
+    include_teacher_topk: bool = False,
 ):
     """Flatten a list of PromptGroups into combined arrays for a fwd_bwd call.
 
@@ -87,6 +93,8 @@ def combine_prompt_groups(
     prompt_lens: List[int] = []
     inf_logprobs: List[List[float]] = []
     raw_inf_logprobs: List[List[float]] = []
+    teacher_logprobs: List[List[float]] = []
+    teacher_topk: List[List[Any]] = []
 
     for pg in groups:
         data.extend(pg.data)
@@ -103,17 +111,25 @@ def combine_prompt_groups(
                 raw_inf_logprobs.extend(pg.raw_inf_logprobs)
             else:
                 raw_inf_logprobs.extend([[] for _ in pg.data])
+        if include_teacher:
+            if pg.teacher_logprobs:
+                teacher_logprobs.extend(pg.teacher_logprobs)
+            else:
+                teacher_logprobs.extend([[] for _ in pg.data])
+        if include_teacher_topk:
+            if pg.teacher_topk:
+                teacher_topk.extend(pg.teacher_topk)
+            else:
+                teacher_topk.extend([[] for _ in pg.data])
 
+    result = (data, advantages, ref_logprobs, prompt_lens, inf_logprobs)
     if include_raw:
-        return (
-            data,
-            advantages,
-            ref_logprobs,
-            prompt_lens,
-            inf_logprobs,
-            raw_inf_logprobs,
-        )
-    return data, advantages, ref_logprobs, prompt_lens, inf_logprobs
+        result += (raw_inf_logprobs,)
+    if include_teacher:
+        result += (teacher_logprobs,)
+    if include_teacher_topk:
+        result += (teacher_topk,)
+    return result
 
 
 def build_grpo_datums(
@@ -230,7 +246,9 @@ def build_grpo_datums(
         # Bulk extraction avoids per-token tensor calls while retaining Python-float arithmetic.
         per_token_adv.extend(
             float(advantage * weight * mask)
-            for weight, mask in zip(tis_weight.tolist(), loss_mask.tolist(), strict=True)
+            for weight, mask in zip(
+                tis_weight.tolist(), loss_mask.tolist(), strict=True
+            )
         )
 
         new_datum = tinker.Datum(

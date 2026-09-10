@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
 import tinker
+from fireworks.training.sdk.deployment import DeploymentConfig
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
@@ -66,6 +67,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.dataloader import CursorDataLoader
+from training.utils.distillation import build_rl_topk_forward_kl_datums
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_rl import (
@@ -202,6 +204,13 @@ class Config:
     """Save a resumable+promotable checkpoint at the end of training."""
     output_model_id: str | None = None
     """Promote the final checkpoint to this 4-segment model id on clean exit."""
+    opd_beta: float = 0.0
+    """Sampled reverse-KL weight for a privileged lagged teacher."""
+    opd_top_k: int = 0
+    """Use sparse forward-KL over this many teacher candidates; 0 uses sampled KL."""
+    opd_teacher_sync_every: int = 10
+    opd_teacher_deployment_id: str | None = None
+    opd_teacher_replica_count: int = 1
 
 
 @dataclass
@@ -230,6 +239,8 @@ class RolloutSetup:
     remain for compatibility with externally constructed setups and older
     rollout factories.
     """
+    teacher_sampler: Any | None = None
+    """Optional lagged teacher sampler used to score rollout token IDs."""
 
 
 RolloutFn = Callable[..., Awaitable[RolloutRun | None]]
@@ -385,6 +396,21 @@ def main(
     )
     if cfg.server_side_grpo and cfg.kl_beta != 0:
         raise ValueError("server_side_grpo requires kl_beta=0.")
+    if cfg.server_side_grpo and cfg.opd_beta > 0:
+        raise ValueError("server_side_grpo does not support OPD.")
+    if cfg.opd_beta < 0:
+        raise ValueError("opd_beta must be non-negative.")
+    if not 0 <= cfg.opd_top_k <= 5:
+        raise ValueError("opd_top_k must be between 0 and 5.")
+    if cfg.opd_top_k > 0 and cfg.opd_beta <= 0:
+        raise ValueError("opd_top_k > 0 requires opd_beta > 0.")
+    if cfg.opd_beta > 0:
+        if not cfg.opd_teacher_deployment_id:
+            raise ValueError("opd_beta > 0 requires opd_teacher_deployment_id.")
+        if cfg.opd_teacher_sync_every <= 0:
+            raise ValueError("opd_teacher_sync_every must be positive.")
+        if cfg.opd_teacher_replica_count <= 0:
+            raise ValueError("opd_teacher_replica_count must be positive.")
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
         "the Config / RolloutSetup API may change. See "
@@ -449,6 +475,9 @@ def main(
             "anchor_logp": cfg.anchor_logp,
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
+            "opd_beta": cfg.opd_beta,
+            "opd_top_k": cfg.opd_top_k,
+            "opd_teacher_sync_every": cfg.opd_teacher_sync_every,
         },
         metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
     )
@@ -499,6 +528,35 @@ def main(
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
         stack.callback(sampler.close)
         rollout_model = sampler.model
+        teacher_sampler = None
+        teacher_deploy_manager = None
+        if cfg.opd_beta > 0:
+            account_id = service._resolved_account_id()
+            if not account_id:
+                raise RuntimeError("Could not resolve OPD teacher trainer account.")
+            teacher_sampler = service.create_inference_deployment_sampler(
+                DeploymentConfig(
+                    deployment_id=cfg.opd_teacher_deployment_id,
+                    base_model=cfg.base_model,
+                    region=cfg.trainer.region,
+                    min_replica_count=cfg.opd_teacher_replica_count,
+                    max_replica_count=cfg.opd_teacher_replica_count,
+                    hot_load_trainer_job=(
+                        f"accounts/{account_id}/rlorTrainerJobs/{service.trainer_job_id}"
+                    ),
+                    enable_hot_load=True,
+                    disable_speculative_decoding=True,
+                    for_training=True,
+                ),
+                cleanup_on_close=(
+                    CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
+                    if cfg.cleanup_on_exit
+                    else None
+                ),
+                tokenizer=tokenizer,
+            )
+            stack.callback(teacher_sampler.close)
+            teacher_deploy_manager = service._managed_deployment_manager()
         log_metrics({"rollout/step": 0}, step=0)
 
         policy = ReconnectableClient.from_training_client(
@@ -548,6 +606,15 @@ def main(
                 checkpoint_type="base",
             )
             service.hotload_sampler_snapshot(saved.path)
+            if teacher_deploy_manager is not None:
+                ok = teacher_deploy_manager.hotload_and_wait(
+                    cfg.opd_teacher_deployment_id,
+                    cfg.base_model,
+                    saved.path,
+                    timeout_seconds=cfg.weight_sync_timeout,
+                )
+                if not ok:
+                    raise RuntimeError("Initial OPD teacher hotload failed.")
         logger.info(
             "[step %d] initial weight sync (%.1fs)",
             step_offset,
@@ -614,6 +681,7 @@ def main(
             completions_per_prompt=cfg.completions_per_prompt,
             extras=dict(rollout_extras or {}),
             sampler=sampler,
+            teacher_sampler=teacher_sampler,
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
         rollout_context_param_names = _rollout_fn_context_param_names(rollout_fn)
@@ -711,6 +779,8 @@ def main(
             prompt_lens,
             inf_lp,
             raw_inf_lp,
+            teacher_lp,
+            teacher_topk,
             old_policy_logprobs,
             precomputed_forward,
         ):
@@ -727,8 +797,17 @@ def main(
                     config=cfg,
                 )
 
-            return policy.forward_backward_custom(
-                data,
+            train_data = data
+            topk_metrics = {}
+            if cfg.opd_top_k > 0:
+                train_data, topk_metrics = build_rl_topk_forward_kl_datums(
+                    data,
+                    teacher_topk,
+                    top_k=cfg.opd_top_k,
+                )
+                precomputed_forward = None
+            result = policy.forward_backward_custom(
+                train_data,
                 make_grpo_loss_fn(
                     advantages=adv,
                     ref_logprobs=ref_lp,
@@ -740,9 +819,14 @@ def main(
                     eps_clip_high=cfg.eps_clip_high,
                     tis_config=cfg.tis,
                     raw_inf_logprobs=raw_inf_lp,
+                    teacher_logprobs=teacher_lp,
+                    opd_beta=cfg.opd_beta,
+                    opd_top_k=cfg.opd_top_k,
                 ),
                 precomputed_forward=precomputed_forward,
             )
+            result.metrics.update(topk_metrics)
+            return result
 
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
             """Run the visible GRPO forward/backward phase for one chunk."""
@@ -751,10 +835,17 @@ def main(
             with elapsed_timer("ref_forward"):
                 ref_forward(prompt_groups)
 
-            data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combine_prompt_groups(
+            combined = combine_prompt_groups(
                 prompt_groups,
                 include_raw=True,
+                include_teacher=cfg.opd_beta > 0 and cfg.opd_top_k == 0,
+                include_teacher_topk=cfg.opd_top_k > 0,
             )
+            data, adv, ref_lp, prompt_lens, inf_lp, raw_inf_lp = combined[:6]
+            teacher_lp = (
+                combined[6] if cfg.opd_beta > 0 and cfg.opd_top_k == 0 else []
+            )
+            teacher_topk = combined[6] if cfg.opd_top_k > 0 else []
             precomputed_forward = None
             if cfg.anchor_logp == "old_policy":
                 with elapsed_timer("old_policy_forward"):
@@ -775,6 +866,8 @@ def main(
                         "anchor_logp='rollout' requires non-empty rollout_logprobs."
                     )
                 old_policy_logprobs = inf_lp
+            if cfg.opd_top_k > 0:
+                precomputed_forward = None
 
             with elapsed_timer("fwd_bwd"):
                 fwd_bwd_result = fwd_bwd_batch(
@@ -784,6 +877,8 @@ def main(
                     prompt_lens,
                     inf_lp,
                     raw_inf_lp,
+                    teacher_lp,
+                    teacher_topk,
                     old_policy_logprobs,
                     precomputed_forward,
                 )
@@ -822,6 +917,20 @@ def main(
             with wall_timer() as span:
                 saved = policy.save_weights_for_sampler(f"step-{step}")
                 service.hotload_sampler_snapshot(saved.path)
+                if (
+                    teacher_deploy_manager is not None
+                    and step % cfg.opd_teacher_sync_every == 0
+                ):
+                    ok = teacher_deploy_manager.hotload_and_wait(
+                        cfg.opd_teacher_deployment_id,
+                        cfg.base_model,
+                        saved.path,
+                        timeout_seconds=cfg.weight_sync_timeout,
+                    )
+                    if not ok:
+                        raise RuntimeError(
+                            f"OPD teacher hotload failed at step {step}."
+                        )
             return span.elapsed
 
         async def run_training() -> tuple[int, dict[str, Any]]:
