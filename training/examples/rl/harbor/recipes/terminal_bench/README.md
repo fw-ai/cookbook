@@ -133,9 +133,9 @@ Set `FIREWORKS_API_KEY` and, when W&B logging is enabled,
 the run directory. Use `--init-from-checkpoint step-N` to resume the trainer's
 weights and optimizer without recreating the trainer or rollout deployment.
 
-### Concrete inputs for the next run
+### Concrete inputs for the convergence run
 
-The next run uses the following immutable shape versions and concrete inputs.
+The convergence run uses the following immutable shape versions and concrete inputs.
 The trainer and deployment IDs are recorded for provenance; create replacements
 from the same shape versions if those resources have expired.
 
@@ -145,8 +145,8 @@ from the same shape versions if those resources have expired.
 | Tokenizer model | `moonshotai/Kimi-K3` |
 | Training shape | `accounts/fireworks/trainingShapes/kimi-k3-262k-gb300/versions/rbb16rr5` |
 | Rollout shape | `accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz` |
-| Trainer | `accounts/training/rlorTrainerJobs/k3-convergence-rbb16rr5-20260909-230155` |
-| Deployment | `accounts/training/deployments/k3-convergence-rbb16rr5-20260909-230155` |
+| Trainer | `accounts/training/rlorTrainerJobs/k3-gspo-all89-20260910-213414` |
+| Deployment | `accounts/training/deployments/k3-gspo-all89-20260910-213414` |
 | Prepared dataset | `/shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode` |
 | Training tasks | All tasks discovered in the prepared dataset (89 in the pinned Terminal-Bench dataset) |
 | Evaluation tasks | `count-dataset-tokens`, `extract-elf`, `polyglot-rust-c` |
@@ -158,21 +158,22 @@ from the same shape versions if those resources have expired.
 | Routing | Router Replay enabled for completion tokens |
 | Token limits | 262,144 total tokens; 32,768 generated tokens per model call |
 | Evaluation/checkpointing | the same three fixed tasks every 5 steps; DCP every 10 steps |
+| W&B run | [`u3ibepq0`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/u3ibepq0) |
 | Prior-run evidence | [`9a13a8f5`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/9a13a8f5); it used LR `2e-6` and no shuffle |
 
-This is the credential-safe command for the next run. The SDK/model-request
+This is the credential-safe command for the convergence run. The SDK/model-request
 timeout and the per-tool Harbor timeout are separate controls, so both are set
 to 7,200 seconds for long-tail tasks.
 
 ```bash
-RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/medium3-b64-lr1e6-1epoch-rbb16rr5
+RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/k3-gspo-all89-20260910-213414
 
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --base-model accounts/fireworks/models/kimi-k3 \
   --tokenizer-model moonshotai/Kimi-K3 \
   --renderer-name kimi_k3 \
-  --trainer-job-id k3-convergence-rbb16rr5-20260909-230155 \
-  --deployment-id k3-convergence-rbb16rr5-20260909-230155 \
+  --trainer-job-id k3-gspo-all89-20260910-213414 \
+  --deployment-id k3-gspo-all89-20260910-213414 \
   --deployment-shape accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz \
   --harbor-dataset /shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode \
   --harbor-trials-dir "$RUN_DIR/trials" \
@@ -209,7 +210,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --no-cleanup-on-exit \
   --wandb-entity myh97 \
   --wandb-project kimi-k3-fullparam-harbor \
-  --wandb-run-name medium3-b64-lr1e6-1epoch-rbb16rr5
+  --wandb-run-name k3-gspo-all89-20260910-213414
 ```
 
 OpenCode title and summary requests do not carry tools and are logged as
