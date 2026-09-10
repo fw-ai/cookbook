@@ -530,6 +530,7 @@ def main(
                 DeploymentConfig(
                     deployment_id=cfg.opd_teacher_deployment_id,
                     base_model=cfg.base_model,
+                    region=cfg.trainer.region,
                     min_replica_count=cfg.opd_teacher_replica_count,
                     max_replica_count=cfg.opd_teacher_replica_count,
                     hot_load_trainer_job=(
