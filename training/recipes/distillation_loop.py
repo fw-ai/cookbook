@@ -342,9 +342,9 @@ def _resolve_teacher_runtime(
     resolved_models: dict[str, str] = {}
     samplers: dict[str, Any] = {}
     deployment_id_to_teacher_model: dict[str, str] = {}
-    # Shapeless deployments skip validated configuration and fail far more
-    # often at creation. Default teachers to the student deployment's shape so
-    # heterogeneous multi-teacher runs are the only ones that must override.
+    # Deployments created without a shape are the most common cause of failed
+    # deployment creations. Default teachers to the student deployment's shape
+    # so only heterogeneous multi-teacher runs must set an explicit shape.
     student_deployment_shape = getattr(service, "deployment_shape", None)
 
     for spec in teacher_specs:
