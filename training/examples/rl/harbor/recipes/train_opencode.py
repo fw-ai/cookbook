@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import itertools
 import json
 import logging
 import os
+import random
 import time
 from pathlib import Path
 
@@ -32,6 +34,7 @@ from training.examples.rl.harbor.tito.trial import (
 )
 from training.recipes.async_rl_loop import Config, RolloutSetup, main
 from training.utils import DeployConfig, TrainerConfig, WandBConfig
+from training.utils.rl.tis import TISConfig
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.tokenizers import load_tokenizer
 
@@ -90,6 +93,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--router-replay",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Replay inference MoE routes during training when supported",
+    )
+    parser.add_argument(
+        "--router-replay-completion-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Replay generated-token routes without prompt echo overhead",
+    )
+    parser.add_argument(
         "--renderer-name",
         required=True,
         help=(
@@ -139,6 +154,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--task-seed", type=int, default=20260728)
     parser.add_argument(
+        "--cycle-selected-tasks",
+        action="store_true",
+        help=(
+            "Shuffle the explicitly selected --harbor-task rows once, then cycle "
+            "them to --max-rows. Intended for small, controlled overfit tests."
+        ),
+    )
+    parser.add_argument(
+        "--shuffle",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Shuffle rows in the RL loop; disable for an exactly reproducible order",
+    )
+    parser.add_argument(
         "--evaluation-task",
         action="append",
         default=[],
@@ -148,6 +177,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--evaluation-every", type=int, default=3)
+    parser.add_argument("--evaluation-repeats", type=int, default=1)
     parser.add_argument("--evaluation-concurrency", type=int, default=24)
     parser.add_argument("--output-model-id", default=None)
     parser.add_argument(
@@ -169,6 +199,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kl-beta", type=float, default=0.001)
     parser.add_argument("--lora-rank", type=int, default=64)
     parser.add_argument("--max-head-offpolicy-versions", type=int, default=0)
+    parser.add_argument("--grad-clip-norm", type=float, default=0.0)
+    parser.add_argument("--eps-clip", type=float, default=0.2)
+    parser.add_argument("--eps-clip-high", type=float, default=None)
+    parser.add_argument("--tis-cap", type=float, default=5.0)
+    parser.add_argument("--tis-icepop-threshold", type=float, default=None)
     parser.add_argument(
         "--grad-accumulation-normalization",
         choices=("none", "num_loss_tokens"),
@@ -203,6 +238,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--replica-count", type=int, default=1)
+    parser.add_argument("--init-from-checkpoint", default=None)
+    parser.add_argument(
+        "--cleanup-on-exit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Clean up resources created by the recipe when it exits",
+    )
+    parser.add_argument(
+        "--save-final-checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--log-path", default="./harbor_opencode_logs")
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
     parser.add_argument(
@@ -316,12 +363,16 @@ def _run_sampling_only(
 
 def run() -> None:
     args = parse_args()
-    if not args.sampling_only and not args.training_shape_id:
-        raise ValueError("training requires --training-shape-id")
+    if not args.sampling_only and not (args.trainer_job_id or args.training_shape_id):
+        raise ValueError("training requires --trainer-job-id or --training-shape-id")
     if args.evaluation_every < 1:
         raise ValueError("--evaluation-every must be positive")
     if args.evaluation_concurrency < 1:
         raise ValueError("--evaluation-concurrency must be positive")
+    if args.evaluation_repeats < 1:
+        raise ValueError("--evaluation-repeats must be positive")
+    if args.cycle_selected_tasks and not args.harbor_task:
+        raise ValueError("--cycle-selected-tasks requires --harbor-task")
     manifest = (
         DABstepManifest.load(args.dabstep_manifest) if args.dabstep_manifest else None
     )
@@ -352,14 +403,28 @@ def run() -> None:
         )
         rows = [{"id": f"dabstep-group-{index}"} for index in range(args.max_rows)]
     else:
-        rows = load_harbor_rows(
+        selected_rows = load_harbor_rows(
             args.harbor_dataset,
             registry_path=args.harbor_registry_path,
             task_names=args.harbor_task or None,
-            n_tasks=args.max_rows,
+            n_tasks=None if args.cycle_selected_tasks else args.max_rows,
         )
         if args.evaluation_task:
-            evaluation_rows = rows_for_tasks(rows, tuple(args.evaluation_task))
+            evaluation_rows = rows_for_tasks(selected_rows, tuple(args.evaluation_task))
+            evaluation_rows = [
+                dict(row)
+                for row in evaluation_rows
+                for _ in range(args.evaluation_repeats)
+            ]
+        if args.cycle_selected_tasks:
+            selected = [dict(row) for row in selected_rows]
+            random.Random(args.task_seed).shuffle(selected)
+            rows = [
+                dict(row)
+                for row in itertools.islice(itertools.cycle(selected), args.max_rows)
+            ]
+        else:
+            rows = selected_rows
     if not rows:
         raise ValueError(f"No Harbor tasks found for {args.harbor_dataset!r}")
     logger.info("Loaded %d Harbor tasks", len(rows))
@@ -383,9 +448,18 @@ def run() -> None:
         temperature=args.temperature,
         epochs=args.epochs,
         max_rows=len(rows),
-        shuffle=manifest is None,
+        shuffle=args.shuffle if manifest is None else False,
         lora_rank=args.lora_rank,
         max_head_offpolicy_versions=args.max_head_offpolicy_versions,
+        router_replay=args.router_replay,
+        router_replay_completion_only=args.router_replay_completion_only,
+        grad_clip_norm=args.grad_clip_norm,
+        eps_clip=args.eps_clip,
+        eps_clip_high=args.eps_clip_high,
+        tis=TISConfig(
+            cap=args.tis_cap,
+            icepop_threshold=args.tis_icepop_threshold,
+        ),
         grad_accumulation_normalization=(
             None
             if args.grad_accumulation_normalization == "none"
@@ -393,6 +467,9 @@ def run() -> None:
         ),
         dcp_save_interval=args.dcp_save_interval,
         weight_sync_timeout=args.weight_sync_timeout,
+        init_from_checkpoint=args.init_from_checkpoint,
+        cleanup_on_exit=args.cleanup_on_exit,
+        save_final_checkpoint=args.save_final_checkpoint,
         warm_start_from_adapter=args.warm_start_from_adapter,
         output_model_id=args.output_model_id,
         trainer=TrainerConfig(

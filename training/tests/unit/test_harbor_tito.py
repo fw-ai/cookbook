@@ -366,6 +366,115 @@ def test_sampling_entry_uses_existing_deployment_without_training_shape(
     assert args.harbor_task == ["task-a", "task-b"]
 
 
+def test_dedicated_full_param_entry_preserves_reproducible_config(
+    monkeypatch, tmp_path
+) -> None:
+    rows = [
+        {"task_name": "count", "harbor_task_config": {}},
+        {"task_name": "extract", "harbor_task_config": {}},
+        {"task_name": "polyglot", "harbor_task_config": {}},
+    ]
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train",
+            "--base-model",
+            "accounts/fireworks/models/kimi-k3",
+            "--tokenizer-model",
+            "accounts/fireworks/models/kimi-k3",
+            "--renderer-name",
+            "kimi_k3",
+            "--trainer-job-id",
+            "trainer",
+            "--deployment-id",
+            "deployment",
+            "--deployment-shape",
+            "shape/version",
+            "--harbor-dataset",
+            str(tmp_path),
+            "--harbor-trials-dir",
+            str(tmp_path / "trials"),
+            "--harbor-task",
+            "count",
+            "--harbor-task",
+            "extract",
+            "--harbor-task",
+            "polyglot",
+            "--evaluation-task",
+            "count",
+            "--evaluation-task",
+            "extract",
+            "--evaluation-task",
+            "polyglot",
+            "--cycle-selected-tasks",
+            "--max-rows",
+            "16",
+            "--completions-per-prompt",
+            "8",
+            "--prompt-groups-per-step",
+            "8",
+            "--pipeline-chunks-per-step",
+            "2",
+            "--lora-rank",
+            "0",
+            "--max-seq-len",
+            "262144",
+            "--max-completion-tokens",
+            "32768",
+            "--learning-rate",
+            "2e-6",
+            "--grad-accumulation-normalization",
+            "num_loss_tokens",
+            "--dcp-save-interval",
+            "10",
+            "--no-shuffle",
+            "--no-cleanup-on-exit",
+        ],
+    )
+    monkeypatch.setattr(opencode_train, "load_harbor_rows", lambda *_, **__: rows)
+    monkeypatch.setattr(
+        opencode_train,
+        "make_fixed_evaluation",
+        lambda evaluation_rows, **kwargs: (evaluation_rows, kwargs),
+    )
+
+    def capture_main(config, **kwargs):
+        captured["config"] = config
+        captured.update(kwargs)
+
+    monkeypatch.setattr(opencode_train, "main", capture_main)
+
+    opencode_train.run()
+
+    config = captured["config"]
+    assert config.trainer.job_id == "trainer"
+    assert config.deployment.deployment_id == "deployment"
+    assert config.cleanup_on_exit is False
+    assert config.lora_rank == 0
+    assert config.max_head_offpolicy_versions == 0
+    assert config.router_replay is True
+    assert config.router_replay_completion_only is True
+    assert config.grad_accumulation_normalization == "num_loss_tokens"
+    assert config.tis.cap == 5.0
+    assert config.shuffle is False
+    assert len(captured["rows"]) == 16
+    assert {row["task_name"] for row in captured["rows"]} == {
+        "count",
+        "extract",
+        "polyglot",
+    }
+    evaluation_rows, evaluation_kwargs = captured["evaluation_fn"]
+    assert [row["task_name"] for row in evaluation_rows] == [
+        "count",
+        "extract",
+        "polyglot",
+    ]
+    assert evaluation_kwargs["completions_per_prompt"] == 8
+
+
 def test_load_harbor_rows_preserves_requested_task_order(monkeypatch, tmp_path) -> None:
     class FakeTaskConfig:
         def __init__(self, name: str) -> None:
