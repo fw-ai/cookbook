@@ -97,7 +97,9 @@ def _pad_or_trim(values: Sequence[float], length: int) -> list[float]:
 
 
 def _loss_mask_for_datum(datum: tinker.Datum, length: int) -> list[float]:
-    mask = datum.loss_fn_inputs.get("loss_mask")
+    mask = datum.loss_fn_inputs.get("weights") or datum.loss_fn_inputs.get(
+        "loss_mask"
+    )
     if mask is None:
         return [1.0] * length
     return _pad_or_trim(mask.data, length)

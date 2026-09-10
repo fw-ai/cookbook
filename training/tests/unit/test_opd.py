@@ -59,6 +59,26 @@ def test_rollout_packs_teacher_topk_and_preserves_mask():
     assert metrics["sdft_active_positions"] == 2
 
 
+def test_rl_topk_builder_honors_weights_mask():
+    dist = TopKDist(token_ids=[7, 8], logprobs=[-0.2, -1.8])
+    datum = tinker.Datum(
+        model_input=tinker.ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={
+            "target_tokens": tinker.TensorData(
+                data=[2, 3], dtype="int64", shape=[2]
+            ),
+            "weights": tinker.TensorData(
+                data=[0, 1], dtype="int64", shape=[2]
+            ),
+        },
+    )
+    datums, metrics = build_rl_topk_forward_kl_datums(
+        [datum], [[None, dist]], top_k=2
+    )
+    assert datums[0].loss_fn_inputs["weights"].data[:3] == [0.0, 0.0, 0.0]
+    assert metrics["sdft_active_positions"] == 1
+
+
 @pytest.mark.parametrize("loss_builder", [make_grpo_loss_fn, make_gspo_loss_fn])
 def test_opd_gradient_raises_mass_when_teacher_is_higher(loss_builder):
     student = torch.tensor([-2.0, -2.0], requires_grad=True)
