@@ -15,7 +15,7 @@
     "@astrojs/tailwind": "^5.1.0",
     "@types/react": "^18.2.74",
     "@types/react-dom": "^18.2.24",
-    "ai": "^3.0.18",
+    "ai": "^7.0.87",
     "astro": "^4.5.15",
     "axios": "^1.6.8",
     "react": "^18.2.0",
