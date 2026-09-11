@@ -85,7 +85,10 @@ and rollout deployment. The following command runs the synchronous full-corpus
 convergence workload: 16 prompt groups x 8 rollouts per optimizer step,
 shuffled training rows, E2B task environments, no Router Replay, 262K total
 context, 32K maximum output per model call, and a fixed evaluation every five
-steps. It does not clean up the supplied resources when interrupted. GSPO uses
+steps. The dedicated trial config provisions 4 CPUs and 8 GB per E2B sandbox;
+the 2 GB task default is insufficient for the Chrome-heavy
+`filter-js-from-html` verifier. It does not clean up the supplied resources
+when interrupted. GSPO uses
 the paper-recommended asymmetric `[1 - 3e-4, 1 + 4e-4]` clipping interval.
 
 ```bash

@@ -1441,7 +1441,7 @@ def _fake_harbor():
     return SimpleNamespace(EnvironmentType=_EnvironmentType, TrialConfig=_Config)
 
 
-def test_two_hour_terminal_bench_config_covers_agent_and_verifier() -> None:
+def test_two_hour_terminal_bench_config_covers_timeouts_and_e2b_resources() -> None:
     config_path = (
         Path(__file__).parents[2]
         / "examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml"
@@ -1449,6 +1449,8 @@ def test_two_hour_terminal_bench_config_covers_agent_and_verifier() -> None:
     config = harbor_adapter.load_harbor_trial_config(config_path)
 
     assert config["agent"]["override_timeout_sec"] == 7200
+    assert config["environment"]["override_cpus"] == 4
+    assert config["environment"]["override_memory_mb"] == 8192
     assert config["verifier"]["override_timeout_sec"] == 7200
 
 
