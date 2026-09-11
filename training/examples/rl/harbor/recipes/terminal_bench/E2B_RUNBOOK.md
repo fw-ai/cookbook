@@ -15,7 +15,7 @@ tokenizer bundle, TITO sidecar, or all task templates.
 | E2B templates | Every selected task alias can create a sandbox; no missing `default` tag |
 | Trial smoke test | One real task produces a validated TITO trajectory artifact |
 | Fanout | Shell open-file limit is at least `65536` before 128-way launch |
-| Timeouts | Tool timeout is strictly below the outer trial timeout (`6900 < 7200`) |
+| Timeouts | Agent and verifier each allow 7200s; tool timeout remains below the agent timeout (`6900 < 7200`) |
 | Secrets | Loaded from a mode-`0600` environment file; never written to commands, logs, or trial artifacts |
 
 Do not restart the trainer or rollout to fix a client/E2B problem. Stop and
@@ -29,6 +29,7 @@ restart only the local harness unless remote health evidence requires more.
 | `netcat` has no installation candidate | Bookworm exposes `netcat` as a virtual package | Install `netcat-openbsd` | Same `qemu-startup` sandbox gate |
 | `Invalid source path "/uv"` | E2B's Dockerfile builder does not accept the external-stage absolute `COPY --from=... /uv /uvx /bin/` form | Replace it with installation of the same pinned `uv` wheel version | Build and create a sandbox for `reshard-c4-data` |
 | `tag 'default' does not exist for template ...` | The shared layer pinned NumPy 2.4.6, which cannot install on two Python 3.10 task images; E2B retained stale alias/tag metadata for the failed builds | Pin the Python-3.10-compatible NumPy 2.2.6, rebuild the affected alias, and retry only this exact sandbox-create 404 | Every alias must pass `AsyncSandbox.create(alias)`; alias/tag metadata alone is insufficient |
+| `Verifier execution timed out after 900.0 seconds` | Extending only `agent.override_timeout_sec` leaves Harbor's independent verifier timeout at its 900s default | Set both agent and verifier `override_timeout_sec` to 7200 in the dedicated trial config | A verifier running longer than 900s returns a numeric reward instead of a rewardless trajectory |
 | `build is not in waiting state` | Eight rollouts raced to build the same previously absent task alias | Prebuild each unique alias once; only then start rollout fanout | No template builds occur during the 128-way smoke launch |
 | `renderer 'kimi_k3' has no production TITO certification` | The offline cookbook renderer name was passed to the production sidecar | Use `kimi_k3_preserve_thinking` | Sidecar readiness succeeds |
 | `tokenizer does not match TITO certification` | The unpinned HF default resolved to revision `f831ab...`; certification is for `9f62e4e9...` | Pass the exact `--tokenizer-revision` above | Host and reloaded bundle fingerprints both equal `3d98398c...` |

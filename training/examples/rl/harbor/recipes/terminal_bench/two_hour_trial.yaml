@@ -1,2 +1,4 @@
 agent:
   override_timeout_sec: 7200
+verifier:
+  override_timeout_sec: 7200
