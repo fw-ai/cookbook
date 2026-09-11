@@ -30,8 +30,8 @@ class GSPOConfig:
     clip epsilons directly. Set them equal for symmetric clipping.
     """
 
-    clip_ratio_low: float = 0.2
-    clip_ratio_high: float = 0.2
+    clip_ratio_low: float = 3e-4
+    clip_ratio_high: float = 4e-4
     seq_ratio_log_cap: float = 10.0
 
 
