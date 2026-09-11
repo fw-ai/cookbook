@@ -115,7 +115,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --epochs 1 \
   --completions-per-prompt 8 \
   --prompt-groups-per-step 16 \
-  --pipeline-chunks-per-step 4 \
+  --pipeline-chunks-per-step 16 \
   --min-group-size 8 \
   --max-incomplete-group-retries 2 \
   --lora-rank 0 \
@@ -163,11 +163,11 @@ from the same shape versions if those resources have expired.
 | Rollout shape | `accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz` |
 | Trainer | `accounts/training/rlorTrainerJobs/k3-gspo-all89-20260910-213414` |
 | Deployment | `accounts/training/deployments/k3-gspo-all89-20260910-213414` |
-| Prepared dataset | `/shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v7` |
+| Prepared dataset | `/shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v12` |
 | Training tasks | All tasks discovered in the prepared dataset (89 in the pinned Terminal-Bench dataset) |
 | Evaluation tasks | `count-dataset-tokens`, `extract-elf`, `polyglot-rust-c` |
 | Training rows | 264 prompt groups cycled across all 89 tasks (2.97 corpus passes); task order seeded with `20260808`, then shuffled by the RL loop |
-| Optimizer batch | 16 prompt groups x 8 rollouts = 128 trajectories; 4 pipeline chunks |
+| Optimizer batch | 16 prompt groups x 8 rollouts = 128 trajectories; 16 pipeline chunks (one prompt group per forward/backward call) |
 | Training length | 17 optimizer steps (16 full and one 8-group tail); 2,112 sampled trajectories |
 | Optimization | full parameter; LR `1e-6`; Adam beta2 `0.95`; Adam epsilon `1e-12`; gradient clipping at `1.0`; sequence-count gradient normalization |
 | Policy objective | GSPO sequence-level importance ratio; `kl_beta=0`; asymmetric clip `3e-4` / `4e-4`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
@@ -200,7 +200,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --trainer-job-id k3-gspo-all89-20260910-213414 \
   --deployment-id k3-gspo-all89-20260910-213414 \
   --deployment-shape accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz \
-  --harbor-dataset /shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v7 \
+  --harbor-dataset /shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v12 \
   --harbor-trials-dir "$RUN_DIR/trials" \
   --log-path "$RUN_DIR" \
   --harbor-environment e2b \
@@ -215,7 +215,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --epochs 1 \
   --completions-per-prompt 8 \
   --prompt-groups-per-step 16 \
-  --pipeline-chunks-per-step 4 \
+  --pipeline-chunks-per-step 16 \
   --min-group-size 8 \
   --max-incomplete-group-retries 2 \
   --lora-rank 0 \
