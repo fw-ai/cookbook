@@ -25,6 +25,27 @@ from training.examples.rl.harbor.tito.trial import (
 )
 
 _LOCAL_PREPARED_IMAGE_PREFIX = "fireworks-harbor-prepared--"
+_E2B_RESOURCE_IDENTITY_FILE = ".harbor-e2b-resources.json"
+
+
+def _ensure_e2b_resource_identity(environment: Any) -> bool:
+    """Include E2B build resources in Harbor's content-addressed alias."""
+
+    cpus = getattr(environment, "_effective_cpus", None)
+    memory_mb = getattr(environment, "_effective_memory_mb", None)
+    if cpus is None and memory_mb is None:
+        return False
+    marker = Path(environment.environment_dir) / _E2B_RESOURCE_IDENTITY_FILE
+    docker_image = getattr(environment.task_env_config, "docker_image", None)
+    encoded = json.dumps(
+        {"cpus": cpus, "docker_image": docker_image, "memory_mb": memory_mb},
+        sort_keys=True,
+    ) + "\n"
+    if marker.exists() and marker.read_text(encoding="utf-8") == encoded:
+        return False
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(encoded, encoding="utf-8")
+    return True
 
 
 def _remove_local_docker_image_pin(config_path: Path) -> None:
@@ -202,6 +223,11 @@ async def prebuild_e2b_templates(
         async with semaphore:
             trial = await harbor.Trial.create(config)
             environment = trial.agent_environment
+            if _ensure_e2b_resource_identity(environment):
+                # ``environment_id`` is cached on construction, so recreate the
+                # trial after writing the marker to derive the resource-aware alias.
+                trial = await harbor.Trial.create(config)
+                environment = trial.agent_environment
             expected_cpus = getattr(environment, "_effective_cpus", None)
             expected_memory_mb = getattr(
                 environment,

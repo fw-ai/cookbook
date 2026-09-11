@@ -2332,15 +2332,21 @@ def test_e2b_template_prebuild_repairs_unlaunchable_default_tag(
 
 def test_e2b_template_prebuild_repairs_resource_mismatch(monkeypatch, tmp_path) -> None:
     environment = None
+    creates = 0
 
     class Environment:
-        _template_name = "template-undersized"
         _effective_cpus = 4
         _effective_memory_mb = 8192
 
         def __init__(self):
-            self.cpu_count = 1
-            self.memory_mb = 2048
+            marker = tmp_path / ".harbor-e2b-resources.json"
+            self.environment_dir = tmp_path
+            self.task_env_config = SimpleNamespace(docker_image="base:latest")
+            self._template_name = (
+                "template-sized" if marker.exists() else "template-undersized"
+            )
+            self.cpu_count = 4 if marker.exists() else 1
+            self.memory_mb = 8192 if marker.exists() else 2048
             self.builds = 0
 
         async def _does_template_exist(self):
@@ -2354,7 +2360,8 @@ def test_e2b_template_prebuild_repairs_resource_mismatch(monkeypatch, tmp_path) 
     class Trial:
         @classmethod
         async def create(cls, _config):
-            nonlocal environment
+            nonlocal creates, environment
+            creates += 1
             environment = Environment()
             return SimpleNamespace(agent_environment=environment)
 
@@ -2399,7 +2406,9 @@ def test_e2b_template_prebuild_repairs_resource_mismatch(monkeypatch, tmp_path) 
     )
 
     assert records[0].existed is True
-    assert environment.builds == 1
+    assert creates == 2
+    assert environment.builds == 0
+    assert environment._template_name == "template-sized"
     assert (environment.cpu_count, environment.memory_mb) == (4, 8192)
 
 
