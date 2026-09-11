@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import re
+import secrets
 import shutil
 import sys
 import tempfile
@@ -152,6 +153,29 @@ def _is_retryable_e2b_stream_open_timeout(
         traceback,
     )
     return provider_trace or cleanup_trace is not None
+
+
+def _is_retryable_e2b_command_stream_disconnect(
+    exception: Any,
+    *,
+    harbor_environment: str,
+) -> bool:
+    """Recognize an E2B command stream that timed out after opening."""
+
+    if harbor_environment != "e2b" or exception is None:
+        return False
+    traceback = str(getattr(exception, "exception_traceback", "") or "")
+    exception_type = str(getattr(exception, "exception_type", "") or "")
+    marker = (
+        "connectrpc.errors.ConnectError: Error reading content: request or "
+        "response body error: error reading a body from connection: timed out"
+    )
+    return (
+        exception_type == "ConnectError"
+        and "harbor/environments/e2b.py" in traceback
+        and "e2b/sandbox_async/commands/command_handle.py" in traceback
+        and marker in traceback
+    )
 
 
 def _is_retryable_e2b_sidecar_readiness_timeout(
@@ -700,8 +724,13 @@ def _build_trial_config(
 
     document.update(
         task=task_config,
+        # A logical rollout may be retried by both the trajectory runner and
+        # the group assembler. Keep every Harbor artifact destination unique;
+        # otherwise a later attempt can validate stale files from an earlier
+        # attempt or collide with an incomplete artifact download.
         trial_name=_safe_trial_name(
-            f"{run_id}-{hashlib.sha256(sidecar_launch_spec.encode()).hexdigest()[:8]}"
+            f"{run_id}-{hashlib.sha256(sidecar_launch_spec.encode()).hexdigest()[:8]}-"
+            f"{secrets.token_hex(4)}"
         ),
         trials_dir=Path(trials_dir),
         agent=agent,
@@ -903,6 +932,10 @@ async def run_harbor_trial(
             exception,
             harbor_environment=harbor_environment,
         )
+        retryable_e2b_disconnect = _is_retryable_e2b_command_stream_disconnect(
+            exception,
+            harbor_environment=harbor_environment,
+        )
         retryable_sidecar_readiness = _is_retryable_e2b_sidecar_readiness_timeout(
             exception,
             harbor_environment=harbor_environment,
@@ -918,6 +951,10 @@ async def run_harbor_trial(
                 raise RecoverableRolloutError(
                     "Harbor E2B command stream did not open before its provider "
                     "request timeout"
+                ) from exc
+            if retryable_e2b_disconnect:
+                raise RecoverableRolloutError(
+                    "Harbor E2B command stream disconnected while waiting for the agent"
                 ) from exc
             if retryable_sidecar_readiness:
                 raise RecoverableRolloutError(
@@ -938,6 +975,10 @@ async def run_harbor_trial(
             raise RecoverableRolloutError(
                 "Harbor E2B command stream did not open before its provider "
                 "request timeout"
+            )
+        if retryable_e2b_disconnect:
+            raise RecoverableRolloutError(
+                "Harbor E2B command stream disconnected while waiting for the agent"
             )
 
         verifier_result = result.verifier_result

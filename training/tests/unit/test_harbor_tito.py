@@ -1513,6 +1513,37 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
     ]
 
 
+def test_repeated_logical_trials_use_distinct_artifact_directories(tmp_path) -> None:
+    sidecar_launch_spec = json.dumps(
+        {
+            "api_key": "secret",
+            "inference_base_url": "https://api.fireworks.ai",
+        }
+    )
+    kwargs = {
+        "harbor": _fake_harbor(),
+        "template": {"environment": {"type": "e2b"}},
+        "task_config": {"path": "/tasks/example"},
+        "run_id": "same-logical-rollout",
+        "trials_dir": tmp_path,
+        "harbor_environment": "e2b",
+        "sidecar_bundle_path": tmp_path / "bundle",
+        "sidecar_launch_spec": sidecar_launch_spec,
+        "context_limit": 4096,
+        "output_limit": 1024,
+        "agent_import_path": OPENCODE_HARBOR_IMPORT_PATH,
+        "agent_version": DEFAULT_OPENCODE_VERSION,
+    }
+
+    first = harbor_adapter._build_trial_config(**kwargs)
+    second = harbor_adapter._build_trial_config(**kwargs)
+
+    assert first.trial_name != second.trial_name
+    assert not (tmp_path / first.trial_name).is_relative_to(
+        tmp_path / second.trial_name
+    )
+
+
 def test_e2b_rejects_compose_task(tmp_path) -> None:
     task_path = tmp_path / "task"
     environment_path = task_path / "environment"
@@ -1765,6 +1796,36 @@ def test_e2b_sidecar_cleanup_stream_timeout_is_retryable() -> None:
     )
     assert harbor_adapter._is_retryable_e2b_stream_open_timeout(
         exception, harbor_environment="e2b"
+    )
+
+
+def test_e2b_command_stream_disconnect_is_retryable() -> None:
+    exception = SimpleNamespace(
+        exception_type="ConnectError",
+        exception_message=(
+            "Error reading content: request or response body error: error reading "
+            "a body from connection: timed out"
+        ),
+        exception_traceback=(
+            'File "/site-packages/harbor/environments/e2b.py"\n'
+            'File "/site-packages/e2b/sandbox_async/commands/command_handle.py"\n'
+            "connectrpc.errors.ConnectError: Error reading content: request or "
+            "response body error: error reading a body from connection: timed out"
+        ),
+    )
+    assert harbor_adapter._is_retryable_e2b_command_stream_disconnect(
+        exception, harbor_environment="e2b"
+    )
+    assert not harbor_adapter._is_retryable_e2b_command_stream_disconnect(
+        exception, harbor_environment="docker"
+    )
+    assert not harbor_adapter._is_retryable_e2b_command_stream_disconnect(
+        SimpleNamespace(
+            exception_type="ConnectError",
+            exception_message=exception.exception_message,
+            exception_traceback="unrelated timeout",
+        ),
+        harbor_environment="e2b",
     )
 
 
