@@ -147,7 +147,12 @@ def test_client_policy_loss_dispatches_gspo(monkeypatch) -> None:
         return expected
 
     monkeypatch.setattr(async_rl_loop, "make_gspo_loss_fn", fake_make_gspo_loss_fn)
-    cfg = async_rl_loop.Config(log_path="gs://logs", policy_loss="gspo", kl_beta=0)
+    cfg = async_rl_loop.Config(
+        log_path="gs://logs",
+        policy_loss="gspo",
+        kl_beta=0,
+        grad_accumulation_normalization="num_sequences",
+    )
 
     result = async_rl_loop._make_client_policy_loss(
         cfg,
@@ -169,9 +174,25 @@ def test_client_policy_loss_dispatches_gspo(monkeypatch) -> None:
     "config_overrides, error",
     [
         ({"policy_loss": "unknown"}, "Unknown policy_loss"),
-        ({"policy_loss": "gspo", "kl_beta": 0.1}, "requires kl_beta=0"),
         (
-            {"policy_loss": "gspo", "kl_beta": 0, "server_side_grpo": True},
+            {
+                "policy_loss": "gspo",
+                "kl_beta": 0.1,
+                "grad_accumulation_normalization": "num_sequences",
+            },
+            "requires kl_beta=0",
+        ),
+        (
+            {"policy_loss": "gspo", "kl_beta": 0},
+            "requires grad_accumulation_normalization='num_sequences'",
+        ),
+        (
+            {
+                "policy_loss": "gspo",
+                "kl_beta": 0,
+                "server_side_grpo": True,
+                "grad_accumulation_normalization": "num_sequences",
+            },
             "only supports policy_loss='grpo'",
         ),
     ],
@@ -411,6 +432,63 @@ def test_main_can_disable_cleanup_on_exit(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert kwargs["cleanup_trainer_on_close"] is False
     assert kwargs["cleanup_deployment_on_close"] is None
+
+
+def test_main_logs_paper_aligned_gspo_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setattr(
+        async_rl_loop,
+        "setup_wandb",
+        lambda _config, values, **_kwargs: captured.update(values),
+    )
+    monkeypatch.setattr(
+        async_rl_loop, "validate_config", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        async_rl_loop,
+        "resolve_router_replay_enabled",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        async_rl_loop,
+        "load_deployment_tokenizer",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    def stop_after_provisioning(**_kwargs):
+        raise _StopAfterProvisioning
+
+    monkeypatch.setattr(
+        async_rl_loop,
+        "build_service_client",
+        stop_after_provisioning,
+    )
+    cfg = async_rl_loop.Config(
+        log_path="/tmp/async_rl_test_logs",
+        policy_loss="gspo",
+        kl_beta=0,
+        grad_accumulation_normalization="num_sequences",
+        router_replay=False,
+        deployment=async_rl_loop.DeployConfig(tokenizer_model="tokenizer"),
+        gspo=async_rl_loop.GSPOConfig(
+            clip_ratio_low=3e-4,
+            clip_ratio_high=4e-4,
+        ),
+    )
+
+    with pytest.raises(_StopAfterProvisioning):
+        async_rl_loop.main(
+            cfg,
+            rows=[{"prompt": "1+1"}],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
+
+    assert captured["algorithm"] == "gspo"
+    assert captured["clip_ratio_low"] == pytest.approx(3e-4)
+    assert captured["clip_ratio_high"] == pytest.approx(4e-4)
+    assert captured["grad_accumulation_normalization"] == "num_sequences"
+    assert captured["router_replay_requested"] is False
 
 
 def test_main_requests_trainer_cleanup_for_empty_job_id(

@@ -77,10 +77,11 @@ coverage is rejected before creating a Harbor trial.
 
 The generic OpenCode recipe can attach to an existing full-parameter trainer
 and rollout deployment. The following command runs the synchronous full-corpus
-convergence workload: 8 prompt groups x 8 rollouts per optimizer step, shuffled
-training rows, completion-only Router Replay, 262K total context, 32K maximum
-output per model call, and a fixed evaluation every five steps. It does not
-clean up the supplied resources when interrupted.
+convergence workload: 16 prompt groups x 8 rollouts per optimizer step,
+shuffled training rows, E2B task environments, no Router Replay, 262K total
+context, 32K maximum output per model call, and a fixed evaluation every five
+steps. It does not clean up the supplied resources when interrupted. GSPO uses
+the paper-recommended asymmetric `[1 - 3e-4, 1 + 4e-4]` clipping interval.
 
 ```bash
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
@@ -93,6 +94,9 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --harbor-dataset <prepared-terminal-bench-opencode-directory> \
   --harbor-trials-dir <run-directory>/trials \
   --log-path <run-directory> \
+  --harbor-environment e2b \
+  --harbor-trial-config training/examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml \
+  --max-concurrent-trials 128 \
   --evaluation-task count-dataset-tokens \
   --evaluation-task extract-elf \
   --evaluation-task polyglot-rust-c \
@@ -101,8 +105,8 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --max-rows 264 \
   --epochs 1 \
   --completions-per-prompt 8 \
-  --prompt-groups-per-step 8 \
-  --pipeline-chunks-per-step 2 \
+  --prompt-groups-per-step 16 \
+  --pipeline-chunks-per-step 4 \
   --min-group-size 8 \
   --max-incomplete-group-retries 2 \
   --lora-rank 0 \
@@ -110,9 +114,11 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --kl-beta 0 \
   --max-head-offpolicy-versions 0 \
   --policy-loss gspo \
+  --no-router-replay \
   --grad-accumulation-normalization num_sequences \
   --grad-clip-norm 1.0 \
-  --eps-clip 0.2 \
+  --eps-clip 0.0003 \
+  --eps-clip-high 0.0004 \
   --tis-cap 5 \
   --max-seq-len 262144 \
   --max-completion-tokens 32768 \
@@ -147,15 +153,17 @@ from the same shape versions if those resources have expired.
 | Rollout shape | `accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz` |
 | Trainer | `accounts/training/rlorTrainerJobs/k3-gspo-all89-20260910-213414` |
 | Deployment | `accounts/training/deployments/k3-gspo-all89-20260910-213414` |
-| Prepared dataset | `/shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode` |
+| Prepared dataset | `/shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v7` |
 | Training tasks | All tasks discovered in the prepared dataset (89 in the pinned Terminal-Bench dataset) |
 | Evaluation tasks | `count-dataset-tokens`, `extract-elf`, `polyglot-rust-c` |
 | Training rows | 264 prompt groups cycled across all 89 tasks (2.97 corpus passes); task order seeded with `20260808`, then shuffled by the RL loop |
-| Optimizer batch | 8 prompt groups x 8 rollouts = 64 trajectories; 2 pipeline chunks |
-| Training length | 33 complete optimizer steps; 2,112 sampled trajectories |
+| Optimizer batch | 16 prompt groups x 8 rollouts = 128 trajectories; 4 pipeline chunks |
+| Training length | 17 optimizer steps (16 full and one 8-group tail); 2,112 sampled trajectories |
 | Optimization | full parameter; LR `1e-6`; Adam beta2 `0.95`; Adam epsilon `1e-12`; gradient clipping at `1.0`; sequence-count gradient normalization |
-| Policy objective | GSPO sequence-level importance ratio; `kl_beta=0`; clip `0.2`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
-| Routing | Router Replay enabled for completion tokens |
+| Policy objective | GSPO sequence-level importance ratio; `kl_beta=0`; asymmetric clip `3e-4` / `4e-4`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
+| Loss reduction | Mean over active response tokens within each sequence, then equal mean over sequences (`num_sequences`) |
+| Routing | Router Replay disabled; GSPO does not require routing replay |
+| Harbor backend | E2B; 128 concurrent trials; two-hour outer-trial and tool timeouts |
 | Token limits | 262,144 total tokens; 32,768 generated tokens per model call |
 | Evaluation/checkpointing | the same three fixed tasks every 5 steps; DCP every 10 steps |
 | W&B run | [`u3ibepq0`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/u3ibepq0) |
@@ -163,7 +171,10 @@ from the same shape versions if those resources have expired.
 
 This is the credential-safe command for the convergence run. The SDK/model-request
 timeout and the per-tool Harbor timeout are separate controls, so both are set
-to 7,200 seconds for long-tail tasks.
+to 7,200 seconds for long-tail tasks. W&B records the configured clipping
+epsilons and the dynamic `train/gspo_sequence_ratio_mean`,
+`train/gspo_clip_frac`, `train/gspo_clip_low_frac`, and
+`train/gspo_clip_high_frac` metrics.
 
 ```bash
 RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/k3-gspo-all89-20260910-213414
@@ -175,9 +186,12 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --trainer-job-id k3-gspo-all89-20260910-213414 \
   --deployment-id k3-gspo-all89-20260910-213414 \
   --deployment-shape accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz \
-  --harbor-dataset /shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode \
+  --harbor-dataset /shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v7 \
   --harbor-trials-dir "$RUN_DIR/trials" \
   --log-path "$RUN_DIR" \
+  --harbor-environment e2b \
+  --harbor-trial-config training/examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml \
+  --max-concurrent-trials 128 \
   --evaluation-task count-dataset-tokens \
   --evaluation-task extract-elf \
   --evaluation-task polyglot-rust-c \
@@ -186,8 +200,8 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --max-rows 264 \
   --epochs 1 \
   --completions-per-prompt 8 \
-  --prompt-groups-per-step 8 \
-  --pipeline-chunks-per-step 2 \
+  --prompt-groups-per-step 16 \
+  --pipeline-chunks-per-step 4 \
   --min-group-size 8 \
   --max-incomplete-group-retries 2 \
   --lora-rank 0 \
@@ -195,9 +209,11 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --kl-beta 0 \
   --max-head-offpolicy-versions 0 \
   --policy-loss gspo \
+  --no-router-replay \
   --grad-accumulation-normalization num_sequences \
   --grad-clip-norm 1.0 \
-  --eps-clip 0.2 \
+  --eps-clip 0.0003 \
+  --eps-clip-high 0.0004 \
   --tis-cap 5 \
   --max-seq-len 262144 \
   --max-completion-tokens 32768 \

@@ -376,6 +376,7 @@ def _make_client_policy_loss(
             old_policy_logprobs=old_policy_logprobs,
             gspo_config=config.gspo,
             tis_config=config.tis,
+            raw_inf_logprobs=raw_inf_logprobs,
         )
     return make_grpo_loss_fn(
         advantages=advantages,
@@ -427,6 +428,12 @@ def main(
         validate_gspo_config(cfg.gspo)
         if cfg.kl_beta != 0:
             raise ValueError("policy_loss='gspo' requires kl_beta=0.")
+        if cfg.grad_accumulation_normalization != "num_sequences":
+            raise ValueError(
+                "policy_loss='gspo' requires "
+                "grad_accumulation_normalization='num_sequences' so the "
+                "paper's outer sequence mean is applied across accumulation chunks."
+            )
     elif cfg.policy_loss != "grpo":
         raise ValueError(
             f"Unknown policy_loss={cfg.policy_loss!r}; expected 'grpo' or 'gspo'."
@@ -493,6 +500,18 @@ def main(
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
             "algorithm": cfg.policy_loss,
+            "clip_ratio_low": (
+                cfg.gspo.clip_ratio_low if cfg.policy_loss == "gspo" else cfg.eps_clip
+            ),
+            "clip_ratio_high": (
+                cfg.gspo.clip_ratio_high
+                if cfg.policy_loss == "gspo"
+                else (cfg.eps_clip if cfg.eps_clip_high is None else cfg.eps_clip_high)
+            ),
+            "grad_accumulation_normalization": (
+                cfg.grad_accumulation_normalization or "none"
+            ),
+            "router_replay_requested": cfg.router_replay,
             "trainer_loss": "server_ppo" if cfg.server_side_grpo else "client",
             "server_side_grpo": cfg.server_side_grpo,
             "kl_beta": cfg.kl_beta,

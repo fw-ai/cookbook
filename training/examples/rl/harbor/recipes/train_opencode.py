@@ -27,6 +27,7 @@ from training.examples.rl.harbor.opencode.rollout import (
     make_rollout_fn,
 )
 from training.examples.rl.harbor.opencode.constants import DEFAULT_OPENCODE_VERSION
+from training.examples.rl.harbor.tito.e2b_templates import isolate_e2b_task_rows
 from training.examples.rl.harbor.tito.trial import (
     DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
@@ -76,6 +77,12 @@ def parse_args() -> argparse.Namespace:
         choices=("docker", "e2b"),
         default="docker",
         help="Harbor sandbox backend; local Docker remains the default",
+    )
+    parser.add_argument(
+        "--e2b-request-timeout",
+        type=float,
+        default=900.0,
+        help="E2B control-plane request timeout in seconds",
     )
     parser.add_argument("--harbor-trials-dir", default=None)
     parser.add_argument(
@@ -312,6 +319,9 @@ def _run_sampling_only(
         raise ValueError("--sampling-only requires --harbor-trials-dir")
 
     tokenizer = load_tokenizer(args.tokenizer_model, args.tokenizer_revision)
+    deployment_model = args.deployment_id
+    if "/" not in deployment_model:
+        deployment_model = f"accounts/training/deployments/{deployment_model}"
     setup = RolloutSetup(
         tokenizer=tokenizer,
         tokenizer_id=args.tokenizer_model,
@@ -323,14 +333,14 @@ def _run_sampling_only(
             "max_seq_len": args.max_seq_len,
             "http_timeout": args.sample_timeout,
             "logprobs": True,
-            "include_routing_matrix": True,
+            "include_routing_matrix": args.router_replay,
             "echo": False,
         },
         inference_base_url=os.environ.get(
             "FIREWORKS_BASE_URL", "https://api.fireworks.ai"
         ),
         api_key=os.environ["FIREWORKS_API_KEY"],
-        model=args.deployment_id,
+        model=deployment_model,
         completions_per_prompt=args.completions_per_prompt,
         extras=_rollout_extras(args, selector=selector),
     )
@@ -432,6 +442,22 @@ def run() -> None:
             rows = selected_rows
     if not rows:
         raise ValueError(f"No Harbor tasks found for {args.harbor_dataset!r}")
+    if args.harbor_environment == "e2b":
+        if not os.environ.get("E2B_API_KEY"):
+            raise ValueError("E2B_API_KEY is required for --harbor-environment=e2b")
+        if args.e2b_request_timeout <= 0:
+            raise ValueError("--e2b-request-timeout must be positive")
+        # Local Docker caches are host-local and cannot be pulled by E2B. Use
+        # private copies so an active Docker run remains completely untouched.
+        all_rows = isolate_e2b_task_rows(
+            [*rows, *evaluation_rows],
+            task_root=Path(args.log_path).expanduser().resolve() / ".e2b-tasks",
+        )
+        rows = all_rows[: len(rows)]
+        evaluation_rows = all_rows[len(rows) :]
+        import e2b.connection_config as e2b_connection_config
+
+        e2b_connection_config.REQUEST_TIMEOUT = args.e2b_request_timeout
     logger.info("Loaded %d Harbor tasks", len(rows))
 
     if args.sampling_only:

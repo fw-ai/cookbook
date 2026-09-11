@@ -11,7 +11,12 @@ import tinker
 from training.utils.rl.losses import PromptGroup
 
 _SKIP_REMOTE_KEYS = {"step_id", "step", "response_tokens", "total_tokens"}
-_SUM_REMOTE_KEYS = {"active_tokens", "total_resp_tokens"}
+_SUM_REMOTE_KEYS = {
+    "active_tokens",
+    "inference_kld_sum",
+    "inference_kld_tokens",
+    "total_resp_tokens",
+}
 _LOOP_STAT_PASSTHROUGH_KEYS = (
     "async/version_offset_mean",
     "async/version_offset_max",
@@ -312,6 +317,11 @@ def compute_step_metrics(
         response_tokens = metrics.get("train/total_resp_tokens")
         if active_tokens is not None and response_tokens:
             metrics["train/mask_ratio"] = active_tokens / response_tokens
+        kld_sum = metrics.get("train/inference_kld_sum")
+        kld_tokens = metrics.get("train/inference_kld_tokens")
+        if kld_sum is not None and kld_tokens:
+            # Match Harvey's token-weighted KLD across all accumulation chunks.
+            metrics["train/inference_kld"] = kld_sum / kld_tokens
 
     all_rewards: list[float] = []
 

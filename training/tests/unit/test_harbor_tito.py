@@ -409,9 +409,11 @@ def test_dedicated_full_param_entry_cycles_all_tasks_with_aligned_config(
             "--completions-per-prompt",
             "8",
             "--prompt-groups-per-step",
-            "8",
+            "16",
             "--pipeline-chunks-per-step",
-            "2",
+            "4",
+            "--max-concurrent-trials",
+            "128",
             "--lora-rank",
             "0",
             "--max-seq-len",
@@ -422,8 +424,13 @@ def test_dedicated_full_param_entry_cycles_all_tasks_with_aligned_config(
             "1e-6",
             "--policy-loss",
             "gspo",
+            "--eps-clip",
+            "0.0003",
+            "--eps-clip-high",
+            "0.0004",
             "--grad-accumulation-normalization",
             "num_sequences",
+            "--no-router-replay",
             "--grad-clip-norm",
             "1.0",
             "--dcp-save-interval",
@@ -452,16 +459,19 @@ def test_dedicated_full_param_entry_cycles_all_tasks_with_aligned_config(
     assert config.cleanup_on_exit is False
     assert config.lora_rank == 0
     assert config.max_head_offpolicy_versions == 0
-    assert config.router_replay is True
+    assert config.router_replay is False
     assert config.router_replay_completion_only is True
     assert config.policy_loss == "gspo"
-    assert config.gspo.clip_ratio_low == 0.2
-    assert config.gspo.clip_ratio_high == 0.2
+    assert config.gspo.clip_ratio_low == pytest.approx(3e-4)
+    assert config.gspo.clip_ratio_high == pytest.approx(4e-4)
     assert config.grad_accumulation_normalization == "num_sequences"
     assert config.grad_clip_norm == 1.0
     assert config.learning_rate == 1e-6
     assert config.tis.cap == 5.0
     assert config.shuffle is True
+    assert config.prompt_groups_per_step == 16
+    assert config.pipeline_chunks_per_step == 4
+    assert captured["rollout_extras"]["max_concurrent_trials"] == 128
     assert len(captured["rows"]) == 16
     assert {row["task_name"] for row in captured["rows"]} == {
         "count",
@@ -536,6 +546,7 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
         harbor_environment="e2b",
         tito_debug=False,
         tito_prompt_mode="full_history",
+        router_replay=False,
     )
     captured: dict[str, Any] = {}
 
@@ -572,6 +583,7 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
     assert setup.sampler is None
     assert not hasattr(setup, "max_context_tokens")
     assert setup.sample_kwargs["max_seq_len"] == args.max_seq_len
+    assert setup.sample_kwargs["include_routing_matrix"] is False
     assert setup.extras["harbor_environment"] == "e2b"
     assert setup.extras["tito_prompt_mode"] == "full_history"
     assert captured["evaluate_kwargs"]["max_concurrency"] is None
@@ -580,6 +592,56 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
         json.loads((tmp_path / "logs" / "sampling-result.json").read_text())["mode"]
         == "sampling_only"
     )
+
+
+def test_sampling_only_expands_short_training_deployment_id(
+    monkeypatch, tmp_path
+) -> None:
+    args = SimpleNamespace(
+        deployment_id="policy",
+        trainer_job_id=None,
+        harbor_trials_dir=str(tmp_path / "trials"),
+        tokenizer_model="tokenizer",
+        tokenizer_revision=None,
+        max_completion_tokens=1024,
+        temperature=1.0,
+        sample_timeout=6900,
+        completions_per_prompt=1,
+        max_seq_len=4096,
+        log_path=str(tmp_path / "logs"),
+        renderer_name="renderer",
+        rollout_retries=3,
+        retry_include_exception=None,
+        max_concurrent_trials=4,
+        terminal_failure_reward=None,
+        opencode_version=DEFAULT_OPENCODE_VERSION,
+        harness_tool_timeout_seconds=600,
+        harbor_trial_config=None,
+        harbor_environment="e2b",
+        tito_debug=False,
+        tito_prompt_mode="full_history",
+        router_replay=False,
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setenv("FIREWORKS_API_KEY", "deployment-key")
+    monkeypatch.setattr(opencode_train, "load_tokenizer", lambda *_: object())
+    monkeypatch.setattr(
+        opencode_train,
+        "make_rollout_fn",
+        lambda setup: captured.setdefault("setup", setup) or (lambda: None),
+    )
+
+    async def evaluate(*_args, **_kwargs):
+        return {"sampling/attempted_trajectories": 0}
+
+    async def close(_fn):
+        return None
+
+    monkeypatch.setattr(opencode_train, "evaluate_rows", evaluate)
+    monkeypatch.setattr(opencode_train, "close_rollout_fn", close)
+    opencode_train._run_sampling_only(args, rows=[], selector=None)
+
+    assert captured["setup"].model == "accounts/training/deployments/policy"
 
 
 def test_context_limit_is_shared_by_inference_and_training_retention(
@@ -1050,6 +1112,9 @@ def test_agent_command_promotes_context_marker_to_nonzero_exit(
     )
 
     assert len(commands) == 1
+    if module_name.endswith("opencode.agent"):
+        assert "--auto --" in commands[0]
+        assert "--dangerously-skip-permissions" not in commands[0]
     assert sidecar_runtime.SIDECAR_CONTEXT_OVERFLOW_PATH in commands[0]
     assert "exit 43" in commands[0]
     assert terminal_states == ["completed"]
@@ -1876,6 +1941,66 @@ def test_prepare_pi_tasks_selects_requested_tasks_in_order(tmp_path) -> None:
     assert [path.name for path in prepared] == ["task-b", "task-a"]
 
 
+def test_set_task_prebuilt_image_replaces_existing_reference(tmp_path) -> None:
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text(
+        'version = "1.0"\n\n[environment]\n'
+        'docker_image = "registry/source:old"\n'
+        "build_timeout_sec = 600\n",
+        encoding="utf-8",
+    )
+
+    harbor_adapter._set_task_prebuilt_image(
+        {"path": str(task)}, "fireworks-harbor-prepared--digest"
+    )
+
+    document = harbor_adapter._task_document({"path": str(task)})
+    assert document["environment"] == {
+        "docker_image": "fireworks-harbor-prepared--digest",
+        "build_timeout_sec": 600,
+    }
+
+
+def test_prepared_docker_image_is_built_once_then_reused(monkeypatch, tmp_path) -> None:
+    task = tmp_path / "task"
+    environment = task / "environment"
+    environment.mkdir(parents=True)
+    (environment / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (task / "task.toml").write_text(
+        '[environment]\ndocker_image = "registry/source:old"\n'
+        "build_timeout_sec = 123\n",
+        encoding="utf-8",
+    )
+    image = "fireworks-harbor-prepared--digest"
+    builds: list[dict[str, Any]] = []
+
+    async def image_exists(candidate: str) -> bool:
+        return candidate == image and bool(builds)
+
+    async def ensure_image(**kwargs) -> str:
+        builds.append(kwargs)
+        return image
+
+    async def platform() -> str:
+        return "linux/amd64"
+
+    import harbor.environments.docker.utils as docker_utils
+
+    monkeypatch.setattr(docker_utils, "docker_image_exists", image_exists)
+    monkeypatch.setattr(docker_utils, "ensure_docker_image_built", ensure_image)
+    monkeypatch.setattr(docker_utils, "default_docker_platform", platform)
+
+    config = {"path": str(task)}
+    asyncio.run(harbor_adapter.ensure_prepared_docker_task_image(config))
+    asyncio.run(harbor_adapter.ensure_prepared_docker_task_image(config))
+
+    assert len(builds) == 1
+    assert builds[0]["docker_build_context"] == environment
+    assert builds[0]["timeout_sec"] == 123.0
+    assert harbor_adapter._task_prebuilt_image(config) == image
+
+
 def test_e2b_template_prebuild_builds_missing_alias_once(monkeypatch, tmp_path) -> None:
     environments = []
 
@@ -1937,6 +2062,40 @@ def test_e2b_template_prebuild_builds_missing_alias_once(monkeypatch, tmp_path) 
         ("new", False),
     ]
     assert [environment.builds for environment in environments] == [0, 1]
+
+
+def test_e2b_task_isolation_removes_only_host_local_image_pin(tmp_path) -> None:
+    source = tmp_path / "source" / "task"
+    environment = source / "environment"
+    environment.mkdir(parents=True)
+    (source / "task.toml").write_text(
+        "[environment]\n"
+        'docker_image = "fireworks-harbor-prepared--local-digest"\n'
+        'memory = "2G"\n',
+        encoding="utf-8",
+    )
+    (environment / "Dockerfile").write_text(
+        "FROM python:3.13-slim-bookworm\n", encoding="utf-8"
+    )
+    row = {
+        "task_name": "task",
+        "harbor_task_config": {"path": str(source), "source": "test"},
+    }
+
+    isolated = e2b_templates.isolate_e2b_task_rows(
+        [row, row], task_root=tmp_path / "e2b"
+    )
+
+    isolated_path = Path(isolated[0]["harbor_task_config"]["path"])
+    assert isolated_path != source
+    assert isolated[1]["harbor_task_config"]["path"] == str(isolated_path)
+    assert "fireworks-harbor-prepared--local-digest" in (
+        source / "task.toml"
+    ).read_text(encoding="utf-8")
+    isolated_config = (isolated_path / "task.toml").read_text(encoding="utf-8")
+    assert "docker_image" not in isolated_config
+    assert 'memory = "2G"' in isolated_config
+    assert (isolated_path / "environment" / "Dockerfile").is_file()
 
 
 @pytest.mark.parametrize("base_image", ["mutable:latest", "image@sha256:bad"])

@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 _COMPACT_ARTIFACT_DESTINATION = Path("tito/compact")
 _DEBUG_ARTIFACT_DESTINATION = Path("tito/debug")
 _LOG_ARTIFACT_DESTINATION = Path("tito/logs")
+_PREPARED_DOCKER_IMAGE_NAME = "fireworks-harbor-prepared"
 
 
 def validate_harbor_retry_exceptions(names: Any) -> frozenset[str]:
@@ -458,6 +459,97 @@ def _task_prebuilt_image(task_config: Any) -> str | None:
     return value or None
 
 
+def _set_task_prebuilt_image(task_config: Any, image: str) -> None:
+    """Atomically pin a prepared local task to its content-addressed image."""
+
+    task_path = _task_local_path(task_config)
+    if task_path is None:
+        raise ValueError("Docker task image caching requires a local Harbor task")
+    config_path = task_path / "task.toml"
+    source = config_path.read_text(encoding="utf-8")
+    replacement = f"docker_image = {json.dumps(image)}\n"
+    section: str | None = None
+    replaced = False
+    output: list[str] = []
+    for line in source.splitlines(keepends=True):
+        header = re.match(r"^\s*\[([^]]+)]\s*(?:#.*)?$", line.rstrip("\r\n"))
+        if header is not None:
+            if section == "environment" and not replaced:
+                output.append(replacement)
+            section = header.group(1).strip()
+        if section == "environment" and re.match(r"^\s*docker_image\s*=", line):
+            if replaced:
+                raise ValueError(f"duplicate environment.docker_image in {config_path}")
+            output.append(replacement)
+            replaced = True
+            continue
+        output.append(line)
+    if section == "environment" and not replaced:
+        output.append(replacement)
+        replaced = True
+    if not replaced:
+        output.extend(("\n[environment]\n", replacement))
+
+    rewritten = "".join(output)
+    parsed = tomllib.loads(rewritten)
+    if parsed.get("environment", {}).get("docker_image") != image:
+        raise ValueError(f"could not pin environment.docker_image in {config_path}")
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=config_path.parent,
+        prefix=f".{config_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(rewritten)
+        temporary_path = Path(handle.name)
+    temporary_path.replace(config_path)
+
+
+async def ensure_prepared_docker_task_image(task_config: Any) -> Any:
+    """Build one prepared task image once and reuse it across rollout members."""
+
+    task_path = _task_local_path(task_config)
+    if task_path is None:
+        raise ValueError("Docker task image caching requires a local Harbor task")
+    environment_dir = task_path / "environment"
+    dockerfile = environment_dir / "Dockerfile"
+    if not dockerfile.is_file():
+        return task_config
+
+    harbor = _require_harbor()
+    from harbor.environments.docker.utils import (
+        default_docker_platform,
+        docker_image_exists,
+        ensure_docker_image_built,
+    )
+
+    configured_image = _task_prebuilt_image(task_config)
+    if configured_image and configured_image.startswith(
+        f"{_PREPARED_DOCKER_IMAGE_NAME}--"
+    ) and await docker_image_exists(configured_image):
+        return task_config
+
+    document = _task_document(task_config) or {}
+    environment = document.get("environment")
+    timeout = None
+    if isinstance(environment, Mapping):
+        value = environment.get("build_timeout_sec")
+        timeout = float(value) if value is not None else None
+    image = await ensure_docker_image_built(
+        docker_name=_PREPARED_DOCKER_IMAGE_NAME,
+        docker_build_context=environment_dir,
+        dockerfile_path=dockerfile,
+        build_args={},
+        platform=await default_docker_platform(),
+        timeout_sec=timeout,
+        logger=logger,
+    )
+    _set_task_prebuilt_image(task_config, image)
+    return task_config
+
+
 def _task_uses_compose(task_config: Any) -> bool:
     task_path = _task_local_path(task_config)
     if task_path is None:
@@ -509,16 +601,18 @@ def _build_trial_config(
         environment["type"] = harbor.EnvironmentType.E2B
     else:
         raise ValueError(f"unsupported Harbor environment {harbor_environment!r}")
-    # Remove trial-local containers and volumes after verification. A task's
-    # explicitly configured prepared image has its own stable reference and is
-    # not the disposable Harbor build tag.
-    environment["delete"] = True
+    prebuilt_image = _task_prebuilt_image(task_config)
+    # ``delete=True`` adds ``--rmi local`` to `docker compose down`. That is
+    # unsafe for a content-addressed image shared by concurrent rollouts:
+    # image removal fails while siblings still use it and leaves containers
+    # behind. Preserve shared images while still removing each Compose project.
+    environment["delete"] = harbor_environment == "docker" and prebuilt_image is None
     # Docker must rebuild an untagged prepared context. Harbor's E2B backend
     # names templates by the environment-content hash, so force_build would
     # defeat safe reuse and rebuild the same task for every rollout member.
     # A changed context naturally gets a new E2B template name.
     environment["force_build"] = (
-        harbor_environment == "docker" and _task_prebuilt_image(task_config) is None
+        harbor_environment == "docker" and prebuilt_image is None
     )
 
     try:

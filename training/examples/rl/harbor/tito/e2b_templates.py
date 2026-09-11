@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,11 +14,78 @@ from typing import Any
 
 from training.examples.rl.harbor.tito.trial import (
     DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
+    HARBOR_TASK_CONFIG_KEY,
     _build_trial_config,
     _require_harbor,
+    _task_local_path,
+    _task_prebuilt_image,
     task_config_from_row,
     task_name_from_row,
 )
+
+_LOCAL_PREPARED_IMAGE_PREFIX = "fireworks-harbor-prepared--"
+
+
+def _remove_local_docker_image_pin(config_path: Path) -> None:
+    """Remove only the host-local image pin that E2B cannot resolve."""
+
+    source = config_path.read_text(encoding="utf-8")
+    section: str | None = None
+    output: list[str] = []
+    removed = False
+    for line in source.splitlines(keepends=True):
+        header = re.match(r"^\s*\[([^]]+)]\s*(?:#.*)?$", line.rstrip("\r\n"))
+        if header is not None:
+            section = header.group(1).strip()
+        if section == "environment" and re.match(
+            r'^\s*docker_image\s*=\s*["\']fireworks-harbor-prepared--', line
+        ):
+            removed = True
+            continue
+        output.append(line)
+    if not removed:
+        raise ValueError(f"could not remove local Docker image pin from {config_path}")
+    config_path.write_text("".join(output), encoding="utf-8")
+
+
+def isolate_e2b_task_rows(
+    task_rows: Sequence[Mapping[str, Any]], *, task_root: str | Path
+) -> list[dict[str, Any]]:
+    """Copy local tasks and drop Docker-only cache pins before E2B builds.
+
+    The local Docker backend writes a content-addressed, host-local image tag
+    into ``task.toml``. E2B cannot pull that tag. Keeping a private task copy
+    avoids mutating a dataset that an active Docker run may still be using.
+    """
+
+    destination_root = Path(task_root).expanduser().resolve()
+    destination_root.mkdir(parents=True, exist_ok=True)
+    isolated_configs: dict[Path, dict[str, Any]] = {}
+    output: list[dict[str, Any]] = []
+    for row in task_rows:
+        task_config = task_config_from_row(row)
+        source_path = _task_local_path(task_config)
+        if source_path is None:
+            output.append(dict(row))
+            continue
+        config = isolated_configs.get(source_path)
+        if config is None:
+            task_name = task_name_from_row(row)
+            suffix = hashlib.sha256(str(source_path).encode("utf-8")).hexdigest()[:12]
+            destination = destination_root / f"{task_name}-{suffix}"
+            if not destination.exists():
+                shutil.copytree(source_path, destination)
+            if (_task_prebuilt_image(task_config) or "").startswith(
+                _LOCAL_PREPARED_IMAGE_PREFIX
+            ) and _task_prebuilt_image({"path": str(destination)}):
+                _remove_local_docker_image_pin(destination / "task.toml")
+            config = dict(row[HARBOR_TASK_CONFIG_KEY])
+            config["path"] = str(destination)
+            isolated_configs[source_path] = config
+        isolated = dict(row)
+        isolated[HARBOR_TASK_CONFIG_KEY] = dict(config)
+        output.append(isolated)
+    return output
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,4 +180,8 @@ async def prebuild_e2b_templates(
     return tuple(results)
 
 
-__all__ = ["E2BTemplateRecord", "prebuild_e2b_templates"]
+__all__ = [
+    "E2BTemplateRecord",
+    "isolate_e2b_task_rows",
+    "prebuild_e2b_templates",
+]

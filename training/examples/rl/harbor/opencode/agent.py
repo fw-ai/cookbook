@@ -243,7 +243,7 @@ class ConfigurableOpenCode(OpenCode):
                     f"opencode --model={shlex.quote(str(self.model_name))} "
                     "run --format=json "
                     f"{resume_flag}{cli_flags_arg}--thinking "
-                    "--dangerously-skip-permissions -- "
+                    "--auto -- "
                     f"{escaped_instruction} </dev/null; "
                     f"printf '%s\\n' \"$?\" > {shlex.quote(_AGENT_STATUS_PATH)}; "
                     ") 2>&1 | stdbuf -oL tee /logs/agent/opencode.txt; "

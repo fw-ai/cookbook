@@ -33,6 +33,7 @@ from training.examples.rl.harbor.tito.trial import (
     DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
     DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     HarborTrialOutcome,
+    ensure_prepared_docker_task_image,
     load_harbor_trial_config,
     run_harbor_trial,
     task_config_from_row,
@@ -308,6 +309,8 @@ class _HarborRolloutRunner:
         trials_dir: Path | None = None,
         **agent_kwargs: Any,
     ) -> HarborTrialOutcome:
+        if self._harbor_environment == "docker":
+            task_config = await ensure_prepared_docker_task_image(task_config)
         return await run_harbor_trial(
             task_config=task_config,
             inference_key=inference_key,
