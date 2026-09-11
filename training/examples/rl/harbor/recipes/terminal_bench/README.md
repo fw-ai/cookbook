@@ -174,10 +174,13 @@ timeout and the per-tool Harbor timeout are separate controls, so both are set
 to 7,200 seconds for long-tail tasks. W&B records the configured clipping
 epsilons and the dynamic `train/gspo_sequence_ratio_mean`,
 `train/gspo_clip_frac`, `train/gspo_clip_low_frac`, and
-`train/gspo_clip_high_frac` metrics.
+`train/gspo_clip_high_frac` metrics. The 128-way E2B fanout uses more than the
+common 1,024-descriptor shell default, so raise the client process limit before
+launching it.
 
 ```bash
 RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/k3-gspo-all89-20260910-213414
+ulimit -n 65536
 
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --base-model accounts/fireworks/models/kimi-k3 \
