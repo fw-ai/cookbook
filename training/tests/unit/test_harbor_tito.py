@@ -5,6 +5,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -385,8 +386,10 @@ def test_dedicated_full_param_entry_cycles_all_tasks_with_aligned_config(
             "accounts/fireworks/models/kimi-k3",
             "--tokenizer-model",
             "accounts/fireworks/models/kimi-k3",
+            "--tokenizer-revision",
+            "9f62e4e9fffbd0a83ddd60e1c209d828994b3569",
             "--renderer-name",
-            "kimi_k3",
+            "kimi_k3_preserve_thinking",
             "--trainer-job-id",
             "trainer",
             "--deployment-id",
@@ -1793,6 +1796,32 @@ def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> Non
     )
 
 
+def test_e2b_missing_default_template_tag_requires_exact_error() -> None:
+    exception = SimpleNamespace(
+        exception_type="SandboxException",
+        exception_message=(
+            "404: tag 'default' does not exist for template "
+            "'owner/task__0123456789ab'"
+        ),
+        exception_traceback="",
+    )
+    assert harbor_adapter._is_retryable_e2b_default_tag_not_found(
+        exception,
+        harbor_environment="e2b",
+    )
+    assert not harbor_adapter._is_retryable_e2b_default_tag_not_found(
+        exception,
+        harbor_environment="docker",
+    )
+    assert not harbor_adapter._is_retryable_e2b_default_tag_not_found(
+        SimpleNamespace(
+            exception_type="SandboxException",
+            exception_message="404: template not found",
+        ),
+        harbor_environment="e2b",
+    )
+
+
 def test_launch_spec_and_inference_key_are_redacted(tmp_path) -> None:
     result_path = tmp_path / "result.json"
     result_path.write_text(
@@ -1915,11 +1944,81 @@ def test_prepared_harness_image_is_pinned_and_preserves_final_user(
     assert expected_marker in dockerfile
     assert expected_package in dockerfile
     assert "jinja2==3.1.6" in dockerfile
-    assert "numpy==2.4.6" in dockerfile
+    assert 'numpy==2.2.6; python_version < "3.11"' in dockerfile
+    assert 'numpy==2.4.6; python_version >= "3.11"' in dockerfile
     assert "import aiohttp, httpx, jinja2," in dockerfile
     assert "zstandard" not in dockerfile
     assert dockerfile.rstrip().endswith("USER task-user")
     assert not (prepared[0] / "solution" / "solve.sh").stat().st_mode & stat.S_IROTH
+
+
+def test_opencode_preparation_replaces_eol_debian_bullseye_base(
+    tmp_path,
+) -> None:
+    source = tmp_path / "source" / "task"
+    environment = source / "environment"
+    environment.mkdir(parents=True)
+    (source / "task.toml").write_text("", encoding="utf-8")
+    (environment / "Dockerfile").write_text(
+        "FROM debian:bullseye-slim\nRUN apt-get install -y netcat\n",
+        encoding="utf-8",
+    )
+
+    prepared = prepare_opencode_tasks.prepare(source, tmp_path / "prepared")
+    dockerfile = (prepared[0] / "environment" / "Dockerfile").read_text()
+
+    assert "FROM debian:bookworm-slim" in dockerfile
+    assert "debian:bullseye" not in dockerfile
+    assert "netcat-openbsd" in dockerfile
+
+
+def test_opencode_preparation_replaces_unsupported_external_uv_copy(
+    tmp_path,
+) -> None:
+    source = tmp_path / "source" / "task"
+    environment = source / "environment"
+    environment.mkdir(parents=True)
+    (source / "task.toml").write_text("", encoding="utf-8")
+    (environment / "Dockerfile").write_text(
+        "FROM python:3.13-slim-bookworm\n"
+        "COPY --from=ghcr.io/astral-sh/uv:0.8.15 /uv /uvx /bin/\n",
+        encoding="utf-8",
+    )
+
+    prepared = prepare_opencode_tasks.prepare(source, tmp_path / "prepared")
+    dockerfile = (prepared[0] / "environment" / "Dockerfile").read_text()
+
+    assert "COPY --from=ghcr.io/astral-sh/uv" not in dockerfile
+    assert "python3 -m pip install --no-cache-dir uv==0.8.15" in dockerfile
+
+
+def test_opencode_preparation_flattens_financial_document_stage(tmp_path) -> None:
+    source = tmp_path / "source" / "financial-document-processor"
+    environment = source / "environment"
+    environment.mkdir(parents=True)
+    (source / "task.toml").write_text("", encoding="utf-8")
+    (environment / "Dockerfile").write_text(
+        "FROM ubuntu:24.04 as build\n"
+        "COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /uvx /bin/\n"
+        "COPY randomize_filenames.py /root\n"
+        "COPY documents/ /tmp/original_documents/\n"
+        "RUN uv run /root/randomize_filenames.py\n"
+        "FROM ubuntu:24.04 AS target\n"
+        "COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /uvx /bin/\n"
+        "COPY --from=build /app/documents /app/documents\n"
+        "WORKDIR /app\n",
+        encoding="utf-8",
+    )
+    (environment / "randomize_filenames.py").write_text("", encoding="utf-8")
+    (environment / "documents").mkdir()
+
+    prepared = prepare_opencode_tasks.prepare(source, tmp_path / "prepared")
+    dockerfile = (prepared[0] / "environment" / "Dockerfile").read_text()
+
+    assert len(re.findall(r"(?im)^FROM\s+", dockerfile)) == 1
+    assert "COPY --from=" not in dockerfile
+    assert "RUN uv run /root/randomize_filenames.py" in dockerfile
+    assert "WORKDIR /app" in dockerfile
 
 
 def test_prepare_pi_tasks_selects_requested_tasks_in_order(tmp_path) -> None:
@@ -2045,6 +2144,25 @@ def test_e2b_template_prebuild_builds_missing_alias_once(monkeypatch, tmp_path) 
         lambda _harbor, *, task_config, **_kwargs: {"name": task_config["task_name"]},
     )
 
+    class AsyncTemplate:
+        @staticmethod
+        async def get_tags(template_name):
+            environment = next(
+                item for item in environments if item._template_name == template_name
+            )
+            return [SimpleNamespace(tag="default")] if environment.exists else []
+
+    class AsyncSandbox:
+        @classmethod
+        async def create(cls, **_kwargs):
+            return cls()
+
+        async def kill(self):
+            return None
+
+    monkeypatch.setattr("e2b.AsyncTemplate", AsyncTemplate)
+    monkeypatch.setattr("e2b.AsyncSandbox", AsyncSandbox)
+
     records = asyncio.run(
         e2b_templates.prebuild_e2b_templates(
             [{"task_name": "existing"}, {"task_name": "new"}],
@@ -2062,6 +2180,141 @@ def test_e2b_template_prebuild_builds_missing_alias_once(monkeypatch, tmp_path) 
         ("new", False),
     ]
     assert [environment.builds for environment in environments] == [0, 1]
+
+
+def test_e2b_template_prebuild_repairs_alias_without_default_tag(
+    monkeypatch, tmp_path
+) -> None:
+    environment = None
+
+    class Environment:
+        _template_name = "template-stale"
+
+        def __init__(self):
+            self.ready = False
+            self.builds = 0
+
+        async def _does_template_exist(self):
+            return True
+
+        async def _create_template(self):
+            self.builds += 1
+            self.ready = True
+
+    class Trial:
+        @classmethod
+        async def create(cls, _config):
+            nonlocal environment
+            environment = Environment()
+            return SimpleNamespace(agent_environment=environment)
+
+    class AsyncTemplate:
+        @staticmethod
+        async def get_tags(_template_name):
+            return [SimpleNamespace(tag="default")] if environment.ready else []
+
+    class AsyncSandbox:
+        @classmethod
+        async def create(cls, **_kwargs):
+            return cls()
+
+        async def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        e2b_templates, "_require_harbor", lambda: SimpleNamespace(Trial=Trial)
+    )
+    monkeypatch.setattr(e2b_templates, "task_name_from_row", lambda row: row["task_name"])
+    monkeypatch.setattr(e2b_templates, "task_config_from_row", lambda row: row)
+    monkeypatch.setattr(e2b_templates, "_build_trial_config", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("e2b.AsyncTemplate", AsyncTemplate)
+    monkeypatch.setattr("e2b.AsyncSandbox", AsyncSandbox)
+
+    records = asyncio.run(
+        e2b_templates.prebuild_e2b_templates(
+            [{"task_name": "stale"}],
+            trials_dir=tmp_path,
+            agent_import_path="agent:Class",
+            agent_version="1",
+            agent_provider="provider",
+            context_limit=4096,
+            output_limit=1024,
+        )
+    )
+
+    assert records[0].existed is True
+    assert environment.builds == 1
+
+
+def test_e2b_template_prebuild_repairs_unlaunchable_default_tag(
+    monkeypatch, tmp_path
+) -> None:
+    environment = None
+
+    class Environment:
+        _template_name = "template-stale"
+
+        def __init__(self):
+            self.ready = False
+            self.builds = 0
+
+        async def _does_template_exist(self):
+            return True
+
+        async def _create_template(self):
+            self.builds += 1
+            self.ready = True
+
+    class Trial:
+        @classmethod
+        async def create(cls, _config):
+            nonlocal environment
+            environment = Environment()
+            return SimpleNamespace(agent_environment=environment)
+
+    class AsyncTemplate:
+        @staticmethod
+        async def get_tags(_template_name):
+            return [SimpleNamespace(tag="default")]
+
+    SandboxException = type("SandboxException", (Exception,), {})
+
+    class AsyncSandbox:
+        @classmethod
+        async def create(cls, **_kwargs):
+            if not environment.ready:
+                raise SandboxException(
+                    "404: tag 'default' does not exist for template "
+                    "'owner/template-stale'"
+                )
+            return cls()
+
+        async def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        e2b_templates, "_require_harbor", lambda: SimpleNamespace(Trial=Trial)
+    )
+    monkeypatch.setattr(e2b_templates, "task_name_from_row", lambda row: row["task_name"])
+    monkeypatch.setattr(e2b_templates, "task_config_from_row", lambda row: row)
+    monkeypatch.setattr(e2b_templates, "_build_trial_config", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("e2b.AsyncTemplate", AsyncTemplate)
+    monkeypatch.setattr("e2b.AsyncSandbox", AsyncSandbox)
+
+    records = asyncio.run(
+        e2b_templates.prebuild_e2b_templates(
+            [{"task_name": "stale"}],
+            trials_dir=tmp_path,
+            agent_import_path="agent:Class",
+            agent_version="1",
+            agent_provider="provider",
+            context_limit=4096,
+            output_limit=1024,
+        )
+    )
+
+    assert records[0].existed is True
+    assert environment.builds == 1
 
 
 def test_e2b_task_isolation_removes_only_host_local_image_pin(tmp_path) -> None:

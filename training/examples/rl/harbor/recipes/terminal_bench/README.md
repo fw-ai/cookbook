@@ -75,6 +75,11 @@ coverage is rejected before creating a Harbor trial.
 
 ## Dedicated Kimi-K3 full-parameter convergence test
 
+Before launching the full fanout, complete the checks in
+[`E2B_RUNBOOK.md`](E2B_RUNBOOK.md). They cover task-image compatibility,
+template readiness, the certified Kimi tokenizer/renderer pair, and one real
+trajectory smoke test.
+
 The generic OpenCode recipe can attach to an existing full-parameter trainer
 and rollout deployment. The following command runs the synchronous full-corpus
 convergence workload: 16 prompt groups x 8 rollouts per optimizer step,
@@ -87,7 +92,8 @@ the paper-recommended asymmetric `[1 - 3e-4, 1 + 4e-4]` clipping interval.
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --base-model accounts/fireworks/models/kimi-k3 \
   --tokenizer-model moonshotai/Kimi-K3 \
-  --renderer-name kimi_k3 \
+  --tokenizer-revision 9f62e4e9fffbd0a83ddd60e1c209d828994b3569 \
+  --renderer-name kimi_k3_preserve_thinking \
   --trainer-job-id <trainer-job-id> \
   --deployment-id <deployment-id> \
   --deployment-shape <versioned-rollout-shape> \
@@ -123,7 +129,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --max-seq-len 262144 \
   --max-completion-tokens 32768 \
   --sample-timeout 7200 \
-  --harness-tool-timeout-seconds 7200 \
+  --harness-tool-timeout-seconds 6900 \
   --evaluation-every 5 \
   --evaluation-concurrency 24 \
   --dcp-save-interval 10 \
@@ -149,6 +155,7 @@ from the same shape versions if those resources have expired.
 | --- | --- |
 | Base model | `accounts/fireworks/models/kimi-k3` |
 | Tokenizer model | `moonshotai/Kimi-K3` |
+| Tokenizer revision | `9f62e4e9fffbd0a83ddd60e1c209d828994b3569` (the production-certified TITO bundle) |
 | Training shape | `accounts/fireworks/trainingShapes/kimi-k3-262k-gb300/versions/rbb16rr5` |
 | Rollout shape | `accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz` |
 | Trainer | `accounts/training/rlorTrainerJobs/k3-gspo-all89-20260910-213414` |
@@ -185,7 +192,8 @@ ulimit -n 65536
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --base-model accounts/fireworks/models/kimi-k3 \
   --tokenizer-model moonshotai/Kimi-K3 \
-  --renderer-name kimi_k3 \
+  --tokenizer-revision 9f62e4e9fffbd0a83ddd60e1c209d828994b3569 \
+  --renderer-name kimi_k3_preserve_thinking \
   --trainer-job-id k3-gspo-all89-20260910-213414 \
   --deployment-id k3-gspo-all89-20260910-213414 \
   --deployment-shape accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz \
@@ -221,7 +229,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --max-seq-len 262144 \
   --max-completion-tokens 32768 \
   --sample-timeout 7200 \
-  --harness-tool-timeout-seconds 7200 \
+  --harness-tool-timeout-seconds 6900 \
   --evaluation-every 5 \
   --evaluation-concurrency 24 \
   --dcp-save-interval 10 \

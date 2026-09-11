@@ -16,6 +16,7 @@ from training.examples.rl.harbor.tito.trial import (
     DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     HARBOR_TASK_CONFIG_KEY,
     _build_trial_config,
+    _is_retryable_e2b_default_tag_not_found,
     _require_harbor,
     _task_local_path,
     _task_prebuilt_image,
@@ -132,6 +133,35 @@ async def prebuild_e2b_templates(
     harbor = _require_harbor()
     semaphore = asyncio.Semaphore(max_concurrency)
 
+    async def has_default_tag(template_name: str) -> bool:
+        # E2B can retain an alias after a failed build even though the alias has
+        # no usable default image. ``alias_exists`` alone is therefore not a
+        # sufficient readiness check before rollout fan-out.
+        from e2b import AsyncTemplate
+
+        tags = await AsyncTemplate.get_tags(template_name)
+        return any(tag.tag == "default" for tag in tags)
+
+    async def is_launchable(template_name: str) -> bool:
+        """Probe the sandbox API, which is authoritative over alias metadata."""
+
+        from e2b import AsyncSandbox
+
+        sandbox = None
+        try:
+            sandbox = await AsyncSandbox.create(template=template_name, timeout=60)
+        except Exception as exc:
+            if _is_retryable_e2b_default_tag_not_found(
+                exc,
+                harbor_environment="e2b",
+            ):
+                return False
+            raise
+        finally:
+            if sandbox is not None:
+                await sandbox.kill()
+        return True
+
     async def build(index: int, row: Mapping[str, Any]) -> E2BTemplateRecord:
         task_name = names[index]
         config = _build_trial_config(
@@ -159,14 +189,24 @@ async def prebuild_e2b_templates(
             trial = await harbor.Trial.create(config)
             environment = trial.agent_environment
             exists = await environment._does_template_exist()
-            if not exists:
+            ready = (
+                exists
+                and await has_default_tag(environment._template_name)
+                and await is_launchable(environment._template_name)
+            )
+            if not ready:
                 await asyncio.wait_for(
                     environment._create_template(),
                     timeout=timeout_seconds,
                 )
-                if not await environment._does_template_exist():
+                if (
+                    not await environment._does_template_exist()
+                    or not await has_default_tag(environment._template_name)
+                    or not await is_launchable(environment._template_name)
+                ):
                     raise RuntimeError(
-                        f"E2B template build returned without an alias for {task_name}"
+                        "E2B template build returned without a launchable default tag "
+                        f"for {task_name}"
                     )
             return E2BTemplateRecord(
                 task_name=task_name,

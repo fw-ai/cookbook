@@ -60,7 +60,8 @@ _SIDECAR_PYTHON_INSTALL = r"""python3 -c 'import sys; assert sys.version_info >=
    tiktoken==0.13.0 \
    tokenizers==0.22.2 \
    transformers==5.5.4 \
-   numpy==2.4.6; \
+   'numpy==2.2.6; python_version < "3.11"' \
+   'numpy==2.4.6; python_version >= "3.11"'; \
  /opt/fireworks-tito/bin/python -c 'import aiohttp, httpx, jinja2, numpy, tiktoken, tokenizers, transformers, urllib3'; \
 """
 

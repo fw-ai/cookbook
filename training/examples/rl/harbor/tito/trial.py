@@ -183,6 +183,27 @@ def _is_retryable_e2b_sidecar_readiness_timeout(
     return explicit_wrapper or harbor_wrapper
 
 
+def _is_retryable_e2b_default_tag_not_found(
+    exception: Any,
+    *,
+    harbor_environment: str,
+) -> bool:
+    """Recognize E2B's transient failure to resolve a built template alias."""
+
+    if harbor_environment != "e2b" or exception is None:
+        return False
+    exception_type = str(
+        getattr(exception, "exception_type", type(exception).__name__) or ""
+    )
+    exception_message = str(
+        getattr(exception, "exception_message", str(exception)) or ""
+    )
+    return exception_type == "SandboxException" and re.fullmatch(
+        r"404: tag 'default' does not exist for template '[^']+'",
+        exception_message,
+    ) is not None
+
+
 def _redact_sidecar_spec(result_path: Path) -> None:
     """Remove the inference credential-bearing launch spec from the result."""
     if not result_path.is_file():
@@ -886,6 +907,10 @@ async def run_harbor_trial(
             exception,
             harbor_environment=harbor_environment,
         )
+        retryable_default_tag = _is_retryable_e2b_default_tag_not_found(
+            exception,
+            harbor_environment=harbor_environment,
+        )
         try:
             trajectory_artifact, artifact_manifest = _load_sidecar_artifact(trial_path)
         except RecoverableRolloutError as exc:
@@ -898,6 +923,10 @@ async def run_harbor_trial(
                 raise RecoverableRolloutError(
                     "Harbor E2B sidecar did not become ready within its bounded "
                     "startup window"
+                ) from exc
+            if retryable_default_tag:
+                raise RecoverableRolloutError(
+                    "Harbor E2B could not resolve a built template's default tag"
                 ) from exc
             if exception_type and exception_type not in retry_names:
                 raise RuntimeError(

@@ -26,12 +26,19 @@ from training.examples.rl.harbor.opencode.rollout import (
     DEFAULT_MAX_CONCURRENT_TRIALS,
     make_rollout_fn,
 )
-from training.examples.rl.harbor.opencode.constants import DEFAULT_OPENCODE_VERSION
-from training.examples.rl.harbor.tito.e2b_templates import isolate_e2b_task_rows
+from training.examples.rl.harbor.opencode.constants import (
+    DEFAULT_OPENCODE_VERSION,
+    OPENCODE_HARBOR_IMPORT_PATH,
+)
+from training.examples.rl.harbor.tito.e2b_templates import (
+    isolate_e2b_task_rows,
+    prebuild_e2b_templates,
+)
 from training.examples.rl.harbor.tito.trial import (
     DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
     load_harbor_rows,
+    task_name_from_row,
 )
 from training.recipes.async_rl_loop import Config, RolloutSetup, main
 from training.utils import DeployConfig, TrainerConfig, WandBConfig
@@ -83,6 +90,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=900.0,
         help="E2B control-plane request timeout in seconds",
+    )
+    parser.add_argument(
+        "--e2b-template-concurrency",
+        type=int,
+        default=8,
+        help="Maximum concurrent E2B template builds before rollout fan-out",
+    )
+    parser.add_argument(
+        "--e2b-template-timeout",
+        type=float,
+        default=1800.0,
+        help="Timeout in seconds for each E2B template build",
     )
     parser.add_argument("--harbor-trials-dir", default=None)
     parser.add_argument(
@@ -458,6 +477,34 @@ def run() -> None:
         import e2b.connection_config as e2b_connection_config
 
         e2b_connection_config.REQUEST_TIMEOUT = args.e2b_request_timeout
+        unique_rows = list(
+            {
+                task_name_from_row(row): row
+                for row in [*rows, *evaluation_rows]
+            }.values()
+        )
+        template_records = asyncio.run(
+            prebuild_e2b_templates(
+                unique_rows,
+                trials_dir=(
+                    args.harbor_trials_dir
+                    or Path(args.log_path).expanduser().resolve() / "trials"
+                ),
+                agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
+                agent_version=args.opencode_version,
+                agent_provider="fireworks-rl",
+                context_limit=args.max_seq_len,
+                output_limit=args.max_completion_tokens,
+                trial_config=args.harbor_trial_config,
+                max_concurrency=args.e2b_template_concurrency,
+                timeout_seconds=args.e2b_template_timeout,
+                tool_timeout_seconds=args.harness_tool_timeout_seconds,
+            )
+        )
+        logger.info(
+            "Verified %d unique E2B templates before rollout fan-out",
+            len(template_records),
+        )
     logger.info("Loaded %d Harbor tasks", len(rows))
 
     if args.sampling_only:
