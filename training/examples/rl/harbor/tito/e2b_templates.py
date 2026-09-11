@@ -142,14 +142,28 @@ async def prebuild_e2b_templates(
         tags = await AsyncTemplate.get_tags(template_name)
         return any(tag.tag == "default" for tag in tags)
 
-    async def is_launchable(template_name: str) -> bool:
-        """Probe the sandbox API, which is authoritative over alias metadata."""
+    async def is_launchable(
+        template_name: str,
+        *,
+        expected_cpus: int | None,
+        expected_memory_mb: int | None,
+    ) -> bool:
+        """Verify that an alias launches with the requested resources."""
 
         from e2b import AsyncSandbox
 
         sandbox = None
         try:
             sandbox = await AsyncSandbox.create(template=template_name, timeout=60)
+            if expected_cpus is not None or expected_memory_mb is not None:
+                info = await sandbox.get_info()
+                if expected_cpus is not None and info.cpu_count != expected_cpus:
+                    return False
+                if (
+                    expected_memory_mb is not None
+                    and info.memory_mb != expected_memory_mb
+                ):
+                    return False
         except Exception as exc:
             if _is_retryable_e2b_default_tag_not_found(
                 exc,
@@ -188,11 +202,21 @@ async def prebuild_e2b_templates(
         async with semaphore:
             trial = await harbor.Trial.create(config)
             environment = trial.agent_environment
+            expected_cpus = getattr(environment, "_effective_cpus", None)
+            expected_memory_mb = getattr(
+                environment,
+                "_effective_memory_mb",
+                None,
+            )
             exists = await environment._does_template_exist()
             ready = (
                 exists
                 and await has_default_tag(environment._template_name)
-                and await is_launchable(environment._template_name)
+                and await is_launchable(
+                    environment._template_name,
+                    expected_cpus=expected_cpus,
+                    expected_memory_mb=expected_memory_mb,
+                )
             )
             if not ready:
                 await asyncio.wait_for(
@@ -202,7 +226,11 @@ async def prebuild_e2b_templates(
                 if (
                     not await environment._does_template_exist()
                     or not await has_default_tag(environment._template_name)
-                    or not await is_launchable(environment._template_name)
+                    or not await is_launchable(
+                        environment._template_name,
+                        expected_cpus=expected_cpus,
+                        expected_memory_mb=expected_memory_mb,
+                    )
                 ):
                     raise RuntimeError(
                         "E2B template build returned without a launchable default tag "

@@ -2330,6 +2330,79 @@ def test_e2b_template_prebuild_repairs_unlaunchable_default_tag(
     assert environment.builds == 1
 
 
+def test_e2b_template_prebuild_repairs_resource_mismatch(monkeypatch, tmp_path) -> None:
+    environment = None
+
+    class Environment:
+        _template_name = "template-undersized"
+        _effective_cpus = 4
+        _effective_memory_mb = 8192
+
+        def __init__(self):
+            self.cpu_count = 1
+            self.memory_mb = 2048
+            self.builds = 0
+
+        async def _does_template_exist(self):
+            return True
+
+        async def _create_template(self):
+            self.builds += 1
+            self.cpu_count = self._effective_cpus
+            self.memory_mb = self._effective_memory_mb
+
+    class Trial:
+        @classmethod
+        async def create(cls, _config):
+            nonlocal environment
+            environment = Environment()
+            return SimpleNamespace(agent_environment=environment)
+
+    class AsyncTemplate:
+        @staticmethod
+        async def get_tags(_template_name):
+            return [SimpleNamespace(tag="default")]
+
+    class AsyncSandbox:
+        @classmethod
+        async def create(cls, **_kwargs):
+            return cls()
+
+        async def get_info(self):
+            return SimpleNamespace(
+                cpu_count=environment.cpu_count,
+                memory_mb=environment.memory_mb,
+            )
+
+        async def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        e2b_templates, "_require_harbor", lambda: SimpleNamespace(Trial=Trial)
+    )
+    monkeypatch.setattr(e2b_templates, "task_name_from_row", lambda row: row["task_name"])
+    monkeypatch.setattr(e2b_templates, "task_config_from_row", lambda row: row)
+    monkeypatch.setattr(e2b_templates, "_build_trial_config", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("e2b.AsyncTemplate", AsyncTemplate)
+    monkeypatch.setattr("e2b.AsyncSandbox", AsyncSandbox)
+
+    records = asyncio.run(
+        e2b_templates.prebuild_e2b_templates(
+            [{"task_name": "undersized"}],
+            trials_dir=tmp_path,
+            agent_import_path="agent:Class",
+            agent_version="1",
+            agent_provider="provider",
+            context_limit=4096,
+            output_limit=1024,
+        )
+    )
+
+    assert records[0].existed is True
+    assert environment.builds == 1
+    assert (environment.cpu_count, environment.memory_mb) == (4, 8192)
+
+
 def test_e2b_task_isolation_removes_only_host_local_image_pin(tmp_path) -> None:
     source = tmp_path / "source" / "task"
     environment = source / "environment"
