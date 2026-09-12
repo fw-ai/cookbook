@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import hashlib
 import json
 import os
@@ -356,7 +357,22 @@ def launch_spec_json(spec: TITOSidecarLaunchSpec) -> str:
 
 
 def _temporary_private_file(payload: str) -> Path:
-    descriptor, raw_path = tempfile.mkstemp(prefix="tito-sidecar-", suffix=".json")
+    try:
+        descriptor, raw_path = tempfile.mkstemp(
+            prefix="tito-sidecar-", suffix=".json"
+        )
+    except OSError as exc:
+        if exc.errno != errno.ENOSPC:
+            raise
+        # Long-running Harbor clients can outlive unrelated users filling the
+        # host's /tmp filesystem. The process working directory normally lives
+        # on the run volume, so use it as a one-shot fallback rather than
+        # failing every new remote sandbox before agent setup begins.
+        descriptor, raw_path = tempfile.mkstemp(
+            prefix="tito-sidecar-",
+            suffix=".json",
+            dir=Path.cwd(),
+        )
     path = Path(raw_path)
     try:
         path.write_text(payload, encoding="utf-8")

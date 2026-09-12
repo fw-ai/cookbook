@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import importlib
 import json
@@ -67,6 +68,32 @@ def _setup(tmp_path: Path | None = None) -> SimpleNamespace:
         model="deployment",
         completions_per_prompt=4,
     )
+
+
+def test_temporary_private_file_falls_back_from_full_tmp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_mkstemp = sidecar_runtime.tempfile.mkstemp
+    calls: list[str | None] = []
+
+    def mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
+        directory = kwargs.get("dir")
+        calls.append(os.fspath(directory) if directory is not None else None)
+        if directory is None:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return original_mkstemp(*args, **kwargs)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sidecar_runtime.tempfile, "mkstemp", mkstemp)
+
+    path = sidecar_runtime._temporary_private_file("private payload")
+    try:
+        assert path.parent == tmp_path
+        assert path.read_text() == "private payload"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert calls == [None, os.fspath(tmp_path)]
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def _artifact(trajectory_id: str = "trajectory-1") -> TITOTrajectoryArtifact:
