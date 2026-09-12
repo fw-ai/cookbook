@@ -242,12 +242,15 @@ class ReconnectableClient:
         self,
         params,
         grad_accumulation_normalization: str | GradAccNormalization | None = None,
+        emit_grad_norm_metrics: bool | None = None,
     ):
         kwargs: dict = {}
         if grad_accumulation_normalization is not None:
             kwargs["grad_accumulation_normalization"] = _normalize_grad_accumulation_normalization(
                 grad_accumulation_normalization
             )
+        if emit_grad_norm_metrics is not None:
+            kwargs["emit_grad_norm_metrics"] = emit_grad_norm_metrics
         return self._client.optim_step(params, **kwargs).result(
             timeout=self._default_timeout,
         )
@@ -266,12 +269,15 @@ class ReconnectableClient:
         self,
         params,
         grad_accumulation_normalization: str | GradAccNormalization | None = None,
+        emit_grad_norm_metrics: bool | None = None,
     ):
         kwargs: dict = {}
         if grad_accumulation_normalization is not None:
             kwargs["grad_accumulation_normalization"] = _normalize_grad_accumulation_normalization(
                 grad_accumulation_normalization
             )
+        if emit_grad_norm_metrics is not None:
+            kwargs["emit_grad_norm_metrics"] = emit_grad_norm_metrics
         return self._require_client().optim_step(params, **kwargs)
 
     def save_state(self, name: str, timeout: int = DCP_TIMEOUT_S):
