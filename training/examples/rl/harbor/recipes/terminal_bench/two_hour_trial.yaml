@@ -1,5 +1,10 @@
 agent:
   override_timeout_sec: 7200
+  # OpenCode can grow its SQLite history and tool-output cache to tens of GB on
+  # long tasks. They are not trajectory inputs and must not block E2B teardown.
+  exclude_logs:
+    - "**/opencode.db*"
+    - "**/tool-output/**"
 environment:
   override_cpus: 4
   override_memory_mb: 8192

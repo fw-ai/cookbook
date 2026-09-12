@@ -1449,6 +1449,10 @@ def test_two_hour_terminal_bench_config_covers_timeouts_and_e2b_resources() -> N
     config = harbor_adapter.load_harbor_trial_config(config_path)
 
     assert config["agent"]["override_timeout_sec"] == 7200
+    assert config["agent"]["exclude_logs"] == [
+        "**/opencode.db*",
+        "**/tool-output/**",
+    ]
     assert config["environment"]["override_cpus"] == 4
     assert config["environment"]["override_memory_mb"] == 8192
     assert config["verifier"]["override_timeout_sec"] == 7200
