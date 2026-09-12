@@ -16,7 +16,7 @@ tokenizer bundle, TITO sidecar, or all task templates.
 | Trial smoke test | One real task produces a validated TITO trajectory artifact |
 | Fanout | Shell open-file limit is at least `65536` before 128-way launch |
 | Timeouts | Agent and verifier each allow 7200s; tool timeout remains below the agent timeout (`6900 < 7200`) |
-| E2B resources | Each trial gets 4 CPUs and 8192 MB; the Chrome-heavy `filter-js-from-html` verifier exhausts its task default of 2 GB |
+| E2B resources | Each trial gets 4 CPUs and 8192 MB; `rstan-to-pystan` gets 16384 MB via `--e2b-task-memory-mb` |
 | Secrets | Loaded from a mode-`0600` environment file; never written to commands, logs, or trial artifacts |
 
 Do not restart the trainer or rollout to fix a client/E2B problem. Stop and
@@ -39,6 +39,7 @@ restart only the local harness unless remote health evidence requires more.
 | Agent stops after starting a persistent service | A generated `nohup ... &` command can leave its wrapper shell attached to the healthy daemon, so OpenCode waits until the per-tool timeout even though the task service is ready | Confirm the daemon is healthy, then terminate only the orphaned wrapper shell; do not terminate the daemon, sandbox, client, trainer, or rollout | The existing OpenCode process resumes, writes its trajectory, and the verifier reaches the preserved daemon |
 | `ConnectError: ... error reading a body ... timed out` during a long tool call | The E2B command stream disconnected after opening; the sandbox process may still be running | Treat this exact typed E2B transport failure as recoverable and retry with a fresh trajectory | The retry uses a new sandbox and produces a checksum-valid TITO artifact |
 | A repeated prompt group reads stale or colliding TITO files | Group-level retries reused the same Harbor trial directory even though trajectory-level retry counters reset | Give every physical Harbor attempt a unique artifact directory while preserving its logical rollout ID | Repeated logical rollouts have distinct trial paths and cannot consume prior-attempt artifacts |
+| PyStan agent appears active indefinitely | Its main Python process is OOM-killed at 8 GiB while orphaned chain workers retain the command pipe | Prebuild and run only `rstan-to-pystan` with `--e2b-task-memory-mb rstan-to-pystan=16384` | The task alias launches with 16384 MB and all chain workers complete without a kernel OOM kill |
 | `Sandbox not found` during artifact cleanup | Secondary cleanup after sandbox creation/build failed | Diagnose the earlier exception; do not treat cleanup noise as the root cause | Root exception is absent on rerun |
 | `PyTorch was not found` | Informational Transformers warning in the lightweight sidecar | No fix required; TITO needs tokenizer utilities, not Torch | Ignore unless followed by a different fatal exception |
 

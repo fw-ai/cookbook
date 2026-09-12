@@ -20,6 +20,7 @@ from training.examples.rl.harbor.tito.trial import (
     _require_harbor,
     _task_local_path,
     _task_prebuilt_image,
+    load_harbor_trial_config,
     task_config_from_row,
     task_name_from_row,
 )
@@ -117,6 +118,55 @@ class E2BTemplateRecord:
     existed: bool
 
 
+def parse_e2b_task_memory_overrides(values: Sequence[str]) -> dict[str, int]:
+    """Parse repeatable ``TASK=MB`` E2B memory overrides."""
+
+    overrides: dict[str, int] = {}
+    for value in values:
+        task_name, separator, encoded_memory = value.partition("=")
+        task_name = task_name.strip()
+        if not separator or not task_name or not encoded_memory.strip():
+            raise ValueError(
+                f"invalid E2B task memory override {value!r}; expected TASK=MB"
+            )
+        if task_name in overrides:
+            raise ValueError(f"duplicate E2B memory override for task {task_name!r}")
+        try:
+            memory_mb = int(encoded_memory)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid E2B memory for task {task_name!r}: {encoded_memory!r}"
+            ) from exc
+        if memory_mb < 1:
+            raise ValueError(
+                f"E2B memory for task {task_name!r} must be positive"
+            )
+        overrides[task_name] = memory_mb
+    return overrides
+
+
+def e2b_trial_config_for_task(
+    trial_config: Mapping[str, Any] | str | Path | None,
+    *,
+    task_name: str,
+    task_memory_mb: Mapping[str, int] | None,
+) -> dict[str, Any]:
+    """Apply one task's E2B memory override without mutating the base config."""
+
+    config = load_harbor_trial_config(trial_config)
+    if not task_memory_mb or task_name not in task_memory_mb:
+        return config
+    configured_environment = config.get("environment")
+    if configured_environment is not None and not isinstance(
+        configured_environment, Mapping
+    ):
+        raise TypeError("Harbor trial config 'environment' must be a mapping")
+    environment = dict(configured_environment or {})
+    environment["override_memory_mb"] = int(task_memory_mb[task_name])
+    config["environment"] = environment
+    return config
+
+
 async def prebuild_e2b_templates(
     task_rows: Sequence[Mapping[str, Any]],
     *,
@@ -127,6 +177,7 @@ async def prebuild_e2b_templates(
     context_limit: int,
     output_limit: int,
     trial_config: Any | None = None,
+    task_memory_mb: Mapping[str, int] | None = None,
     max_concurrency: int = 8,
     timeout_seconds: float = 1_800.0,
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
@@ -199,9 +250,14 @@ async def prebuild_e2b_templates(
 
     async def build(index: int, row: Mapping[str, Any]) -> E2BTemplateRecord:
         task_name = names[index]
+        task_trial_config = e2b_trial_config_for_task(
+            trial_config,
+            task_name=task_name,
+            task_memory_mb=task_memory_mb,
+        )
         config = _build_trial_config(
             harbor,
-            template=trial_config,
+            template=task_trial_config,
             task_config=task_config_from_row(dict(row)),
             run_id=f"e2b-template-{index:03d}-{task_name}",
             trials_dir=trials_dir,
@@ -275,7 +331,9 @@ async def prebuild_e2b_templates(
 
 
 __all__ = [
+    "e2b_trial_config_for_task",
     "E2BTemplateRecord",
     "isolate_e2b_task_rows",
+    "parse_e2b_task_memory_overrides",
     "prebuild_e2b_templates",
 ]

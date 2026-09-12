@@ -32,6 +32,7 @@ from training.examples.rl.harbor.opencode.constants import (
 )
 from training.examples.rl.harbor.tito.e2b_templates import (
     isolate_e2b_task_rows,
+    parse_e2b_task_memory_overrides,
     prebuild_e2b_templates,
 )
 from training.examples.rl.harbor.tito.trial import (
@@ -102,6 +103,16 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1800.0,
         help="Timeout in seconds for each E2B template build",
+    )
+    parser.add_argument(
+        "--e2b-task-memory-mb",
+        action="append",
+        default=[],
+        metavar="TASK=MB",
+        help=(
+            "Per-task E2B memory override; repeat for exceptional tasks while "
+            "keeping the shared trial config unchanged"
+        ),
     )
     parser.add_argument("--harbor-trials-dir", default=None)
     parser.add_argument(
@@ -315,6 +326,9 @@ def _rollout_extras(
         "task_selector": selector,
         "harbor_trial_config": args.harbor_trial_config,
         "harbor_environment": args.harbor_environment,
+        "e2b_task_memory_mb": parse_e2b_task_memory_overrides(
+            getattr(args, "e2b_task_memory_mb", ())
+        ),
         "harbor_trials_dir": args.harbor_trials_dir,
         "tito_sidecar_bundle_root": str(
             Path(args.log_path).expanduser().resolve() / ".tito-sidecar-bundles"
@@ -399,6 +413,7 @@ def _run_sampling_only(
 
 def run() -> None:
     args = parse_args()
+    e2b_task_memory_mb = parse_e2b_task_memory_overrides(args.e2b_task_memory_mb)
     if not args.sampling_only and not (args.trainer_job_id or args.training_shape_id):
         raise ValueError("training requires --trainer-job-id or --training-shape-id")
     if args.evaluation_every < 1:
@@ -496,6 +511,7 @@ def run() -> None:
                 context_limit=args.max_seq_len,
                 output_limit=args.max_completion_tokens,
                 trial_config=args.harbor_trial_config,
+                task_memory_mb=e2b_task_memory_mb,
                 max_concurrency=args.e2b_template_concurrency,
                 timeout_seconds=args.e2b_template_timeout,
                 tool_timeout_seconds=args.harness_tool_timeout_seconds,

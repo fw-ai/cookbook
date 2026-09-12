@@ -2256,6 +2256,72 @@ def test_e2b_template_prebuild_builds_missing_alias_once(monkeypatch, tmp_path) 
     assert [environment.builds for environment in environments] == [0, 1]
 
 
+def test_e2b_task_memory_override_is_task_specific_and_immutable() -> None:
+    base = {"environment": {"override_cpus": 4, "override_memory_mb": 8192}}
+    overrides = e2b_templates.parse_e2b_task_memory_overrides(
+        ["rstan-to-pystan=16384"]
+    )
+
+    regular = e2b_templates.e2b_trial_config_for_task(
+        base,
+        task_name="distribution-search",
+        task_memory_mb=overrides,
+    )
+    larger = e2b_templates.e2b_trial_config_for_task(
+        base,
+        task_name="rstan-to-pystan",
+        task_memory_mb=overrides,
+    )
+
+    assert regular["environment"]["override_memory_mb"] == 8192
+    assert larger["environment"]["override_memory_mb"] == 16384
+    assert base["environment"]["override_memory_mb"] == 8192
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["rstan-to-pystan", "=16384", "rstan-to-pystan=", "task=zero", "task=0"],
+)
+def test_e2b_task_memory_override_rejects_invalid_values(value) -> None:
+    with pytest.raises(ValueError):
+        e2b_templates.parse_e2b_task_memory_overrides([value])
+
+
+def test_e2b_rollout_uses_task_memory_override(monkeypatch, tmp_path) -> None:
+    setup = _setup(tmp_path)
+    setup.extras.update(
+        harbor_environment="e2b",
+        harbor_trial_config={
+            "environment": {"override_cpus": 4, "override_memory_mb": 8192}
+        },
+        e2b_task_memory_mb={"rstan-to-pystan": 16384},
+    )
+    monkeypatch.setattr(
+        rollout,
+        "build_sidecar_bundle",
+        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+    )
+    captured = {}
+
+    async def run_harbor_trial(**kwargs):
+        captured.update(kwargs)
+        return _outcome(environment_type="e2b")
+
+    monkeypatch.setattr(rollout, "run_harbor_trial", run_harbor_trial)
+    runner = rollout.make_rollout_fn(setup)
+    asyncio.run(
+        runner._run_trial(
+            task_config={},
+            task_name="rstan-to-pystan",
+            inference_key="key",
+            run_id="run",
+        )
+    )
+
+    assert captured["trial_config"]["environment"]["override_cpus"] == 4
+    assert captured["trial_config"]["environment"]["override_memory_mb"] == 16384
+
+
 def test_e2b_template_prebuild_repairs_alias_without_default_tag(
     monkeypatch, tmp_path
 ) -> None:

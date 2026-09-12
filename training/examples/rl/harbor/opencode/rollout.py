@@ -15,11 +15,8 @@ from training.examples.rl.harbor.opencode.constants import (
     OPENCODE_HARBOR_IMPORT_PATH,
 )
 from training.examples.rl.harbor.opencode.artifacts import tool_timeout_count
-from training.examples.rl.harbor.tito.sidecar import (
-    build_launch_spec,
-    build_sidecar_bundle,
-    launch_spec_json,
-    resolve_max_context_tokens,
+from training.examples.rl.harbor.tito.e2b_templates import (
+    e2b_trial_config_for_task,
 )
 from training.examples.rl.harbor.tito.rollout import (
     DEFAULT_MAX_CONCURRENT_TRIALS,
@@ -28,6 +25,12 @@ from training.examples.rl.harbor.tito.rollout import (
     resolve_trials_dir,
     run_with_fresh_trajectory_retries,
     trial_workspace,
+)
+from training.examples.rl.harbor.tito.sidecar import (
+    build_launch_spec,
+    build_sidecar_bundle,
+    launch_spec_json,
+    resolve_max_context_tokens,
 )
 from training.examples.rl.harbor.tito.trial import (
     DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
@@ -96,6 +99,9 @@ class _HarborRolloutRunner:
             raise ValueError("rollout_extras['terminal_failure_reward'] must be finite")
         self._trial_config = load_harbor_trial_config(
             setup.extras.get("harbor_trial_config")
+        )
+        self._e2b_task_memory_mb = dict(
+            setup.extras.get("e2b_task_memory_mb") or {}
         )
         self._harbor_environment = str(
             setup.extras.get("harbor_environment", "docker")
@@ -255,6 +261,7 @@ class _HarborRolloutRunner:
         ) as trial_root:
             outcome = await self._run_admitted_trial(
                 task_config=task_config,
+                task_name=task_name,
                 inference_key=self._setup.api_key,
                 run_id=(f"{run_id}:retry-{retry_index}" if retry_index else run_id),
                 trials_dir=trial_root,
@@ -304,6 +311,7 @@ class _HarborRolloutRunner:
         self,
         *,
         task_config: Any,
+        task_name: str | None = None,
         inference_key: str,
         run_id: str,
         trials_dir: Path | None = None,
@@ -311,11 +319,18 @@ class _HarborRolloutRunner:
     ) -> HarborTrialOutcome:
         if self._harbor_environment == "docker":
             task_config = await ensure_prepared_docker_task_image(task_config)
+        trial_config = self._trial_config
+        if self._harbor_environment == "e2b" and task_name is not None:
+            trial_config = e2b_trial_config_for_task(
+                trial_config,
+                task_name=task_name,
+                task_memory_mb=self._e2b_task_memory_mb,
+            )
         return await run_harbor_trial(
             task_config=task_config,
             inference_key=inference_key,
             run_id=run_id,
-            trial_config=self._trial_config,
+            trial_config=trial_config,
             trials_dir=trials_dir if trials_dir is not None else self._trials_dir,
             terminal_failure_reward=self._terminal_failure_reward,
             retry_include_exceptions=self._retry_include_exceptions,

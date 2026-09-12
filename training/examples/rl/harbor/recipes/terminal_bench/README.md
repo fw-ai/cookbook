@@ -105,6 +105,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --log-path <run-directory> \
   --harbor-environment e2b \
   --harbor-trial-config training/examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml \
+  --e2b-task-memory-mb rstan-to-pystan=16384 \
   --max-concurrent-trials 128 \
   --evaluation-task count-dataset-tokens \
   --evaluation-task extract-elf \
@@ -173,7 +174,7 @@ from the same shape versions if those resources have expired.
 | Policy objective | GSPO sequence-level importance ratio; `kl_beta=0`; asymmetric clip `3e-4` / `4e-4`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
 | Loss reduction | Mean over active response tokens within each sequence, then equal mean over sequences (`num_sequences`) |
 | Routing | Router Replay disabled; GSPO does not require routing replay |
-| Harbor backend | E2B; 128 concurrent trials; two-hour outer-trial and tool timeouts |
+| Harbor backend | E2B; 128 concurrent trials; 8 GiB normally and 16 GiB for `rstan-to-pystan`; two-hour outer-trial and tool timeouts |
 | Token limits | 262,144 total tokens; 32,768 generated tokens per model call |
 | Evaluation/checkpointing | the same three fixed tasks every 5 steps; DCP every 10 steps |
 | W&B run | [`u3ibepq0`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/u3ibepq0) |
@@ -205,6 +206,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --log-path "$RUN_DIR" \
   --harbor-environment e2b \
   --harbor-trial-config training/examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml \
+  --e2b-task-memory-mb rstan-to-pystan=16384 \
   --max-concurrent-trials 128 \
   --evaluation-task count-dataset-tokens \
   --evaluation-task extract-elf \
