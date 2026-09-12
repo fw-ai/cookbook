@@ -73,6 +73,180 @@ The model, tokenizer, and renderer are deliberately required. V1 ships the
 GLM-5.2 sidecar renderer; a model/template pair that has only offline renderer
 coverage is rejected before creating a Harbor trial.
 
+## Dedicated Kimi-K3 full-parameter convergence test
+
+Before launching the full fanout, complete the checks in
+[`E2B_RUNBOOK.md`](E2B_RUNBOOK.md). They cover task-image compatibility,
+template readiness, the certified Kimi tokenizer/renderer pair, and one real
+trajectory smoke test.
+
+The generic OpenCode recipe can attach to an existing full-parameter trainer
+and rollout deployment. The following command runs the synchronous full-corpus
+convergence workload: 16 prompt groups x 8 rollouts per optimizer step,
+shuffled training rows, E2B task environments, no Router Replay, 262K total
+context, 32K maximum output per model call, and a fixed evaluation every five
+steps. The dedicated trial config provisions 4 CPUs and 8 GB per E2B sandbox;
+the 2 GB task default is insufficient for the Chrome-heavy
+`filter-js-from-html` verifier. It does not clean up the supplied resources
+when interrupted. GSPO uses
+the paper-recommended asymmetric `[1 - 3e-4, 1 + 4e-4]` clipping interval.
+
+```bash
+uv run python -m training.examples.rl.harbor.recipes.train_opencode \
+  --base-model accounts/fireworks/models/kimi-k3 \
+  --tokenizer-model moonshotai/Kimi-K3 \
+  --tokenizer-revision 9f62e4e9fffbd0a83ddd60e1c209d828994b3569 \
+  --renderer-name kimi_k3_preserve_thinking \
+  --trainer-job-id <trainer-job-id> \
+  --deployment-id <deployment-id> \
+  --deployment-shape <versioned-rollout-shape> \
+  --harbor-dataset <prepared-terminal-bench-opencode-directory> \
+  --harbor-trials-dir <run-directory>/trials \
+  --log-path <run-directory> \
+  --harbor-environment e2b \
+  --harbor-trial-config training/examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml \
+  --e2b-task-memory-mb rstan-to-pystan=16384 \
+  --e2b-task-verifier-timeout-seconds torch-tensor-parallelism=1200 \
+  --max-concurrent-trials 128 \
+  --evaluation-task count-dataset-tokens \
+  --evaluation-task extract-elf \
+  --evaluation-task polyglot-rust-c \
+  --cycle-selected-tasks \
+  --task-seed 20260808 \
+  --max-rows 264 \
+  --epochs 1 \
+  --completions-per-prompt 8 \
+  --prompt-groups-per-step 16 \
+  --pipeline-chunks-per-step 16 \
+  --min-group-size 8 \
+  --max-incomplete-group-retries 2 \
+  --lora-rank 0 \
+  --learning-rate 1e-6 \
+  --kl-beta 0 \
+  --max-head-offpolicy-versions 0 \
+  --policy-loss gspo \
+  --no-router-replay \
+  --grad-accumulation-normalization num_sequences \
+  --grad-clip-norm 1.0 \
+  --eps-clip 0.0003 \
+  --eps-clip-high 0.0004 \
+  --tis-cap 5 \
+  --max-seq-len 262144 \
+  --max-completion-tokens 32768 \
+  --sample-timeout 7200 \
+  --harness-tool-timeout-seconds 6900 \
+  --evaluation-every 5 \
+  --evaluation-concurrency 24 \
+  --dcp-save-interval 10 \
+  --shuffle \
+  --no-cleanup-on-exit \
+  --wandb-entity <entity> \
+  --wandb-project <project> \
+  --wandb-run-name <run-name>
+```
+
+Set `FIREWORKS_API_KEY` and, when W&B logging is enabled,
+`WANDB_API_KEY` in the environment. Do not put either secret in the command or
+the run directory. Use `--init-from-checkpoint step-N` to resume the trainer's
+weights and optimizer without recreating the trainer or rollout deployment.
+
+### Concrete inputs for the convergence run
+
+The convergence run uses the following immutable shape versions and concrete inputs.
+The trainer and deployment IDs are recorded for provenance; create replacements
+from the same shape versions if those resources have expired.
+
+| Input | Value |
+| --- | --- |
+| Base model | `accounts/fireworks/models/kimi-k3` |
+| Tokenizer model | `moonshotai/Kimi-K3` |
+| Tokenizer revision | `9f62e4e9fffbd0a83ddd60e1c209d828994b3569` (the production-certified TITO bundle) |
+| Training shape | `accounts/fireworks/trainingShapes/kimi-k3-262k-gb300/versions/rbb16rr5` |
+| Rollout shape | `accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz` |
+| Trainer | `accounts/training/rlorTrainerJobs/k3-gspo-all89-20260910-213414` |
+| Deployment | `accounts/training/deployments/k3-gspo-all89-20260910-213414` |
+| Prepared dataset | `/shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v12` |
+| Training tasks | All tasks discovered in the prepared dataset (89 in the pinned Terminal-Bench dataset) |
+| Evaluation tasks | `count-dataset-tokens`, `extract-elf`, `polyglot-rust-c` |
+| Training rows | 264 prompt groups cycled across all 89 tasks (2.97 corpus passes); task order seeded with `20260808`, then shuffled by the RL loop |
+| Optimizer batch | 16 prompt groups x 8 rollouts = 128 trajectories; 16 pipeline chunks (one prompt group per forward/backward call) |
+| Training length | 17 optimizer steps (16 full and one 8-group tail); 2,112 sampled trajectories |
+| Optimization | full parameter; LR `1e-6`; Adam beta2 `0.95`; Adam epsilon `1e-12`; gradient clipping at `1.0`; sequence-count gradient normalization |
+| Policy objective | GSPO sequence-level importance ratio; `kl_beta=0`; asymmetric clip `3e-4` / `4e-4`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
+| Loss reduction | Mean over active response tokens within each sequence, then equal mean over sequences (`num_sequences`) |
+| Routing | Router Replay disabled; GSPO does not require routing replay |
+| Harbor backend | E2B; 128 concurrent trials; 8 GiB normally and 16 GiB for `rstan-to-pystan`; two-hour outer-trial and tool timeouts |
+| Token limits | 262,144 total tokens; 32,768 generated tokens per model call |
+| Evaluation/checkpointing | the same three fixed tasks every 5 steps; DCP every 10 steps |
+| W&B run | [`u3ibepq0`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/u3ibepq0) |
+| Prior-run evidence | [`9a13a8f5`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/9a13a8f5); it used LR `2e-6` and no shuffle |
+
+This is the credential-safe command for the convergence run. The SDK/model-request
+timeout and the per-tool Harbor timeout are separate controls, so both are set
+to 7,200 seconds for long-tail tasks. W&B records the configured clipping
+epsilons and the dynamic `train/gspo_sequence_ratio_mean`,
+`train/gspo_clip_frac`, `train/gspo_clip_low_frac`, and
+`train/gspo_clip_high_frac` metrics. The 128-way E2B fanout uses more than the
+common 1,024-descriptor shell default, so raise the client process limit before
+launching it.
+
+```bash
+RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/k3-gspo-all89-20260910-213414
+ulimit -n 65536
+
+uv run python -m training.examples.rl.harbor.recipes.train_opencode \
+  --base-model accounts/fireworks/models/kimi-k3 \
+  --tokenizer-model moonshotai/Kimi-K3 \
+  --tokenizer-revision 9f62e4e9fffbd0a83ddd60e1c209d828994b3569 \
+  --renderer-name kimi_k3_preserve_thinking \
+  --trainer-job-id k3-gspo-all89-20260910-213414 \
+  --deployment-id k3-gspo-all89-20260910-213414 \
+  --deployment-shape accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz \
+  --harbor-dataset /shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v12 \
+  --harbor-trials-dir "$RUN_DIR/trials" \
+  --log-path "$RUN_DIR" \
+  --harbor-environment e2b \
+  --harbor-trial-config training/examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml \
+  --e2b-task-memory-mb rstan-to-pystan=16384 \
+  --e2b-task-verifier-timeout-seconds torch-tensor-parallelism=1200 \
+  --max-concurrent-trials 128 \
+  --evaluation-task count-dataset-tokens \
+  --evaluation-task extract-elf \
+  --evaluation-task polyglot-rust-c \
+  --cycle-selected-tasks \
+  --task-seed 20260808 \
+  --max-rows 264 \
+  --epochs 1 \
+  --completions-per-prompt 8 \
+  --prompt-groups-per-step 16 \
+  --pipeline-chunks-per-step 16 \
+  --min-group-size 8 \
+  --max-incomplete-group-retries 2 \
+  --lora-rank 0 \
+  --learning-rate 1e-6 \
+  --kl-beta 0 \
+  --max-head-offpolicy-versions 0 \
+  --policy-loss gspo \
+  --no-router-replay \
+  --grad-accumulation-normalization num_sequences \
+  --grad-clip-norm 1.0 \
+  --eps-clip 0.0003 \
+  --eps-clip-high 0.0004 \
+  --tis-cap 5 \
+  --max-seq-len 262144 \
+  --max-completion-tokens 32768 \
+  --sample-timeout 7200 \
+  --harness-tool-timeout-seconds 6900 \
+  --evaluation-every 5 \
+  --evaluation-concurrency 24 \
+  --dcp-save-interval 10 \
+  --shuffle \
+  --no-cleanup-on-exit \
+  --wandb-entity myh97 \
+  --wandb-project kimi-k3-fullparam-harbor \
+  --wandb-run-name k3-gspo-all89-20260910-213414
+```
+
 OpenCode title and summary requests do not carry tools and are logged as
 auxiliary calls. Tool-bearing turns are trainable. Their exact sampled token IDs,
 log probabilities, optional routing matrices, history decisions, and trainable

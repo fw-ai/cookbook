@@ -204,6 +204,9 @@ class ConfigurableOpenCode(OpenCode):
             # bootstrap, especially when a full Harbor cohort starts at once.
             "OPENCODE_DISABLE_MODELS_FETCH": "1",
             "OPENCODE_DISABLE_AUTOUPDATE": "1",
+            # Keep OpenCode's own per-call ceiling non-binding. The trajectory
+            # sidecar enforces the configured output and context budgets.
+            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "1000000",
             "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": str(
                 self._tool_timeout_seconds * 1000
             ),
@@ -240,7 +243,7 @@ class ConfigurableOpenCode(OpenCode):
                     f"opencode --model={shlex.quote(str(self.model_name))} "
                     "run --format=json "
                     f"{resume_flag}{cli_flags_arg}--thinking "
-                    "--dangerously-skip-permissions -- "
+                    "--auto -- "
                     f"{escaped_instruction} </dev/null; "
                     f"printf '%s\\n' \"$?\" > {shlex.quote(_AGENT_STATUS_PATH)}; "
                     ") 2>&1 | stdbuf -oL tee /logs/agent/opencode.txt; "

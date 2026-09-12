@@ -10,6 +10,7 @@ model/template-specific suffix-and-junction implementation.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -28,6 +29,7 @@ from fireworks.training.sdk import (
 
 
 _GLM52_RENDERER = "glm_moe_dsa_preserve_thinking"
+_KIMI_K3_RENDERER = "kimi_k3_preserve_thinking"
 _INCREMENTAL_ANCHOR_SYSTEM = {"role": "system", "content": "TITO anchor"}
 _GLM_TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 _GLM_TOOL_ARG_RE = re.compile(
@@ -66,28 +68,57 @@ def load_sidecar_tokenizer(path: str | Path) -> Any:
     """Load the pinned tokenizer and its bundled authoritative chat template."""
     from transformers import AutoTokenizer
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        Path(path),
-        local_files_only=True,
-        trust_remote_code=False,
+    tokenizer_path = Path(path)
+    tokenizer_config = json.loads(
+        (tokenizer_path / "tokenizer_config.json").read_text(encoding="utf-8")
     )
-    if not getattr(tokenizer, "chat_template", None):
+    auto_map = tokenizer_config.get("auto_map") or {}
+    custom_tokenizer = auto_map.get("AutoTokenizer")
+    if custom_tokenizer not in (None, ["tokenization_kimi.TikTokenTokenizer", None]):
+        raise ValueError("TITO sidecar does not allow this custom tokenizer")
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_path,
+        local_files_only=True,
+        trust_remote_code=custom_tokenizer is not None,
+    )
+    if custom_tokenizer is None and not getattr(tokenizer, "chat_template", None):
         raise ValueError("TITO sidecar tokenizer has no bundled chat template")
     return tokenizer
 
 
 def _tokenizer_fingerprint(tokenizer: Any) -> str:
     backend = getattr(tokenizer, "backend_tokenizer", None)
-    if backend is None or not hasattr(backend, "to_str"):
+    if backend is not None and hasattr(backend, "to_str"):
+        contract = {
+            "kind": "fast",
+            "backend": json.loads(backend.to_str()),
+            "chat_template": getattr(tokenizer, "chat_template", None),
+            "special_tokens_map": tokenizer.special_tokens_map,
+        }
+    elif type(tokenizer).__name__ == "TikTokenTokenizer":
+        tokenizer_module = __import__(type(tokenizer).__module__, fromlist=["__file__"])
+        tokenizer_source = Path(tokenizer_module.__file__).resolve()
+        encoding_source = tokenizer_source.with_name("encoding_k3.py")
+        vocab_source = Path(tokenizer.vocab_file).resolve()
+        if not encoding_source.is_file() or not vocab_source.is_file():
+            raise ValueError("Kimi K3 tokenizer bundle is incomplete")
+        contract = {
+            "kind": "kimi_k3_tiktoken",
+            "class": type(tokenizer).__name__,
+            "tokenization_sha256": hashlib.sha256(
+                tokenizer_source.read_bytes()
+            ).hexdigest(),
+            "encoding_sha256": hashlib.sha256(
+                encoding_source.read_bytes()
+            ).hexdigest(),
+            "vocab_sha256": hashlib.sha256(vocab_source.read_bytes()).hexdigest(),
+            "special_tokens_map": tokenizer.special_tokens_map,
+        }
+    else:
         raise ValueError(
-            "production TITO certification requires a fast tokenizer with a "
-            "serializable backend"
+            "production TITO certification requires a serializable fast tokenizer "
+            "or the pinned Kimi K3 TikTokenTokenizer"
         )
-    contract = {
-        "backend": json.loads(backend.to_str()),
-        "chat_template": getattr(tokenizer, "chat_template", None),
-        "special_tokens_map": tokenizer.special_tokens_map,
-    }
     encoded = json.dumps(
         contract,
         sort_keys=True,
@@ -553,11 +584,273 @@ class GLM52TITORenderer:
         return tuple(str(self.tokenizer.decode([token])) for token in self._stop)
 
 
+_KIMI_OPEN = "<|open|>"
+_KIMI_CLOSE = "<|close|>"
+_KIMI_SEP = "<|sep|>"
+_KIMI_STOP = f"{_KIMI_CLOSE}message{_KIMI_SEP}"
+_KIMI_CALL_PATTERN = re.compile(
+    rf"{re.escape(_KIMI_OPEN)}call(?P<header>.*?){re.escape(_KIMI_SEP)}"
+    rf"(?P<body>.*?){re.escape(_KIMI_CLOSE)}call{re.escape(_KIMI_SEP)}",
+    re.DOTALL,
+)
+_KIMI_ARG_PATTERN = re.compile(
+    rf"{re.escape(_KIMI_OPEN)}argument(?P<header>.*?){re.escape(_KIMI_SEP)}"
+    rf"(?P<body>.*?){re.escape(_KIMI_CLOSE)}argument{re.escape(_KIMI_SEP)}",
+    re.DOTALL,
+)
+_KIMI_JSON_PATTERN = re.compile(
+    rf"{re.escape(_KIMI_OPEN)}json(?P<header>.*?){re.escape(_KIMI_SEP)}"
+    rf"(?P<body>.*?){re.escape(_KIMI_CLOSE)}json{re.escape(_KIMI_SEP)}",
+    re.DOTALL,
+)
+
+
+def _find_token_subsequence(
+    haystack: Sequence[int], needle: Sequence[int], start: int = 0
+) -> int:
+    if not needle:
+        return start
+    for index in range(start, len(haystack) - len(needle) + 1):
+        if list(haystack[index : index + len(needle)]) == list(needle):
+            return index
+    return -1
+
+
+def _kimi_control_ids(tokenizer: Any, text: str) -> list[int]:
+    return list(tokenizer._encode_text_piece(text, allow_special_tokens=True))
+
+
+def _kimi_attribute(tag: str, name: str) -> str | None:
+    match = re.search(rf'\b{re.escape(name)}="([^"]*)"', tag)
+    return html.unescape(match.group(1)) if match else None
+
+
+def _kimi_typed_argument(value: str, type_name: str | None) -> Any:
+    if type_name in {"object", "array", "number", "boolean", "null"}:
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value
+
+
+def _parse_kimi_tool_calls(tokenizer: Any, tokens: Sequence[int]) -> list[dict[str, Any]]:
+    text = str(tokenizer.decode(list(tokens)))
+    matches = list(_KIMI_CALL_PATTERN.finditer(text))
+    if not matches:
+        raise ValueError("Kimi K3 tools block contains no complete tool call")
+    calls: list[dict[str, Any]] = []
+    for match in matches:
+        name = _kimi_attribute(match.group("header"), "tool")
+        if not name:
+            raise ValueError("Kimi K3 tool call is missing a function name")
+        arguments: dict[str, Any] = {}
+        json_match = _KIMI_JSON_PATTERN.search(match.group("body"))
+        if json_match:
+            parsed = json.loads(json_match.group("body"))
+            if not isinstance(parsed, dict):
+                raise ValueError("Kimi K3 JSON tool arguments must be an object")
+            arguments = parsed
+        else:
+            for argument in _KIMI_ARG_PATTERN.finditer(match.group("body")):
+                key = _kimi_attribute(argument.group("header"), "key")
+                if key is None:
+                    raise ValueError("Kimi K3 tool argument is missing a key")
+                arguments[key] = _kimi_typed_argument(
+                    argument.group("body"),
+                    _kimi_attribute(argument.group("header"), "type"),
+                )
+        calls.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(
+                        arguments, ensure_ascii=False, separators=(",", ":")
+                    ),
+                },
+            }
+        )
+    return calls
+
+
+class KimiK3TITORenderer:
+    """Pinned Kimi K3 XTML renderer for the lightweight TITO sidecar."""
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        *,
+        certification: TITORendererCertification,
+    ) -> None:
+        self.tokenizer = tokenizer
+        self.renderer_id = _KIMI_K3_RENDERER
+        self.certification_id = certification.certification_id
+        self.tokenizer_fingerprint = certification.tokenizer_fingerprint
+
+    def _render(self, request: TITOChatRequest) -> tuple[int, ...]:
+        wire = request.wire_value()
+        messages = GLM52TITORenderer._plain(
+            list((wire or {}).get("messages") or request.messages)
+        )
+        tools = GLM52TITORenderer._plain(
+            list((wire or {}).get("tools") or request.tools)
+        )
+        rendered = self.tokenizer.apply_chat_template(
+            messages,
+            tools=tools or None,
+            tokenize=True,
+            add_generation_prompt=True,
+            thinking=True,
+            thinking_effort="max",
+        )
+        if isinstance(rendered, Mapping):
+            rendered = rendered["input_ids"]
+        return tuple(int(token) for token in rendered)
+
+    def render_conversation_tokens(self, request: TITOChatRequest) -> Sequence[int]:
+        return self._render(request)
+
+    def prepare_incremental_prompt(
+        self,
+        request: TITOChatRequest,
+        stored_messages: Sequence[Mapping[str, Any]],
+        appended_messages: Sequence[Mapping[str, Any]],
+        exact_checkpoint_ids: Sequence[int],
+    ) -> TITOIncrementalPrompt | None:
+        del request, stored_messages, appended_messages, exact_checkpoint_ids
+        return None
+
+    def parse_assistant(
+        self,
+        request: TITOChatRequest,
+        completion_ids: Sequence[int],
+        completion_text: str,
+        finish_reason: str,
+    ) -> TITOParsedAssistant:
+        del completion_text
+        tokens = [int(token) for token in completion_ids]
+        stop = _kimi_control_ids(self.tokenizer, _KIMI_STOP)
+        stop_at = _find_token_subsequence(tokens, stop)
+        if stop_at < 0:
+            if finish_reason == "length":
+                return TITOParsedAssistant(
+                    message={
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": str(self.tokenizer.decode(tokens)),
+                    },
+                    output_kind="reasoning",
+                )
+            tokens.extend(stop)
+            stop_at = len(tokens) - len(stop)
+        elif _find_token_subsequence(tokens, stop, stop_at + len(stop)) >= 0:
+            raise ValueError("Kimi K3 completion contains multiple stop sequences")
+        body = tokens[:stop_at]
+
+        close_think_open_response = _kimi_control_ids(
+            self.tokenizer,
+            f"{_KIMI_CLOSE}think{_KIMI_SEP}{_KIMI_OPEN}response{_KIMI_SEP}",
+        )
+        close_response = _kimi_control_ids(
+            self.tokenizer, f"{_KIMI_CLOSE}response{_KIMI_SEP}"
+        )
+        open_tools = _kimi_control_ids(
+            self.tokenizer, f"{_KIMI_OPEN}tools{_KIMI_SEP}"
+        )
+        close_tools = _kimi_control_ids(
+            self.tokenizer, f"{_KIMI_CLOSE}tools{_KIMI_SEP}"
+        )
+
+        channel_at = _find_token_subsequence(body, close_think_open_response)
+        reasoning_ids = body[:channel_at] if channel_at >= 0 else []
+        response_start = (
+            channel_at + len(close_think_open_response) if channel_at >= 0 else 0
+        )
+        response_end = _find_token_subsequence(body, close_response, response_start)
+        if response_end < 0:
+            raise ValueError("Kimi K3 completion has no closed response channel")
+        content_ids = body[response_start:response_end]
+        remainder_start = response_end + len(close_response)
+
+        calls: list[dict[str, Any]] = []
+        tools_at = _find_token_subsequence(body, open_tools, remainder_start)
+        if tools_at >= 0:
+            tools_end = _find_token_subsequence(
+                body, close_tools, tools_at + len(open_tools)
+            )
+            if tools_end < 0:
+                raise ValueError("Kimi K3 completion has an unclosed tools channel")
+            calls = _parse_kimi_tool_calls(
+                self.tokenizer, body[tools_at + len(open_tools) : tools_end]
+            )
+
+        reasoning = str(self.tokenizer.decode(reasoning_ids))
+        content = str(self.tokenizer.decode(content_ids))
+        message: dict[str, Any] = {"role": "assistant", "content": content}
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        if calls:
+            message["tool_calls"] = calls
+        message = _ensure_tool_call_ids(message, completion_ids)
+        allowed_names = {
+            str((tool.get("function") or {}).get("name"))
+            for tool in request.tools
+            if (tool.get("function") or {}).get("name")
+        }
+        if calls and any(
+            str(call["function"]["name"]) not in allowed_names for call in calls
+        ):
+            raise ValueError("Kimi K3 tool call names are absent from the request")
+        return TITOParsedAssistant(
+            message=message,
+            output_kind="tool_calls" if calls else "reasoning" if reasoning else "text",
+        )
+
+    def fallback_assistant_text(
+        self,
+        request: TITOChatRequest,
+        completion_ids: Sequence[int],
+        finish_reason: str,
+        parser_error: BaseException,
+    ) -> str | None:
+        del request, completion_ids, finish_reason, parser_error
+        return None
+
+    def render_contract_id(self, request: TITOChatRequest) -> str:
+        contract = {
+            "renderer_id": self.renderer_id,
+            "certification_id": self.certification_id,
+            "model": request.model,
+            "tools": [dict(tool) for tool in request.tools],
+            "tokenizer_fingerprint": self.tokenizer_fingerprint,
+        }
+        return hashlib.sha256(
+            json.dumps(
+                contract,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
+
+    def stop_sequences(self, request: TITOChatRequest) -> Sequence[str]:
+        del request
+        return (_KIMI_STOP,)
+
+
 def _build_glm52_tito_renderer(
     tokenizer: Any,
     certification: TITORendererCertification,
 ) -> TITORenderer:
     return GLM52TITORenderer(tokenizer, certification=certification)
+
+
+def _build_kimi_k3_tito_renderer(
+    tokenizer: Any,
+    certification: TITORendererCertification,
+) -> TITORenderer:
+    return KimiK3TITORenderer(tokenizer, certification=certification)
 
 
 _TITO_RENDERER_CERTIFICATIONS = (
@@ -568,6 +861,14 @@ _TITO_RENDERER_CERTIFICATIONS = (
             "5591741bd28d5acb92d4b7d735e0084d4d76d9ce50e2afe99aec6b01e1ef3ef0"
         ),
         renderer_factory=_build_glm52_tito_renderer,
+    ),
+    TITORendererCertification(
+        certification_id="kimi-k3-preserved@9f62e4e9-v1",
+        renderer_names=frozenset({_KIMI_K3_RENDERER}),
+        tokenizer_fingerprint=(
+            "3d98398caa8f9429f16be14e95efc65767ac09f8a7944e306ae0e0d7f72aef58"
+        ),
+        renderer_factory=_build_kimi_k3_tito_renderer,
     ),
 )
 _TITO_CERTIFICATION_BY_RENDERER = {
@@ -588,6 +889,7 @@ def build_sidecar_tito_renderer(
 
 __all__ = [
     "GLM52TITORenderer",
+    "KimiK3TITORenderer",
     "TITORendererCertification",
     "build_sidecar_tito_renderer",
     "get_tito_renderer_certification",

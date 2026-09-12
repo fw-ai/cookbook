@@ -38,7 +38,7 @@ SIDECAR_COMPLETE_PATH = f"{SIDECAR_LOG_ROOT}/COMPLETE"
 SIDECAR_STDOUT_PATH = f"{SIDECAR_LOG_ROOT}/sidecar.stdout"
 SIDECAR_STDERR_PATH = f"{SIDECAR_LOG_ROOT}/sidecar.stderr"
 
-_BUNDLE_VERSION = 6
+_BUNDLE_VERSION = 7
 # E2B can exhibit multi-minute startup outliers while the sidecar process is
 # still alive. Keep readiness bounded by the wider agent-setup timeout, but do
 # not kill a healthy process at the old two-minute bound observed under
@@ -223,19 +223,9 @@ def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
         source = training_source / name
         digest.update(f"cookbook/training/{name}\0".encode())
         digest.update(source.read_bytes())
-    tokenizer_backend = getattr(setup.tokenizer, "backend_tokenizer", None)
-    if tokenizer_backend is None or not hasattr(tokenizer_backend, "to_str"):
-        raise ValueError("TITO sidecar requires a serializable fast tokenizer")
-    digest.update(tokenizer_backend.to_str().encode())
-    digest.update(
-        json.dumps(setup.tokenizer.special_tokens_map, sort_keys=True).encode()
-    )
-    chat_template = getattr(setup.tokenizer, "chat_template", None)
-    if not chat_template:
-        raise ValueError("TITO sidecar requires a tokenizer chat template")
-    digest.update(
-        json.dumps(chat_template, sort_keys=True, ensure_ascii=False).encode()
-    )
+    from training.tito.renderer import _tokenizer_fingerprint
+
+    digest.update(_tokenizer_fingerprint(setup.tokenizer).encode())
     bundle_digest = digest.hexdigest()
 
     configured_root = setup.extras.get("tito_sidecar_bundle_root")

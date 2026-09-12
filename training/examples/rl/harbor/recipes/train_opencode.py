@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import itertools
 import json
 import logging
 import os
+import random
 import time
 from pathlib import Path
 
@@ -24,14 +26,26 @@ from training.examples.rl.harbor.opencode.rollout import (
     DEFAULT_MAX_CONCURRENT_TRIALS,
     make_rollout_fn,
 )
-from training.examples.rl.harbor.opencode.constants import DEFAULT_OPENCODE_VERSION
+from training.examples.rl.harbor.opencode.constants import (
+    DEFAULT_OPENCODE_VERSION,
+    OPENCODE_HARBOR_IMPORT_PATH,
+)
+from training.examples.rl.harbor.tito.e2b_templates import (
+    isolate_e2b_task_rows,
+    parse_e2b_task_memory_overrides,
+    parse_e2b_task_verifier_timeout_overrides,
+    prebuild_e2b_templates,
+)
 from training.examples.rl.harbor.tito.trial import (
     DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
     load_harbor_rows,
+    task_name_from_row,
 )
 from training.recipes.async_rl_loop import Config, RolloutSetup, main
 from training.utils import DeployConfig, TrainerConfig, WandBConfig
+from training.utils.rl.gspo import GSPOConfig
+from training.utils.rl.tis import TISConfig
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.tokenizers import load_tokenizer
 
@@ -73,6 +87,44 @@ def parse_args() -> argparse.Namespace:
         default="docker",
         help="Harbor sandbox backend; local Docker remains the default",
     )
+    parser.add_argument(
+        "--e2b-request-timeout",
+        type=float,
+        default=900.0,
+        help="E2B control-plane request timeout in seconds",
+    )
+    parser.add_argument(
+        "--e2b-template-concurrency",
+        type=int,
+        default=8,
+        help="Maximum concurrent E2B template builds before rollout fan-out",
+    )
+    parser.add_argument(
+        "--e2b-template-timeout",
+        type=float,
+        default=1800.0,
+        help="Timeout in seconds for each E2B template build",
+    )
+    parser.add_argument(
+        "--e2b-task-memory-mb",
+        action="append",
+        default=[],
+        metavar="TASK=MB",
+        help=(
+            "Per-task E2B memory override; repeat for exceptional tasks while "
+            "keeping the shared trial config unchanged"
+        ),
+    )
+    parser.add_argument(
+        "--e2b-task-verifier-timeout-seconds",
+        action="append",
+        default=[],
+        metavar="TASK=SECONDS",
+        help=(
+            "Per-task E2B verifier timeout; repeat to bound known verifier "
+            "deadlocks without shortening the agent timeout"
+        ),
+    )
     parser.add_argument("--harbor-trials-dir", default=None)
     parser.add_argument(
         "--sampling-only",
@@ -88,6 +140,18 @@ def parse_args() -> argparse.Namespace:
             "Prompt construction mode. Incremental is experimental and requires "
             "a model-specific exact-checkpoint suffix/junction implementation."
         ),
+    )
+    parser.add_argument(
+        "--router-replay",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Replay inference MoE routes during training when supported",
+    )
+    parser.add_argument(
+        "--router-replay-completion-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Replay generated-token routes without prompt echo overhead",
     )
     parser.add_argument(
         "--renderer-name",
@@ -139,6 +203,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--task-seed", type=int, default=20260728)
     parser.add_argument(
+        "--cycle-selected-tasks",
+        action="store_true",
+        help=(
+            "Shuffle the selected --harbor-task rows once, then cycle them to "
+            "--max-rows. When no task is selected, cycle every discovered task."
+        ),
+    )
+    parser.add_argument(
+        "--shuffle",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Shuffle rows in the RL loop; disable for an exactly reproducible order",
+    )
+    parser.add_argument(
         "--evaluation-task",
         action="append",
         default=[],
@@ -148,6 +226,7 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--evaluation-every", type=int, default=3)
+    parser.add_argument("--evaluation-repeats", type=int, default=1)
     parser.add_argument("--evaluation-concurrency", type=int, default=24)
     parser.add_argument("--output-model-id", default=None)
     parser.add_argument(
@@ -169,9 +248,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kl-beta", type=float, default=0.001)
     parser.add_argument("--lora-rank", type=int, default=64)
     parser.add_argument("--max-head-offpolicy-versions", type=int, default=0)
+    parser.add_argument("--grad-clip-norm", type=float, default=0.0)
+    parser.add_argument("--eps-clip", type=float, default=0.2)
+    parser.add_argument("--eps-clip-high", type=float, default=None)
+    parser.add_argument(
+        "--policy-loss",
+        choices=("grpo", "gspo"),
+        default="grpo",
+        help="PPO ratio granularity: per-token GRPO or sequence-level GSPO",
+    )
+    parser.add_argument("--tis-cap", type=float, default=5.0)
+    parser.add_argument("--tis-icepop-threshold", type=float, default=None)
     parser.add_argument(
         "--grad-accumulation-normalization",
-        choices=("none", "num_loss_tokens"),
+        choices=("none", "num_loss_tokens", "num_sequences"),
         default="none",
     )
     parser.add_argument(
@@ -203,6 +293,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--replica-count", type=int, default=1)
+    parser.add_argument("--init-from-checkpoint", default=None)
+    parser.add_argument(
+        "--cleanup-on-exit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Clean up resources created by the recipe when it exits",
+    )
+    parser.add_argument(
+        "--save-final-checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument("--log-path", default="./harbor_opencode_logs")
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
     parser.add_argument(
@@ -235,6 +337,14 @@ def _rollout_extras(
         "task_selector": selector,
         "harbor_trial_config": args.harbor_trial_config,
         "harbor_environment": args.harbor_environment,
+        "e2b_task_memory_mb": parse_e2b_task_memory_overrides(
+            getattr(args, "e2b_task_memory_mb", ())
+        ),
+        "e2b_task_verifier_timeout_seconds": (
+            parse_e2b_task_verifier_timeout_overrides(
+                getattr(args, "e2b_task_verifier_timeout_seconds", ())
+            )
+        ),
         "harbor_trials_dir": args.harbor_trials_dir,
         "tito_sidecar_bundle_root": str(
             Path(args.log_path).expanduser().resolve() / ".tito-sidecar-bundles"
@@ -258,6 +368,9 @@ def _run_sampling_only(
         raise ValueError("--sampling-only requires --harbor-trials-dir")
 
     tokenizer = load_tokenizer(args.tokenizer_model, args.tokenizer_revision)
+    deployment_model = args.deployment_id
+    if "/" not in deployment_model:
+        deployment_model = f"accounts/training/deployments/{deployment_model}"
     setup = RolloutSetup(
         tokenizer=tokenizer,
         tokenizer_id=args.tokenizer_model,
@@ -269,14 +382,14 @@ def _run_sampling_only(
             "max_seq_len": args.max_seq_len,
             "http_timeout": args.sample_timeout,
             "logprobs": True,
-            "include_routing_matrix": True,
+            "include_routing_matrix": args.router_replay,
             "echo": False,
         },
         inference_base_url=os.environ.get(
             "FIREWORKS_BASE_URL", "https://api.fireworks.ai"
         ),
         api_key=os.environ["FIREWORKS_API_KEY"],
-        model=args.deployment_id,
+        model=deployment_model,
         completions_per_prompt=args.completions_per_prompt,
         extras=_rollout_extras(args, selector=selector),
     )
@@ -316,12 +429,20 @@ def _run_sampling_only(
 
 def run() -> None:
     args = parse_args()
-    if not args.sampling_only and not args.training_shape_id:
-        raise ValueError("training requires --training-shape-id")
+    e2b_task_memory_mb = parse_e2b_task_memory_overrides(args.e2b_task_memory_mb)
+    e2b_task_verifier_timeout_seconds = (
+        parse_e2b_task_verifier_timeout_overrides(
+            args.e2b_task_verifier_timeout_seconds
+        )
+    )
+    if not args.sampling_only and not (args.trainer_job_id or args.training_shape_id):
+        raise ValueError("training requires --trainer-job-id or --training-shape-id")
     if args.evaluation_every < 1:
         raise ValueError("--evaluation-every must be positive")
     if args.evaluation_concurrency < 1:
         raise ValueError("--evaluation-concurrency must be positive")
+    if args.evaluation_repeats < 1:
+        raise ValueError("--evaluation-repeats must be positive")
     manifest = (
         DABstepManifest.load(args.dabstep_manifest) if args.dabstep_manifest else None
     )
@@ -352,16 +473,78 @@ def run() -> None:
         )
         rows = [{"id": f"dabstep-group-{index}"} for index in range(args.max_rows)]
     else:
-        rows = load_harbor_rows(
+        selected_rows = load_harbor_rows(
             args.harbor_dataset,
             registry_path=args.harbor_registry_path,
             task_names=args.harbor_task or None,
-            n_tasks=args.max_rows,
+            n_tasks=None if args.cycle_selected_tasks else args.max_rows,
         )
         if args.evaluation_task:
-            evaluation_rows = rows_for_tasks(rows, tuple(args.evaluation_task))
+            evaluation_rows = rows_for_tasks(selected_rows, tuple(args.evaluation_task))
+            evaluation_rows = [
+                dict(row)
+                for row in evaluation_rows
+                for _ in range(args.evaluation_repeats)
+            ]
+        if args.cycle_selected_tasks:
+            selected = [dict(row) for row in selected_rows]
+            random.Random(args.task_seed).shuffle(selected)
+            rows = [
+                dict(row)
+                for row in itertools.islice(itertools.cycle(selected), args.max_rows)
+            ]
+        else:
+            rows = selected_rows
     if not rows:
         raise ValueError(f"No Harbor tasks found for {args.harbor_dataset!r}")
+    if args.harbor_environment == "e2b":
+        if not os.environ.get("E2B_API_KEY"):
+            raise ValueError("E2B_API_KEY is required for --harbor-environment=e2b")
+        if args.e2b_request_timeout <= 0:
+            raise ValueError("--e2b-request-timeout must be positive")
+        # Local Docker caches are host-local and cannot be pulled by E2B. Use
+        # private copies so an active Docker run remains completely untouched.
+        all_rows = isolate_e2b_task_rows(
+            [*rows, *evaluation_rows],
+            task_root=Path(args.log_path).expanduser().resolve() / ".e2b-tasks",
+        )
+        rows = all_rows[: len(rows)]
+        evaluation_rows = all_rows[len(rows) :]
+        import e2b.connection_config as e2b_connection_config
+
+        e2b_connection_config.REQUEST_TIMEOUT = args.e2b_request_timeout
+        unique_rows = list(
+            {
+                task_name_from_row(row): row
+                for row in [*rows, *evaluation_rows]
+            }.values()
+        )
+        template_records = asyncio.run(
+            prebuild_e2b_templates(
+                unique_rows,
+                trials_dir=(
+                    args.harbor_trials_dir
+                    or Path(args.log_path).expanduser().resolve() / "trials"
+                ),
+                agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
+                agent_version=args.opencode_version,
+                agent_provider="fireworks-rl",
+                context_limit=args.max_seq_len,
+                output_limit=args.max_completion_tokens,
+                trial_config=args.harbor_trial_config,
+                task_memory_mb=e2b_task_memory_mb,
+                task_verifier_timeout_seconds=(
+                    e2b_task_verifier_timeout_seconds
+                ),
+                max_concurrency=args.e2b_template_concurrency,
+                timeout_seconds=args.e2b_template_timeout,
+                tool_timeout_seconds=args.harness_tool_timeout_seconds,
+            )
+        )
+        logger.info(
+            "Verified %d unique E2B templates before rollout fan-out",
+            len(template_records),
+        )
     logger.info("Loaded %d Harbor tasks", len(rows))
 
     if args.sampling_only:
@@ -383,9 +566,25 @@ def run() -> None:
         temperature=args.temperature,
         epochs=args.epochs,
         max_rows=len(rows),
-        shuffle=manifest is None,
+        shuffle=args.shuffle if manifest is None else False,
         lora_rank=args.lora_rank,
         max_head_offpolicy_versions=args.max_head_offpolicy_versions,
+        router_replay=args.router_replay,
+        router_replay_completion_only=args.router_replay_completion_only,
+        grad_clip_norm=args.grad_clip_norm,
+        eps_clip=args.eps_clip,
+        eps_clip_high=args.eps_clip_high,
+        policy_loss=args.policy_loss,
+        gspo=GSPOConfig(
+            clip_ratio_low=args.eps_clip,
+            clip_ratio_high=(
+                args.eps_clip if args.eps_clip_high is None else args.eps_clip_high
+            ),
+        ),
+        tis=TISConfig(
+            cap=args.tis_cap,
+            icepop_threshold=args.tis_icepop_threshold,
+        ),
         grad_accumulation_normalization=(
             None
             if args.grad_accumulation_normalization == "none"
@@ -393,6 +592,9 @@ def run() -> None:
         ),
         dcp_save_interval=args.dcp_save_interval,
         weight_sync_timeout=args.weight_sync_timeout,
+        init_from_checkpoint=args.init_from_checkpoint,
+        cleanup_on_exit=args.cleanup_on_exit,
+        save_final_checkpoint=args.save_final_checkpoint,
         warm_start_from_adapter=args.warm_start_from_adapter,
         output_model_id=args.output_model_id,
         trainer=TrainerConfig(

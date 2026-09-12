@@ -404,6 +404,29 @@ class TestFwdBwdResultAveraging:
         assert metrics["train/inference_k3"] == pytest.approx(3.0)
         assert metrics["train/raw_inference_logprob_coverage"] == pytest.approx(0.75)
 
+    def test_inference_kld_is_token_weighted_across_chunks(self):
+        metrics = compute_step_metrics(
+            prompt_groups=[],
+            fwd_bwd_results=[
+                self._fake_fwd_bwd(
+                    inference_kld=0.2,
+                    inference_kld_sum=2.0,
+                    inference_kld_tokens=10.0,
+                ),
+                self._fake_fwd_bwd(
+                    inference_kld=0.4,
+                    inference_kld_sum=12.0,
+                    inference_kld_tokens=30.0,
+                ),
+            ],
+            optim_result=None,
+            n_accum=2,
+            timing_metrics={},
+        )
+
+        assert metrics["train/inference_kld"] == pytest.approx(14.0 / 40.0)
+        assert metrics["train/inference_kld_tokens"] == 40.0
+
     def test_single_fwd_bwd_result_is_reported_directly(self):
         """Report a single forward/backward result without changing its metrics."""
         only = self._fake_fwd_bwd(ppo_clip_frac=0.42, ppo_ratio_mean=1.07)
