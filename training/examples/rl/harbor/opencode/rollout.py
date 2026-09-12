@@ -103,6 +103,9 @@ class _HarborRolloutRunner:
         self._e2b_task_memory_mb = dict(
             setup.extras.get("e2b_task_memory_mb") or {}
         )
+        self._e2b_task_verifier_timeout_seconds = dict(
+            setup.extras.get("e2b_task_verifier_timeout_seconds") or {}
+        )
         self._harbor_environment = str(
             setup.extras.get("harbor_environment", "docker")
         ).lower()
@@ -325,6 +328,9 @@ class _HarborRolloutRunner:
                 trial_config,
                 task_name=task_name,
                 task_memory_mb=self._e2b_task_memory_mb,
+                task_verifier_timeout_seconds=(
+                    self._e2b_task_verifier_timeout_seconds
+                ),
             )
         return await run_harbor_trial(
             task_config=task_config,

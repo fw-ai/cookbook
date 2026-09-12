@@ -2278,6 +2278,30 @@ def test_e2b_task_memory_override_is_task_specific_and_immutable() -> None:
     assert base["environment"]["override_memory_mb"] == 8192
 
 
+def test_e2b_task_verifier_timeout_is_task_specific_and_immutable() -> None:
+    base = {"verifier": {"override_timeout_sec": 7200}}
+    overrides = e2b_templates.parse_e2b_task_verifier_timeout_overrides(
+        ["torch-tensor-parallelism=1200"]
+    )
+
+    regular = e2b_templates.e2b_trial_config_for_task(
+        base,
+        task_name="distribution-search",
+        task_memory_mb=None,
+        task_verifier_timeout_seconds=overrides,
+    )
+    bounded = e2b_templates.e2b_trial_config_for_task(
+        base,
+        task_name="torch-tensor-parallelism",
+        task_memory_mb=None,
+        task_verifier_timeout_seconds=overrides,
+    )
+
+    assert regular["verifier"]["override_timeout_sec"] == 7200
+    assert bounded["verifier"]["override_timeout_sec"] == 1200
+    assert base["verifier"]["override_timeout_sec"] == 7200
+
+
 @pytest.mark.parametrize(
     "value",
     ["rstan-to-pystan", "=16384", "rstan-to-pystan=", "task=zero", "task=0"],
@@ -2285,6 +2309,15 @@ def test_e2b_task_memory_override_is_task_specific_and_immutable() -> None:
 def test_e2b_task_memory_override_rejects_invalid_values(value) -> None:
     with pytest.raises(ValueError):
         e2b_templates.parse_e2b_task_memory_overrides([value])
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["torch-tensor-parallelism", "=1200", "task=", "task=zero", "task=0"],
+)
+def test_e2b_task_verifier_timeout_rejects_invalid_values(value) -> None:
+    with pytest.raises(ValueError):
+        e2b_templates.parse_e2b_task_verifier_timeout_overrides([value])
 
 
 def test_e2b_rollout_uses_task_memory_override(monkeypatch, tmp_path) -> None:
@@ -2320,6 +2353,38 @@ def test_e2b_rollout_uses_task_memory_override(monkeypatch, tmp_path) -> None:
 
     assert captured["trial_config"]["environment"]["override_cpus"] == 4
     assert captured["trial_config"]["environment"]["override_memory_mb"] == 16384
+
+
+def test_e2b_rollout_uses_task_verifier_timeout(monkeypatch, tmp_path) -> None:
+    setup = _setup(tmp_path)
+    setup.extras.update(
+        harbor_environment="e2b",
+        harbor_trial_config={"verifier": {"override_timeout_sec": 7200}},
+        e2b_task_verifier_timeout_seconds={"torch-tensor-parallelism": 1200},
+    )
+    monkeypatch.setattr(
+        rollout,
+        "build_sidecar_bundle",
+        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+    )
+    captured = {}
+
+    async def run_harbor_trial(**kwargs):
+        captured.update(kwargs)
+        return _outcome(environment_type="e2b")
+
+    monkeypatch.setattr(rollout, "run_harbor_trial", run_harbor_trial)
+    runner = rollout.make_rollout_fn(setup)
+    asyncio.run(
+        runner._run_trial(
+            task_config={},
+            task_name="torch-tensor-parallelism",
+            inference_key="key",
+            run_id="run",
+        )
+    )
+
+    assert captured["trial_config"]["verifier"]["override_timeout_sec"] == 1200
 
 
 def test_e2b_template_prebuild_repairs_alias_without_default_tag(

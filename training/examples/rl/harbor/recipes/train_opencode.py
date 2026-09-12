@@ -33,6 +33,7 @@ from training.examples.rl.harbor.opencode.constants import (
 from training.examples.rl.harbor.tito.e2b_templates import (
     isolate_e2b_task_rows,
     parse_e2b_task_memory_overrides,
+    parse_e2b_task_verifier_timeout_overrides,
     prebuild_e2b_templates,
 )
 from training.examples.rl.harbor.tito.trial import (
@@ -112,6 +113,16 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Per-task E2B memory override; repeat for exceptional tasks while "
             "keeping the shared trial config unchanged"
+        ),
+    )
+    parser.add_argument(
+        "--e2b-task-verifier-timeout-seconds",
+        action="append",
+        default=[],
+        metavar="TASK=SECONDS",
+        help=(
+            "Per-task E2B verifier timeout; repeat to bound known verifier "
+            "deadlocks without shortening the agent timeout"
         ),
     )
     parser.add_argument("--harbor-trials-dir", default=None)
@@ -329,6 +340,11 @@ def _rollout_extras(
         "e2b_task_memory_mb": parse_e2b_task_memory_overrides(
             getattr(args, "e2b_task_memory_mb", ())
         ),
+        "e2b_task_verifier_timeout_seconds": (
+            parse_e2b_task_verifier_timeout_overrides(
+                getattr(args, "e2b_task_verifier_timeout_seconds", ())
+            )
+        ),
         "harbor_trials_dir": args.harbor_trials_dir,
         "tito_sidecar_bundle_root": str(
             Path(args.log_path).expanduser().resolve() / ".tito-sidecar-bundles"
@@ -414,6 +430,11 @@ def _run_sampling_only(
 def run() -> None:
     args = parse_args()
     e2b_task_memory_mb = parse_e2b_task_memory_overrides(args.e2b_task_memory_mb)
+    e2b_task_verifier_timeout_seconds = (
+        parse_e2b_task_verifier_timeout_overrides(
+            args.e2b_task_verifier_timeout_seconds
+        )
+    )
     if not args.sampling_only and not (args.trainer_job_id or args.training_shape_id):
         raise ValueError("training requires --trainer-job-id or --training-shape-id")
     if args.evaluation_every < 1:
@@ -512,6 +533,9 @@ def run() -> None:
                 output_limit=args.max_completion_tokens,
                 trial_config=args.harbor_trial_config,
                 task_memory_mb=e2b_task_memory_mb,
+                task_verifier_timeout_seconds=(
+                    e2b_task_verifier_timeout_seconds
+                ),
                 max_concurrency=args.e2b_template_concurrency,
                 timeout_seconds=args.e2b_template_timeout,
                 tool_timeout_seconds=args.harness_tool_timeout_seconds,

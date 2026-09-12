@@ -145,25 +145,73 @@ def parse_e2b_task_memory_overrides(values: Sequence[str]) -> dict[str, int]:
     return overrides
 
 
+def parse_e2b_task_verifier_timeout_overrides(
+    values: Sequence[str],
+) -> dict[str, int]:
+    """Parse repeatable ``TASK=SECONDS`` E2B verifier-timeout overrides."""
+
+    overrides: dict[str, int] = {}
+    for value in values:
+        task_name, separator, encoded_timeout = value.partition("=")
+        task_name = task_name.strip()
+        if not separator or not task_name or not encoded_timeout.strip():
+            raise ValueError(
+                "invalid E2B task verifier-timeout override "
+                f"{value!r}; expected TASK=SECONDS"
+            )
+        if task_name in overrides:
+            raise ValueError(
+                "duplicate E2B verifier-timeout override for task "
+                f"{task_name!r}"
+            )
+        try:
+            timeout_seconds = int(encoded_timeout)
+        except ValueError as exc:
+            raise ValueError(
+                f"invalid E2B verifier timeout for task {task_name!r}: "
+                f"{encoded_timeout!r}"
+            ) from exc
+        if timeout_seconds < 1:
+            raise ValueError(
+                f"E2B verifier timeout for task {task_name!r} must be positive"
+            )
+        overrides[task_name] = timeout_seconds
+    return overrides
+
+
 def e2b_trial_config_for_task(
     trial_config: Mapping[str, Any] | str | Path | None,
     *,
     task_name: str,
     task_memory_mb: Mapping[str, int] | None,
+    task_verifier_timeout_seconds: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Apply one task's E2B memory override without mutating the base config."""
+    """Apply task-specific E2B resources without mutating the base config."""
 
     config = load_harbor_trial_config(trial_config)
-    if not task_memory_mb or task_name not in task_memory_mb:
-        return config
-    configured_environment = config.get("environment")
-    if configured_environment is not None and not isinstance(
-        configured_environment, Mapping
+    if task_memory_mb and task_name in task_memory_mb:
+        configured_environment = config.get("environment")
+        if configured_environment is not None and not isinstance(
+            configured_environment, Mapping
+        ):
+            raise TypeError("Harbor trial config 'environment' must be a mapping")
+        environment = dict(configured_environment or {})
+        environment["override_memory_mb"] = int(task_memory_mb[task_name])
+        config["environment"] = environment
+    if (
+        task_verifier_timeout_seconds
+        and task_name in task_verifier_timeout_seconds
     ):
-        raise TypeError("Harbor trial config 'environment' must be a mapping")
-    environment = dict(configured_environment or {})
-    environment["override_memory_mb"] = int(task_memory_mb[task_name])
-    config["environment"] = environment
+        configured_verifier = config.get("verifier")
+        if configured_verifier is not None and not isinstance(
+            configured_verifier, Mapping
+        ):
+            raise TypeError("Harbor trial config 'verifier' must be a mapping")
+        verifier = dict(configured_verifier or {})
+        verifier["override_timeout_sec"] = int(
+            task_verifier_timeout_seconds[task_name]
+        )
+        config["verifier"] = verifier
     return config
 
 
@@ -178,6 +226,7 @@ async def prebuild_e2b_templates(
     output_limit: int,
     trial_config: Any | None = None,
     task_memory_mb: Mapping[str, int] | None = None,
+    task_verifier_timeout_seconds: Mapping[str, int] | None = None,
     max_concurrency: int = 8,
     timeout_seconds: float = 1_800.0,
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
@@ -254,6 +303,7 @@ async def prebuild_e2b_templates(
             trial_config,
             task_name=task_name,
             task_memory_mb=task_memory_mb,
+            task_verifier_timeout_seconds=task_verifier_timeout_seconds,
         )
         config = _build_trial_config(
             harbor,
@@ -335,5 +385,6 @@ __all__ = [
     "E2BTemplateRecord",
     "isolate_e2b_task_rows",
     "parse_e2b_task_memory_overrides",
+    "parse_e2b_task_verifier_timeout_overrides",
     "prebuild_e2b_templates",
 ]

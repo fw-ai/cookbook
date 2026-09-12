@@ -106,6 +106,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --harbor-environment e2b \
   --harbor-trial-config training/examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml \
   --e2b-task-memory-mb rstan-to-pystan=16384 \
+  --e2b-task-verifier-timeout-seconds torch-tensor-parallelism=1200 \
   --max-concurrent-trials 128 \
   --evaluation-task count-dataset-tokens \
   --evaluation-task extract-elf \
@@ -207,6 +208,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --harbor-environment e2b \
   --harbor-trial-config training/examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml \
   --e2b-task-memory-mb rstan-to-pystan=16384 \
+  --e2b-task-verifier-timeout-seconds torch-tensor-parallelism=1200 \
   --max-concurrent-trials 128 \
   --evaluation-task count-dataset-tokens \
   --evaluation-task extract-elf \
