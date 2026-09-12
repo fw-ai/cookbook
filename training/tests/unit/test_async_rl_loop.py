@@ -133,6 +133,7 @@ def test_main_has_explicit_client_and_server_grpo_paths() -> None:
     assert "precomputed_forward = old_policy_fwd" in source
     assert "precomputed_forward=precomputed_forward" in source
     assert 'metrics["custom_forward_reused"]' in source
+    assert "emit_grad_norm_metrics=True" in source
     assert "build_loss_fn" not in source
     assert "loss_path" not in source
     assert '"algorithm": cfg.policy_loss' in source

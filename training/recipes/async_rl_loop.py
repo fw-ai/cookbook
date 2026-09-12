@@ -879,6 +879,7 @@ def main(
                 result = policy.optim_step(
                     adam_params,
                     grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                    emit_grad_norm_metrics=True,
                 )
             return {
                 "result": result,
