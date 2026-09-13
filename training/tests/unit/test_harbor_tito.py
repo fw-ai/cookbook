@@ -1260,6 +1260,95 @@ def test_recoverable_attempt_gets_a_fresh_sidecar_spec(monkeypatch, tmp_path) ->
     assert [item["trajectory_metadata"]["retry_index"] for item in specs] == [0, 1]
 
 
+def test_incomplete_retained_trial_does_not_block_fresh_attempt(
+    monkeypatch, tmp_path
+) -> None:
+    setup = _setup(tmp_path)
+    setup.extras["rollout_retries"] = 0
+    monkeypatch.setattr(
+        rollout,
+        "build_sidecar_bundle",
+        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+    )
+    runner = rollout.make_rollout_fn(setup)
+    runner._trial_start_interval_seconds = 0
+
+    retained = tmp_path / f"{harbor_adapter._safe_trial_name('run')}-cached"
+    retained.mkdir(parents=True)
+    (retained / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "example",
+                "trial_name": retained.name,
+                "verifier_result": {"rewards": {"reward": 1.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fresh_attempts = 0
+
+    async def run_trial(**_kwargs):
+        nonlocal fresh_attempts
+        fresh_attempts += 1
+        return _outcome(artifact=_artifact("fresh-trajectory"))
+
+    monkeypatch.setattr(runner, "_run_trial", run_trial)
+    monkeypatch.setattr(tito_rollout, "materialize_tito_trajectory", _sample_rollout)
+
+    result = asyncio.run(
+        runner._run_opencode(task_config={}, task_name="task", run_id="run")
+    )
+
+    assert result is not None
+    assert result.run_id == "run"
+    assert fresh_attempts == 1
+
+
+def test_valid_retained_trial_is_reused_without_fresh_attempt(
+    monkeypatch, tmp_path
+) -> None:
+    setup = _setup(tmp_path)
+    setup.extras["rollout_retries"] = 0
+    monkeypatch.setattr(
+        rollout,
+        "build_sidecar_bundle",
+        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+    )
+    runner = rollout.make_rollout_fn(setup)
+
+    retained = tmp_path / f"{harbor_adapter._safe_trial_name('run')}-cached"
+    retained.mkdir(parents=True)
+    (retained / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "example",
+                "trial_name": retained.name,
+                "verifier_result": {"rewards": {"reward": 0.75}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        rollout,
+        "_load_sidecar_artifact",
+        lambda _path: (_artifact("retained-trajectory"), {}),
+    )
+    monkeypatch.setattr(tito_rollout, "materialize_tito_trajectory", _sample_rollout)
+
+    async def unexpected_fresh_attempt(**_kwargs):
+        raise AssertionError("a valid retained trial must not be rerun")
+
+    monkeypatch.setattr(runner, "_run_trial", unexpected_fresh_attempt)
+    result = asyncio.run(
+        runner._run_opencode(task_config={}, task_name="task", run_id="run")
+    )
+
+    assert result is not None
+    assert result.run_id == "run"
+    assert result.segments[0].reward == pytest.approx(0.75)
+
+
 def test_opencode_temporary_trial_survives_through_adapter_metrics(
     monkeypatch, tmp_path
 ) -> None:
