@@ -137,7 +137,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --harness-tool-timeout-seconds 6900 \
   --evaluation-every 5 \
   --evaluation-concurrency 24 \
-  --dcp-save-interval 10 \
+  --dcp-save-interval 1 \
   --shuffle \
   --no-cleanup-on-exit \
   --wandb-entity <entity> \
@@ -177,7 +177,7 @@ from the same shape versions if those resources have expired.
 | Routing | Router Replay disabled; GSPO does not require routing replay |
 | Harbor backend | E2B; 128 concurrent trials; 8 GiB normally and 16 GiB for `rstan-to-pystan`; two-hour outer-trial and tool timeouts |
 | Token limits | 262,144 total tokens; 32,768 generated tokens per model call |
-| Evaluation/checkpointing | the same three fixed tasks every 5 steps; DCP every 10 steps |
+| Evaluation/checkpointing | the same three fixed tasks every 5 steps; DCP every step |
 | W&B run | [`u3ibepq0`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/u3ibepq0) |
 | Prior-run evidence | [`9a13a8f5`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/9a13a8f5); it used LR `2e-6` and no shuffle |
 
@@ -239,7 +239,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --harness-tool-timeout-seconds 6900 \
   --evaluation-every 5 \
   --evaluation-concurrency 24 \
-  --dcp-save-interval 10 \
+  --dcp-save-interval 1 \
   --shuffle \
   --no-cleanup-on-exit \
   --wandb-entity myh97 \

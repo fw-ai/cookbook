@@ -36,6 +36,8 @@ restart only the local harness unless remote health evidence requires more.
 | `tokenizer does not match TITO certification` | The unpinned HF default resolved to revision `f831ab...`; certification is for `9f62e4e9...` | Pass the exact `--tokenizer-revision` above | Host and reloaded bundle fingerprints both equal `3d98398c...` |
 | Inner timeout validation failure | Tool timeout equaled the outer trial timeout | Use `--sample-timeout 7200 --harness-tool-timeout-seconds 6900` | CLI validation passes before provisioning |
 | Too many open files | 128 concurrent environments exceed a 1024-FD shell limit | Run `ulimit -n 65536` before Python | `/proc/<pid>/limits` reports `65536` |
+| `ReconnectableClient.optim_step()` rejects `emit_grad_norm_metrics` | The recipe requested optimizer diagnostics that the reconnecting wrapper did not forward to the SDK client | Forward the optional argument through synchronous and asynchronous optimizer calls | Unit-test both wrapper paths, then require `train/grad_norm` and `train/grad_norm_post_clip` from a real optimizer step |
+| Gradient clipping fails on mixed FSDP/EP `DTensor` meshes, followed by NCCL/CUDA OOM | The generic norm implementation combines dense `fsdp=128` and routed-expert `efsdp=16,ep=8` tensors before reducing their local squared norms | Use a trainer image with the mixed-mesh scalar-reduction fix; do not work around it by removing clipping | Complete forward/backward, report finite pre/post-clip norms, complete the optimizer step, hot-load its delta, and save DCP without a pod restart or OOM |
 | Agent stops after starting a persistent service | A generated `nohup ... &` command can leave its wrapper shell attached to the healthy daemon, so OpenCode waits until the per-tool timeout even though the task service is ready | Confirm the daemon is healthy, then terminate only the orphaned wrapper shell; do not terminate the daemon, sandbox, client, trainer, or rollout | The existing OpenCode process resumes, writes its trajectory, and the verifier reaches the preserved daemon |
 | `ConnectError: ... error reading a body ... timed out` during a long tool call | The E2B command stream disconnected after opening; the sandbox process may still be running | Treat this exact typed E2B transport failure as recoverable and retry with a fresh trajectory | The retry uses a new sandbox and produces a checksum-valid TITO artifact |
 | A repeated prompt group reads stale or colliding TITO files | Group-level retries reused the same Harbor trial directory even though trajectory-level retry counters reset | Give every physical Harbor attempt a unique artifact directory while preserving its logical rollout ID | Repeated logical rollouts have distinct trial paths and cannot consume prior-attempt artifacts |
@@ -43,6 +45,23 @@ restart only the local harness unless remote health evidence requires more.
 | Candidate distributed test hangs after partial verifier progress | Invalid candidate code deadlocks a multiprocess collective, so the verifier cannot reach its remaining tests | Keep the two-hour agent budget, but set `--e2b-task-verifier-timeout-seconds torch-tensor-parallelism=1200` | A hung verifier is discarded and replaced within 20 minutes; unrelated tasks retain the full verifier budget |
 | `Sandbox not found` during artifact cleanup | Secondary cleanup after sandbox creation/build failed | Diagnose the earlier exception; do not treat cleanup noise as the root cause | Root exception is absent on rerun |
 | `PyTorch was not found` | Informational Transformers warning in the lightweight sidecar | No fix required; TITO needs tokenizer utilities, not Torch | Ignore unless followed by a different fatal exception |
+
+## Retry and progress counters
+
+Do not infer failures from a counter name alone. Use these metrics together:
+
+| Metric | Meaning | Failure signal |
+| --- | --- | --- |
+| `producer/completion_refill_attempts_total` | Coordinator passes that look for more completed work and refill available capacity | None by itself; it grows during healthy long-running sampling |
+| `producer/incomplete_group_retries_total` | Prompt groups resubmitted because too few valid completions survived | Any increase requires inspecting the affected group and its trial artifacts |
+| `producer/trajectory_drops_total` | Individual trajectories discarded after rollout or validation failure | Any increase requires a typed root exception before proceeding |
+| `producer/recoverable_errors_total` | Errors handled by the producer's explicit recovery policy | Confirm every increment matches an allowlisted transient failure |
+| `tito/calls/upstream_retries` | Model-request retries inside TITO | A small nonzero count can be transient; sustained growth requires deployment/client-log inspection |
+
+Before restarting a client, record these counters and preserve its run directory.
+Never restart the trainer or rollout for a client-only failure. With DCP saved every
+step, resume from the latest server-confirmed checkpoint and keep the same W&B run
+ID so the next optimizer step remains monotonic.
 
 ## Launch sequence
 
