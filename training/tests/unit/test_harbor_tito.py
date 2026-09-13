@@ -1830,18 +1830,25 @@ def test_e2b_sidecar_cleanup_stream_timeout_is_retryable() -> None:
     )
 
 
-def test_e2b_command_stream_disconnect_is_retryable() -> None:
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "timed out",
+        "peer closed connection without sending TLS close_notify",
+    ],
+)
+def test_e2b_command_stream_disconnect_is_retryable(reason: str) -> None:
     exception = SimpleNamespace(
         exception_type="ConnectError",
         exception_message=(
             "Error reading content: request or response body error: error reading "
-            "a body from connection: timed out"
+            f"a body from connection: {reason}"
         ),
         exception_traceback=(
             'File "/site-packages/harbor/environments/e2b.py"\n'
             'File "/site-packages/e2b/sandbox_async/commands/command_handle.py"\n'
             "connectrpc.errors.ConnectError: Error reading content: request or "
-            "response body error: error reading a body from connection: timed out"
+            f"response body error: error reading a body from connection: {reason}"
         ),
     )
     assert harbor_adapter._is_retryable_e2b_command_stream_disconnect(

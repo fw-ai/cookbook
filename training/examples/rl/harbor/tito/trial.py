@@ -160,21 +160,25 @@ def _is_retryable_e2b_command_stream_disconnect(
     *,
     harbor_environment: str,
 ) -> bool:
-    """Recognize an E2B command stream that timed out after opening."""
+    """Recognize a transient E2B command-stream failure after it opened."""
 
     if harbor_environment != "e2b" or exception is None:
         return False
     traceback = str(getattr(exception, "exception_traceback", "") or "")
     exception_type = str(getattr(exception, "exception_type", "") or "")
-    marker = (
+    marker_prefix = (
         "connectrpc.errors.ConnectError: Error reading content: request or "
-        "response body error: error reading a body from connection: timed out"
+        "response body error: error reading a body from connection: "
+    )
+    retryable_reasons = (
+        "timed out",
+        "peer closed connection without sending TLS close_notify",
     )
     return (
         exception_type == "ConnectError"
         and "harbor/environments/e2b.py" in traceback
         and "e2b/sandbox_async/commands/command_handle.py" in traceback
-        and marker in traceback
+        and any(marker_prefix + reason in traceback for reason in retryable_reasons)
     )
 
 
