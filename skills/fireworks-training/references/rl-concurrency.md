@@ -41,6 +41,12 @@ window immediately; a short cooldown avoids repeated reductions from one burst.
 
 ## Deployment sizing
 
+Harbor Mini-SWE and Pi materialize TITO artifacts in one owned, spawned CPU
+process and return the normal `RolloutRun`. This is independent of
+the negotiated communication version. Keep script entrypoints under `if __name__ == "__main__":`;
+close runners with `aclose()` to release the worker. Cancellation drains a
+running conversion before its temporary files are removed.
+
 Recipe concurrency is only admission control. Deployment replicas and batch
 capacity still determine actual serving throughput. If the trainer repeatedly
 waits for rollout batches, increase rollout capacity or reduce the optimizer
@@ -48,13 +54,36 @@ batch size after checking the async performance metrics.
 
 ## Large batches and metadata-only future retrieval
 
-Separate the request-upload path from the future-result download path:
+Use `build_training_datum_from_token_mask` when only the datum is needed;
+`build_datum_from_token_mask` also returns rendered token metadata. Both preserve
+input ownership and next-token alignment. For server-side GRPO,
+`perf/fwd_bwd_time` measures SDK submission through decoded results, excluding
+datum preparation, Torch conversion and PPO/KL diagnostics.
 
-- A large request uploads the input datums. The SDK may split one logical batch
-  into transport chunks, submit chunks `2..N` in parallel, and submit chunk
-  `1` last so the trainer runs the chunks together. Metadata-only retrieval
-  does not reduce these uploads and cannot prevent a sequence-arrival gap while
-  the request is still in flight.
+The SDK automatically enables optimized request encoding, bounded numeric
+validation and concurrent chunk submission when the selected trainer's completed
+model-creation response advertises `comms: "v2"`. This works for both dedicated
+and serverless trainers; an unbound serverless session cannot advertise a
+trainer capability. Missing or unknown capabilities retain legacy behavior.
+Policy and reference models negotiate independently, including after resume.
+Inspect `training_client.comms` to see the resolved `"v1"` or `"v2"` mode. No
+manual service or cookbook flag is needed. Only v2 requests carry `comms: "v2"`;
+v1 requests retain the original wire format. No control-plane change or extra
+request is needed. Comms v2 F/B polling waits up to 20 seconds; v1
+polling retains the five-second cadence. Older SDKs ignore the added capability.
+
+Compatible optimizations apply to every client: request-size estimation,
+trainer numeric preparation, result gathering, asynchronous completion and
+forward/F/B response caching. Result bytes are reused for metadata peeks and
+retries with the existing sanitization, telemetry and retention semantics.
+
+Request uploads and future-result downloads have separate contracts:
+
+- The SDK splits large requests into transport chunks. Comms v1 clients submit
+  chunks `2..N` concurrently, then chunk `1`; comms v2 clients start chunk
+  `1` first and submit the rest concurrently. Trainer sequence ordering stays
+  intact, but a logical call can span multiple physical batches. Metadata-only
+  retrieval does not change uploads or enable streamed responses.
 - A large completed future response downloads outputs such as per-token
   logprobs. On a compatible trainer, metadata-only retrieval lets the trainer
   report that the future is complete and state its response size before the

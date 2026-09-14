@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
+import numpy as np
 import torch
 import tinker
 from training.renderer.model_info import get_recommended_renderer_name
@@ -1112,8 +1113,87 @@ def build_datum_from_tokens_and_weights(
     reduction: Literal["none", "mean"] = "none",
 ) -> RenderedSupervisedDatum:
     """Build a weighted ``tinker.Datum`` from full tokens and per-token weights."""
-    tokens = [int(x) for x in token_ids]
-    weights = [float(x) for x in token_weights]
+    return _build_text_datum(
+        _text_token_array(token_ids),
+        _text_weight_array(token_weights).astype(np.float32),
+        max_seq_len=max_seq_len,
+        include_loss_mask=include_loss_mask,
+        reduction=reduction,
+    )
+
+
+def _text_token_array(token_ids: Sequence[int]) -> np.ndarray:
+    # Own the storage: mutating a caller's array must not alter a queued datum.
+    if isinstance(token_ids, (list, tuple)):
+        # The target dtype is known. Avoid NumPy's extra dtype-inference scan;
+        # scalar assignment still checks int64 overflow and applies int().
+        try:
+            return np.fromiter(token_ids, dtype=np.int64, count=len(token_ids))
+        except (TypeError, ValueError, OverflowError):
+            # Preserve canonical error ordering when several items are invalid.
+            pass
+    values = np.array(token_ids, copy=True)
+    if values.ndim == 1 and values.dtype.kind in "bi" and values.dtype.itemsize <= 8:
+        return values.astype(np.int64, copy=False)
+    # Preserve int() coercion for floats/strings and checked int64 overflow.
+    return np.asarray([int(x) for x in token_ids], dtype=np.int64)
+
+
+def _text_weight_array(token_weights: Sequence[float]) -> np.ndarray:
+    if isinstance(token_weights, (list, tuple)):
+        try:
+            values = np.fromiter(token_weights, dtype=np.float64, count=len(token_weights))
+            if np.isfinite(values).all():
+                return values
+        except (TypeError, ValueError, OverflowError):
+            pass
+        # NumPy maps None to NaN. Use the original coercion path for nonfinite
+        # values so None still raises while explicit NaN/Inf retain semantics.
+    values = np.array(token_weights, copy=True)
+    if values.ndim == 1 and values.dtype.kind in "biuf":
+        return values.astype(np.float64, copy=False)
+    # In particular, None must still raise instead of becoming a masked NaN.
+    return np.asarray([float(x) for x in token_weights], dtype=np.float64)
+
+
+def _model_input_from_checked_tokens(tokens: np.ndarray) -> tinker.ModelInput:
+    # _text_token_array already applied int() coercion and checked int64
+    # overflow. Its tolist() owns a list of Python ints, so validating the
+    # EncodedTextChunk Sequence[int] again only scans and copies that list.
+    chunk = tinker.types.EncodedTextChunk.model_construct(tokens=tokens.tolist())
+    return tinker.ModelInput(chunks=[chunk])
+
+
+def _build_text_datum(
+    tokens: np.ndarray,
+    weights: np.ndarray,
+    *,
+    max_seq_len: int | None,
+    include_loss_mask: bool,
+    reduction: Literal["none", "mean"] = "none",
+) -> RenderedSupervisedDatum:
+    tokens, datum = _build_text_training_datum(
+        tokens,
+        weights,
+        max_seq_len=max_seq_len,
+        include_loss_mask=include_loss_mask,
+        reduction=reduction,
+    )
+    return RenderedSupervisedDatum(
+        token_ids=tokens.tolist(),
+        token_weights=[0.0] + datum.loss_fn_inputs["weights"].to_numpy().tolist(),
+        datum=datum,
+    )
+
+
+def _build_text_training_datum(
+    tokens: np.ndarray,
+    weights: np.ndarray,
+    *,
+    max_seq_len: int | None,
+    include_loss_mask: bool,
+    reduction: Literal["none", "mean"] = "none",
+) -> tuple[np.ndarray, tinker.Datum]:
     if len(tokens) != len(weights):
         raise ValueError(
             f"tokens/weights length mismatch: {len(tokens)} != {len(weights)}"
@@ -1122,33 +1202,37 @@ def build_datum_from_tokens_and_weights(
         raise ValueError("Need at least 2 tokens to build a supervised datum.")
 
     if max_seq_len is not None:
+        if max_seq_len < 2:
+            raise ValueError("Truncation left fewer than 2 tokens.")
         tokens = tokens[:max_seq_len]
         weights = weights[:max_seq_len]
         if len(tokens) < 2:
             raise ValueError("Truncation left fewer than 2 tokens.")
 
-    weight_tensor = torch.tensor(weights, dtype=torch.float32)
-    datum = datum_from_model_input_weights(
-        tinker.ModelInput.from_ints(tokens),
-        weight_tensor,
-        max_length=max_seq_len,
-        reduction=reduction,
-    )
-
-    if include_loss_mask:
-        shifted_weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
-        datum.loss_fn_inputs["loss_mask"] = tinker.TensorData(
-            data=shifted_weights,
-            dtype="float32",
-            shape=[len(shifted_weights)],
+    if reduction == "none":
+        # Text already has one flat coordinate space. Shift it once instead
+        # of building, flattening and validating a second full ModelInput.
+        datum = tinker.Datum(
+            model_input=_model_input_from_checked_tokens(tokens[:-1]),
+            loss_fn_inputs={
+                "target_tokens": tinker.TensorData.from_numpy(tokens[1:]),
+                "weights": tinker.TensorData.from_numpy(weights[1:]),
+            },
+        )
+    else:
+        # Keep the canonical float32 reduction and its validation semantics.
+        datum = datum_from_model_input_weights(
+            _model_input_from_checked_tokens(tokens),
+            torch.from_numpy(weights),
+            max_length=max_seq_len,
+            reduction=reduction,
         )
 
-    return RenderedSupervisedDatum(
-        token_ids=[int(x) for x in datum.model_input.to_ints()]
-        + [int(datum.loss_fn_inputs["target_tokens"].data[-1])],
-        token_weights=[0.0] + [float(x) for x in datum.loss_fn_inputs["weights"].data],
-        datum=datum,
-    )
+    if include_loss_mask:
+        datum.loss_fn_inputs["loss_mask"] = tinker.TensorData.from_numpy(
+            datum.loss_fn_inputs["weights"].to_numpy().copy(),
+        )
+    return tokens, datum
 
 
 def _extract_token_ids(model_input: tinker.ModelInput) -> list[int]:
@@ -1346,13 +1430,34 @@ def build_datum_from_token_mask(
     include_loss_mask: bool = False,
 ) -> RenderedSupervisedDatum:
     """Build a weighted datum from an eval-protocol-style per-token mask."""
-    token_weights = [1.0 if float(mask_value) > 0 else 0.0 for mask_value in token_mask]
-    return build_datum_from_tokens_and_weights(
-        token_ids,
-        token_weights,
+    return _build_text_datum(
+        _text_token_array(token_ids),
+        (_text_weight_array(token_mask) > 0).astype(np.float32),
         max_seq_len=max_seq_len,
         include_loss_mask=include_loss_mask,
     )
+
+
+def build_training_datum_from_token_mask(
+    token_ids: Sequence[int],
+    token_mask: Sequence[int | float],
+    *,
+    max_seq_len: int | None = None,
+    include_loss_mask: bool = False,
+) -> tinker.Datum:
+    """Build the training datum without materializing rendered token metadata.
+
+    Use this when the caller only needs ``build_datum_from_token_mask(...).datum``.
+    Input ownership, positive-mask semantics and next-token alignment are the
+    same as the rendered helper, including truncation and optional loss masks.
+    """
+    _, datum = _build_text_training_datum(
+        _text_token_array(token_ids),
+        (_text_weight_array(token_mask) > 0).astype(np.float32),
+        max_seq_len=max_seq_len,
+        include_loss_mask=include_loss_mask,
+    )
+    return datum
 
 
 def render_messages_to_datum(

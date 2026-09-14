@@ -6,8 +6,10 @@ import asyncio
 import hashlib
 import logging
 import math
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from training.examples.rl.harbor.tito._artifact_io import ArtifactProcessPool
 from training.examples.rl.harbor.mini_swe.constants import (
     MINI_SWE_HARBOR_IMPORT_PATH,
     PINNED_MINI_SWE_VERSION,
@@ -111,6 +113,7 @@ class _MiniSweRolloutRunner:
         self._max_context_tokens = resolve_max_context_tokens(setup)
         self._sidecar_bundle = build_sidecar_bundle(setup)
         self._active_rollouts = ActiveRolloutTasks()
+        self._artifact_processor = ArtifactProcessPool()
 
     async def __call__(
         self,
@@ -220,12 +223,14 @@ class _MiniSweRolloutRunner:
                     retry_include_exceptions=self._retry_include_exceptions,
                     tool_timeout_seconds=self._tool_timeout_seconds,
                     terminal_failure_reward=self._terminal_failure_reward,
+                    artifact_processor=self._artifact_processor,
+                    materializer=partial(
+                        materialize_harbor_trajectory,
+                        max_context_tokens=self._max_context_tokens,
+                        debug_enabled=self._tito_debug_enabled,
+                    ),
                 )
-            rollout = materialize_harbor_trajectory(
-                outcome,
-                max_context_tokens=self._max_context_tokens,
-                debug_enabled=self._tito_debug_enabled,
-            )
+            rollout = outcome.rollout
             if rollout is None:
                 logger.warning(
                     "Harbor/Mini-SWE retained a rewardless trajectory for %s",
@@ -249,7 +254,10 @@ class _MiniSweRolloutRunner:
             return rollout
 
     async def aclose(self) -> None:
-        await self._active_rollouts.cancel_and_wait()
+        try:
+            await self._active_rollouts.cancel_and_wait()
+        finally:
+            await self._artifact_processor.aclose()
 
 
 def make_rollout_fn(setup: RolloutSetup) -> RolloutFn:
