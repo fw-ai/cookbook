@@ -64,7 +64,7 @@ and `chromadb_text2sql/` are all gitignored.
 ## Run
 
 ```bash
-pip install --pre "fireworks-ai[training]" tinker-cookbook==0.4.1 transformers python-dotenv matplotlib
+pip install --pre "fireworks-ai[training]" transformers python-dotenv matplotlib
 export FIREWORKS_API_KEY=fw_...
 ```
 

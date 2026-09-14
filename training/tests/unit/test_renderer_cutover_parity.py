@@ -1,9 +1,7 @@
-"""Characterization gates for the renderer/model-routing ownership cutover."""
+"""Post-removal gates for Fireworks renderer/model-routing ownership."""
 
 from __future__ import annotations
 
-import dataclasses
-import importlib
 import json
 import re
 import subprocess
@@ -12,19 +10,22 @@ from typing import Any
 
 import pytest
 
+import training._vendor.tinker_cookbook_0_4_3.model_info as vendored_model_info
+import training._vendor.tinker_cookbook_0_4_3.renderers as vendored_renderers
 import training.renderer as fireworks_renderers
 import training.renderer.model_info as fireworks_model_info
-
-# The pinned package is loaded dynamically only as the temporary differential
-# oracle. Static imports from the installed package are forbidden below, and
-# this oracle goes away when the final package dependency is removed.
-legacy_model_info = importlib.import_module("tinker_cookbook.model_info")
-legacy_renderers = importlib.import_module("tinker_cookbook.renderers")
 
 _INSTALLED_PACKAGE_IMPORT = re.compile(
     r"(?m)^[ \t]*(?:"
     r"from[ \t]+tinker_cookbook(?:\.[A-Za-z_]\w*)*[ \t]+import\b"
     r"|import[ \t]+tinker_cookbook(?:\.[A-Za-z_]\w*)*\b"
+    r")"
+)
+_DISTRIBUTION_REQUIREMENT = re.compile(
+    r"(?im)(?:"
+    r"^[^\n]*(?:pip(?:3)?|uv[ \t]+pip)[ \t]+install[^\n#]*\btinker-cookbook\b"
+    r"|^[ \t\"']*tinker-cookbook(?:\[[^\]]+\])?(?:[ \t=<>~!;\"']|$)"
+    r"|\bname[ \t]*=[ \t]*\"tinker-cookbook\""
     r")"
 )
 
@@ -113,67 +114,65 @@ _BASELINE_CUSTOM_RENDERERS = (
 
 
 def test_custom_registry_matches_pre_cutover_snapshot() -> None:
-    assert tuple(fireworks_renderers.get_registered_renderer_names()) == _BASELINE_CUSTOM_RENDERERS
+    assert (
+        tuple(fireworks_renderers.get_registered_renderer_names())
+        == _BASELINE_CUSTOM_RENDERERS
+    )
 
 
-def test_role_colon_runtime_behavior_matches_pinned_package() -> None:
+def test_role_colon_runtime_behavior_matches_vendored_snapshot() -> None:
     tokenizer = _CharacterTokenizer()
     messages = [
         {"role": "system", "content": "Be terse."},
         {"role": "user", "content": "2 + 2?"},
         {"role": "assistant", "content": "4"},
     ]
-    legacy = legacy_renderers.get_renderer("role_colon", tokenizer)
+    vendored = vendored_renderers.get_renderer("role_colon", tokenizer)
     fireworks = fireworks_renderers.get_renderer("role_colon", tokenizer)
 
-    assert fireworks.get_stop_sequences() == legacy.get_stop_sequences()
-    assert fireworks.build_generation_prompt(messages).to_ints() == legacy.build_generation_prompt(
-        messages
-    ).to_ints()
+    assert fireworks.get_stop_sequences() == vendored.get_stop_sequences()
+    assert (
+        fireworks.build_generation_prompt(messages).to_ints()
+        == vendored.build_generation_prompt(messages).to_ints()
+    )
 
-    legacy_input, legacy_weights = legacy.build_supervised_example(
-        messages, legacy_renderers.TrainOnWhat.ALL_ASSISTANT_MESSAGES
+    vendored_input, vendored_weights = vendored.build_supervised_example(
+        messages, vendored_renderers.TrainOnWhat.ALL_ASSISTANT_MESSAGES
     )
     fireworks_input, fireworks_weights = fireworks.build_supervised_example(
         messages, fireworks_renderers.TrainOnWhat.ALL_ASSISTANT_MESSAGES
     )
-    assert fireworks_input.to_ints() == legacy_input.to_ints()
-    assert fireworks_weights.tolist() == legacy_weights.tolist()
+    assert fireworks_input.to_ints() == vendored_input.to_ints()
+    assert fireworks_weights.tolist() == vendored_weights.tolist()
 
     response = tokenizer.encode(" four\n\nUser:")
-    legacy_message, legacy_termination = legacy.parse_response(response)
+    vendored_message, vendored_termination = vendored.parse_response(response)
     fireworks_message, fireworks_termination = fireworks.parse_response(response)
-    assert fireworks_message == legacy_message
-    assert fireworks_termination.value == legacy_termination.value
+    assert fireworks_message == vendored_message
+    assert fireworks_termination.value == vendored_termination.value
 
 
-def test_model_routing_matches_pinned_package() -> None:
-    legacy_maps = (
-        legacy_model_info.get_llama_info(),
-        legacy_model_info.get_qwen_info(),
-        legacy_model_info.get_deepseek_info(),
-        legacy_model_info.get_gpt_oss_info(),
-        legacy_model_info.get_moonshot_info(),
-        legacy_model_info.get_nvidia_info(),
+def test_model_routing_exports_vendored_snapshot() -> None:
+    vendored_functions = (
+        vendored_model_info.get_llama_info,
+        vendored_model_info.get_qwen_info,
+        vendored_model_info.get_deepseek_info,
+        vendored_model_info.get_gpt_oss_info,
+        vendored_model_info.get_moonshot_info,
+        vendored_model_info.get_nvidia_info,
     )
-    fireworks_maps = (
-        fireworks_model_info.get_llama_info(),
-        fireworks_model_info.get_qwen_info(),
-        fireworks_model_info.get_deepseek_info(),
-        fireworks_model_info.get_gpt_oss_info(),
-        fireworks_model_info.get_moonshot_info(),
-        fireworks_model_info.get_nvidia_info(),
+    fireworks_functions = (
+        fireworks_model_info.get_llama_info,
+        fireworks_model_info.get_qwen_info,
+        fireworks_model_info.get_deepseek_info,
+        fireworks_model_info.get_gpt_oss_info,
+        fireworks_model_info.get_moonshot_info,
+        fireworks_model_info.get_nvidia_info,
     )
-    assert [
-        {name: dataclasses.asdict(attributes) for name, attributes in model_map.items()}
-        for model_map in fireworks_maps
-    ] == [
-        {name: dataclasses.asdict(attributes) for name, attributes in model_map.items()}
-        for model_map in legacy_maps
-    ]
+    assert fireworks_functions == vendored_functions
 
 
-def test_no_consumer_imports_installed_tinker_cookbook() -> None:
+def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:
     repository_root = Path(
         subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -182,20 +181,29 @@ def test_no_consumer_imports_installed_tinker_cookbook() -> None:
             text=True,
         ).stdout.strip()
     )
-    tracked_source_files = subprocess.run(
-        ["git", "ls-files", "*.py", "*.ipynb"],
+    tracked_files = subprocess.run(
+        ["git", "ls-files"],
         cwd=repository_root,
         check=True,
         capture_output=True,
         text=True,
     ).stdout.splitlines()
 
-    forbidden: list[str] = []
-    for relative_path in tracked_source_files:
+    forbidden_imports: list[str] = []
+    forbidden_requirements: list[str] = []
+    for relative_path in tracked_files:
         if "training/_vendor/tinker_cookbook_0_4_3/" in relative_path:
             continue
         path = repository_root / relative_path
-        source = path.read_text(encoding="utf-8")
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for match in _DISTRIBUTION_REQUIREMENT.finditer(source):
+            line_number = source.count("\n", 0, match.start()) + 1
+            forbidden_requirements.append(f"{relative_path}:{line_number}")
+        if path.suffix not in {".py", ".ipynb"}:
+            continue
         if path.suffix == ".ipynb":
             notebook = json.loads(source)
             source = "\n".join(
@@ -205,16 +213,22 @@ def test_no_consumer_imports_installed_tinker_cookbook() -> None:
             )
         for match in _INSTALLED_PACKAGE_IMPORT.finditer(source):
             line_number = source.count("\n", 0, match.start()) + 1
-            forbidden.append(f"{relative_path}:{line_number}")
+            forbidden_imports.append(f"{relative_path}:{line_number}")
 
-    assert not forbidden, "installed tinker-cookbook imports remain: " + ", ".join(forbidden)
+    assert not forbidden_imports, (
+        "installed tinker-cookbook imports remain: " + ", ".join(forbidden_imports)
+    )
+    assert not forbidden_requirements, (
+        "external cookbook distribution requirements remain: "
+        + ", ".join(forbidden_requirements)
+    )
 
 
 @pytest.mark.parametrize("name", ["not-a-renderer", "", "qwen-unknown"])
-def test_unknown_renderer_error_shape_matches_pinned_package(name: str) -> None:
+def test_unknown_renderer_error_shape_matches_vendored_snapshot(name: str) -> None:
     tokenizer = _CharacterTokenizer()
-    with pytest.raises(ValueError) as legacy_error:
-        legacy_renderers.get_renderer(name, tokenizer)
+    with pytest.raises(ValueError) as vendored_error:
+        vendored_renderers.get_renderer(name, tokenizer)
     with pytest.raises(ValueError) as fireworks_error:
         fireworks_renderers.get_renderer(name, tokenizer)
-    assert str(fireworks_error.value) == str(legacy_error.value)
+    assert str(fireworks_error.value) == str(vendored_error.value)
