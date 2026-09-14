@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 import tinker
 
+import training.recipes.distillation_loop as distillation_loop
 from training.recipes.distillation_loop import (
     Config,
     _auto_select_teacher_deployment_shape,
@@ -1093,27 +1094,21 @@ def test_teacher_model_resource_detection() -> None:
     assert not _is_base_model_resource("accounts/test/deployedModels/qwen3p5-9b")
 
 
-class _FakeDeployMgr:
-    """Stands in for DeploymentManager: returns canned shape-version pages."""
+class _FakeTrainerMgr:
+    """Stands in for TrainerJobManager.resolve_training_profile.
 
-    def __init__(self, shapes_by_model: dict[str, str] | None = None) -> None:
-        # map of base-model resource -> versioned shape name it should yield
-        self.shapes_by_model = shapes_by_model or {}
-        self.get_calls: list[str] = []
+    Auto-selection goes through ``auto_select_training_shape`` (monkeypatched
+    in tests that exercise it) + ``resolve_training_profile``; this fake
+    covers the profile half, mapping training shape id -> profile namespace.
+    """
 
-    def _get(self, path: str, timeout: int = 30):
-        self.get_calls.append(path)
-        self._last_path = path
-        return SimpleNamespace(
-            raise_for_status=lambda: None,
-            json=lambda: {"deploymentShapeVersions": self._versions_for(path)},
-        )
+    def __init__(self, profiles_by_shape: dict[str, SimpleNamespace] | None = None) -> None:
+        self.profiles_by_shape = profiles_by_shape or {}
+        self.resolve_calls: list[str] = []
 
-    def _versions_for(self, path: str) -> list[dict]:
-        for model, shape in self.shapes_by_model.items():
-            if model.rsplit("/models/", 1)[0] in path:
-                return [{"name": shape}]
-        return []
+    def resolve_training_profile(self, shape_id: str):
+        self.resolve_calls.append(shape_id)
+        return self.profiles_by_shape.get(shape_id)
 
 
 class _FakeTeacherRuntimeService:
@@ -1186,7 +1181,7 @@ def test_resolve_teacher_runtime_uses_existing_inference_model_directly() -> Non
     assert runtime.route_key == "teacher"
 
 
-def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> None:
+def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment(monkeypatch) -> None:
     teacher_model = "accounts/fireworks/models/qwen3p5-9b"
     cfg = Config(
         log_path="/tmp/opd",
@@ -1203,7 +1198,16 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
         teacher_deployment_timeout_s=123,
     )
     service = _FakeTeacherRuntimeService()
-    deploy_mgr = _FakeDeployMgr({teacher_model: "shape-teacher-auto"})
+    shape_id = "accounts/fw/trainingShapes/ts-teacher"
+    trainer_mgr = _FakeTrainerMgr(
+        {shape_id: SimpleNamespace(deployment_shape="shape-teacher-auto")}
+    )
+
+    monkeypatch.setattr(
+        distillation_loop,
+        "auto_select_training_shape",
+        lambda mgr, *, base_model, **kwargs: shape_id,
+    )
 
     runtime = _resolve_teacher_runtime(
         cfg=cfg,
@@ -1212,7 +1216,7 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
         tokenizer="tok",
         base_url="https://api.test",
         cancel_on_exit=True,
-        deploy_mgr=deploy_mgr,
+        trainer_mgr=trainer_mgr,
     )
 
     assert service.direct_calls == []
@@ -1228,8 +1232,8 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
     assert call["config"].hot_load_bucket_type is None
     assert call["config"].for_training is True
     assert call["config"].deployment_shape == "shape-teacher-auto"
-    # One auto-select lookup per unique teacher model, not per spec.
-    assert len(deploy_mgr.get_calls) == 1
+    # One profile resolution per unique teacher model, not per spec.
+    assert len(trainer_mgr.resolve_calls) == 1
     assert runtime.is_multi_teacher
     assert runtime.route_key == "teacher_route"
     assert sorted(runtime.route_to_entry) == ["code", "math"]
@@ -1412,26 +1416,45 @@ def test_teacher_deployment_shape_unconfigured_returns_none_for_auto_select() ->
     assert _teacher_deployment_shape_for_spec(spec, cfg) is None
 
 
-def test_auto_select_teacher_deployment_shape_picks_latest_validated() -> None:
+def test_auto_select_teacher_deployment_shape_uses_training_profile(monkeypatch) -> None:
     model = "accounts/fireworks/models/qwen3p5-9b"
-    deploy_mgr = _FakeDeployMgr({model: "accounts/fw/deploymentShapes/ds-x/versions/abc"})
+    shape_id = "accounts/fw/trainingShapes/ts-teacher"
+    profile = SimpleNamespace(deployment_shape="accounts/fw/deploymentShapes/ds-x/versions/abc")
+    trainer_mgr = _FakeTrainerMgr({shape_id: profile})
+
+    def fake_auto_select(mgr, *, base_model, **kwargs):
+        assert mgr is trainer_mgr
+        assert base_model == model
+        return shape_id
+
+    monkeypatch.setattr(distillation_loop, "auto_select_training_shape", fake_auto_select)
 
     assert (
-        _auto_select_teacher_deployment_shape(deploy_mgr, model)
+        _auto_select_teacher_deployment_shape(trainer_mgr, model)
         == "accounts/fw/deploymentShapes/ds-x/versions/abc"
     )
-    assert deploy_mgr.get_calls and "latest_validated%3Dtrue" in deploy_mgr.get_calls[0]
+    assert trainer_mgr.resolve_calls == [shape_id]
 
 
-def test_auto_select_teacher_deployment_shape_raises_when_model_has_no_shape() -> None:
+def test_auto_select_teacher_deployment_shape_raises_when_profile_has_no_deployment_shape(
+    monkeypatch,
+) -> None:
     model = "accounts/fireworks/models/orphan"
-    deploy_mgr = _FakeDeployMgr()  # no shapes registered for the model
+    shape_id = "accounts/fw/trainingShapes/ts-orphan"
+    # Profile resolves but its deployment_shape is empty (broken shape link).
+    trainer_mgr = _FakeTrainerMgr({shape_id: SimpleNamespace(deployment_shape="")})
 
-    with pytest.raises(ValueError, match="No validated deployment shape"):
-        _auto_select_teacher_deployment_shape(deploy_mgr, model)
+    monkeypatch.setattr(
+        distillation_loop,
+        "auto_select_training_shape",
+        lambda mgr, *, base_model, **kwargs: shape_id,
+    )
+
+    with pytest.raises(ValueError, match="no pinned deployment shape"):
+        _auto_select_teacher_deployment_shape(trainer_mgr, model)
 
 
-def test_resolve_teacher_runtime_requires_deploy_mgr_for_auto_select() -> None:
+def test_resolve_teacher_runtime_requires_trainer_mgr_for_auto_select() -> None:
     cfg = Config(
         log_path="/tmp/opd",
         base_model="accounts/fireworks/models/student",
@@ -1439,7 +1462,7 @@ def test_resolve_teacher_runtime_requires_deploy_mgr_for_auto_select() -> None:
     )
     service = _FakeTeacherRuntimeService()
 
-    with pytest.raises(ValueError, match="deploy_mgr"):
+    with pytest.raises(ValueError, match="trainer_mgr"):
         _resolve_teacher_runtime(
             cfg=cfg,
             teacher_specs=_resolve_teacher_specs(cfg),

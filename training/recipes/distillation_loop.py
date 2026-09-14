@@ -36,8 +36,8 @@ from fireworks.training.sdk.client import GradAccNormalization
 from fireworks.training.sdk.deployment import (
     AdaptiveConcurrencyController,
     DeploymentConfig,
-    DeploymentManager,
 )
+from fireworks.training.sdk.trainer import TrainerJobManager
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
@@ -50,6 +50,7 @@ from training.utils import (
     RunStatus,
     TrainerConfig,
     WandBConfig,
+    auto_select_training_shape,
     build_service_client,
     load_jsonl_dataset,
     load_deployment_tokenizer,
@@ -335,34 +336,32 @@ def _teacher_deployment_shape_for_spec(
 
 
 def _auto_select_teacher_deployment_shape(
-    deploy_mgr: Any,
+    trainer_mgr: Any,
     teacher_model: str,
 ) -> str:
-    """Auto-select the latest validated deployment shape for a teacher model.
+    """Auto-select a validated deployment shape for a teacher model.
 
-    Deployments created without a shape are the most common cause of failed
-    deployment creations, so teacher deployments are never created shapeless.
-    Mirrors the trainer-side ``auto_select_training_shape`` pattern: pick from
-    what the control plane has already validated for this model.
+    Teacher deployments are never created without a shape (shapeless
+    deployments are the most common cause of failed deployment creations).
+    Reuses the trainer-side helpers: ``auto_select_training_shape`` picks a
+    validated training shape for the teacher's model, and
+    ``resolve_training_profile`` yields its pinned ``deployment_shape``.
     """
-    from urllib.parse import urlencode
-
-    parent = f"{teacher_model.rsplit('/models/', 1)[0]}/deploymentShapes/-"
-    params = {"filter": 'latest_validated=true', "pageSize": 1}
-    resp = deploy_mgr._get(
-        f"/v1/{parent}/versions?{urlencode(params)}", timeout=30
+    shape_id = auto_select_training_shape(
+        trainer_mgr,
+        base_model=teacher_model,
+        trainer_role="reference",
     )
-    resp.raise_for_status()
-    versions = resp.json().get("deploymentShapeVersions", []) or []
-    if not versions:
+    profile = trainer_mgr.resolve_training_profile(shape_id)
+    shape = getattr(profile, "deployment_shape", "") or ""
+    if not shape:
         raise ValueError(
-            f"No validated deployment shape exists for teacher model "
-            f"{teacher_model!r}. Teacher deployments are never created "
-            "without a shape (shapeless deployments are the most common "
-            "cause of failed deployment creations). Pick one explicitly via "
-            "TeacherConfig.deployment_shape or teacher_deployment_shape."
+            f"Training shape {shape_id!r} for teacher model "
+            f"{teacher_model!r} has no pinned deployment shape. Pick a "
+            "deployment shape explicitly via TeacherConfig.deployment_shape "
+            "or teacher_deployment_shape."
         )
-    return versions[0]["name"]
+    return shape
 
 
 def _resolve_teacher_runtime(
@@ -373,13 +372,14 @@ def _resolve_teacher_runtime(
     tokenizer: Any,
     base_url: str,
     cancel_on_exit: bool,
-    deploy_mgr: Any | None = None,
+    trainer_mgr: Any | None = None,
 ) -> _TeacherRuntime:
     """Resolve teacher model specs to inference samplers used for scoring.
 
     Teacher deployments are never created without a shape: when no explicit
     shape is configured, a validated shape is auto-selected for each
-    teacher's own model (mirrors trainer-side ``auto_select_training_shape``).
+    teacher's own model via ``auto_select_training_shape`` +
+    ``resolve_training_profile``.
     """
     single_teacher = len(teacher_specs) == 1
     resolved_models: dict[str, str] = {}
@@ -416,16 +416,16 @@ def _resolve_teacher_runtime(
 
         shape = _teacher_deployment_shape_for_spec(spec, cfg)
         if shape is None:
-            if deploy_mgr is None:
+            if trainer_mgr is None:
                 raise ValueError(
                     "Teacher deployment shape could not be resolved: no "
-                    "deploy_mgr available for auto-selection. Set "
+                    "trainer_mgr available for auto-selection. Set "
                     "TeacherConfig.deployment_shape or "
                     "teacher_deployment_shape explicitly."
                 )
             shape = auto_selected_shapes.get(spec.model)
             if shape is None:
-                shape = _auto_select_teacher_deployment_shape(deploy_mgr, spec.model)
+                shape = _auto_select_teacher_deployment_shape(trainer_mgr, spec.model)
                 auto_selected_shapes[spec.model] = shape
                 logger.info(
                     "Auto-selected validated deployment shape for teacher %s: %s "
@@ -647,12 +647,12 @@ def main(
         )
         student_model = student_sampler.model
 
-        teacher_deploy_mgr = DeploymentManager(
+        teacher_trainer_mgr = TrainerJobManager(
             api_key=api_key,
             base_url=base_url,
             additional_headers=additional_headers,
         )
-        stack.callback(teacher_deploy_mgr.close)
+        stack.callback(teacher_trainer_mgr.close)
         teacher_runtime = _resolve_teacher_runtime(
             cfg=cfg,
             teacher_specs=teacher_specs,
@@ -660,7 +660,7 @@ def main(
             tokenizer=tokenizer,
             base_url=base_url,
             cancel_on_exit=cancel_on_exit,
-            deploy_mgr=teacher_deploy_mgr,
+            trainer_mgr=teacher_trainer_mgr,
         )
         teacher_entries = teacher_runtime.entries
         route_to_entry = teacher_runtime.route_to_entry
