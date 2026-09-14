@@ -163,14 +163,14 @@ from the same shape versions if those resources have expired.
 | Tokenizer revision | `9f62e4e9fffbd0a83ddd60e1c209d828994b3569` (the production-certified TITO bundle) |
 | Training shape | `accounts/fireworks/trainingShapes/kimi-k3-262k-gb300/versions/rbb16rr5` |
 | Rollout shape | `accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz` |
-| Trainer | `accounts/training/rlorTrainerJobs/k3-gspo-all89-20260910-213414` |
-| Deployment | `accounts/training/deployments/k3-gspo-all89-20260910-213414` |
+| Trainer | `accounts/training/rlorTrainerJobs/k3-gspo-gradclip-gloo-candidate-20260913-0225` |
+| Deployment | `accounts/training/deployments/k3-gspo-gradclip-gloo-candidate-20260913-0225` |
 | Prepared dataset | `/shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v12` |
 | Training tasks | All tasks discovered in the prepared dataset (89 in the pinned Terminal-Bench dataset) |
 | Evaluation tasks | `count-dataset-tokens`, `extract-elf`, `polyglot-rust-c` |
 | Training rows | 264 prompt groups cycled across all 89 tasks (2.97 corpus passes); task order seeded with `20260808`, then shuffled by the RL loop |
 | Optimizer batch | 16 prompt groups x 8 rollouts = 128 trajectories; 16 pipeline chunks (one prompt group per forward/backward call) |
-| Training length | 17 optimizer steps (16 full and one 8-group tail); 2,112 sampled trajectories |
+| Training length | 17 optimizer steps (16 full and one 7-group tail); 2,104 trained trajectories. One 8-trajectory group was excluded after a verifier timed out in all three attempts. |
 | Optimization | full parameter; LR `1e-6`; Adam beta2 `0.95`; Adam epsilon `1e-12`; gradient clipping at `1.0`; sequence-count gradient normalization |
 | Policy objective | GSPO sequence-level importance ratio; `kl_beta=0`; asymmetric clip `3e-4` / `4e-4`; TIS cap `5`; synchronous (`max_head_offpolicy_versions=0`) |
 | Loss reduction | Mean over active response tokens within each sequence, then equal mean over sequences (`num_sequences`) |
@@ -178,8 +178,39 @@ from the same shape versions if those resources have expired.
 | Harbor backend | E2B; 128 concurrent trials; 8 GiB normally and 16 GiB for `rstan-to-pystan`; two-hour outer-trial and tool timeouts |
 | Token limits | 262,144 total tokens; 32,768 generated tokens per model call |
 | Evaluation/checkpointing | the same three fixed tasks every 5 steps; DCP every step |
-| W&B run | [`u3ibepq0`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/u3ibepq0) |
+| W&B run | [`vg0u67hs`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/vg0u67hs) |
 | Prior-run evidence | [`9a13a8f5`](https://wandb.ai/myh97/kimi-k3-fullparam-harbor/runs/9a13a8f5); it used LR `2e-6` and no shuffle |
+
+### Completed convergence-run result
+
+The 17-step run completed the full dataset lifecycle, including a DCP save
+after every optimizer step, sampler hot-loads, and the final fixed evaluation.
+It validates the harness and recovery path, but it does **not** establish model
+convergence: the fixed evaluation did not improve over its step-0 value.
+
+| Result | Observed value |
+| --- | --- |
+| Source population | 264 shuffled prompt groups over all 89 tasks |
+| Trained population | 263 prompt groups; 2,104 trajectories |
+| Training-batch reward | `0.5859` at step 1, `0.7143` at step 17; first-five mean `0.7500`, last-five mean `0.7788` |
+| Fixed evaluation reward | step 0 `0.5417`; step 5 `0.5417`; step 8 `0.3750`; step 10 `0.6250`; step 15 `0.5417`; final step 17 `0.4583` |
+| Evaluation coverage | 24 trajectories per evaluation: 3 fixed tasks x 8 rollouts |
+| Train-inference K3 | mean `0.00769`; range `0.00600`-`0.00937`; final `0.00693` |
+| Train-inference KLD | mean `0.01693`; range `0.01009`-`0.02268`; final `0.01338` |
+| Trainer throughput | mean `29,294` tok/s; median `28,796` tok/s; range `23,813`-`32,732` tok/s |
+| Gradient clipping | all 17 steps clipped; pre-clip global norm `17.87`-`235.83`, post-clip norm approximately `1.0` |
+| Policy clipping | GSPO clip fraction `0` on every step; maximum TIS clip fraction `0.0071%` |
+| Recovery | 6 incomplete-group retries; 8 trajectory drops, all from one excluded `torch-tensor-parallelism` group |
+| Final checkpoints | DCP `step-18`; sampler `step-17-cff7e02b` |
+
+The evaluation has only 24 binary-reward samples per point. Its step-0 and
+final 95% Wilson intervals overlap substantially, so the observed `-0.0833`
+change is not enough to claim either improvement or regression. Training-batch
+reward is also not a convergence metric because each shuffled step contains a
+different task mix. Before another expensive run, expand the fixed evaluation
+set and restore the qualified Kimi-K3 train-inference alignment configuration;
+this run explicitly disabled Router Replay and measured K3 well above the
+previously qualified approximately `0.0015` level.
 
 This is the credential-safe command for the convergence run. The SDK/model-request
 timeout and the per-tool Harbor timeout are separate controls, so both are set
@@ -191,7 +222,7 @@ common 1,024-descriptor shell default, so raise the client process limit before
 launching it.
 
 ```bash
-RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/k3-gspo-all89-20260910-213414
+RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/<run-name>
 ulimit -n 65536
 
 uv run python -m training.examples.rl.harbor.recipes.train_opencode \
@@ -199,8 +230,8 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --tokenizer-model moonshotai/Kimi-K3 \
   --tokenizer-revision 9f62e4e9fffbd0a83ddd60e1c209d828994b3569 \
   --renderer-name kimi_k3_preserve_thinking \
-  --trainer-job-id k3-gspo-all89-20260910-213414 \
-  --deployment-id k3-gspo-all89-20260910-213414 \
+  --trainer-job-id <trainer-job-id> \
+  --deployment-id <deployment-id> \
   --deployment-shape accounts/fireworks/deploymentShapes/kimi-k3-rl-gb300-fp4-w16-p4/versions/pu8yssdz \
   --harbor-dataset /shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v12 \
   --harbor-trials-dir "$RUN_DIR/trials" \
@@ -244,7 +275,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --no-cleanup-on-exit \
   --wandb-entity myh97 \
   --wandb-project kimi-k3-fullparam-harbor \
-  --wandb-run-name k3-gspo-all89-20260910-213414
+  --wandb-run-name <run-name>
 ```
 
 OpenCode title and summary requests do not carry tools and are logged as
