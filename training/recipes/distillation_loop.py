@@ -33,7 +33,11 @@ from typing import Any, Callable
 import tinker
 
 from fireworks.training.sdk.client import GradAccNormalization
-from fireworks.training.sdk.deployment import AdaptiveConcurrencyController, DeploymentConfig
+from fireworks.training.sdk.deployment import (
+    AdaptiveConcurrencyController,
+    DeploymentConfig,
+    DeploymentManager,
+)
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
@@ -121,9 +125,9 @@ class Config:
     """Deployment ID to create/reuse when ``teacher_model`` is a base model."""
 
     teacher_deployment_shape: str | None = None
-    """Optional teacher deployment shape. When unset, teachers default to the
-    resolved student deployment shape (see ``service.deployment_shape``).
-    Set this for heterogeneous teachers on a different model than the student."""
+    """Optional teacher deployment shape. When unset, the recipe auto-selects
+    a validated deployment shape for each teacher's own model. Set this to pin
+    a specific shape for all teachers."""
 
     teacher_replica_count: int = 1
     """Replica count for an auto-created teacher inference deployment."""
@@ -316,16 +320,50 @@ def _validate_teacher_tokenizers(
 def _teacher_deployment_shape_for_spec(
     spec: TeacherConfig,
     cfg: Config,
-    *,
-    student_deployment_shape: str | None = None,
 ) -> str | None:
+    """Resolve the shape for an auto-created teacher deployment.
+
+    Precedence: per-teacher ``TeacherConfig.deployment_shape``, then the
+    run-level ``Config.teacher_deployment_shape``, then ``None`` (the caller
+    auto-resolves a validated shape for the teacher's own model).
+    """
     if spec.deployment_shape is not None:
         return spec.deployment_shape
     if cfg.teacher_deployment_shape is not None:
         return cfg.teacher_deployment_shape
-    if student_deployment_shape is not None:
-        return student_deployment_shape
     return None
+
+
+def _auto_select_teacher_deployment_shape(
+    deploy_mgr: Any,
+    teacher_model: str,
+) -> str:
+    """Auto-select the latest validated deployment shape for a teacher model.
+
+    Deployments created without a shape are the most common cause of failed
+    deployment creations, so teacher deployments are never created shapeless.
+    Mirrors the trainer-side ``auto_select_training_shape`` pattern: pick from
+    what the control plane has already validated for this model.
+    """
+    from urllib.parse import urlencode
+
+    parent = f"{teacher_model.rsplit('/models/', 1)[0]}/deploymentShapes/-"
+    params = {"filter": 'latest_validated=true', "pageSize": 1}
+    resp = deploy_mgr._get(
+        f"/v1/{parent}/versions?{urlencode(params)}", timeout=30
+    )
+    resp.raise_for_status()
+    versions = resp.json().get("deploymentShapeVersions", []) or []
+    if not versions:
+        raise ValueError(
+            f"No validated deployment shape exists for teacher model "
+            f"{teacher_model!r}. Teacher deployments are never created "
+            "without a shape (shapeless deployments are the most common "
+            "cause of failed deployment creations). Pick one explicitly via "
+            "TeacherConfig.deployment_shape or teacher_deployment_shape; if "
+            "no shape fits, contact Fireworks to find or add one."
+        )
+    return versions[0]["name"]
 
 
 def _resolve_teacher_runtime(
@@ -336,16 +374,19 @@ def _resolve_teacher_runtime(
     tokenizer: Any,
     base_url: str,
     cancel_on_exit: bool,
+    deploy_mgr: Any | None = None,
 ) -> _TeacherRuntime:
-    """Resolve teacher model specs to inference samplers used for scoring."""
+    """Resolve teacher model specs to inference samplers used for scoring.
+
+    Teacher deployments are never created without a shape: when no explicit
+    shape is configured, a validated shape is auto-selected for each
+    teacher's own model (mirrors trainer-side ``auto_select_training_shape``).
+    """
     single_teacher = len(teacher_specs) == 1
     resolved_models: dict[str, str] = {}
     samplers: dict[str, Any] = {}
     deployment_id_to_teacher_model: dict[str, str] = {}
-    # Deployments created without a shape are the most common cause of failed
-    # deployment creations. Default teachers to the student deployment's shape
-    # so only heterogeneous multi-teacher runs must set an explicit shape.
-    student_deployment_shape = getattr(service, "deployment_shape", None)
+    auto_selected_shapes: dict[str, str] = {}
 
     for spec in teacher_specs:
         if spec.model in samplers:
@@ -374,15 +415,32 @@ def _resolve_teacher_runtime(
             )
         deployment_id_to_teacher_model[teacher_deployment_id] = spec.model
 
+        shape = _teacher_deployment_shape_for_spec(spec, cfg)
+        if shape is None:
+            if deploy_mgr is None:
+                raise ValueError(
+                    "Teacher deployment shape could not be resolved: no "
+                    "deploy_mgr available for auto-selection. Set "
+                    "TeacherConfig.deployment_shape or "
+                    "teacher_deployment_shape explicitly."
+                )
+            shape = auto_selected_shapes.get(spec.model)
+            if shape is None:
+                shape = _auto_select_teacher_deployment_shape(deploy_mgr, spec.model)
+                auto_selected_shapes[spec.model] = shape
+                logger.info(
+                    "Auto-selected validated deployment shape for teacher %s: %s "
+                    "(override via TeacherConfig.deployment_shape or "
+                    "teacher_deployment_shape)",
+                    spec.model,
+                    shape,
+                )
+
         sampler = service.create_inference_deployment_sampler(
             DeploymentConfig(
                 deployment_id=teacher_deployment_id,
                 base_model=spec.model,
-                deployment_shape=_teacher_deployment_shape_for_spec(
-                    spec,
-                    cfg,
-                    student_deployment_shape=student_deployment_shape,
-                ),
+                deployment_shape=shape,
                 min_replica_count=cfg.teacher_replica_count,
                 max_replica_count=cfg.teacher_replica_count,
                 hot_load_bucket_type=None,
@@ -590,6 +648,12 @@ def main(
         )
         student_model = student_sampler.model
 
+        teacher_deploy_mgr = DeploymentManager(
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=additional_headers,
+        )
+        stack.callback(teacher_deploy_mgr.close)
         teacher_runtime = _resolve_teacher_runtime(
             cfg=cfg,
             teacher_specs=teacher_specs,
@@ -597,6 +661,7 @@ def main(
             tokenizer=tokenizer,
             base_url=base_url,
             cancel_on_exit=cancel_on_exit,
+            deploy_mgr=teacher_deploy_mgr,
         )
         teacher_entries = teacher_runtime.entries
         route_to_entry = teacher_runtime.route_to_entry

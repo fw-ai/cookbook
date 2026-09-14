@@ -13,6 +13,7 @@ import tinker
 
 from training.recipes.distillation_loop import (
     Config,
+    _auto_select_teacher_deployment_shape,
     _default_teacher_deployment_id,
     _is_base_model_resource,
     _resolve_teacher_runtime,
@@ -1092,6 +1093,29 @@ def test_teacher_model_resource_detection() -> None:
     assert not _is_base_model_resource("accounts/test/deployedModels/qwen3p5-9b")
 
 
+class _FakeDeployMgr:
+    """Stands in for DeploymentManager: returns canned shape-version pages."""
+
+    def __init__(self, shapes_by_model: dict[str, str] | None = None) -> None:
+        # map of base-model resource -> versioned shape name it should yield
+        self.shapes_by_model = shapes_by_model or {}
+        self.get_calls: list[str] = []
+
+    def _get(self, path: str, timeout: int = 30):
+        self.get_calls.append(path)
+        self._last_path = path
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"deploymentShapeVersions": self._versions_for(path)},
+        )
+
+    def _versions_for(self, path: str) -> list[dict]:
+        for model, shape in self.shapes_by_model.items():
+            if model.rsplit("/models/", 1)[0] in path:
+                return [{"name": shape}]
+        return []
+
+
 class _FakeTeacherRuntimeService:
     def __init__(self, deployment_shape: str | None = None) -> None:
         self.direct_calls: list[dict] = []
@@ -1178,7 +1202,8 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
         teacher_replica_count=2,
         teacher_deployment_timeout_s=123,
     )
-    service = _FakeTeacherRuntimeService(deployment_shape="shape-student")
+    service = _FakeTeacherRuntimeService()
+    deploy_mgr = _FakeDeployMgr({teacher_model: "shape-teacher-auto"})
 
     runtime = _resolve_teacher_runtime(
         cfg=cfg,
@@ -1187,6 +1212,7 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
         tokenizer="tok",
         base_url="https://api.test",
         cancel_on_exit=True,
+        deploy_mgr=deploy_mgr,
     )
 
     assert service.direct_calls == []
@@ -1201,7 +1227,9 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
     assert call["config"].enable_hot_load is False
     assert call["config"].hot_load_bucket_type is None
     assert call["config"].for_training is True
-    assert call["config"].deployment_shape == "shape-student"
+    assert call["config"].deployment_shape == "shape-teacher-auto"
+    # One auto-select lookup per unique teacher model, not per spec.
+    assert len(deploy_mgr.get_calls) == 1
     assert runtime.is_multi_teacher
     assert runtime.route_key == "teacher_route"
     assert sorted(runtime.route_to_entry) == ["code", "math"]
@@ -1377,32 +1405,49 @@ def test_teacher_deployment_shape_uses_run_level_override() -> None:
     )
 
 
-def test_teacher_deployment_shape_defaults_to_student_shape() -> None:
-    cfg = Config(log_path="/tmp/opd", base_model="accounts/fireworks/models/student")
-    spec = TeacherConfig(model="accounts/fireworks/models/student")
-
-    assert (
-        _teacher_deployment_shape_for_spec(
-            spec,
-            cfg,
-            student_deployment_shape="shape-student",
-        )
-        == "shape-student"
-    )
-
-
-def test_teacher_deployment_shape_falls_back_to_none_when_student_unresolved() -> None:
+def test_teacher_deployment_shape_unconfigured_returns_none_for_auto_select() -> None:
     cfg = Config(log_path="/tmp/opd", base_model="accounts/fireworks/models/student")
     spec = TeacherConfig(model="accounts/fireworks/models/teacher")
 
+    assert _teacher_deployment_shape_for_spec(spec, cfg) is None
+
+
+def test_auto_select_teacher_deployment_shape_picks_latest_validated() -> None:
+    model = "accounts/fireworks/models/qwen3p5-9b"
+    deploy_mgr = _FakeDeployMgr({model: "accounts/fw/deploymentShapes/ds-x/versions/abc"})
+
     assert (
-        _teacher_deployment_shape_for_spec(
-            spec,
-            cfg,
-            student_deployment_shape=None,
-        )
-        is None
+        _auto_select_teacher_deployment_shape(deploy_mgr, model)
+        == "accounts/fw/deploymentShapes/ds-x/versions/abc"
     )
+    assert deploy_mgr.get_calls and "latest_validated%3Dtrue" in deploy_mgr.get_calls[0]
+
+
+def test_auto_select_teacher_deployment_shape_raises_when_model_has_no_shape() -> None:
+    model = "accounts/fireworks/models/orphan"
+    deploy_mgr = _FakeDeployMgr()  # no shapes registered for the model
+
+    with pytest.raises(ValueError, match="No validated deployment shape"):
+        _auto_select_teacher_deployment_shape(deploy_mgr, model)
+
+
+def test_resolve_teacher_runtime_requires_deploy_mgr_for_auto_select() -> None:
+    cfg = Config(
+        log_path="/tmp/opd",
+        base_model="accounts/fireworks/models/student",
+        teacher_model="accounts/fireworks/models/teacher",
+    )
+    service = _FakeTeacherRuntimeService()
+
+    with pytest.raises(ValueError, match="deploy_mgr"):
+        _resolve_teacher_runtime(
+            cfg=cfg,
+            teacher_specs=_resolve_teacher_specs(cfg),
+            service=service,
+            tokenizer="tok",
+            base_url="https://api.test",
+            cancel_on_exit=True,
+        )
 
 
 def test_validate_teacher_tokenizers_rejects_declared_mismatch() -> None:
