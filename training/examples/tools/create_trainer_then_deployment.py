@@ -69,7 +69,7 @@ def create_trainer_then_deployment(
         base_model=base_model,
         lora_rank=lora_rank,
         learning_rate=learning_rate,
-        training_shape_ref=profile.training_shape_version,
+        training_shape_ref=profile.training_shape,
         requested_job_id=trainer_job_id,
         use_reservation=not bypass_reservation,
     )
