@@ -54,7 +54,7 @@ The `to_deployment_config` helper in `training/utils/config.py` **rejects
 deployments with no shape** (raising with guidance on how to resolve one).
 Overriding individual fields on top of a shape — e.g. `replica_count` — is
 supported; the shape owns accelerator selection, so manual accelerator fields
-are never forwarded. If no shape fits a workload, email greg@fireworks.ai.
+are never forwarded. If no shape fits a workload, [contact us](https://fireworks.ai/contact).
 
 ## Reference-model shape (RL / DPO)
 
