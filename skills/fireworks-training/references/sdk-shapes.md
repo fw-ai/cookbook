@@ -37,8 +37,10 @@ trainer/deployment provisioning path.
 
 ## Deployment shape
 
+**Do not create deployments without a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape).** Shapeless deployments are the most common cause of failed deployment creations, and the shapeless path may be deprecated in the future.
+
 Do not set `cfg.deployment.deployment_shape` manually. The SDK resolves it from
-the requested deployment shape or the selected training profile, and recipes read
+the requested [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape) or the selected training profile, and recipes read
 the resolved value from the service:
 
 ```python
@@ -48,8 +50,11 @@ deployment_shape = service.deployment_shape
 ```
 
 That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123`).
-The `to_deployment_config` helper in `training/utils/config.py` auto-clears
-manual accelerator fields whenever a shape is present.
+The `to_deployment_config` helper in `training/utils/config.py` **rejects
+deployments with no shape** (raising with guidance on how to resolve one).
+Overriding individual fields on top of a shape — e.g. `replica_count` — is
+supported; the shape owns accelerator selection, so manual accelerator fields
+are never forwarded. If no shape fits a workload, [contact us](https://fireworks.ai/contact).
 
 ## Reference-model shape (RL / DPO)
 
@@ -68,9 +73,13 @@ The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 el
 ## Listing available shapes
 
 ```bash
-firectl training-shape list      # alias: firectl ts list
-firectl deployment-shape list    # alias: firectl ds list
+firectl training-shape list                       # alias: firectl ts list
+firectl deployment-shape-version match --model <MODEL>
 ```
+
+`match` returns the validated shapes the account can actually deploy the model on (server-side rules: exact-model matches over param-bucket siblings, embedding separation, FP4 filtering, PEFT addons resolved to their base model). Pass `--enable-addons` for multi-LoRA serving. Use `deployment-shape-version list --base-model <MODEL>` only to browse the raw inventory.
+
+Always create deployments against a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape) returned by `match`.
 
 Or programmatically via `FireworksClient` — see the SDK docs linked from the repo README.
 

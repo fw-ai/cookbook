@@ -262,10 +262,6 @@ class DeployConfig:
     (e.g. ``accounts/fw/deploymentShapes/ds-x/versions/abc123``) to pin the
     exact shape config.  Recipes populate this from
     ``profile.deployment_shape`` which returns the versioned path."""
-    deployment_accelerator_type: str | None = None
-    """DEPRECATED and ignored on the SDK-managed path. The deployment shape
-    owns accelerator selection; set the accelerator via ``deployment_shape``.
-    Retained only for the legacy ``to_deployment_config`` path."""
     hot_load_bucket_type: str = "FW_HOSTED"
     hot_load_trainer_job: str | None = None
     """Trainer job name whose hot-load bucket this deployment should use.
@@ -314,8 +310,19 @@ class DeployConfig:
         infra: InfraConfig,
     ) -> DeploymentConfig:
         """Produce an SDK-level DeploymentConfig from cookbook settings."""
+        # Dev only: skip_validation skips validation of an unvalidated shape
+        # version (set it locally for dev). Never enable in production.
         skip_validation = False
-        accel = None if self.deployment_shape else self.deployment_accelerator_type
+        if not self.deployment_shape and not skip_validation:
+            raise ValueError(
+                "DeployConfig.deployment_shape is required. Shapeless "
+                "deployments are the most common cause of failed deployment "
+                "creations, and the shapeless path may be deprecated in the "
+                "future. Resolve a shape from the training shape profile "
+                "(``profile.deployment_shape``) or find deployable shapes "
+                "with ``firectl deployment-shape-version match --model "
+                "<model>``."
+            )
         replica_count = 1 if self.replica_count is None else self.replica_count
         return DeploymentConfig(
             deployment_id=self.deployment_id,
@@ -330,7 +337,6 @@ class DeployConfig:
             extra_args=self.deployment_extra_args,
             min_replica_count=replica_count,
             max_replica_count=replica_count,
-            accelerator_type=accel,
             disable_speculative_decoding=self.disable_speculative_decoding,
             extra_values=self.extra_values,
             preemptible=self.preemptible or getattr(infra, "preemptible", False),
