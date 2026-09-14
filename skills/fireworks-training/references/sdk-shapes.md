@@ -74,10 +74,12 @@ The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 el
 
 ```bash
 firectl training-shape list                       # alias: firectl ts list
-firectl deployment-shape-version list --base-model <MODEL>
+firectl deployment-shape-version match --model <MODEL>
 ```
 
-Always create deployments against a listed [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape) — never guess a GPU count.
+`match` returns the validated shapes the account can actually deploy the model on (server-side rules: exact-model matches over param-bucket siblings, embedding separation, FP4 filtering, PEFT addons resolved to their base model). Pass `--enable-addons` for multi-LoRA serving. Use `deployment-shape-version list --base-model <MODEL>` only to browse the raw inventory.
+
+Always create deployments against a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape) returned by `match`.
 
 Or programmatically via `FireworksClient` — see the SDK docs linked from the repo README.
 
