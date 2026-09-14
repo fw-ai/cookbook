@@ -37,18 +37,10 @@ trainer/deployment provisioning path.
 
 ## Deployment shape
 
-**Do not create deployments without a shape.** A deployment is shapeless
-whenever the shape is omitted — whether or not accelerator fields are set —
-and a shapeless deployment skips validation (mistakes like a GPU count that
-can't fit the model surface only at creation, where they cause failures).
-Deployments created without a shape are the most common cause of failed
-deployment creations, and the unshaped path may be deprecated in the future.
-See the user-facing docs:
-[What is a deployment shape?](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape)
-If no shape fits a workload, contact Fireworks to find or add one.
+**Do not create deployments without a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape).** Shapeless deployments are the most common cause of failed deployment creations, and the shapeless path may be deprecated in the future.
 
 Do not set `cfg.deployment.deployment_shape` manually. The SDK resolves it from
-the requested deployment shape or the selected training profile, and recipes read
+the requested [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape) or the selected training profile, and recipes read
 the resolved value from the service:
 
 ```python
@@ -62,7 +54,7 @@ The `to_deployment_config` helper in `training/utils/config.py` **rejects
 deployments with no shape** (raising with guidance on how to resolve one).
 Overriding individual fields on top of a shape — e.g. `replica_count` — is
 supported; the shape owns accelerator selection, so manual accelerator fields
-are never forwarded.
+are never forwarded. If no shape fits a workload, email greg@fireworks.ai.
 
 ## Reference-model shape (RL / DPO)
 
@@ -85,10 +77,7 @@ firectl training-shape list      # alias: firectl ts list
 firectl deployment-shape list    # alias: firectl ds list
 ```
 
-When a customer needs a serving deployment shape for a model, list the
-model's verified shapes first (firectl is gaining richer per-model shape
-visibility, e.g. `firectl deployment-shape list`) rather than guessing a GPU
-count — always create deployments against a listed shape.
+Always create deployments against a listed [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape) — never guess a GPU count.
 
 Or programmatically via `FireworksClient` — see the SDK docs linked from the repo README.
 

@@ -309,13 +309,12 @@ class DeployConfig:
         """Produce an SDK-level DeploymentConfig from cookbook settings."""
         if not self.deployment_shape:
             raise ValueError(
-                "DeployConfig.deployment_shape is required. Deployments "
-                "created without a shape are the most common cause of failed "
-                "deployment creations, and the unshaped path may be "
-                "deprecated in the future. Resolve a shape from the training "
-                "shape profile (``profile.deployment_shape``) or list shapes "
-                "with ``firectl deployment-shape list``; if none fits, "
-                "contact Fireworks to find or add one."
+                "DeployConfig.deployment_shape is required. Shapeless "
+                "deployments are the most common cause of failed deployment "
+                "creations, and the shapeless path may be deprecated in the "
+                "future. Resolve a shape from the training shape profile "
+                "(``profile.deployment_shape``) or list shapes with "
+                "``firectl deployment-shape list``."
             )
         replica_count = 1 if self.replica_count is None else self.replica_count
         return DeploymentConfig(

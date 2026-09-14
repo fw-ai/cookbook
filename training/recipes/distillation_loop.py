@@ -360,8 +360,7 @@ def _auto_select_teacher_deployment_shape(
             f"{teacher_model!r}. Teacher deployments are never created "
             "without a shape (shapeless deployments are the most common "
             "cause of failed deployment creations). Pick one explicitly via "
-            "TeacherConfig.deployment_shape or teacher_deployment_shape; if "
-            "no shape fits, contact Fireworks to find or add one."
+            "TeacherConfig.deployment_shape or teacher_deployment_shape."
         )
     return versions[0]["name"]
 
