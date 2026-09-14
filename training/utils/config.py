@@ -298,6 +298,9 @@ class DeployConfig:
     Increase for R3 + long completions where responses can be very large."""
     disable_speculative_decoding: bool = False
     """When true, disable the base model's default draft/EAGLE speculation."""
+    wait_for_trainer_before_deployment: bool = False
+    """For ``PER_TRAINER``, wait for trainer capacity before rollout allocation.
+    Avoids idle rollout GPUs while queued, but serializes trainer/deployment boot."""
     replica_count: int | None = None
     """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from typing import Any
 
 from fireworks.training.sdk import (
@@ -9,8 +10,9 @@ from fireworks.training.sdk import (
     FireworksClient,
     FiretitanServiceClient,
 )
+from fireworks.training.sdk.managed import FiretitanProvisioningConfig
 
-from training.utils.config import DeployConfig, TrainerConfig
+from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 
 
 def resolve_router_replay_enabled(
@@ -110,6 +112,28 @@ def _firetitan_service_kwargs(
             "hot_load_transition_type": deployment.hot_load_transition_type,
         }
     )
+    if (
+        deployment.wait_for_trainer_before_deployment
+        and deployment.weight_sync_scope != WeightSyncScope.PER_TRAINER
+    ):
+        raise ValueError(
+            "wait_for_trainer_before_deployment requires PER_TRAINER weight sync"
+        )
+    supported = {f.name for f in fields(FiretitanProvisioningConfig)}
+    optional_deploy = {
+        "wait_for_trainer_before_deployment": deployment.wait_for_trainer_before_deployment,
+    }
+    for name, value in optional_deploy.items():
+        if not value:
+            continue
+        if name in supported:
+            service_kwargs[name] = value
+            continue
+        raise RuntimeError(
+            f"{name}={value!r} was requested, but the installed fireworks-ai "
+            f"SDK's FiretitanProvisioningConfig has no {name!r} field. "
+            "Upgrade the SDK or drop the option."
+        )
     return service_kwargs
 
 
