@@ -73,8 +73,8 @@ The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 el
 ## Listing available shapes
 
 ```bash
-firectl training-shape list      # alias: firectl ts list
-firectl deployment-shape list    # alias: firectl ds list
+firectl training-shape list                       # alias: firectl ts list
+firectl deployment-shape-version list --base-model <MODEL>
 ```
 
 Always create deployments against a listed [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape) — never guess a GPU count.

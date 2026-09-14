@@ -314,7 +314,8 @@ class DeployConfig:
                 "creations, and the shapeless path may be deprecated in the "
                 "future. Resolve a shape from the training shape profile "
                 "(``profile.deployment_shape``) or list shapes with "
-                "``firectl deployment-shape list``."
+                "``firectl deployment-shape-version list --base-model "
+                "<model>``."
             )
         replica_count = 1 if self.replica_count is None else self.replica_count
         return DeploymentConfig(
