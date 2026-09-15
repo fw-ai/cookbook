@@ -200,6 +200,25 @@ Do not repair the model's candidate code or silently label the sample completed.
 Any integrated fix must retain output and report signal termination correctly,
 with separate coverage for background-server survival, cancellation, and timeout.
 
+### Agent completion does not bound verifier duration
+
+The same run's other pending eigenvalue trial,
+`harbor-opencode-largest-eigenval-0-11-5-32f03a19-0072f9e9`, captured its agent
+trajectory at approximately 05:15:27 UTC, then remained in verification.
+Read-only inspection at approximately 05:17 UTC found a Python process using
+one CPU core and verifier output showing 27 collected tests with no completed
+test reported. Its candidate `/app/eigen.py` invokes LAPACK through `ctypes`;
+the exact native-code stall cause has not been established.
+
+The dataset's `largest-eigenval/tests/test_outputs.py` calls the candidate
+directly in `test_eigen_pair` and `test_dominance_eigenvalue`, without a
+per-call timeout. The later speed tests' `future.result(timeout=30)` does not
+bound those earlier calls. Harbor's verifier has its own 7,200-second budget,
+separate from the agent budget. Thus an agent reaching its two-hour limit does
+not imply the trial, evaluation join, or next weight sync will finish promptly.
+Track the active phase and its result separately. Do not silently shorten the
+verifier budget, edit candidate code, or turn a pending test into a scored zero.
+
 ### Command-stream failure and evaluation coverage
 
 At 04:01:10 UTC, the waiting `hf-model-inference` training trial and one
