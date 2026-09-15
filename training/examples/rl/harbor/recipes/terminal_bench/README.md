@@ -301,6 +301,16 @@ The deliberate changes are the disjoint holdout, 100-step horizon, gradient-norm
 threshold `100`, 131,072-token per-call output limit, and DCP cadence of two
 optimizer steps.
 
+The live rollout also requires
+`extraEnvVars.FIREWORKS_P2P_COLLECTIVE_FUSED_BASE_EXCHANGE=1`. Shape version
+`n852kghu` omits this setting; the validated live deployment has it as an
+override and is consequently detached from that shape version. Do not recreate
+the deployment from this shape alone and assume it matches the live run.
+The setting must be active at model-process startup. See
+[the snapshot recovery checks](E2B_RUNBOOK.md#snapshot-synchronization-checks).
+The command below uses the actual launch's 1,800-second client hot-load timeout;
+increasing this timeout does not repair a server-side loading error.
+
 ```bash
 RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/<run-name>
 ulimit -n 65536
@@ -355,6 +365,7 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --tis-cap 5 \
   --max-seq-len 262144 \
   --max-completion-tokens 131072 \
+  --weight-sync-timeout 1800 \
   --sample-timeout 7200 \
   --harness-tool-timeout-seconds 6900 \
   --evaluation-every 5 \

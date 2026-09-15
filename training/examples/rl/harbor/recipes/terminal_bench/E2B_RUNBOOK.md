@@ -48,6 +48,41 @@ restart only the local harness unless remote health evidence requires more.
 | `Sandbox not found` during artifact cleanup | Secondary cleanup after sandbox creation/build failed | Diagnose the earlier exception; do not treat cleanup noise as the root cause | Root exception is absent on rerun |
 | `PyTorch was not found` | Informational Transformers warning in the lightweight sidecar | No fix required; TITO needs tokenizer utilities, not Torch | Ignore unless followed by a different fatal exception |
 
+## Snapshot synchronization checks
+
+Inspect **every** entry in the hot-load status endpoint's `replicas` array.
+For this deployment there must be four peers, each with the requested
+`current_snapshot_identity`, `readiness=true`, and `loading_state.stage=idle`.
+Control-plane `READY` does not prove that the sampler weights finished loading.
+The SDK version used in this run polls only `replicas[0]`, which hid errors
+reported by the other peers; inspect their `readiness_reason` as well.
+
+On 2026-09-15, the Mercor TP4/DP4 shape omitted
+`FIREWORKS_P2P_COLLECTIVE_FUSED_BASE_EXCHANGE=1`. The initial full-snapshot request
+timed out after 600 seconds; three peers reported
+`ValueError('Tensors must be contiguous')` while another stayed in `updating`.
+The non-fused exchange passes individual weight views to the collective; the
+fused path exchanges contiguous byte ranges from weight slabs allocated at
+startup. A full traceback identifying the specific tensor was unavailable.
+
+Restoring the flag and actually recycling the rollout processes resolved the
+observed failure with the same TP4/DP4 topology and image. The fresh snapshot
+`step-0-15892378` then loaded in 57 seconds; the client's initial synchronization
+timer, including trainer export, was 156.8 seconds. Verify new peer process
+identities after a requested restart: a deployment extra-value update and a
+control-plane `READY` transition alone did not establish that the old processes
+had been replaced in this incident. Preserve the trainer throughout recovery.
+
+The active command uses `--weight-sync-timeout 1800`. This extends observation
+time only. An `error`/`internal_error` peer requires investigation even while
+the client is still waiting; repeated snapshot posts or a larger timeout cannot
+repair a non-contiguous collective input.
+
+Use a fresh `WANDB_RUN_ID` for a new experiment. Reuse it only to resume that
+experiment, after checking its config and checkpoint. A reused ID from an older
+run initially displayed seven stale optimizer steps before this run had
+completed its first synchronization. The corrected run is `2ja2bva6`.
+
 ## Retry and progress counters
 
 Do not infer failures from a counter name alone. Use these metrics together:
