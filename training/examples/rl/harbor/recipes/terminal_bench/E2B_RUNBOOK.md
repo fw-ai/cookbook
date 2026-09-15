@@ -276,8 +276,6 @@ This is an inspection warning, not a failure verdict or recovery policy. A new
 sandbox, tool, process identity, CPU progress, resumed child, or missing
 observation suppresses the warning. It never terminates a process.
 
-### Agent completion does not bound verifier duration
-
 ### A command's inner GNU timeout may not terminate Node
 
 On September 15, batch 8 of the 78-task run exposed another instance in
@@ -302,7 +300,7 @@ inspection trigger. A future automatic guard must reject changed identities,
 unknown timeout option forms, verifier processes and commands still within
 their own deadline. Do not apply a generic 30-minute kill limit to valid tasks.
 
-### Independent verifier deadlines
+### Agent completion does not bound verifier duration
 
 The same run's other pending eigenvalue trial,
 `harbor-opencode-largest-eigenval-0-11-5-32f03a19-0072f9e9`, captured its agent
