@@ -150,6 +150,19 @@ delete active or uncheckpointed trials to recover disk space. If GCS credentials
 expire, retain local artifacts and report the upload failure separately from RL
 health.
 
+Root exhaustion can also cause `gcloud` file-logging errors independently of
+the transfer result. For the archive worker only, use a private `CLOUDSDK_CONFIG`
+directory on a filesystem with headroom and `CLOUDSDK_CORE_DISABLE_FILE_LOGGING=1`.
+Keep its temporary files off the full root filesystem as well. Preserve the
+existing authenticated configuration; when copying live SQLite credential/token
+stores, use SQLite's backup API rather than copying an open database file.
+Require directory mode `0700` and credential-file mode `0600`, and keep this
+directory outside the archived run and repository. Never upload it. Verify
+authentication and an exact GCS object before replacing only the archive worker;
+do not restart RL or clear upload/checkpoint markers. A later manual login may
+require refreshing this isolated configuration. Check transfer exit status and
+destination objects, not merely the presence of local logging errors.
+
 ## Background-server tool waits
 
 The 2026-09-15 first batch included an `hf-model-inference` sample with no new
@@ -788,6 +801,12 @@ host, concurrent container activity nearly filled `/`; moving inactive owned
 backup archives intact to `/shared` recovered headroom without restarting RL.
 Inspect both filesystems, preserve active code/checkpoints, and coordinate other
 users' builds instead of pruning shared Docker/containerd storage blindly.
+For a reversible worktree relocation, first check active users and Git status,
+retain the original path, and verify both the root repository and submodules.
+Cross-filesystem moves can partially fail on root-owned generated files; preserve
+and checksum-copy remaining files before completing the relocation. Relative
+submodule Git pointers may need repair. Do not treat a partially moved tree as
+complete or remove its remaining files without verifying their preservation.
 
 ## Launch sequence
 
