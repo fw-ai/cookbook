@@ -401,6 +401,18 @@ Do not edit the existing `task-split.json` or assume editing this command change
 a live process: the dataloader and evaluation rows are captured at startup.
 When continuing trained weights, retain the reduced evaluation set from the
 original unseen hold-out. Re-shuffling a changed task pool can move previously
-trained tasks into evaluation. Preserve a versioned split, checkpoint/cursor,
+trained tasks into evaluation. The supported selection flags are:
+
+```bash
+--evaluation-holdout-fraction 0.1 \
+--evaluation-holdout-source <original-run>/task-split.json
+```
+
+Use a new phase log directory; the command refuses to overwrite the source
+split, requires the same task seed, and fails if exclusions leave too few unseen
+evaluation tasks. It does not fall back to selecting previously trained tasks.
+The source manifest path is recorded in the new split. These flags configure
+task selection only; they do not themselves restore trainer or dataloader state.
+Preserve a versioned split, checkpoint/cursor,
 and monotonic W&B step numbering before applying a revised profile. No trainer
 or rollout restart is required merely to change sampling/evaluation policy.

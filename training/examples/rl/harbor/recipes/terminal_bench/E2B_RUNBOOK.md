@@ -229,6 +229,14 @@ These observations do not prove a LAPACK stall or a pytest-plugin bug. Preserve
 the original verifier and candidate; do not substitute a diagnostic result for
 the official trial reward.
 
+A subsequent native GDB backtrace of the live verifier placed the active thread
+inside `libpython3.13.so.1.0`, called by `_PyDict_LoadGlobal` and
+`_PyEval_EvalFrameDefault`, rather than inside LAPACK or a network wait. GDB and
+its dependencies were extracted into a diagnostic-only `/tmp` prefix; no system
+Python packages were replaced. The debugger detached and the original process
+continued. The result narrows the observed stall to interpreter execution; it
+does not yet prove which candidate operation or dependency corrupted state.
+
 ### Sampling wall time versus model-request time
 
 For the first 128-trajectory training batch on 2026-09-15, the sampling window

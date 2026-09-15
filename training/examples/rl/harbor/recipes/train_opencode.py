@@ -63,8 +63,9 @@ def split_task_holdout(
     excluded_tasks: list[str],
     holdout_fraction: float | None,
     seed: int,
+    previous_holdout: list[str] | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    """Remove exclusions and deterministically split a disjoint holdout."""
+    """Split tasks; optional prior holdout prevents leakage after exclusions."""
     by_name = {task_name_from_row(row): row for row in rows}
     if len(by_name) != len(rows):
         raise ValueError("Harbor task names must be unique before splitting")
@@ -77,15 +78,31 @@ def split_task_holdout(
 
     pool = [dict(by_name[name]) for name in sorted(by_name.keys() - excluded)]
     if holdout_fraction is None:
+        if previous_holdout is not None:
+            raise ValueError("A prior holdout requires --evaluation-holdout-fraction")
         return pool, []
     if not 0.0 < holdout_fraction < 1.0:
         raise ValueError("--evaluation-holdout-fraction must be in (0, 1)")
 
-    shuffled = list(pool)
-    random.Random(seed).shuffle(shuffled)
-    holdout_count = round(len(shuffled) * holdout_fraction)
-    if not 0 < holdout_count < len(shuffled):
+    holdout_count = round(len(pool) * holdout_fraction)
+    if not 0 < holdout_count < len(pool):
         raise ValueError("Holdout fraction must leave at least one task in each split")
+    candidates = pool
+    if previous_holdout is not None:
+        if not previous_holdout or any(
+            not isinstance(x, str) or not x for x in previous_holdout
+        ):
+            raise ValueError("Prior holdout must contain nonempty task names")
+        prior_names = set(previous_holdout)
+        if len(prior_names) != len(previous_holdout):
+            raise ValueError("Prior holdout contains duplicate task names")
+        if missing := sorted(prior_names - by_name.keys()):
+            raise ValueError(f"Prior holdout tasks were not found: {missing}")
+        candidates = [row for row in pool if task_name_from_row(row) in prior_names]
+        if len(candidates) < holdout_count:
+            raise ValueError("Too few unseen holdout tasks remain after exclusions")
+    shuffled = list(candidates)
+    random.Random(seed).shuffle(shuffled)
     holdout_names = {
         task_name_from_row(row) for row in shuffled[:holdout_count]
     }
@@ -288,6 +305,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--evaluation-every", type=int, default=3)
+    parser.add_argument(
+        "--evaluation-holdout-source",
+        default=None,
+        help=(
+            "Prior task-split.json: select the reduced holdout only from its "
+            "unseen tasks. Requires --evaluation-holdout-fraction and a new log path."
+        ),
+    )
     parser.add_argument("--evaluation-repeats", type=int, default=1)
     parser.add_argument("--evaluation-concurrency", type=int, default=24)
     parser.add_argument("--output-model-id", default=None)
@@ -505,6 +530,24 @@ def run() -> None:
         raise ValueError("--evaluation-concurrency must be positive")
     if args.evaluation_repeats < 1:
         raise ValueError("--evaluation-repeats must be positive")
+    previous_holdout = None
+    holdout_source = None
+    if args.evaluation_holdout_source:
+        if args.evaluation_holdout_fraction is None:
+            raise ValueError("--evaluation-holdout-source requires a holdout fraction")
+        holdout_source = Path(args.evaluation_holdout_source).expanduser().resolve()
+        destination = Path(args.log_path).expanduser().resolve() / "task-split.json"
+        if holdout_source == destination:
+            raise ValueError("Do not overwrite the source split; use a new log path")
+        source_split = json.loads(holdout_source.read_text())
+        if (
+            not isinstance(source_split, dict)
+            or source_split.get("seed") != args.task_seed
+        ):
+            raise ValueError("Prior task-split.json must have the same task seed")
+        previous_holdout = source_split.get("holdout")
+        if not isinstance(previous_holdout, list):
+            raise ValueError("Prior task-split.json must contain a holdout list")
     manifest = (
         DABstepManifest.load(args.dabstep_manifest) if args.dabstep_manifest else None
     )
@@ -555,6 +598,7 @@ def run() -> None:
             excluded_tasks=args.exclude_task,
             holdout_fraction=args.evaluation_holdout_fraction,
             seed=args.task_seed,
+            previous_holdout=previous_holdout,
         )
         post_exclusion_count = len(selected_rows) + len(holdout_rows)
         if (
@@ -593,6 +637,11 @@ def run() -> None:
                         "excluded_tasks": sorted(args.exclude_task),
                         "holdout_fraction": args.evaluation_holdout_fraction,
                         "seed": args.task_seed,
+                        **(
+                            {"holdout_source": str(holdout_source)}
+                            if holdout_source is not None
+                            else {}
+                        ),
                         "train_pool": sorted(
                             {task_name_from_row(row) for row in selected_rows}
                         ),

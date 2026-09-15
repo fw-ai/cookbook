@@ -432,6 +432,7 @@ def test_ten_percent_holdout_preserves_unseen_subset_for_unchanged_pool() -> Non
     )
     def names(items):
         return {row["task_name"] for row in items}
+
     assert len(train) == 71
     assert len(holdout) == 8
     assert names(holdout) <= names(previous_holdout)
@@ -439,14 +440,21 @@ def test_ten_percent_holdout_preserves_unseen_subset_for_unchanged_pool() -> Non
     assert not names(train) & names(holdout)
 
 
+@pytest.mark.parametrize("reuse_holdout", [False, True])
 def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, reuse_holdout
 ) -> None:
     rows = [
         {"task_name": f"task-{index}", "harbor_task_config": {}}
         for index in range(89)
     ]
     captured: dict[str, Any] = {}
+    original_train, original_holdout = opencode_train.split_task_holdout(
+        rows,
+        excluded_tasks=[f"task-{index}" for index in range(10)],
+        holdout_fraction=0.2,
+        seed=20260808,
+    )
     argv = [
         "train",
         "--base-model",
@@ -465,9 +473,9 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
         "--task-seed",
         "20260808",
         "--expected-task-pool-size",
-        "79",
+        "75" if reuse_holdout else "79",
         "--evaluation-holdout-fraction",
-        "0.2",
+        "0.1" if reuse_holdout else "0.2",
         "--max-rows",
         "1600",
         "--completions-per-prompt",
@@ -487,8 +495,20 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
         "--log-path",
         str(tmp_path / "run"),
     ]
-    for index in range(10):
+    exclusion_count = 14 if reuse_holdout else 10
+    for index in range(exclusion_count):
         argv.extend(("--exclude-task", f"task-{index}"))
+    if reuse_holdout:
+        source = tmp_path / "original-split.json"
+        source.write_text(
+            json.dumps(
+                {
+                    "seed": 20260808,
+                    "holdout": [row["task_name"] for row in original_holdout],
+                }
+            )
+        )
+        argv.extend(("--evaluation-holdout-source", str(source)))
 
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(opencode_train, "load_harbor_rows", lambda *_, **__: rows)
@@ -510,9 +530,15 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
     evaluation_rows, evaluation_kwargs = captured["evaluation_fn"]
     eval_names = {row["task_name"] for row in evaluation_rows}
     assert len(captured["rows"]) == 1600
-    assert len(train_names) == 63
-    assert len(eval_names) == 16
+    assert len(train_names) == (67 if reuse_holdout else 63)
+    assert len(eval_names) == (8 if reuse_holdout else 16)
     assert not train_names & eval_names
+    if reuse_holdout:
+        assert eval_names <= {row["task_name"] for row in original_holdout}
+        assert not eval_names & {row["task_name"] for row in original_train}
+        assert json.loads(source.read_text())["holdout"] == [
+            row["task_name"] for row in original_holdout
+        ]
     assert config.grad_clip_norm == 100.0
     assert config.max_completion_tokens == 131072
     assert config.max_seq_len == 262144
@@ -521,9 +547,28 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
     assert evaluation_kwargs["completions_per_prompt"] == 8
 
     split = json.loads((tmp_path / "run" / "task-split.json").read_text())
-    assert len(split["train_pool"]) == 63
-    assert len(split["holdout"]) == 16
-    assert split["excluded_tasks"] == [f"task-{index}" for index in range(10)]
+    assert len(split["train_pool"]) == len(train_names)
+    assert len(split["holdout"]) == len(eval_names)
+    assert split["excluded_tasks"] == sorted(
+        f"task-{index}" for index in range(exclusion_count)
+    )
+    if reuse_holdout:
+        assert split["holdout_source"] == str(source.resolve())
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [[], ["task-0"] * 8, ["missing-task"], [None], [f"task-{i}" for i in range(7)]],
+)
+def test_prior_holdout_rejects_invalid_or_insufficient_unseen_tasks(prior) -> None:
+    with pytest.raises(ValueError):
+        opencode_train.split_task_holdout(
+            [{"task_name": f"task-{i}"} for i in range(79)],
+            excluded_tasks=[],
+            holdout_fraction=0.1,
+            seed=20260808,
+            previous_holdout=prior,
+        )
 
 
 def test_dedicated_full_param_entry_cycles_all_tasks_with_aligned_config(
