@@ -6,6 +6,8 @@ pending trials from health.jsonl and connects only to exact trial session IDs.
 Records activity ages and process states, never tool inputs, model text or
 credentials. By default it never signals processes. Opt-in kernel-stream grep
 recovery terminates only a revalidated stuck search child, never the agent.
+Opt-in overdue-Node recovery enforces only an existing model-authored GNU
+timeout plus a 30-second termination grace; it never caps total sampling time.
 It never retries samples or changes timeouts.
 An old activity timestamp is a reason to inspect, not proof of a failed sample.
 Assistant-message timing and log growth help distinguish a long model turn
@@ -21,6 +23,8 @@ from pathlib import Path
 import time
 
 from e2b import Sandbox, SandboxQuery
+
+from training.examples.rl.harbor.recipes.terminal_bench import node_timeout_guard
 
 from training.examples.rl.harbor.recipes.terminal_bench.kernel_stream_guard import (
     recovery_candidates,
@@ -154,9 +158,11 @@ def inspect_trial(root, trial):
     return result
 
 
-def recover_trial_search(root, previous, current):
+def recover_trial_search(root, previous, current, *, node_deadlines=False):
     actions = []
-    for expected in recovery_candidates(previous, current):
+    candidates = node_timeout_guard.recovery_candidates if node_deadlines else recovery_candidates
+    command = node_timeout_guard.recovery_command if node_deadlines else recovery_command
+    for expected in candidates(previous, current):
         if (root / 'trials' / current['trial'] / 'result.json').exists():
             break
         session = current['trial'] + '__env'
@@ -167,7 +173,7 @@ def recover_trial_search(root, previous, current):
                 actions.append({'action': 'none', 'reason': 'sandbox_identity_changed'})
                 break
             sandbox = Sandbox.connect(current['sandbox_id'])
-            result = sandbox.commands.run(recovery_command(expected), timeout=15)
+            result = sandbox.commands.run(command(expected), timeout=15)
             actions.append(json.loads(result.stdout))
         except Exception as error:
             actions.append({'action': 'unknown', 'reason': type(error).__name__,
@@ -228,6 +234,8 @@ def main():
     parser.add_argument('--once', action='store_true')
     parser.add_argument('--recover-kernel-stream-grep', action='store_true',
                         help='Opt in to SIGTERM only for revalidated OpenCode grep children blocked on kernel streams')
+    parser.add_argument('--recover-overdue-node', action='store_true',
+                        help='Opt in to killing only Node children exceeding their model-authored GNU timeout plus 30s grace')
     args = parser.parse_args()
     root = args.run_dir.resolve()
     original = identity(args.pid)
@@ -254,6 +262,9 @@ def main():
                                          + search_wait_warnings(trial))
                     if args.recover_kernel_stream_grep:
                         trial['recovery_actions'] = recover_trial_search(root, previous.get(trial['trial']), trial)
+                    if args.recover_overdue_node:
+                        trial.setdefault('recovery_actions', []).extend(
+                            recover_trial_search(root, previous.get(trial['trial']), trial, node_deadlines=True))
         except Exception as error:
             record['observation_error'] = type(error).__name__
         print(json.dumps(record), flush=True)

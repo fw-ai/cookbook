@@ -294,11 +294,16 @@ The agent, sandbox, trainer and rollout were not restarted; no score or
 candidate code was changed. Final task success must still come from the
 verifier, not the fact that tool execution resumed.
 
-This was a scoped operator recovery, **not an enabled automatic timeout
-policy**. The progress monitor's `inner_timeout_overrun` warning remains an
-inspection trigger. A future automatic guard must reject changed identities,
-unknown timeout option forms, verifier processes and commands still within
-their own deadline. Do not apply a generic 30-minute kill limit to valid tasks.
+This initial recovery was performed manually. The monitor now provides an
+explicit opt-in `--recover-overdue-node` guard, disabled by default. It requires
+the same sandbox, active bash tool, and Node -> timeout -> bash -> OpenCode
+process identities across two observations. Immediately before signaling it
+opens a pidfd and revalidates the full ancestry and the actual remote command.
+Only plain `timeout DURATION node ...` is accepted, after its own deadline plus
+30 seconds of grace. Unknown option forms, changed identities, verifier
+processes and commands still within their deadline fail closed. Actions are
+recorded separately from scores. Do not apply a generic 30-minute kill limit
+to valid tasks or interpret recovery as verifier success.
 
 ### Agent completion does not bound verifier duration
 
