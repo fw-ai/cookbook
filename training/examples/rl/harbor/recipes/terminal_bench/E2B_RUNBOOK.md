@@ -158,6 +158,24 @@ timeout, discard the sample, or restart RL. Any change to tool subprocess/output
 handling needs its own regression test, including intended background-server
 survival, before use in a subsequent run.
 
+### Tool still marked running after a candidate-code crash
+
+In the same run, evaluation trial
+`harbor-opencode-largest-eigenval-0-11-3-05800feb-e6a8c97b` had a different
+failure. The bash tool started at `2026-09-15T03:37:58Z`; its stored metadata
+contained `Fatal Python error: Segmentation fault` at `/app/eigen.py:90` in
+`_dominant_lapack`. At approximately 04:00 UTC, process inspection found no
+remaining candidate-test Python process, but OpenCode's SQLite tool state was
+still `running`. OpenCode and the TITO sidecar remained alive. This is not
+evidence of a trainer crash, GPU OOM, or active numerical computation.
+
+The candidate-code crash is established by the captured traceback; why OpenCode
+has not finalized the tool result remains unverified. Preserve the tool state,
+captured output, process inventory, and timestamps. Do not repair the model's
+candidate code or silently label the sample completed. Future subprocess-handling
+tests must cover signal-terminated children as well as background servers,
+propagating their failure/output without waiting for the long tool timeout.
+
 ## Retry and progress counters
 
 ### Initial evaluation and step-publication gates
