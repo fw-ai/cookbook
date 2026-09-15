@@ -19,8 +19,9 @@ tokenizer bundle, TITO sidecar, or all task templates.
 | E2B resources | Each trial gets 4 CPUs and 8192 MB; `rstan-to-pystan` gets 16384 MB via `--e2b-task-memory-mb` |
 | Secrets | Loaded from a mode-`0600` environment file; never written to commands, logs, or trial artifacts |
 
-Do not restart the trainer or rollout to fix a client/E2B problem. Stop and
-restart only the local harness unless remote health evidence requires more.
+Do not restart the trainer or rollout to fix a client/E2B problem. Diagnose the
+specific failed component first; a local harness restart also requires a
+checkpoint-safe, authorized transition and must preserve completed samples.
 
 ## Observed failures and fixes
 
@@ -412,6 +413,55 @@ Verify the final admitted group separately. A successful timeout bounds a stuck
 verifier, not the entire sampling batch: fresh attempts can still exceed the
 30-minute target. Quiet pytest output and sleeping workers did not establish
 the exact blocked collective or an OOM; do not label that root cause proven.
+
+### Gloo teardown native-stack evidence (September 15, step 5)
+
+Trial `harbor-opencode-torch-tensor-parallelism-0-70-1-f3cd6fc0-b8a50ce8`
+stalled after five tests with Python 3.13.9 / PyTorch 2.7.0. A native stack
+capture found the main worker in `ProcessGroupGloo::~ProcessGroupGloo`, waiting
+in `pthread_mutex_lock` during `dist.destroy_process_group()`. A Gloo worker
+thread was in `gil_scoped_acquire`, destroying tensors from
+`AsyncAllgatherWork` / `AsyncBarrierWork` under `ProcessGroupGloo::runLoop`.
+The parent was waiting in `torch.multiprocessing.spawn.join`; the preceding
+test cleanup barrier had returned. This is not a rollout request wait.
+
+These stacks, together with PyTorch 2.7.0's work-mutex and Python-holder
+destruction paths, support a GIL/work-mutex lock-order diagnosis. Mutex
+ownership was not independently inspected, so do not claim a proven fix from
+these stacks alone. Native capture briefly attaches to the worker; distinguish
+it from nonblocking Python-stack observation.
+
+An isolated CPU-only experiment retained the typed Gloo backend across generic
+process-group destruction, then released it through the typed no-GIL holder.
+It was **not applied to live trials**. Evidence so far:
+
+| Isolated probe | Stock teardown | Experimental teardown | What it establishes |
+| --- | --- | --- | --- |
+| 400 one-rank init/all-gather/barrier/destroy cycles | 400 passed | 400 passed | Smoke compatibility; no reproduction of the hang |
+| Exact retained step-4 candidate and unmodified verifier (ranks 1, 2, 4) | 13 passed | 13 passed | Matching test outcomes; no reproduction of the hang |
+| Exact step-5 candidate and unmodified verifier (ranks 1, 2, 4) | 9 passed, 4 failed | 9 passed, 4 failed | Same pass/fail pattern; neither run hung |
+
+Do not substitute diagnostic results for a live reward, edit the candidate or
+verifier assertions, or promote this experimental hook as a validated remedy.
+Preserve the existing scoped verifier deadline and recover only missing group
+members through the normal producer path. The current candidate's four test
+failures are separate from the live teardown hang.
+
+### Sandbox memory pressure versus an observation timeout
+
+In step 5, `mteb-leaderboard` cursor 77 / sample 2 had kernel-confirmed OOM
+kills of candidate Python processes (PIDs 1909 and later 2030). The TITO
+sidecar and OpenCode survived, and new tool calls were observed afterward.
+The task declared 4 GiB; its actual sandbox already had approximately 8 GiB.
+Do not silently increase task resources or classify this as a trainer OOM.
+
+Sample 0's control-plane identity still existed, but guest reads timed out
+and its last metrics were stale with about 96% memory usage. That is evidence
+of an unresponsive guest, **not confirmation of its cause or terminal state**.
+Recheck the same sandbox and command handle; never restart based solely on an
+observation timeout. Record metric timestamps, kernel OOM evidence when
+available, which process died, whether the agent continues, and the final
+scored/unscored outcome separately.
 
 ### Harbor retries can precede producer accounting
 
