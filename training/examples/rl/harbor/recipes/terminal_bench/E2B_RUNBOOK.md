@@ -455,6 +455,34 @@ Clipping uses the normalized norm, giving coefficient 1 at threshold 100 for
 this step. Check the image's actual logging and clipping code before comparing
 these values with W&B's `grad_norm_post_clip` metric.
 
+### MIPS cleanup command can kill its own agent launcher (2026-09-15)
+
+Step-4 cursor 50/index 1 and index 2 both ended with
+`NonZeroAgentExitCodeError` (E2B exit `-1`). The final tool calls recovered from
+their checksum-validated TITO artifacts included `pkill -f "node vm.js"`.
+The OpenCode launcher itself contains `node vm.js` in the task prompt passed
+on its command line, so this broad match can terminate the launcher too.
+
+A separate CPU-only E2B reproduction confirmed that a harmless launcher with
+that text in its argv was matched and terminated, returning the same `-1`.
+The diagnostic sandbox was deleted; no live trial or candidate was modified.
+Retained evidence is under the September 15 run's GCS `run/` prefix:
+`reproduce_mips_pkill_exit.py` and `mips-pkill-reproduction.log`.
+
+These two failed-agent artifacts still have real verifier scores (1 and 0).
+The existing materializer accepts their exact retained segments: 39,113 and
+73,334 trainable tokens respectively. A scored result therefore does **not**
+prove clean agent completion. Do not relabel these as infrastructure-free
+successes, silently regenerate them, or replace their scores with diagnostics.
+Changing prompt delivery or failure admission needs a separate validated
+change; neither was changed in this live run.
+
+The read-only observer now audits finalized local results for
+`scored_trial_with_exception`, independently of pending trials and producer
+drop counters. Its scope excludes artifacts already pruned after checkpoint
+and archive verification; it is not a lifetime failure count. Exception messages,
+launch configuration, and tool text are never emitted by this audit.
+
 ### Unclipped gradient metrics
 
 The metrics adapter previously omitted `train/grad_clip_coefficient` when the

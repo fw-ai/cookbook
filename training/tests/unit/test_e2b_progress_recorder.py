@@ -23,6 +23,49 @@ def test_pid_identity_and_remote_probe_syntax():
     compile(code, "<read-only remote probe>", "exec")
 
 
+def test_scored_exception_audit_is_read_only_and_redacted(tmp_path):
+    trial = tmp_path / 'trial-1'
+    trial.mkdir()
+    path = trial / 'result.json'
+    payload = json.dumps({
+        'finished_at': '2026-09-15T12:05:50Z',
+        'exception_info': {'exception_type': 'NonZeroAgentExitCodeError',
+                           'exception_message': 'private command and secret'},
+        'verifier_result': {'rewards': {'reward': 0.0}},
+        'config': {'secret': 'private config'},
+    })
+    path.write_text(payload)
+    result = recorder.scored_exception_inventory(tmp_path)
+    assert result['warnings'][0]['exception_type'] == 'NonZeroAgentExitCodeError'
+    assert result['warnings'][0]['trial'] == 'trial-1'
+    assert 'private' not in json.dumps(result)
+    assert path.read_text() == payload
+
+
+@pytest.mark.parametrize('finished,exception,reward', [
+    (None, {'exception_type': 'Error'}, 0),
+    ('now', None, 1),
+    ('now', {'exception_type': 'VerifierTimeoutError'}, None),
+])
+def test_scored_exception_audit_does_not_conflate_pending_or_unscored(tmp_path, finished, exception, reward):
+    trial = tmp_path / 'trial-1'
+    trial.mkdir()
+    (trial / 'result.json').write_text(json.dumps({
+        'finished_at': finished, 'exception_info': exception,
+        'verifier_result': {'rewards': {'reward': reward}},
+    }))
+    assert recorder.scored_exception_inventory(tmp_path)['warnings'] == []
+
+
+def test_scored_exception_audit_tolerates_partial_json(tmp_path):
+    trial = tmp_path / 'trial-1'
+    trial.mkdir()
+    (trial / 'result.json').write_text('{')
+    result = recorder.scored_exception_inventory(tmp_path)
+    assert result['warnings'] == []
+    assert result['unreadable_results'] == 1
+
+
 @pytest.mark.parametrize('completed', [None, 5000])
 @pytest.mark.parametrize('duration_args,expected_duration', [
     (['60'], 60), (['2m'], 120), (['1.5s'], 1.5), (['0'], 0),

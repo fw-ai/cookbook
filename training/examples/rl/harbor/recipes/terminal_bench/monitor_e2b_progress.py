@@ -190,6 +190,7 @@ def main():
     previous = {}
     while identity(args.pid) == original:
         record = {'time': datetime.now(timezone.utc).isoformat()}
+        record['scored_exception_audit'] = scored_exception_inventory(root / 'trials')
         try:
             with (root / 'health.jsonl').open() as source:
                 health = json.loads(deque(source, maxlen=1)[0])
@@ -211,6 +212,41 @@ def main():
         if args.once:
             return
         time.sleep(180)
+
+
+def scored_exception_inventory(trials_dir):
+    """Expose scored agent failures; this is not an admission or retry policy.
+
+    Only local, finalized results still retained on disk are counted. Never
+    log exception messages or configuration: both can contain task text/secrets.
+    """
+    warnings = []
+    unreadable = 0
+    for path in sorted(trials_dir.glob('*/result.json')):
+        try:
+            result = json.loads(path.read_text())
+            if not isinstance(result, dict) or not result.get('finished_at'):
+                continue
+            exception = result.get('exception_info')
+            verifier = result.get('verifier_result')
+            if not isinstance(exception, dict) or not isinstance(verifier, dict):
+                continue
+            rewards = verifier.get('rewards')
+            if not isinstance(rewards, dict) or rewards.get('reward') is None:
+                continue
+            warnings.append({
+                'code': 'scored_trial_with_exception',
+                'trial': path.parent.name,
+                'exception_type': exception.get('exception_type'),
+                'finished_at': result['finished_at'],
+                'action': 'Inspect exact terminal action and artifact; a score does not prove clean agent completion',
+            })
+        except FileNotFoundError:
+            pass  # The checkpoint-aware archive may prune a completed trial.
+        except (OSError, ValueError):
+            unreadable += 1
+    return {'warnings': warnings, 'unreadable_results': unreadable,
+            'scope': 'finalized_local_results_not_pruned'}
 
 
 if __name__ == '__main__':
