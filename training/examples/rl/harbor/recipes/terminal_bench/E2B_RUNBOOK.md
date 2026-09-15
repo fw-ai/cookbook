@@ -537,6 +537,17 @@ all-gather/barrier work tensors. All three attempts therefore need runtime
 triage, not a larger model-generation timeout. The cleanup workaround remains
 unapplied pending approval; diagnostic outcomes are not live rewards.
 
+Batch 9 reproduced the same issue on September 15 around 20:10 UTC in
+`torch-tensor-parallelism`, cursor143/index1. Seven siblings finished; this
+verifier stopped after six tests. A native stack capture showed worker2508
+joining a Gloo thread while thread2520 waited for the GIL during all-gather/
+barrier tensor destruction. The debugger detached successfully. Increasing
+the agent timeout cannot resolve this verifier teardown deadlock. Any scoped
+verifier retry must preserve candidate/test bytes and integrate with Harbor's
+original exec/result lifecycle: killing pytest alone can finalize an incorrect
+failure reward. Do not inject debugger calls to release the GIL, reuse a
+diagnostic score, or restart the trainer/rollout to treat this condition.
+
 **When retries are exhausted:** the coordinator rejects the incomplete prompt
 group and admits the next source row if available. It does not train the seven
 valid siblings as a complete eight-trajectory group. The unit test
