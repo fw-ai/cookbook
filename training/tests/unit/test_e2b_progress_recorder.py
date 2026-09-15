@@ -23,6 +23,36 @@ def test_pid_identity_and_remote_probe_syntax():
     compile(code, "<read-only remote probe>", "exec")
 
 
+@pytest.mark.parametrize('scenario', ['finalized', 'changed_sandbox', 'matching'])
+def test_recovery_rechecks_finished_trial_and_exact_sandbox(tmp_path, monkeypatch, scenario):
+    current = {'trial': 'our-trial', 'sandbox_id': 'original'}
+    expected = {'pid': 1727, 'parent_pid': 1694, 'start_ticks': '100',
+                'parent_start_ticks': '50', 'cpu_seconds': 0.1}
+    monkeypatch.setattr(recorder, 'recovery_candidates', lambda *_: [expected])
+    sandbox_id = 'replacement' if scenario == 'changed_sandbox' else 'original'
+    api = Mock()
+    api.list.return_value.next_items.return_value = [SimpleNamespace(
+        sandbox_id=sandbox_id, metadata={'session_id': 'our-trial__env'})]
+    api.connect.return_value.commands.run.return_value.stdout = json.dumps({'action': 'SIGTERM'})
+    monkeypatch.setattr(recorder, 'Sandbox', api)
+    if scenario == 'finalized':
+        path = tmp_path / 'trials' / 'our-trial'
+        path.mkdir(parents=True)
+        (path / 'result.json').write_text('{}')
+    actions = recorder.recover_trial_search(tmp_path, {}, current)
+    if scenario == 'finalized':
+        assert actions == []
+        api.list.assert_not_called()
+    elif scenario == 'changed_sandbox':
+        assert actions == [{'action': 'none', 'reason': 'sandbox_identity_changed'}]
+        api.connect.assert_not_called()
+    else:
+        assert actions == [{'action': 'SIGTERM'}]
+        api.connect.assert_called_once_with('original')
+        api.connect.return_value.commands.run.assert_called_once_with(
+            recorder.recovery_command(expected), timeout=15)
+
+
 @pytest.mark.parametrize('tool,elapsed,expected', [
     ('grep', 300, True), ('grep', 900, True), ('grep', 299, False),
     ('grep', None, False), ('bash', 900, False),

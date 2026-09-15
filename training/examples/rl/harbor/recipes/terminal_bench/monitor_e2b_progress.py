@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Read-only E2B progress sampling for the live run, every three minutes.
+"""E2B progress sampling every three minutes; read-only unless explicitly enabled.
 
 Run with --pid LIVE_HARNESS_PID; add --once for a single observation. Reads
 pending trials from health.jsonl and connects only to exact trial session IDs.
 Records activity ages and process states, never tool inputs, model text or
-credentials. It never signals processes, retries samples, or changes timeouts.
+credentials. By default it never signals processes. Opt-in kernel-stream grep
+recovery terminates only a revalidated stuck search child, never the agent.
+It never retries samples or changes timeouts.
 An old activity timestamp is a reason to inspect, not proof of a failed sample.
 Assistant-message timing and log growth help distinguish a long model turn
 from a tool wait; neither alone proves upstream request or GPU activity.
@@ -19,6 +21,11 @@ from pathlib import Path
 import time
 
 from e2b import Sandbox, SandboxQuery
+
+from training.examples.rl.harbor.recipes.terminal_bench.kernel_stream_guard import (
+    recovery_candidates,
+    recovery_command,
+)
 
 
 REMOTE = """python3 - <<'REMOTE'
@@ -147,6 +154,27 @@ def inspect_trial(root, trial):
     return result
 
 
+def recover_trial_search(root, previous, current):
+    actions = []
+    for expected in recovery_candidates(previous, current):
+        if (root / 'trials' / current['trial'] / 'result.json').exists():
+            break
+        session = current['trial'] + '__env'
+        try:
+            matches = Sandbox.list(query=SandboxQuery(metadata={'session_id': session}), limit=2).next_items()
+            matches = [s for s in matches if s.metadata.get('session_id') == session]
+            if len(matches) != 1 or matches[0].sandbox_id != current['sandbox_id']:
+                actions.append({'action': 'none', 'reason': 'sandbox_identity_changed'})
+                break
+            sandbox = Sandbox.connect(current['sandbox_id'])
+            result = sandbox.commands.run(recovery_command(expected), timeout=15)
+            actions.append(json.loads(result.stdout))
+        except Exception as error:
+            actions.append({'action': 'unknown', 'reason': type(error).__name__,
+                            'next': 'Reinspect the same process; do not assume success or resend blindly'})
+    return actions
+
+
 def stall_warnings(previous, current):
     """Flag unchanged traced child/parent pairs; never classify task failure."""
     if not previous or previous.get('sandbox_id') != current.get('sandbox_id'):
@@ -198,6 +226,8 @@ def main():
     parser.add_argument('--pid', type=int, required=True)
     parser.add_argument('--run-dir', type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument('--once', action='store_true')
+    parser.add_argument('--recover-kernel-stream-grep', action='store_true',
+                        help='Opt in to SIGTERM only for revalidated OpenCode grep children blocked on kernel streams')
     args = parser.parse_args()
     root = args.run_dir.resolve()
     original = identity(args.pid)
@@ -222,6 +252,8 @@ def main():
                     trial['warnings'] = (stall_warnings(previous.get(trial['trial']), trial)
                                          + timeout_warnings(trial)
                                          + search_wait_warnings(trial))
+                    if args.recover_kernel_stream_grep:
+                        trial['recovery_actions'] = recover_trial_search(root, previous.get(trial['trial']), trial)
         except Exception as error:
             record['observation_error'] = type(error).__name__
         print(json.dumps(record), flush=True)

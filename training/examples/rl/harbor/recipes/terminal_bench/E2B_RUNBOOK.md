@@ -652,6 +652,24 @@ an optimizer-step metric alone does not prove that a resumable checkpoint exists
 
 ## Read-only live progress recorder
 
+The default recorder is read-only. After approval to recover confirmed tool
+hangs, add `--recover-kernel-stream-grep` to the **monitor command**, not the RL
+training command. This opt-in guard requires the same active grep call and child
+PID in two observations without CPU progress, and a grep age of at least five
+minutes. Inside the exact sandbox it rechecks PID/start time, OpenCode parent
+identity, root working directory, unchanged CPU time, open kernel-stream FDs,
+and blocked kernel wait channels. Only then does it send SIGTERM through a
+pidfd to that search child. Unsupported pidfds, changed/missing evidence, or a
+finished trial cause no action. It never kills the agent, sandbox, process group,
+trainer, or rollout; never changes a score, retries a sample, or caps a valid
+model/CPU computation. Every attempted recovery is recorded in `recovery_actions`.
+Observation errors mean the action outcome is unknown and require reinspection.
+
+The first real recovery preserved the same OpenCode PID and trajectory. The
+agent continued immediately with new tool calls, then completed with reward0
+and no Harbor exception. A recovered harness does not imply that the model
+solved the task; keep the actual verifier result.
+
 `long_grep_wait` flags an OpenCode grep call running for at least five minutes.
 Inspect before the 30-minute sampling target; do not classify the sample as failed
 based on elapsed time. A confirmed `headless-terminal` incident searched `.` from
@@ -676,8 +694,9 @@ When the run has the minute-level `health.jsonl` recorder, run
 Redirect stdout to a run-local JSONL artifact. Every three minutes it inspects
 only pending phases older than three minutes, matched by their exact E2B session
 metadata. It records tool activity ages, exit status and process/tracer states;
-it never logs tool inputs or credentials, signals processes, changes timeouts,
-or retries samples. Observation errors do not mean the sample failed. Review
+it never logs tool inputs or credentials or changes timeouts; without the explicit
+recovery option it never signals processes. It never retries samples.
+Observation errors do not mean the sample failed. Review
 these records alongside CPU progress and verifier logs before any intervention.
 The recorder exits when the original harness PID disappears or is reused.
 
