@@ -1,6 +1,6 @@
 """Exercise the real OpenCode CLI/tool loop without model calls or training.
 
-Run INSIDE an isolated E2B sandbox:
+Run in an isolated E2B sandbox or locally for a CPU-only diagnostic:
     python3 shell_completion_probe.py /tmp/opencode-fixed
 
 A loopback OpenAI-compatible stub emits deterministic bash tool calls. It does
@@ -36,6 +36,23 @@ def main(binary: str, selected: set[str] | None = None) -> None:
             "threading.Thread(target=s.serve_forever,daemon=True).start(); "
             "exec('while True:\\n print(\"background heartbeat\", flush=True)\\n time.sleep(.05)')"
         )
+        traced_pids = root / "traced-pids.json"
+        tracee_code = (
+            "import ctypes, os, signal; "
+            "assert ctypes.CDLL(None).ptrace(0, 0, None, None) == 0; "
+            "os.kill(os.getpid(), signal.SIGSTOP)"
+        )
+        traced_parent_code = (
+            "import json, os, pathlib, subprocess, sys; "
+            f"child=subprocess.Popen([sys.executable, '-c', {tracee_code!r}], "
+            "stdout=subprocess.PIPE, stderr=subprocess.PIPE); "
+            "identities={str(p): pathlib.Path(f'/proc/{p}/stat').read_text()"
+            ".rsplit(')',1)[1].split()[19] for p in (os.getpid(),child.pid)}; "
+            f"pathlib.Path({str(traced_pids)!r}).write_text(json.dumps(identities)); "
+            "waited,status=os.waitpid(child.pid,os.WUNTRACED); "
+            "assert waited == child.pid and os.WIFSTOPPED(status), 'Tracee did not stop'; "
+            "print('traced-timeout-start',flush=True); child.communicate()"
+        )
         cases = [
             ("nonzero", [("printf final-stdout; printf final-stderr >&2; exit 7", 5000)]),
             ("signal", [("echo before-signal; kill -TERM $$", 5000)]),
@@ -49,6 +66,7 @@ def main(binary: str, selected: set[str] | None = None) -> None:
                  "&& echo SERVER_ALIVE", 5000),
             ]),
             ("timeout", [("echo timeout-start; sleep 30", 300)]),
+            ("ptrace_timeout", [(f"python3 -c {shlex.quote(traced_parent_code)}", 500)]),
         ]
         for name, commands in cases:
             if selected is not None and name not in selected:
@@ -142,6 +160,9 @@ def main(binary: str, selected: set[str] | None = None) -> None:
                     assert "SERVER_ALIVE" in events[1].get("output", "")
                 elif name == "timeout":
                     assert "timeout-start" in output and "exceeding timeout" in output
+                elif name == "ptrace_timeout":
+                    assert "traced-timeout-start" in output and "exceeding timeout" in output
+                    assert elapsed < 8, "Traced-child timeout did not release the tool promptly"
             finally:
                 stub.shutdown()
                 stub.server_close()
@@ -150,6 +171,18 @@ def main(binary: str, selected: set[str] | None = None) -> None:
                         os.kill(int((root / "server-pid").read_text()), 9)
                     except ProcessLookupError:
                         pass
+                if name == "ptrace_timeout" and traced_pids.exists():
+                    # Emergency cleanup is limited to this probe's recorded PIDs;
+                    # guard against PID reuse and never signal a shared group.
+                    for pid, start in json.loads(traced_pids.read_text()).items():
+                        try:
+                            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(')', 1)[1].split()
+                            if fields[19] == start and fields[0] != 'Z':
+                                os.kill(int(pid), 9)
+                        except ProcessLookupError:
+                            pass
+                        except FileNotFoundError:
+                            pass
     print(json.dumps({"passed": len(results)}))
 
 

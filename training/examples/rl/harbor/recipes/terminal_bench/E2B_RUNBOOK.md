@@ -250,6 +250,16 @@ preserve the sample and audit the eventual verifier result separately. Such an
 intervention must be identified in run results, not described as an untouched
 sample. No automatic ptrace-stop recovery policy has been validated here.
 
+The CPU-only `shell_completion_probe.py --cases ptrace_timeout` regression
+probe uses a mock model with the real patched OpenCode CLI. Its Python parent
+confirms its child entered a traced stop, then blocks awaiting the child's
+captured output. With an explicit 500ms tool timeout, the CLI returned the real
+timeout error and requested the next model response in 3.81s (including its
+termination grace period). The test passed on September 15. This validates the
+timeout escape path in isolation, not successful completion of the live task.
+The live command's unchanged default deadline is 09:07:14 UTC; do not replace
+that deadline with the probe's shorter timeout or infer that recovery occurred.
+
 ### Agent completion does not bound verifier duration
 
 The same run's other pending eigenvalue trial,
