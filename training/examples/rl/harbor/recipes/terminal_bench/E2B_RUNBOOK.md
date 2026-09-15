@@ -433,7 +433,7 @@ it from nonblocking Python-stack observation.
 
 An isolated CPU-only experiment retained the typed Gloo backend across generic
 process-group destruction, then released it through the typed no-GIL holder.
-It was **not applied to live trials**. Evidence so far:
+It was **not applied to live trials**. Initial isolated probes:
 
 | Isolated probe | Stock teardown | Experimental teardown | What it establishes |
 | --- | --- | --- | --- |
@@ -441,11 +441,38 @@ It was **not applied to live trials**. Evidence so far:
 | Exact retained step-4 candidate and unmodified verifier (ranks 1, 2, 4) | 13 passed | 13 passed | Matching test outcomes; no reproduction of the hang |
 | Exact step-5 candidate and unmodified verifier (ranks 1, 2, 4) | 9 passed, 4 failed | 9 passed, 4 failed | Same pass/fail pattern; neither run hung |
 
-Do not substitute diagnostic results for a live reward, edit the candidate or
-verifier assertions, or promote this experimental hook as a validated remedy.
+Those initial probes alone did not validate a remedy. Do not substitute
+diagnostic results for a live reward or edit candidate code/verifier assertions.
 Preserve the existing scoped verifier deadline and recover only missing group
 members through the normal producer path. The current candidate's four test
 failures are separate from the live teardown hang.
+
+**Later reproduction:** repeating the literal `tests/test.sh` entrypoint in
+one isolated sandbox produced stock results of (1) 9 passed / 4 failed, then
+(2) a hang after five tests, terminated by the diagnostic's 150-second bound.
+The two interleaved retained-backend runs completed with the same 9/4 test
+outcomes and reward 0. The hung stock worker was in `std::thread::join` inside
+Gloo destruction; its worker thread was waiting for the GIL during tensor
+destruction. This reproduces GIL-held teardown waiting for a worker that needs
+the GIL, complementing the live mutex-wait stack. It is not a candidate
+collective mismatch or a wait for rollout tokens.
+
+The first literal fixture copy had an extra trailing newline, with unchanged
+executable code; the recorded hashes distinguish it from the source bytes.
+A byte-exact follow-up then completed with the same 9-pass/4-fail result and
+reward 0 under stock (25.23s) and retained-backend (28.88s) teardown. A separate
+positive-candidate activation audit passed all 13 tests in 19.95s and recorded
+exactly one retained/released pair in each of 28 verifier workers (world sizes
+1, 2, and 4). This verifies that the hook actually executed, rather than merely
+observing another lucky completion. The hook is scoped to PyTorch 2.7.0 and the
+default Gloo backend; no collective math or assertions are changed.
+
+The workaround remains isolated pending approval for future task verifiers;
+these tests do not establish correctness for every backend or PyTorch version.
+Do not
+reuse a diagnostic score for training, and do not interpret shell exit 0 as
+test success: this verifier writes reward 0 after pytest failures and then
+exits successfully. Read the actual pytest result and reward file.
 
 ### Sandbox memory pressure versus an observation timeout
 
