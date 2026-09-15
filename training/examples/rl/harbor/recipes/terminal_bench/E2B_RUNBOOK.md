@@ -655,6 +655,15 @@ of an HTTP429 from rollout. Check structured call outcomes and the final
 emitted tool action before changing capacity, credentials or retry settings.
 These samples were not regenerated, rescored, or silently removed from training.
 
+The same signature subsequently affected cursor119/index1 and index0, bringing
+the batch-8 audit to five scored agent exceptions. Index0 finished at
+2026-09-15 18:39:29 UTC with verifier reward `1.0` and a failed artifact; all 131
+recorded model calls succeeded, and the final emitted tool action again
+contained `pkill -f "node vm.js"`. A passing verifier score does not establish
+clean agent completion. This is further evidence for deploying the already
+verified prompt-transport fix at a safe approved transition, not a reason to
+retry successful model calls or silently replace the recorded reward.
+
 The read-only observer now audits finalized local results for
 `scored_trial_with_exception`, independently of pending trials and producer
 drop counters. Its scope excludes artifacts already pruned after checkpoint
