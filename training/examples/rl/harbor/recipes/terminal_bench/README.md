@@ -513,3 +513,19 @@ task selection only; they do not themselves restore trainer or dataloader state.
 Preserve a versioned split, checkpoint/cursor,
 and monotonic W&B step numbering before applying a revised profile. No trainer
 or rollout restart is required merely to change sampling/evaluation policy.
+
+### Read-only step summary
+
+For a run monitored with `health.jsonl`, print the observed synchronized steps:
+
+```bash
+uv run python -m training.examples.rl.harbor.recipes.terminal_bench.summarize_health \
+  <run-dir>/health.jsonl --expected-peers 4
+```
+
+Use the actual hot-load peer count. A row requires matching training and
+rollout steps and every distinct peer ready on the same snapshot. Repeated
+observations are deduplicated, not averaged. The observation timestamp is not
+the optimizer-completion timestamp. Trainer tok/s is not generation throughput;
+step wall time is not sampling time. Check DCP durability, evaluation completion,
+and scored agent exceptions separately before declaring a run complete or valid.
