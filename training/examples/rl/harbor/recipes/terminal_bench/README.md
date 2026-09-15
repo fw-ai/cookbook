@@ -147,8 +147,20 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
 
 Set `FIREWORKS_API_KEY` and, when W&B logging is enabled,
 `WANDB_API_KEY` in the environment. Do not put either secret in the command or
-the run directory. Use `--init-from-checkpoint step-N` to resume the trainer's
-weights and optimizer without recreating the trainer or rollout deployment.
+the run directory. For a **dedicated same-trainer continuation**, use
+`--init-from-checkpoint <current-trainer-job-id>:step-N`, keep the same log
+directory (including `dataloader.json` and `checkpoint_aliases.json`), and reuse
+the same `WANDB_RUN_ID`. Verify that checkpoint N actually completed first.
+The qualified reference restores weights, optimizer, recipe step, and the saved
+dataset cursor without recreating the trainer or rollout. A bare `step-N`
+restores trainer state but intentionally resets the dedicated recipe step and
+cursor to zero; it is **not** a continuation of this experiment.
+
+Do not interrupt an in-flight batch merely to reload code. The current recipe
+performs an initial full-snapshot hotload and forced evaluation on client
+startup, including resume. Account for that extra work and inspect the safe
+transition point before restarting a client; a saved checkpoint alone does not
+prove that pending sample work will be preserved.
 
 ### Concrete inputs for the convergence run
 
