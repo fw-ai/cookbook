@@ -224,6 +224,32 @@ Do not repair the model's candidate code or silently label the sample completed.
 Any integrated fix must retain output and report signal termination correctly,
 with separate coverage for background-server survival, cancellation, and timeout.
 
+### A live traced child can deadlock a tool independently of pipe completion
+
+In the fresh `k3-gspo-tbench78-c16x8-100step-20260915-0640` run, training
+trial `harbor-opencode-vulnerable-secret-0-2-3-3b9ecc4a-1dfbecf1` stopped
+making progress despite using the patched OpenCode binary. Read-only inspection
+of its SQLite `part` records showed a running bash tool since 07:12:14 UTC,
+with no explicit timeout. The model-authored Python command called
+`subprocess.run(['/app/vulnerable'], input=payload, capture_output=True)`.
+
+At approximately 07:21 UTC, the Python parent was in `do_poll` and its child
+was in `ptrace_stop`, with `TracerPid` equal to the Python parent's PID. Both
+had accumulated zero CPU time over more than eight minutes. The parent was
+waiting for output/exit rather than driving the traced child. This is a live
+process deadlock, not an exited shell retaining a pipe or a lost signal-exit
+notification; the native completion patch does not make that command finish.
+With no model-specified timeout, the existing 6,900-second default still applies.
+
+Record the tool input, start time, PID/PPID/process-group identity, `TracerPid`,
+CPU time, and wait channels before proposing recovery. Do not restart RL,
+rewrite candidate code, fabricate a reward, or silently shorten the global
+timeout. With operator approval, terminate only the verified deadlocked tool
+process group so OpenCode receives the real command failure and can continue;
+preserve the sample and audit the eventual verifier result separately. Such an
+intervention must be identified in run results, not described as an untouched
+sample. No automatic ptrace-stop recovery policy has been validated here.
+
 ### Agent completion does not bound verifier duration
 
 The same run's other pending eigenvalue trial,
