@@ -1,0 +1,236 @@
+--- a/packages/core/src/cross-spawn-spawner.ts
++++ b/packages/core/src/cross-spawn-spawner.ts
+@@ -23,6 +23,7 @@
+ } from "effect/unstable/process/ChildProcessSpawner"
+ import * as NodeChildProcess from "node:child_process"
+ import { PassThrough } from "node:stream"
++import { Socket } from "node:net"
+ import launch from "cross-spawn"
+ import { makeGlobalNode } from "./effect/app-node"
+ import { filesystem, path } from "./effect/app-node-platform"
+@@ -96,7 +97,7 @@
+ 
+ type ExitSignal = Deferred.Deferred<readonly [code: number | null, signal: NodeJS.Signals | null]>
+ 
+-export const make = Effect.gen(function* () {
++const makeWithShellCompletion = (shellCompletion: boolean) => Effect.gen(function* () {
+   const fs = yield* FileSystem.FileSystem
+   const path = yield* Path.Path
+ 
+@@ -248,12 +249,14 @@
+     let stdout = proc.stdout
+       ? NodeStream.fromReadable({
+           evaluate: () => proc.stdout!,
++          closeOnDone: !shellCompletion,
+           onError: (cause) => toPlatformError("fromReadable(stdout)", toError(cause), command),
+         })
+       : Stream.empty
+     let stderr = proc.stderr
+       ? NodeStream.fromReadable({
+           evaluate: () => proc.stderr!,
++          closeOnDone: !shellCompletion,
+           onError: (cause) => toPlatformError("fromReadable(stderr)", toError(cause), command),
+         })
+       : Stream.empty
+@@ -275,6 +278,8 @@
+       })
+       proc.on("exit", (...args) => {
+         exit = args
++        // A background server can retain these pipes after its shell exits.
++        if (shellCompletion) Deferred.doneUnsafe(signal, Exit.succeed(args))
+       })
+       proc.on("close", (...args) => {
+         if (end) return
+@@ -382,6 +387,16 @@
+             Effect.fnUntraced(function* ([proc, signal]) {
+               const done = yield* Deferred.isDone(signal)
+               const kill = timeout(proc, command, command.options)
++              if (shellCompletion && done) {
++                // Keep intentional servers alive without retaining their output
++                // or keeping OpenCode alive. Pipes close with the server/sandbox.
++                proc.stdout?.resume()
++                proc.stderr?.resume()
++                if (proc.stdout instanceof Socket) proc.stdout.unref()
++                if (proc.stderr instanceof Socket) proc.stderr.unref()
++                proc.unref()
++                return
++              }
+               if (done) {
+                 const [code] = yield* Deferred.await(signal)
+                 if (process.platform === "win32") return yield* Effect.void
+@@ -428,6 +443,14 @@
+               const sig = opts?.killSignal ?? "SIGTERM"
+               const send = (s: NodeJS.Signals) =>
+                 Effect.catch(killGroup(command, proc, s), () => killOne(command, proc, s))
++              if (shellCompletion && opts?.forceKillAfter && process.platform !== "win32") {
++                // Parent exit does not prove its children exited. Escalate the
++                // group even when the foreground shell handles SIGTERM first.
++                return Effect.ignore(send(sig)).pipe(
++                  Effect.andThen(Effect.sleep(opts.forceKillAfter)),
++                  Effect.andThen(Effect.ignore(killGroup(command, proc, "SIGKILL"))),
++                )
++              }
+               const attempt = send(sig).pipe(Effect.andThen(Deferred.await(signal)), Effect.asVoid)
+               if (!opts?.forceKillAfter) return attempt
+               return Effect.timeoutOrElse(attempt, {
+@@ -497,6 +520,13 @@
+   return makeSpawner(spawnCommand)
+ })
+ 
++export const make = makeWithShellCompletion(false)
++
++// Opt in only for shell tools. Generic command consumers keep close semantics.
++export const makeForShell = makeWithShellCompletion(true).pipe(
++  Effect.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)),
++)
++
+ const layer: Layer.Layer<ChildProcessSpawner, never, FileSystem.FileSystem | Path.Path> = Layer.effect(
+   ChildProcessSpawner,
+   make,
+--- a/packages/opencode/src/tool/shell.ts
++++ b/packages/opencode/src/tool/shell.ts
+@@ -1,4 +1,5 @@
+-import { Effect, Stream } from "effect"
++import { Cause, Effect, Exit, Fiber, Stream } from "effect"
++import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+ import os from "os"
+ import { createWriteStream } from "node:fs"
+ import * as Tool from "./tool"
+@@ -340,6 +341,7 @@
+   Effect.gen(function* () {
+     const config = yield* Config.Service
+     const spawner = yield* ChildProcessSpawner
++    const shellSpawner = yield* CrossSpawnSpawner.makeForShell
+     const fs = yield* FSUtil.Service
+     const trunc = yield* Truncate.Service
+     const plugin = yield* Plugin.Service
+@@ -446,6 +448,7 @@
+       let cut = false
+       let expired = false
+       let aborted = false
++      let failure = ""
+ 
+       const closeSink = Effect.fnUntraced(function* () {
+         const stream = sink
+@@ -481,9 +484,9 @@
+       const code: number | null = yield* Effect.scoped(
+         Effect.gen(function* () {
+           yield* Effect.addFinalizer(closeSink)
+-          const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
++          const handle = yield* shellSpawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
+ 
+-          yield* Effect.forkScoped(
++          const output = yield* Effect.forkScoped(
+             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
+               const size = Buffer.byteLength(chunk, "utf-8")
+               list.push({ text: chunk, size })
+@@ -540,7 +543,8 @@
+           const timeout = Effect.sleep(`${input.timeout + 100} millis`)
+ 
+           const exit = yield* Effect.raceAll([
+-            handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code }))),
++            // raceAll waits for a success; signal exits must also win the race.
++            Effect.exit(handle.exitCode).pipe(Effect.map((result) => ({ kind: "exit" as const, result }))),
+             abort.pipe(Effect.map(() => ({ kind: "abort" as const, code: null }))),
+             timeout.pipe(Effect.map(() => ({ kind: "timeout" as const, code: null }))),
+           ])
+@@ -554,7 +558,19 @@
+             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.orDie)
+           }
+ 
+-          return exit.kind === "exit" ? exit.code : null
++          // Drain foreground output, bounded when a server inherits the pipes.
++          yield* Fiber.await(output).pipe(
++            Effect.timeoutOrElse({ duration: "250 millis", orElse: () => Effect.void }),
++          )
++          if (exit.kind !== "exit") return null
++          if (Exit.isFailure(exit.result)) {
++            const error = Cause.squash(exit.result.cause)
++            failure = error instanceof Error && error.cause instanceof Error
++              ? error.cause.message
++              : error instanceof Error ? error.message : String(error)
++            return null
++          }
++          return exit.result.value
+         }),
+       ).pipe(Effect.orDie)
+ 
+@@ -565,6 +581,7 @@
+         )
+       }
+       if (aborted) meta.push("User aborted the command")
++      if (failure) meta.push(`Command failed: ${failure}`)
+       const raw = list.map((item) => item.text).join("")
+       const end = tail(raw, limits.maxLines, limits.maxBytes)
+       if (end.cut) cut = true
+--- a/packages/opencode/test/tool/shell.test.ts
++++ b/packages/opencode/test/tool/shell.test.ts
+@@ -1132,6 +1132,68 @@
+ })
+ 
+ describe("tool.shell truncation", () => {
++  it.live("finishes background commands without killing their server", () =>
++    runIn(projectRoot, Effect.gen(function* () {
++      const tmp = yield* tmpdirScoped()
++      const ready = path.join(tmp, "port")
++      const script = `require('http').createServer((q,r)=>r.end('alive')).listen(0,'127.0.0.1',function(){require('fs').writeFileSync(${JSON.stringify(ready)},String(this.address().port))});setInterval(()=>console.log('background heartbeat'),50)`
++      const started = performance.now()
++      const result = yield* run({
++        command: `${bin} -e ${JSON.stringify(script)} & bg=$!; while [ ! -s ${squote(ready)} ]; do sleep 0.01; done; echo SERVER_PID=$bg`,
++        timeout: 5000,
++      })
++      const pid = Number(result.output.match(/SERVER_PID=(\d+)/)?.[1])
++      expect(pid).toBeGreaterThan(0)
++      yield* Effect.addFinalizer(() => Effect.sync(() => process.kill(pid, "SIGKILL")))
++      expect(result.metadata.exit).toBe(0)
++      expect(performance.now() - started).toBeLessThan(3000)
++      const port = yield* Effect.promise(() => Bun.file(ready).text())
++      expect(yield* Effect.promise(() => fetch(`http://127.0.0.1:${port}`).then(r => r.text()))).toBe("alive")
++      // A second tool call proves the server survives after capture stops,
++      // including writes into the inherited stdout pipe.
++      const followup = yield* run({command: `sleep 0.3; kill -0 ${pid}; echo server-still-alive`, timeout: 2000})
++      expect(followup.metadata.exit).toBe(0)
++      expect(followup.output).toContain("server-still-alive")
++    })),
++  )
++
++  it.live("reports a shell signal exit without waiting for its timeout", () =>
++    runIn(projectRoot, Effect.gen(function* () {
++      const started = performance.now()
++      const result = yield* run({command: "echo before-signal; kill -TERM $$", timeout: 5000})
++      expect(performance.now() - started).toBeLessThan(3000)
++      expect(result.output).toContain("before-signal")
++      expect(result.output).toContain("SIGTERM")
++      expect(result.output).not.toContain("exceeding timeout")
++      expect(result.metadata.exit).toBeNull()
++    })),
++  )
++
++  it.live("preserves nonzero command status and final output", () =>
++    runIn(projectRoot, Effect.gen(function* () {
++      const result = yield* run({command: "printf last-stdout; printf last-stderr >&2; exit 7", timeout: 5000})
++      expect(result.metadata.exit).toBe(7)
++      expect(result.output).toContain("last-stdout")
++      expect(result.output).toContain("last-stderr")
++    })),
++  )
++
++  it.live("timeout kills a child that ignores SIGTERM even after its shell exits", () =>
++    runIn(projectRoot, Effect.gen(function* () {
++      const tmp = yield* tmpdirScoped()
++      const pidfile = path.join(tmp, "pid")
++      const script = `process.on('SIGTERM',()=>{});require('fs').writeFileSync(${JSON.stringify(pidfile)},String(process.pid));setInterval(()=>{},100)`
++      const result = yield* run({
++        command: `${bin} -e ${JSON.stringify(script)} & wait`, timeout: 600,
++      })
++      expect(result.output).toContain("exceeding timeout")
++      const pid = Number(yield* Effect.promise(() => Bun.file(pidfile).text()))
++      const state = yield* Effect.promise(() => Bun.file(`/proc/${pid}/stat`).text().catch(() => ""))
++      // An adopted child may briefly remain a zombie; it must not be running.
++      expect(state === "" || state.split(") ")[1]?.startsWith("Z")).toBe(true)
++    })),
++  )
++
+   it.live("truncates output exceeding line limit", () =>
+     runIn(
+       projectRoot,
