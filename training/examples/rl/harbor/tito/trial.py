@@ -626,6 +626,7 @@ def _build_trial_config(
     agent_version: str,
     agent_provider: str = "fireworks-rl",
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
+    agent_options: Mapping[str, Any] | None = None,
 ) -> Any:
     """Merge a native TrialConfig template with Fireworks-owned runtime fields."""
 
@@ -690,6 +691,7 @@ def _build_trial_config(
         )
     )
     agent["kwargs"] = {
+        **(agent_options or {}),
         "sidecar_bundle_path": str(sidecar_bundle_path),
         "sidecar_launch_spec": sidecar_launch_spec,
         "context_limit": int(context_limit),
@@ -827,6 +829,7 @@ async def run_harbor_trial(
     terminal_failure_reward: float | None = None,
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     retry_include_exceptions: Any = DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
+    agent_options: Mapping[str, Any] | None = None,
 ) -> HarborTrialOutcome:
     """Run one TITO-backed agent through Harbor's native Trial lifecycle."""
 
@@ -864,6 +867,7 @@ async def run_harbor_trial(
             agent_provider=agent_provider,
             agent_version=agent_version,
             tool_timeout_seconds=tool_timeout_seconds,
+            agent_options=agent_options,
         )
         result = None
         trial_path = trial_root / config.trial_name

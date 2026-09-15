@@ -16,6 +16,11 @@ from training.examples.rl.harbor.opencode.constants import (
     OPENCODE_HARBOR_IMPORT_PATH,
 )
 from training.examples.rl.harbor.opencode.artifacts import tool_timeout_count
+from training.examples.rl.harbor.opencode.config import (
+    SHELL_FIX_VERSION,
+    SHELL_FIX_SHA256,
+    validate_shell_fix_binary,
+)
 from training.examples.rl.harbor.tito.e2b_templates import (
     e2b_trial_config_for_task,
 )
@@ -137,6 +142,8 @@ class _HarborRolloutRunner:
                 DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
             )
         )
+        binary = setup.extras.get("opencode_shell_fix_binary")
+        self._shell_fix_binary = str(validate_shell_fix_binary(binary)) if binary else None
         if self._tool_timeout_seconds < 1:
             raise ValueError(
                 "rollout_extras['harness_tool_timeout_seconds'] must be positive"
@@ -327,6 +334,8 @@ class _HarborRolloutRunner:
             "retry_index": retry_index,
             "evaluation": evaluation,
             "canonical_initial_prompt_hash": canonical_initial_prompt_hash,
+            "opencode_build": SHELL_FIX_VERSION if self._shell_fix_binary else self._opencode_version,
+            "opencode_binary_sha256": SHELL_FIX_SHA256 if self._shell_fix_binary else None,
         }
         launch_spec = launch_spec_json(
             build_launch_spec(
@@ -354,6 +363,10 @@ class _HarborRolloutRunner:
                 agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
                 agent_provider="fireworks-rl",
                 agent_version=self._opencode_version,
+                agent_options=(
+                    {"opencode_shell_fix_binary": self._shell_fix_binary}
+                    if self._shell_fix_binary else None
+                ),
                 tool_timeout_seconds=self._tool_timeout_seconds,
             )
             rollout = materialize_harbor_trajectory(

@@ -1215,6 +1215,77 @@ def test_agents_write_only_the_loopback_trajectory_endpoint(tmp_path) -> None:
             assert "@opencode-ai/plugin" in uploaded
 
 
+def test_opencode_shell_fix_rejects_missing_or_wrong_binary(tmp_path) -> None:
+    from training.examples.rl.harbor.opencode.config import validate_shell_fix_binary
+
+    with pytest.raises(FileNotFoundError):
+        validate_shell_fix_binary(tmp_path / "missing")
+    binary = tmp_path / "opencode"
+    binary.write_bytes(b"not the verified build")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        validate_shell_fix_binary(binary)
+
+
+@pytest.mark.parametrize("patched", [False, True])
+@pytest.mark.parametrize("remote_valid", [False, True])
+def test_opencode_shell_fix_install_is_explicit_and_verified(
+    tmp_path, monkeypatch, patched, remote_valid
+) -> None:
+    pytest.importorskip("harbor")
+    from training.examples.rl.harbor.opencode import agent as agent_module
+    from training.examples.rl.harbor.opencode import config as config_module
+
+    binary = tmp_path / "local-opencode"
+    binary.write_bytes(b"test-build")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    monkeypatch.setattr(config_module, "SHELL_FIX_SHA256", digest)
+    monkeypatch.setattr(agent_module, "SHELL_FIX_SHA256", digest)
+    sidecar_calls = []
+
+    async def sidecar(*_args, **_kwargs):
+        sidecar_calls.append(True)
+        return {"openai_base_url": "http://127.0.0.1:1234/v1", "api_key": "test"}
+
+    monkeypatch.setattr(agent_module, "install_sidecar", sidecar)
+
+    class Environment:
+        def __init__(self):
+            self.uploads = []
+            self.commands = []
+
+        async def exec(self, *, command, **_kwargs):
+            self.commands.append(command)
+            if command.startswith("command -v opencode"):
+                return SimpleNamespace(return_code=0, stdout="1.18.8\n")
+            if "--version" in command:
+                assert digest in command and "sha256sum --check --status" in command
+                return SimpleNamespace(return_code=0 if remote_valid else 1,
+                                       stdout=config_module.SHELL_FIX_VERSION + "\n")
+            return SimpleNamespace(return_code=0, stdout="")
+
+        async def upload_file(self, source, target):
+            self.uploads.append((source, target))
+
+    environment = Environment()
+    agent = agent_module.ConfigurableOpenCode(
+        logs_dir=tmp_path, sidecar_bundle_path="unused", sidecar_launch_spec="{}",
+        context_limit=262144, output_limit=131072, tool_timeout_seconds=6900,
+        version="1.18.8", opencode_shell_fix_binary=str(binary) if patched else None,
+    )
+    if patched and not remote_valid:
+        with pytest.raises(RuntimeError, match="failed its version check"):
+            asyncio.run(agent.install(environment))
+        assert not sidecar_calls
+        assert agent._opencode_executable == "opencode"
+        return
+    asyncio.run(agent.install(environment))
+    assert sidecar_calls == [True]
+    assert bool(environment.uploads) == patched
+    assert agent._opencode_executable == (
+        "/tmp/fireworks-tito-opencode/bin/opencode" if patched else "opencode"
+    )
+
+
 def test_opencode_disables_unrelated_remote_bootstrap_requests(tmp_path) -> None:
     pytest.importorskip("harbor")
     from training.examples.rl.harbor.opencode.agent import ConfigurableOpenCode
@@ -1732,6 +1803,21 @@ class _Config(SimpleNamespace):
 
 def _fake_harbor():
     return SimpleNamespace(EnvironmentType=_EnvironmentType, TrialConfig=_Config)
+
+
+def test_trial_agent_options_cannot_override_tito_owned_fields(tmp_path) -> None:
+    config = harbor_adapter._build_trial_config(
+        _fake_harbor(), template=None, task_config={"path": "/tasks/example"},
+        run_id="run", trials_dir=tmp_path, harbor_environment="e2b",
+        sidecar_bundle_path=tmp_path / "bundle",
+        sidecar_launch_spec=json.dumps({"inference_base_url": "https://api.fireworks.ai"}),
+        agent_import_path=OPENCODE_HARBOR_IMPORT_PATH, agent_version="1.18.8",
+        context_limit=262144,
+        agent_options={"opencode_shell_fix_binary": "/verified/opencode", "version": "wrong", "context_limit": 1},
+    )
+    assert config.agent.kwargs["opencode_shell_fix_binary"] == "/verified/opencode"
+    assert config.agent.kwargs["version"] == "1.18.8"
+    assert config.agent.kwargs["context_limit"] == 262144
 
 
 def test_two_hour_terminal_bench_config_covers_timeouts_and_e2b_resources() -> None:

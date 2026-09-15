@@ -82,12 +82,51 @@ The unmodified `1.18.8` binary was tested in the **same sandbox**: SIGTERM waite
 5.251 s, timed out, and its server was unavailable to the next tool call. These
 probes use a 5-second timeout intentionally, rather than the live 6,900 seconds.
 
+## Explicit harness activation
+
+Download the verified artifact to a stable local file, then add only this option
+to the existing training command at a checkpoint-safe client transition:
+
+```bash
+--opencode-shell-fix-binary /absolute/path/to/opencode-linux-x64
+```
+
+Keep `--opencode-version 1.18.8`: this checks the original baked task image.
+The optional fix is installed separately at
+`/tmp/fireworks-tito-opencode/bin/opencode` inside each **fresh sandbox**. The
+harness checks the binary's exact SHA-256 before upload and again remotely,
+then verifies its actual `1.18.8-fw-shell.2` version. It never relabels that binary
+as stock `1.18.8`. Each new TITO trajectory records `opencode_build` and
+`opencode_binary_sha256`. Existing task templates remain reusable; no template
+rebuild, trainer restart, rollout restart, or change to model/sampling settings
+is needed. Omitting the option retains the existing stock-binary path.
+
+The transfer adds one approximately 143-MiB binary upload per fresh sandbox;
+it is not copied into collected trial artifacts. Baking the same verified
+artifact into future task templates can remove this startup overhead later.
+
+The opt-in installation path was separately tested in E2B sandbox
+`iza3cwadf8pdys1h572sw`: the actual adapter uploaded/verified the binary, and all
+five CLI probes passed against its installed path. The sidecar startup was
+stubbed for this installation-only test; it was not another RL/model test.
+The cookbook Harbor suite passes 109 tests, including opt-in/default behavior,
+missing/wrong binary rejection, remote verification failure, and protection of
+TITO-owned configuration fields.
+
 ## Activation boundary
 
 The running RL client, trainer, rollout, and existing sandbox processes were
 **not restarted or hot-patched** during this work. The patch is not yet active in
-that run. Activation requires installing the patched binary in fresh task
-sandboxes and explicitly updating the supported/pinned OpenCode build. The
-current harness intentionally rejects unrecognized versions; do not relabel
-this binary as unmodified `1.18.8` to bypass that check. Preserve the current
-training state and use a checkpoint-safe client transition, not a step-0 restart.
+that run. The new opt-in above is ready for a checkpoint-safe client transition,
+not a step-0 restart. Already-running OpenCode processes are not retroactively
+changed, and an independently stuck candidate verifier is unaffected.
+
+For a later dedicated-client resume, verify a completed control-plane DCP row,
+the matching `checkpoint_aliases.json`/`dataloader.json`, and persisted cursor
+first. Use the **same-trainer-qualified** checkpoint reference:
+`--init-from-checkpoint <current-trainer-id>:<physical-checkpoint-name>`, together
+with the same log path, split/seed, `WANDB_RUN_ID`, and `WANDB_RESUME=must`.
+`CheckpointManager.resume()` treats a bare checkpoint name as weight/optimizer
+initialization but resets the recipe step and dataset cursor to zero; do not
+use the bare-name form for this continuation. Never stop an in-progress client
+merely because a save was requested or a local filename exists.

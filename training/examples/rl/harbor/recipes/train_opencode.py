@@ -258,6 +258,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--opencode-version", default=DEFAULT_OPENCODE_VERSION)
     parser.add_argument(
+        "--opencode-shell-fix-binary",
+        help="Local path to the checksum-pinned 1.18.8 shell-fix binary; uploads to fresh sandboxes without rebuilding task templates",
+    )
+    parser.add_argument(
         "--harness-tool-timeout-seconds",
         type=int,
         default=DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
@@ -420,6 +424,7 @@ def _rollout_extras(
         "max_concurrent_trials": args.max_concurrent_trials,
         "terminal_failure_reward": args.terminal_failure_reward,
         "opencode_version": args.opencode_version,
+        "opencode_shell_fix_binary": getattr(args, "opencode_shell_fix_binary", None),
         "harness_tool_timeout_seconds": args.harness_tool_timeout_seconds,
         "task_selector": selector,
         "harbor_trial_config": args.harbor_trial_config,

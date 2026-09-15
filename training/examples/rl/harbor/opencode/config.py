@@ -1,5 +1,24 @@
 """Harbor-independent configuration used by the OpenCode adapter."""
 
+import hashlib
+from pathlib import Path
+
+SHELL_FIX_VERSION = "1.18.8-fw-shell.2"
+SHELL_FIX_SHA256 = "6b160847e94b9ecfa608436d23497de08ff5c93f30d9174bcf3fb0c45134ca88"
+
+
+def validate_shell_fix_binary(path: str | Path) -> Path:
+    """Accept only the exact E2B-tested native shell-fix build, without executing it."""
+    binary = Path(path).expanduser().resolve(strict=True)
+    with binary.open("rb") as source:
+        digest = hashlib.file_digest(source, "sha256").hexdigest()
+    if digest != SHELL_FIX_SHA256:
+        raise ValueError(
+            f"OpenCode shell-fix binary checksum mismatch: {digest}; "
+            f"expected {SHELL_FIX_SHA256} ({SHELL_FIX_VERSION})"
+        )
+    return binary
+
 _TOOL_TIMEOUT_PLUGIN = r"""
 export const FireworksTitoToolTimeout = async () => {
   const maximum = Number.parseInt(
@@ -31,4 +50,4 @@ export const FireworksTitoToolTimeout = async () => {
 }
 """
 
-__all__ = ["_TOOL_TIMEOUT_PLUGIN"]
+__all__ = ["_TOOL_TIMEOUT_PLUGIN", "SHELL_FIX_VERSION", "SHELL_FIX_SHA256", "validate_shell_fix_binary"]
