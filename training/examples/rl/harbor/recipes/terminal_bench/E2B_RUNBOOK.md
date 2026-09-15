@@ -260,6 +260,14 @@ timeout escape path in isolation, not successful completion of the live task.
 The live command's unchanged default deadline is 09:07:14 UTC; do not replace
 that deadline with the probe's shorter timeout or infer that recovery occurred.
 
+Live outcome: the saved `agent/opencode.txt` subsequently recorded
+`exceeding timeout 6900000 ms`. OpenCode continued and the trial finalized at
+09:07:36 UTC with verifier reward 1.0 and `exception_info: null`; verification
+took 4.64s. The ephemeral sandbox was then deleted normally. No operator signal,
+sample retry, timeout change, or RL/service restart was applied. All 128 training
+samples completed. This confirms timeout recovery for this instance, but the
+115-minute default still missed the desired 30-minute sampling target.
+
 The read-only progress recorder emits `suspected_traced_child_stall` when two
 successive observations contain the same active tool and the same traced child
 and parent (including process start identities), with unchanged CPU counters.
