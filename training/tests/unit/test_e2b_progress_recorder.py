@@ -1,10 +1,14 @@
+import importlib
 import os
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from training.examples.rl.harbor.recipes.terminal_bench import monitor_e2b_progress as recorder
+pytest.importorskip("e2b", reason="The read-only E2B recorder requires the optional sandbox SDK")
+recorder = importlib.import_module(
+    "training.examples.rl.harbor.recipes.terminal_bench.monitor_e2b_progress"
+)
 
 
 def test_pid_identity_and_remote_probe_syntax():
