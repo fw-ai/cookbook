@@ -85,6 +85,13 @@ completed its first synchronization. The corrected run is `2ja2bva6`.
 
 ## Artifact archival safety
 
+Monitor both the harness process's RSS/high-water mark and the host's
+`MemAvailable` from `/proc/meminfo`; process RSS alone cannot detect pressure
+from other users of this shared host. Do not use `MemFree` as the available
+capacity: reclaimable filesystem cache can make it misleading. Record free disk
+space on both `/` and the actual trial-storage mount, even with remote E2B:
+completed artifacts are collected locally before upload.
+
 `artifacts/tito/compact/COMPLETE` means the compact trajectory is ready, not
 that Harbor has finished verification and written its final result. In the
 2026-09-15 run, six trials had that marker but no `result.json` yet. Archive a
