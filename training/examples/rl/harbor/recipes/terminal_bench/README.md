@@ -377,3 +377,30 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
   --wandb-project kimi-k3-fullparam-harbor \
   --wandb-run-name <run-name>
 ```
+
+### Faster evaluation follow-up (requested September 15)
+
+The preceding command records the original 20% hold-out run. For the requested
+10% profile, use `--evaluation-holdout-fraction 0.1`: an unchanged 79-task pool
+gives 8 evaluation tasks and 71 training tasks. Keep eight completions per task
+and evaluation every five steps; each evaluation then has 64 rather than 128
+trajectories. This halves evaluation sample count, not necessarily wall time:
+one stalled verifier can still dominate the join.
+
+The measured additional exclusion candidates are `largest-eigenval`,
+`feal-linear-cryptanalysis`, `configure-git-webserver`, and `hf-model-inference`.
+The first three produced approximately two-hour evaluation tails; the fourth
+caused the 30-minute training-batch stall documented in
+[the runbook](E2B_RUNBOOK.md#sampling-wall-time-versus-model-request-time).
+The webserver and inference tasks were usually fast, so their exclusion would
+be a temporary throughput-oriented workaround, not a repair for tool handling.
+Excluding all four would leave 75 tasks; eight held out leaves 67 for training.
+These additional exclusions are pending confirmation, not active run settings.
+
+Do not edit the existing `task-split.json` or assume editing this command changes
+a live process: the dataloader and evaluation rows are captured at startup.
+When continuing trained weights, retain the reduced evaluation set from the
+original unseen hold-out. Re-shuffling a changed task pool can move previously
+trained tasks into evaluation. Preserve a versioned split, checkpoint/cursor,
+and monotonic W&B step numbering before applying a revised profile. No trainer
+or rollout restart is required merely to change sampling/evaluation policy.

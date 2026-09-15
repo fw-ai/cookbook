@@ -422,6 +422,23 @@ def test_task_holdout_excludes_long_tasks_and_is_disjoint() -> None:
     ) == (train, holdout)
 
 
+def test_ten_percent_holdout_preserves_unseen_subset_for_unchanged_pool() -> None:
+    rows = [{"task_name": f"task-{index}"} for index in range(79)]
+    previous_train, previous_holdout = opencode_train.split_task_holdout(
+        rows, excluded_tasks=[], holdout_fraction=0.2, seed=20260808
+    )
+    train, holdout = opencode_train.split_task_holdout(
+        rows, excluded_tasks=[], holdout_fraction=0.1, seed=20260808
+    )
+    def names(items):
+        return {row["task_name"] for row in items}
+    assert len(train) == 71
+    assert len(holdout) == 8
+    assert names(holdout) <= names(previous_holdout)
+    assert not names(holdout) & names(previous_train)
+    assert not names(train) & names(holdout)
+
+
 def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
     monkeypatch, tmp_path
 ) -> None:
