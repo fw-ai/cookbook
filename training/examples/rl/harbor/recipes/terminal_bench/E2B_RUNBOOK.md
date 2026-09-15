@@ -260,6 +260,13 @@ timeout escape path in isolation, not successful completion of the live task.
 The live command's unchanged default deadline is 09:07:14 UTC; do not replace
 that deadline with the probe's shorter timeout or infer that recovery occurred.
 
+The read-only progress recorder emits `suspected_traced_child_stall` when two
+successive observations contain the same active tool and the same traced child
+and parent (including process start identities), with unchanged CPU counters.
+This is an inspection warning, not a failure verdict or recovery policy. A new
+sandbox, tool, process identity, CPU progress, resumed child, or missing
+observation suppresses the warning. It never terminates a process.
+
 ### Agent completion does not bound verifier duration
 
 The same run's other pending eigenvalue trial,

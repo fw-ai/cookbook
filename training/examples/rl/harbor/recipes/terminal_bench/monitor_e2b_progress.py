@@ -53,6 +53,7 @@ for p in pathlib.Path('/proc').glob('[0-9]*/status'):
             row = {k: fields[k].strip() for k in ('Name','Pid','PPid','State','TracerPid')}
             stat = (p.parent / 'stat').read_text().rsplit(')', 1)[1].split()
             row['cpu_seconds'] = (int(stat[11])+int(stat[12]))/os.sysconf('SC_CLK_TCK')
+            row['start_ticks'] = stat[19]
             out['processes'].append(row)
     except (OSError, KeyError, ValueError):
         pass
@@ -89,6 +90,39 @@ def inspect_trial(root, trial):
     return result
 
 
+def stall_warnings(previous, current):
+    """Flag unchanged traced child/parent pairs; never classify task failure."""
+    if not previous or previous.get('sandbox_id') != current.get('sandbox_id'):
+        return []
+    before = previous.get('remote', {})
+    after = current.get('remote', {})
+    active = lambda r: {(t.get('tool'), t['start_ms']) for t in r.get('running_tools', [])
+                        if t.get('start_ms') is not None}
+    if not active(before).intersection(active(after)):
+        return []
+    old = {p['Pid']: p for p in before.get('processes', [])}
+    new = {p['Pid']: p for p in after.get('processes', [])}
+
+    def unchanged(p):
+        prior = old.get(p['Pid'], {})
+        return (p.get('start_ticks') is not None
+                and p['start_ticks'] == prior.get('start_ticks')
+                and p.get('cpu_seconds') is not None
+                and p['cpu_seconds'] == prior.get('cpu_seconds'))
+
+    warnings = []
+    for child in new.values():
+        parent = new.get(child.get('TracerPid'))
+        if (parent and child.get('PPid') == parent['Pid']
+                and child.get('State', '').startswith('t ')
+                and old.get(child['Pid'], {}).get('State', '').startswith('t ')
+                and unchanged(child) and unchanged(parent)):
+            warnings.append({'code': 'suspected_traced_child_stall',
+                             'child_pid': child['Pid'], 'parent_pid': parent['Pid'],
+                             'action': 'Inspect wait channels; do not infer failure or terminate automatically'})
+    return warnings
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--pid', type=int, required=True)
@@ -99,6 +133,7 @@ def main():
     original = identity(args.pid)
     if original is None:
         raise SystemExit('Harness PID is not live; no remote inspection started')
+    previous = {}
     while identity(args.pid) == original:
         record = {'time': datetime.now(timezone.utc).isoformat()}
         try:
@@ -112,9 +147,12 @@ def main():
                 pending = [t for t in health['pending_trials'] if t['phase_age_s'] >= 900]
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     record['trials'] = list(pool.map(lambda t: inspect_trial(root, t), pending))
+                for trial in record['trials']:
+                    trial['warnings'] = stall_warnings(previous.get(trial['trial']), trial)
         except Exception as error:
             record['observation_error'] = type(error).__name__
         print(json.dumps(record), flush=True)
+        previous = {t['trial']: t for t in record.get('trials', [])}
         if args.once:
             return
         time.sleep(180)

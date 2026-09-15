@@ -1,4 +1,5 @@
 import importlib
+from copy import deepcopy
 import os
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -66,3 +67,43 @@ def test_observation_error_does_not_log_credentials_or_retry(tmp_path, monkeypat
                       "observation_error": "RuntimeError"}
     assert api.list.call_count == 1
     api.connect.assert_not_called()
+
+
+def traced_observation():
+    return {'sandbox_id': 'ours', 'remote': {
+        'running_tools': [{'tool': 'bash', 'start_ms': 1234}],
+        'processes': [
+            {'Pid': '11', 'PPid': '10', 'TracerPid': '0', 'State': 'S (sleeping)',
+             'start_ticks': '100', 'cpu_seconds': 0.03},
+            {'Pid': '12', 'PPid': '11', 'TracerPid': '11', 'State': 't (tracing stop)',
+             'start_ticks': '101', 'cpu_seconds': 0.0},
+        ],
+    }}
+
+
+def test_traced_child_stall_requires_two_matching_observations():
+    current = traced_observation()
+    assert recorder.stall_warnings(None, current) == []
+    warnings = recorder.stall_warnings(deepcopy(current), current)
+    assert len(warnings) == 1
+    assert warnings[0]['code'] == 'suspected_traced_child_stall'
+    assert warnings[0]['child_pid'] == '12'
+
+
+@pytest.mark.parametrize('change', ['sandbox', 'tool', 'cpu', 'pid_reuse', 'resumed', 'missing'])
+def test_progress_or_changed_identity_is_not_reported_as_stall(change):
+    previous = traced_observation()
+    current = deepcopy(previous)
+    if change == 'sandbox':
+        current['sandbox_id'] = 'replacement'
+    elif change == 'tool':
+        current['remote']['running_tools'][0]['start_ms'] += 1
+    elif change == 'cpu':
+        current['remote']['processes'][0]['cpu_seconds'] += 0.01
+    elif change == 'pid_reuse':
+        current['remote']['processes'][1]['start_ticks'] = '999'
+    elif change == 'resumed':
+        current['remote']['processes'][1]['State'] = 'R (running)'
+    elif change == 'missing':
+        current['remote'] = {}
+    assert recorder.stall_warnings(previous, current) == []
