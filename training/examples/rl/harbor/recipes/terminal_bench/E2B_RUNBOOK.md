@@ -43,7 +43,7 @@ restart only the local harness unless remote health evidence requires more.
 | One member of an 8-rollout prompt group fails after its siblings complete | Rebuilding the whole group repeats seven expensive, already-valid E2B trials | Retain successful members in the producer and resubmit only missing indices at the same policy version | Unit test observes one call for successful members and two calls only for the failed member; the recovered group still contains all eight members |
 | A repeated prompt group reads stale or colliding TITO files | Group-level retries reused the same Harbor trial directory even though trajectory-level retry counters reset | Give every physical Harbor attempt a unique artifact directory while preserving its logical rollout ID | Repeated logical rollouts have distinct trial paths and cannot consume prior-attempt artifacts |
 | PyStan agent appears active indefinitely | Its main Python process is OOM-killed at 8 GiB while orphaned chain workers retain the command pipe | Prebuild and run only `rstan-to-pystan` with `--e2b-task-memory-mb rstan-to-pystan=16384` | The task alias launches with 16384 MB and all chain workers complete without a kernel OOM kill |
-| Candidate distributed test hangs after partial verifier progress | Invalid candidate code deadlocks a multiprocess collective, so the verifier cannot reach its remaining tests | Keep the two-hour agent budget, but set `--e2b-task-verifier-timeout-seconds torch-tensor-parallelism=1200` | A hung verifier is discarded and replaced within 20 minutes; unrelated tasks retain the full verifier budget |
+| Distributed verifier hangs after partial progress | Candidate collectives or verifier/runtime teardown can block; inspect the live stack before assigning a cause | Keep the two-hour agent budget, with the configured `--e2b-task-verifier-timeout-seconds torch-tensor-parallelism=1200` | The verifier is bounded; unscored artifacts are retained and only missing group members are retried. Replacement sampling adds time beyond this verifier bound |
 | The same `torch-tensor-parallelism` verifier times out on every retry | Retrying the same generated candidate cannot repair a deterministic collective deadlock | Preserve the scoped 1,200-second verifier bound, exclude the incomplete prompt group, and record all eight group members as dropped; fix or preflight this verifier before using the task in another convergence claim | The completed run excluded exactly one prompt group after three attempts; every trajectory admitted to training had a checksum-valid TITO artifact |
 | `Sandbox not found` during artifact cleanup | Secondary cleanup after sandbox creation/build failed | Diagnose the earlier exception; do not treat cleanup noise as the root cause | Root exception is absent on rerun |
 | `PyTorch was not found` | Informational Transformers warning in the lightweight sidecar | No fix required; TITO needs tokenizer utilities, not Torch | Ignore unless followed by a different fatal exception |
@@ -373,6 +373,18 @@ signal, task-code edit, or trainer/rollout/harness restart was applied here.
 ## Retry and progress counters
 
 ### Verifier timeout versus producer retry (2026-09-15, step 4)
+
+**Follow-up:** a non-blocking `py-spy==0.4.1` snapshot of replacement index3
+located the surviving worker in `test_outputs.py:40`,
+`dist.destroy_process_group()`, after the numerical assertions and cleanup
+barrier for `test_column_parallel_linear[4-False]`. The parent was waiting in
+`torch.multiprocessing.spawn.join`. With Python3.13.9 / torch2.7.0, a separate
+CPU-only E2B sandbox using the same template and exact candidate plus unmodified
+test files passed all13 tests in22.76seconds. This narrows the live failure to
+teardown; it does not yet establish the underlying runtime cause or validate a
+fix. The diagnostic sandbox was deleted, and its result was NOT substituted for
+the live reward. Two other replacement samples finalized with actual scored
+reward0 and no harness exception.
 
 Three `torch-tensor-parallelism` samples reached their existing 1,200-second
 verifier deadline at 11:48:55, 11:49:32, and 11:50:07 UTC. Their result files
