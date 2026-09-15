@@ -18,7 +18,8 @@ def test_setuptools_package_list_covers_every_python_module_directory() -> None:
     for path in PACKAGE_ROOT.rglob("*.py"):
         relative_parent = path.parent.relative_to(PACKAGE_ROOT)
         if any(
-            part in {".venv", "build", "dist", "__pycache__"}
+            part.startswith(".")
+            or part in {"build", "dist", "site-packages", "venv", "__pycache__"}
             or part.endswith(".egg-info")
             for part in relative_parent.parts
         ):
