@@ -9,7 +9,7 @@ import tinker
 from tinker.lib.chunked_fwdbwd_helpers import combine_fwd_bwd_output_results
 
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.metrics import compute_step_metrics
+from training.utils.rl.metrics import add_optimizer_metrics, compute_step_metrics
 
 
 def _make_prompt_group() -> PromptGroup:
@@ -291,6 +291,7 @@ class TestComputeStepMetrics:
 
         assert metrics["train/grad_norm"] == 3.0
         assert metrics["train/grad_norm_rms"] == 0.2
+        assert metrics["train/grad_clip_coefficient"] == 1.0
         assert set(key for key in metrics if key.startswith("train/grad_norm")) == {
             "train/grad_norm",
             "train/grad_norm_rms",
@@ -315,6 +316,37 @@ class TestComputeStepMetrics:
         assert metrics["train/grad_norm"] == 3.0
         assert metrics["train/grad_norm_post_clip"] == 1.0
         assert metrics["train/grad_clip_coefficient"] == pytest.approx(1.0 / 3.0)
+
+    @pytest.mark.parametrize("suffix", ["", ":last"])
+    def test_optimizer_metrics_report_unclipped_coefficient(self, suffix):
+        metrics = {}
+        add_optimizer_metrics(
+            metrics,
+            SimpleNamespace(
+                metrics={
+                    f"grad_norm{suffix}": 0.52,
+                    f"grad_norm_post_clip{suffix}": 0.52,
+                }
+            ),
+        )
+        assert metrics["train/grad_clip_coefficient"] == 1.0
+        assert "train/grad_norm_post_clip" not in metrics
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            {"grad_norm": 0.52},
+            {"grad_norm_post_clip": 0.52},
+            {"grad_norm": 0.0, "grad_norm_post_clip": 0.0},
+            {"grad_norm": float("nan"), "grad_norm_post_clip": 1.0},
+            {"grad_norm": 1.0, "grad_norm_post_clip": float("inf")},
+            {"grad_norm": "unavailable", "grad_norm_post_clip": 1.0},
+        ],
+    )
+    def test_optimizer_metrics_do_not_invent_coefficient(self, raw):
+        metrics = {}
+        add_optimizer_metrics(metrics, SimpleNamespace(metrics=raw))
+        assert "train/grad_clip_coefficient" not in metrics
 
 
 class TestFwdBwdResultAveraging:

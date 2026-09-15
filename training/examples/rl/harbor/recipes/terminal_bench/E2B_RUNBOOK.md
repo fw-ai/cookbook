@@ -455,6 +455,18 @@ Clipping uses the normalized norm, giving coefficient 1 at threshold 100 for
 this step. Check the image's actual logging and clipping code before comparing
 these values with W&B's `grad_norm_post_clip` metric.
 
+### Unclipped gradient metrics
+
+The metrics adapter previously omitted `train/grad_clip_coefficient` when the
+trainer's pre-clip and post-clip norms were equal. It now reports `1.0` when both
+reported norms are equal and positive, while still omitting the duplicate
+post-clip norm. Missing, zero-denominator, or non-finite diagnostics do not imply
+a coefficient. This is logging only, not a change to gradient clipping.
+
+The September 15 live client was not restarted to pick up this change. Do not
+interpret absent historical coefficient points as evidence of clipping, and do
+not present coefficients inferred from a configured threshold as logged values.
+
 ### Initial evaluation and step-publication gates
 
 In `training/recipes/async_rl_loop.py`, initial evaluation starts concurrently

@@ -243,8 +243,11 @@ def add_optimizer_metrics(metrics: dict[str, Any], optim_result: Any) -> None:
     # the canonical pre-clip norm exactly.
     post_clip = raw.get("grad_norm_post_clip", raw.get("grad_norm_post_clip:last"))
     grad_norm = metrics.get("train/grad_norm")
-    if post_clip is not None and post_clip != grad_norm:
-        metrics["train/grad_norm_post_clip"] = post_clip
+    if post_clip is not None:
+        if post_clip != grad_norm:
+            metrics["train/grad_norm_post_clip"] = post_clip
+        # Keep the coefficient even when no clipping occurred. Otherwise a
+        # missing chart is indistinguishable from missing trainer diagnostics.
         try:
             pre_clip_value = float(grad_norm)
             post_clip_value = float(post_clip)
