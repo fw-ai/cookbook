@@ -440,9 +440,11 @@ def test_ten_percent_holdout_preserves_unseen_subset_for_unchanged_pool() -> Non
     assert not names(train) & names(holdout)
 
 
-@pytest.mark.parametrize("reuse_holdout", [False, True])
+@pytest.mark.parametrize(
+    ("reuse_holdout", "evaluation_limit"), [(False, None), (True, None), (False, 8)]
+)
 def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
-    monkeypatch, tmp_path, reuse_holdout
+    monkeypatch, tmp_path, reuse_holdout, evaluation_limit
 ) -> None:
     rows = [
         {"task_name": f"task-{index}", "harbor_task_config": {}}
@@ -498,6 +500,14 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
     exclusion_count = 14 if reuse_holdout else 10
     for index in range(exclusion_count):
         argv.extend(("--exclude-task", f"task-{index}"))
+    if evaluation_limit is not None:
+        argv.extend(
+            (
+                "--evaluation-holdout-limit", str(evaluation_limit),
+                "--evaluation-concurrency", "64",
+                "--max-concurrent-trials", "128",
+            )
+        )
     if reuse_holdout:
         source = tmp_path / "original-split.json"
         source.write_text(
@@ -531,8 +541,15 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
     eval_names = {row["task_name"] for row in evaluation_rows}
     assert len(captured["rows"]) == 1600
     assert len(train_names) == (67 if reuse_holdout else 63)
-    assert len(eval_names) == (8 if reuse_holdout else 16)
+    assert len(eval_names) == (8 if reuse_holdout or evaluation_limit else 16)
     assert not train_names & eval_names
+    if evaluation_limit is not None:
+        expected_train = list(original_train)
+        opencode_train.random.Random(20260808).shuffle(expected_train)
+        assert captured["rows"] == [expected_train[i % 63] for i in range(1600)]
+        assert eval_names <= {row["task_name"] for row in original_holdout}
+        assert evaluation_kwargs["max_concurrency"] == 64
+        assert captured["rollout_extras"]["max_concurrent_trials"] == 128
     if reuse_holdout:
         assert eval_names <= {row["task_name"] for row in original_holdout}
         assert not eval_names & {row["task_name"] for row in original_train}
@@ -554,6 +571,45 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
     )
     if reuse_holdout:
         assert split["holdout_source"] == str(source.resolve())
+    if evaluation_limit is not None:
+        assert split["evaluation_holdout_limit"] == 8
+        assert len(split["reserved_holdout"]) == 16
+        assert len(split["unused_holdout"]) == 8
+        assert set(split["unused_holdout"]).isdisjoint(eval_names | train_names)
+        original_rows = list(captured["rows"])
+        original_evaluation = captured["evaluation_fn"]
+        opencode_train.run()
+        assert captured["rows"] == original_rows
+        assert captured["evaluation_fn"] == original_evaluation
+
+
+@pytest.mark.parametrize(
+    ("limit", "fraction", "message"),
+    [
+        (0, "0.2", "must be positive"),
+        (-1, "0.2", "must be positive"),
+        (8, None, "requires --evaluation-holdout-fraction"),
+        (17, "0.2", "exceeds held-out tasks"),
+    ],
+)
+def test_evaluation_holdout_limit_rejects_invalid_configuration(
+    monkeypatch, tmp_path, limit, fraction, message
+) -> None:
+    argv = [
+        "train", "--base-model", "test-model", "--harbor-dataset", str(tmp_path),
+        "--tokenizer-model", "test-tokenizer", "--renderer-name", "test-renderer",
+        "--trainer-job-id", "test-trainer", "--deployment-id", "test-deployment",
+        "--cycle-selected-tasks", "--evaluation-holdout-limit", str(limit),
+    ]
+    if fraction is not None:
+        argv.extend(("--evaluation-holdout-fraction", fraction))
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(
+        opencode_train, "load_harbor_rows",
+        lambda *_, **__: [{"task_name": f"task-{i}"} for i in range(79)],
+    )
+    with pytest.raises(ValueError, match=message):
+        opencode_train.run()
 
 
 @pytest.mark.parametrize(

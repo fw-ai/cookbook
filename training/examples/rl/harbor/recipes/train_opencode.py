@@ -319,6 +319,16 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--evaluation-repeats", type=int, default=1)
+    parser.add_argument(
+        "--evaluation-holdout-limit",
+        type=int,
+        default=None,
+        help=(
+            "Evaluate a seeded subset of this many held-out tasks without "
+            "changing the training rows; unselected holdout tasks remain unused. "
+            "Requires --evaluation-holdout-fraction."
+        ),
+    )
     parser.add_argument("--evaluation-concurrency", type=int, default=24)
     parser.add_argument("--output-model-id", default=None)
     parser.add_argument(
@@ -542,6 +552,13 @@ def run() -> None:
         raise ValueError("--evaluation-concurrency must be positive")
     if args.evaluation_repeats < 1:
         raise ValueError("--evaluation-repeats must be positive")
+    if args.evaluation_holdout_limit is not None:
+        if args.evaluation_holdout_limit < 1:
+            raise ValueError("--evaluation-holdout-limit must be positive")
+        if args.evaluation_holdout_fraction is None:
+            raise ValueError(
+                "--evaluation-holdout-limit requires --evaluation-holdout-fraction"
+            )
     previous_holdout = None
     holdout_source = None
     if args.evaluation_holdout_source:
@@ -624,6 +641,18 @@ def run() -> None:
             )
         if holdout_rows:
             evaluation_rows = holdout_rows
+        if args.evaluation_holdout_limit is not None:
+            if args.evaluation_holdout_limit > len(holdout_rows):
+                raise ValueError("--evaluation-holdout-limit exceeds held-out tasks")
+            candidates = sorted(holdout_rows, key=task_name_from_row)
+            random.Random(args.task_seed).shuffle(candidates)
+            chosen = {
+                task_name_from_row(row)
+                for row in candidates[: args.evaluation_holdout_limit]
+            }
+            evaluation_rows = [
+                row for row in holdout_rows if task_name_from_row(row) in chosen
+            ]
         if args.evaluation_task:
             evaluation_rows = rows_for_tasks(selected_rows, tuple(args.evaluation_task))
         evaluation_rows = [
@@ -659,6 +688,20 @@ def run() -> None:
                         ),
                         "holdout": sorted(
                             {task_name_from_row(row) for row in evaluation_rows}
+                        ),
+                        **(
+                            {
+                                "evaluation_holdout_limit": args.evaluation_holdout_limit,
+                                "reserved_holdout": sorted(
+                                    task_name_from_row(row) for row in holdout_rows
+                                ),
+                                "unused_holdout": sorted(
+                                    {task_name_from_row(row) for row in holdout_rows}
+                                    - {task_name_from_row(row) for row in evaluation_rows}
+                                ),
+                            }
+                            if args.evaluation_holdout_limit is not None
+                            else {}
                         ),
                     },
                     indent=2,

@@ -381,11 +381,34 @@ uv run python -m training.examples.rl.harbor.recipes.train_opencode \
 ### Faster evaluation follow-up (requested September 15)
 
 The preceding command records the original 20% hold-out run. For the requested
-10% profile, use `--evaluation-holdout-fraction 0.1`: an unchanged 79-task pool
-gives 8 evaluation tasks and 71 training tasks. Keep eight completions per task
-and evaluation every five steps; each evaluation then has 64 rather than 128
-trajectories. This halves evaluation sample count, not necessarily wall time:
-one stalled verifier can still dominate the join.
+evaluation-only acceleration during continuation, keep that split and add:
+
+```bash
+--evaluation-holdout-fraction 0.2 \
+--evaluation-holdout-limit 8 \
+--evaluation-concurrency 64 \
+--max-concurrent-trials 128
+```
+
+This evaluates a seeded eight-task subset of the original sixteen held-out
+tasks. The other eight remain unused, so all 1,600 training rows, their order,
+and the 63-task training population are unchanged. The split records the active
+`holdout`, original `reserved_holdout`, and `unused_holdout`. Selection uses the
+existing task seed, not observed rewards or durations. Keep eight completions
+per task and evaluation every five steps: each evaluation attempts 64 samples,
+with up to 64 concurrent and the same shared 128-trial E2B ceiling.
+
+The previous 17-step run evaluated three fixed tasks (24 samples) at concurrency
+24. Expanding to sixteen tasks while retaining concurrency 24 introduced
+additional scheduling waves. These settings reduce that delay, but do not fix
+a single hanging candidate/verifier. Record the evaluation-set change in the
+run history; do not compare the old 16-task aggregate directly with the new
+8-task aggregate. A same-subset baseline can be computed from existing scored
+per-task results, with missing-score coverage reported explicitly.
+
+Do not use `--evaluation-holdout-fraction 0.1` for an evaluation-only change:
+that would also expand training to 71 tasks and change the shuffled sequence.
+It is an option for a separately agreed training-population change.
 
 The measured additional exclusion candidates are `largest-eigenval`,
 `feal-linear-cryptanalysis`, `configure-git-webserver`, and `hf-model-inference`.
@@ -399,7 +422,7 @@ These additional exclusions are pending confirmation, not active run settings.
 
 Do not edit the existing `task-split.json` or assume editing this command changes
 a live process: the dataloader and evaluation rows are captured at startup.
-When continuing trained weights, retain the reduced evaluation set from the
+For a separately approved task-population change, retain the evaluation set from the
 original unseen hold-out. Re-shuffling a changed task pool can move previously
 trained tasks into evaluation. The supported selection flags are:
 
