@@ -83,6 +83,19 @@ experiment, after checking its config and checkpoint. A reused ID from an older
 run initially displayed seven stale optimizer steps before this run had
 completed its first synchronization. The corrected run is `2ja2bva6`.
 
+## Artifact archival safety
+
+`artifacts/tito/compact/COMPLETE` means the compact trajectory is ready, not
+that Harbor has finished verification and written its final result. In the
+2026-09-15 run, six trials had that marker but no `result.json` yet. Archive a
+trial only after both the marker and a valid final `result.json` exist. Mark it
+uploaded only after a successful full-directory transfer and confirmation of
+both files at the destination. Prune local files only after that upload and a
+successfully saved DCP checkpoint covering the consumed training row; never
+delete active or uncheckpointed trials to recover disk space. If GCS credentials
+expire, retain local artifacts and report the upload failure separately from RL
+health.
+
 ## Retry and progress counters
 
 Do not infer failures from a counter name alone. Use these metrics together:
