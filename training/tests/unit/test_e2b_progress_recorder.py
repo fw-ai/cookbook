@@ -23,6 +23,25 @@ def test_pid_identity_and_remote_probe_syntax():
     compile(code, "<read-only remote probe>", "exec")
 
 
+@pytest.mark.parametrize('tool,elapsed,expected', [
+    ('grep', 300, True), ('grep', 900, True), ('grep', 299, False),
+    ('grep', None, False), ('bash', 900, False),
+])
+def test_long_search_warning_is_read_only_and_not_a_failure(tool, elapsed, expected):
+    current = {'remote': {'running_tools': [
+        {'tool': tool, 'elapsed_s': elapsed, 'private': 'secret-pattern'},
+    ]}}
+    before = deepcopy(current)
+    warnings = recorder.search_wait_warnings(current)
+    assert bool(warnings) == expected
+    assert current == before
+    assert 'secret-pattern' not in json.dumps(warnings)
+    if expected:
+        assert warnings[0]['code'] == 'long_grep_wait'
+        assert 'do not terminate automatically' in warnings[0]['action']
+    assert recorder.search_wait_warnings({}) == []
+
+
 def test_scored_exception_audit_is_read_only_and_redacted(tmp_path):
     trial = tmp_path / 'trial-1'
     trial.mkdir()

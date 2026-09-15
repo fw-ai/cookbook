@@ -117,6 +117,16 @@ def timeout_warnings(current):
     return warnings
 
 
+def search_wait_warnings(current):
+    """Surface long grep waits early; elapsed time alone does not prove a hang."""
+    return [
+        {'code': 'long_grep_wait', 'elapsed_s': tool['elapsed_s'],
+         'action': 'Inspect search cwd, worker wait channels and open descriptors for kernel streams; do not terminate automatically'}
+        for tool in current.get('remote', {}).get('running_tools', [])
+        if tool.get('tool') == 'grep' and (tool.get('elapsed_s') or 0) >= 300
+    ]
+
+
 def inspect_trial(root, trial):
     name = trial['trial']
     result = {'trial': name, 'phase': trial['phase']}
@@ -210,7 +220,8 @@ def main():
                     record['trials'] = list(pool.map(lambda t: inspect_trial(root, t), pending))
                 for trial in record['trials']:
                     trial['warnings'] = (stall_warnings(previous.get(trial['trial']), trial)
-                                         + timeout_warnings(trial))
+                                         + timeout_warnings(trial)
+                                         + search_wait_warnings(trial))
         except Exception as error:
             record['observation_error'] = type(error).__name__
         print(json.dumps(record), flush=True)

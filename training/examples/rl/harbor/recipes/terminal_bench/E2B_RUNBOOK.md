@@ -652,6 +652,17 @@ an optimizer-step metric alone does not prove that a resumable checkpoint exists
 
 ## Read-only live progress recorder
 
+`long_grep_wait` flags an OpenCode grep call running for at least five minutes.
+Inspect before the 30-minute sampling target; do not classify the sample as failed
+based on elapsed time. A confirmed `headless-terminal` incident searched `.` from
+`/`: ripgrep workers blocked in `kmsg_read` and `tracing_read_pipe`, with open
+descriptors to `/proc/kmsg` and `/sys/kernel/.../trace_pipe*`. The parent waited
+on a futex. OpenCode's result-count limit did not provide an elapsed-time bound.
+This was a tool/pseudo-filesystem read, not a slow model call or capacity issue.
+Record the exact sandbox/process identity and request approval before terminating
+only the stuck search. Preserve the agent/sample and let the tool failure be
+handled normally; never synthesize a result or silently restart the RL run.
+
 Verifier stdout metadata (size, modification time, inode, and age) is recorded
 without uploading its contents in the progress stream. Two observations of the
 same unchanged file, at least 15 minutes old and still in verification, emit
