@@ -36,11 +36,14 @@ def test_remote_probe_reports_message_timing_not_model_text(tmp_path, completed)
         })))
     log = tmp_path / 'opencode.txt'
     log.write_text('private-model-text')
+    verifier_log = tmp_path / 'verifier.txt'
+    verifier_log.write_text('private-verifier-output')
     proc = tmp_path / 'proc'
     proc.mkdir()
     code = recorder.REMOTE.split("python3 - <<'REMOTE'\n", 1)[1].rsplit("\nREMOTE", 1)[0]
     code = code.replace('/logs/agent/opencode/xdg-data/opencode/opencode.db', str(database))
     code = code.replace('/logs/agent/opencode.txt', str(log))
+    code = code.replace('/logs/verifier/test-stdout.txt', str(verifier_log))
     code = code.replace('/tmp/fireworks-tito-opencode/agent-status', str(tmp_path / 'absent-status'))
     code = code.replace("Path('/proc')", f"Path({str(proc)!r})")
     output = io.StringIO()
@@ -50,8 +53,11 @@ def test_remote_probe_reports_message_timing_not_model_text(tmp_path, completed)
     assert result['latest_assistant']['completed_ms'] == completed
     assert result['latest_assistant']['duration_s'] == (4.0 if completed is not None else None)
     assert result['agent_log']['bytes'] == log.stat().st_size
+    assert result['verifier_log']['bytes'] == verifier_log.stat().st_size
+    assert result['verifier_log']['mtime_ns'] == verifier_log.stat().st_mtime_ns
     assert result['running_tools'] == []
     assert 'private-model-text' not in output.getvalue()
+    assert 'private-verifier-output' not in output.getvalue()
     assert 'tokens' not in output.getvalue()
 
 
@@ -124,6 +130,23 @@ def test_traced_child_stall_requires_two_matching_observations():
     assert len(warnings) == 1
     assert warnings[0]['code'] == 'suspected_traced_child_stall'
     assert warnings[0]['child_pid'] == '12'
+
+
+@pytest.mark.parametrize('change', [None, 'bytes', 'mtime_ns', 'inode', 'phase', 'young', 'missing'])
+def test_verifier_quiet_log_is_only_an_inspection_warning(change):
+    previous = {'sandbox_id': 'ours', 'phase': 'verification_or_finalization',
+                'remote': {'verifier_log': {'bytes': 123, 'mtime_ns': 100, 'inode': 1, 'age_s': 901}}}
+    current = deepcopy(previous)
+    if change in ('bytes', 'mtime_ns', 'inode'):
+        current['remote']['verifier_log'][change] += 1
+    elif change == 'phase':
+        current['phase'] = 'agent_or_setup'
+    elif change == 'young':
+        current['remote']['verifier_log']['age_s'] = 899
+    elif change == 'missing':
+        current['remote'] = {}
+    warnings = recorder.stall_warnings(previous, current)
+    assert [w['code'] for w in warnings] == (['verifier_log_unchanged'] if change is None else [])
 
 
 @pytest.mark.parametrize('change', ['sandbox', 'tool', 'cpu', 'pid_reuse', 'resumed', 'missing'])

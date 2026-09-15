@@ -59,6 +59,11 @@ p = pathlib.Path('/logs/agent/opencode.txt')
 if p.exists():
     stat = p.stat()
     out['agent_log'] = {'bytes': stat.st_size, 'age_s': round(time.time()-stat.st_mtime, 1)}
+p = pathlib.Path('/logs/verifier/test-stdout.txt')
+if p.exists():
+    stat = p.stat()
+    out['verifier_log'] = {'bytes': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
+        'inode': stat.st_ino, 'age_s': round(time.time()-stat.st_mtime, 1)}
 p = pathlib.Path('/tmp/fireworks-tito-opencode/agent-status')
 if p.exists():
     value = p.read_text().strip()
@@ -114,10 +119,18 @@ def stall_warnings(previous, current):
         return []
     before = previous.get('remote', {})
     after = current.get('remote', {})
+    warnings = []
+    old_log, new_log = before.get('verifier_log', {}), after.get('verifier_log', {})
+    if (previous.get('phase') == current.get('phase') == 'verification_or_finalization'
+            and new_log.get('age_s', 0) >= 900
+            and all(new_log.get(k) is not None and new_log[k] == old_log.get(k)
+                    for k in ('bytes', 'mtime_ns', 'inode'))):
+        warnings.append({'code': 'verifier_log_unchanged',
+                         'action': 'Inspect verifier processes and deadline; quiet output alone is not failure'})
     active = lambda r: {(t.get('tool'), t['start_ms']) for t in r.get('running_tools', [])
                         if t.get('start_ms') is not None}
     if not active(before).intersection(active(after)):
-        return []
+        return warnings
     old = {p['Pid']: p for p in before.get('processes', [])}
     new = {p['Pid']: p for p in after.get('processes', [])}
 
@@ -128,7 +141,6 @@ def stall_warnings(previous, current):
                 and p.get('cpu_seconds') is not None
                 and p['cpu_seconds'] == prior.get('cpu_seconds'))
 
-    warnings = []
     for child in new.values():
         parent = new.get(child.get('TracerPid'))
         if (parent and child.get('PPid') == parent['Pid']

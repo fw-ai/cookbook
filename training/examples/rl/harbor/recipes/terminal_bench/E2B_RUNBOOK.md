@@ -447,6 +447,13 @@ an optimizer-step metric alone does not prove that a resumable checkpoint exists
 
 ## Read-only live progress recorder
 
+Verifier stdout metadata (size, modification time, inode, and age) is recorded
+without uploading its contents in the progress stream. Two observations of the
+same unchanged file, at least 15 minutes old and still in verification, emit
+`verifier_log_unchanged`. This is an inspection warning, not proof of deadlock:
+check worker activity and the configured verifier deadline. Never automatically
+kill a sample or assign zero reward just because its output is quiet.
+
 When the run has the minute-level `health.jsonl` recorder, run
 `python training/examples/rl/harbor/recipes/terminal_bench/monitor_e2b_progress.py --run-dir RUN_DIR --pid HARNESS_PID` in a persistent server session, with
 `E2B_API_KEY` supplied through the environment. Add `--once` for a preflight.
