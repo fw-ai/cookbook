@@ -394,6 +394,121 @@ def test_sampling_entry_uses_existing_deployment_without_training_shape(
     assert args.harbor_task == ["task-a", "task-b"]
 
 
+def test_task_holdout_excludes_long_tasks_and_is_disjoint() -> None:
+    rows = [
+        {"task_name": f"task-{index}", "harbor_task_config": {}}
+        for index in range(89)
+    ]
+
+    train, holdout = opencode_train.split_task_holdout(
+        rows,
+        excluded_tasks=[f"task-{index}" for index in range(10)],
+        holdout_fraction=0.2,
+        seed=20260808,
+    )
+
+    train_names = {row["task_name"] for row in train}
+    holdout_names = {row["task_name"] for row in holdout}
+    assert len(train_names) == 63
+    assert len(holdout_names) == 16
+    assert not train_names & holdout_names
+    assert not train_names & {f"task-{index}" for index in range(10)}
+    assert not holdout_names & {f"task-{index}" for index in range(10)}
+    assert opencode_train.split_task_holdout(
+        rows,
+        excluded_tasks=[f"task-{index}" for index in range(10)],
+        holdout_fraction=0.2,
+        seed=20260808,
+    ) == (train, holdout)
+
+
+def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
+    monkeypatch, tmp_path
+) -> None:
+    rows = [
+        {"task_name": f"task-{index}", "harbor_task_config": {}}
+        for index in range(89)
+    ]
+    captured: dict[str, Any] = {}
+    argv = [
+        "train",
+        "--base-model",
+        "accounts/fireworks/models/kimi-k3",
+        "--tokenizer-model",
+        "moonshotai/Kimi-K3",
+        "--renderer-name",
+        "kimi_k3_preserve_thinking",
+        "--trainer-job-id",
+        "trainer",
+        "--deployment-id",
+        "deployment",
+        "--harbor-dataset",
+        str(tmp_path),
+        "--cycle-selected-tasks",
+        "--task-seed",
+        "20260808",
+        "--expected-task-pool-size",
+        "79",
+        "--evaluation-holdout-fraction",
+        "0.2",
+        "--max-rows",
+        "1600",
+        "--completions-per-prompt",
+        "8",
+        "--prompt-groups-per-step",
+        "16",
+        "--max-completion-tokens",
+        "131072",
+        "--max-seq-len",
+        "262144",
+        "--grad-clip-norm",
+        "100",
+        "--evaluation-every",
+        "5",
+        "--dcp-save-interval",
+        "2",
+        "--log-path",
+        str(tmp_path / "run"),
+    ]
+    for index in range(10):
+        argv.extend(("--exclude-task", f"task-{index}"))
+
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(opencode_train, "load_harbor_rows", lambda *_, **__: rows)
+    monkeypatch.setattr(
+        opencode_train,
+        "make_fixed_evaluation",
+        lambda evaluation_rows, **kwargs: (evaluation_rows, kwargs),
+    )
+
+    def capture_main(config, **kwargs):
+        captured["config"] = config
+        captured.update(kwargs)
+
+    monkeypatch.setattr(opencode_train, "main", capture_main)
+    opencode_train.run()
+
+    config = captured["config"]
+    train_names = {row["task_name"] for row in captured["rows"]}
+    evaluation_rows, evaluation_kwargs = captured["evaluation_fn"]
+    eval_names = {row["task_name"] for row in evaluation_rows}
+    assert len(captured["rows"]) == 1600
+    assert len(train_names) == 63
+    assert len(eval_names) == 16
+    assert not train_names & eval_names
+    assert config.grad_clip_norm == 100.0
+    assert config.max_completion_tokens == 131072
+    assert config.max_seq_len == 262144
+    assert config.dcp_save_interval == 2
+    assert captured["evaluation_interval"] == 5
+    assert evaluation_kwargs["completions_per_prompt"] == 8
+
+    split = json.loads((tmp_path / "run" / "task-split.json").read_text())
+    assert len(split["train_pool"]) == 63
+    assert len(split["holdout"]) == 16
+    assert split["excluded_tasks"] == [f"task-{index}" for index in range(10)]
+
+
 def test_dedicated_full_param_entry_cycles_all_tasks_with_aligned_config(
     monkeypatch, tmp_path
 ) -> None:
@@ -1143,8 +1258,8 @@ def test_agent_command_promotes_context_marker_to_nonzero_exit(
 
     assert len(commands) == 1
     if module_name.endswith("opencode.agent"):
-        assert "--auto --" in commands[0]
-        assert "--dangerously-skip-permissions" not in commands[0]
+        assert "--dangerously-skip-permissions --" in commands[0]
+        assert "--auto --" not in commands[0]
     assert sidecar_runtime.SIDECAR_CONTEXT_OVERFLOW_PATH in commands[0]
     assert "exit 43" in commands[0]
     assert terminal_states == ["completed"]

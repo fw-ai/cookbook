@@ -245,6 +245,20 @@ def add_optimizer_metrics(metrics: dict[str, Any], optim_result: Any) -> None:
     grad_norm = metrics.get("train/grad_norm")
     if post_clip is not None and post_clip != grad_norm:
         metrics["train/grad_norm_post_clip"] = post_clip
+        try:
+            pre_clip_value = float(grad_norm)
+            post_clip_value = float(post_clip)
+        except (TypeError, ValueError):
+            pass
+        else:
+            if (
+                pre_clip_value > 0.0
+                and math.isfinite(pre_clip_value)
+                and math.isfinite(post_clip_value)
+            ):
+                metrics["train/grad_clip_coefficient"] = min(
+                    1.0, post_clip_value / pre_clip_value
+                )
 
 
 def add_train_perf_metrics(metrics: dict[str, Any], *, total_model_tokens: int) -> None:

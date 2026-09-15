@@ -284,3 +284,85 @@ log probabilities, optional routing matrices, history decisions, and trainable
 segment shapes are written under `_fireworks_trajectories/`. A history rewrite
 starts a new segment within the same logical rollout; it does not create another
 GRPO completion or reward.
+
+### 100-step Kimi-K3 convergence run
+
+This run removes the ten measured long-tail tasks, fails unless the resulting
+fast-task pool has exactly 79 members, and uses seed `20260808` to reserve 20%
+(16 tasks) exclusively for evaluation. The remaining 63 tasks are cycled to
+1,600 prompt groups: 100 optimizer steps at 16 groups per step and 12,800
+training trajectories at eight completions per group. Each evaluation contains
+128 trajectories (16 fixed tasks x eight completions) and runs every five
+optimizer steps. The exact split is saved to `task-split.json` before any E2B
+template build or rollout begins.
+
+All other arguments remain identical to the completed convergence run above.
+The deliberate changes are the disjoint holdout, 100-step horizon, gradient-norm
+threshold `100`, 131,072-token per-call output limit, and DCP cadence of two
+optimizer steps.
+
+```bash
+RUN_DIR=/shared/yuedong/kimi-k3-harbor-convergence/<run-name>
+ulimit -n 65536
+
+uv run python -m training.examples.rl.harbor.recipes.train_opencode \
+  --base-model accounts/fireworks/models/kimi-k3 \
+  --tokenizer-model moonshotai/Kimi-K3 \
+  --tokenizer-revision 9f62e4e9fffbd0a83ddd60e1c209d828994b3569 \
+  --renderer-name kimi_k3_preserve_thinking \
+  --trainer-job-id efq8pkpso5e2x1ks \
+  --deployment-id k3-terminalbench-gradclip-20260915 \
+  --deployment-shape accounts/fireworks/deploymentShapes/kimi-k3-rl-mercor-gb300-fp4-w16-p4-tp4-dp4-pair1500/versions/n852kghu \
+  --harbor-dataset /shared/yuedong/kimi-k3-harbor-convergence-data/terminal-bench-opencode-e2b-v12 \
+  --harbor-trials-dir "$RUN_DIR/trials" \
+  --log-path "$RUN_DIR" \
+  --harbor-environment e2b \
+  --harbor-trial-config training/examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml \
+  --e2b-task-memory-mb rstan-to-pystan=16384 \
+  --e2b-task-verifier-timeout-seconds torch-tensor-parallelism=1200 \
+  --max-concurrent-trials 128 \
+  --exclude-task extract-moves-from-video \
+  --exclude-task path-tracing \
+  --exclude-task install-windows-3.11 \
+  --exclude-task train-fasttext \
+  --exclude-task schemelike-metacircular-eval \
+  --exclude-task make-doom-for-mips \
+  --exclude-task winning-avg-corewars \
+  --exclude-task caffe-cifar-10 \
+  --exclude-task mcmc-sampling-stan \
+  --exclude-task qemu-alpine-ssh \
+  --expected-task-pool-size 79 \
+  --evaluation-holdout-fraction 0.2 \
+  --cycle-selected-tasks \
+  --task-seed 20260808 \
+  --max-rows 1600 \
+  --epochs 1 \
+  --completions-per-prompt 8 \
+  --prompt-groups-per-step 16 \
+  --pipeline-chunks-per-step 16 \
+  --min-group-size 8 \
+  --max-incomplete-group-retries 2 \
+  --lora-rank 0 \
+  --learning-rate 1e-6 \
+  --kl-beta 0 \
+  --max-head-offpolicy-versions 0 \
+  --policy-loss gspo \
+  --no-router-replay \
+  --grad-accumulation-normalization num_sequences \
+  --grad-clip-norm 100 \
+  --eps-clip 0.0003 \
+  --eps-clip-high 0.0004 \
+  --tis-cap 5 \
+  --max-seq-len 262144 \
+  --max-completion-tokens 131072 \
+  --sample-timeout 7200 \
+  --harness-tool-timeout-seconds 6900 \
+  --evaluation-every 5 \
+  --evaluation-concurrency 24 \
+  --dcp-save-interval 2 \
+  --shuffle \
+  --no-cleanup-on-exit \
+  --wandb-entity myh97 \
+  --wandb-project kimi-k3-fullparam-harbor \
+  --wandb-run-name <run-name>
+```

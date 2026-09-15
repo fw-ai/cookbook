@@ -314,6 +314,7 @@ class TestComputeStepMetrics:
 
         assert metrics["train/grad_norm"] == 3.0
         assert metrics["train/grad_norm_post_clip"] == 1.0
+        assert metrics["train/grad_clip_coefficient"] == pytest.approx(1.0 / 3.0)
 
 
 class TestFwdBwdResultAveraging:

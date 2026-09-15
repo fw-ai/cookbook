@@ -57,6 +57,47 @@ logger = logging.getLogger(__name__)
 DEFAULT_HARBOR_DATASET = "terminal-bench@2.0"
 
 
+def split_task_holdout(
+    rows: list[dict],
+    *,
+    excluded_tasks: list[str],
+    holdout_fraction: float | None,
+    seed: int,
+) -> tuple[list[dict], list[dict]]:
+    """Remove exclusions and deterministically split a disjoint holdout."""
+    by_name = {task_name_from_row(row): row for row in rows}
+    if len(by_name) != len(rows):
+        raise ValueError("Harbor task names must be unique before splitting")
+    excluded = set(excluded_tasks)
+    if len(excluded) != len(excluded_tasks):
+        raise ValueError("--exclude-task contains duplicates")
+    missing = sorted(excluded - by_name.keys())
+    if missing:
+        raise ValueError(f"Excluded Harbor tasks were not found: {missing}")
+
+    pool = [dict(by_name[name]) for name in sorted(by_name.keys() - excluded)]
+    if holdout_fraction is None:
+        return pool, []
+    if not 0.0 < holdout_fraction < 1.0:
+        raise ValueError("--evaluation-holdout-fraction must be in (0, 1)")
+
+    shuffled = list(pool)
+    random.Random(seed).shuffle(shuffled)
+    holdout_count = round(len(shuffled) * holdout_fraction)
+    if not 0 < holdout_count < len(shuffled):
+        raise ValueError("Holdout fraction must leave at least one task in each split")
+    holdout_names = {
+        task_name_from_row(row) for row in shuffled[:holdout_count]
+    }
+    train_rows = [
+        row for row in pool if task_name_from_row(row) not in holdout_names
+    ]
+    holdout_rows = [
+        row for row in pool if task_name_from_row(row) in holdout_names
+    ]
+    return train_rows, holdout_rows
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fireworks-native Harbor RL with the async loop"
@@ -74,6 +115,18 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help="Exact task name to include; repeat to preserve an explicit order",
+    )
+    parser.add_argument(
+        "--exclude-task",
+        action="append",
+        default=[],
+        help="Exact task name to remove before training/holdout splitting; repeatable",
+    )
+    parser.add_argument(
+        "--expected-task-pool-size",
+        type=int,
+        default=None,
+        help="Fail if the task count after exclusions differs from this value",
     )
     parser.add_argument("--harbor-registry-path", default=None)
     parser.add_argument(
@@ -223,6 +276,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Fixed evaluation task from --harbor-dataset; repeat for multiple "
             "tasks. These rows remain in the training population."
+        ),
+    )
+    parser.add_argument(
+        "--evaluation-holdout-fraction",
+        type=float,
+        default=None,
+        help=(
+            "Seeded fraction of the post-exclusion task pool reserved exclusively "
+            "for evaluation; cannot be combined with --evaluation-task"
         ),
     )
     parser.add_argument("--evaluation-every", type=int, default=3)
@@ -446,10 +508,19 @@ def run() -> None:
     manifest = (
         DABstepManifest.load(args.dabstep_manifest) if args.dabstep_manifest else None
     )
-    if manifest is not None and args.evaluation_task:
+    if manifest is not None and (
+        args.evaluation_task
+        or args.evaluation_holdout_fraction is not None
+        or args.exclude_task
+    ):
         raise ValueError(
-            "--evaluation-task cannot be combined with --dabstep-manifest; "
-            "the manifest already owns its holdout set"
+            "task exclusions and evaluation selection cannot be combined with "
+            "--dabstep-manifest; the manifest already owns its task split"
+        )
+    if args.evaluation_task and args.evaluation_holdout_fraction is not None:
+        raise ValueError(
+            "--evaluation-task cannot be combined with "
+            "--evaluation-holdout-fraction"
         )
     selector = None
     evaluation_rows: list[dict] = []
@@ -479,13 +550,31 @@ def run() -> None:
             task_names=args.harbor_task or None,
             n_tasks=None if args.cycle_selected_tasks else args.max_rows,
         )
+        selected_rows, holdout_rows = split_task_holdout(
+            selected_rows,
+            excluded_tasks=args.exclude_task,
+            holdout_fraction=args.evaluation_holdout_fraction,
+            seed=args.task_seed,
+        )
+        post_exclusion_count = len(selected_rows) + len(holdout_rows)
+        if (
+            args.expected_task_pool_size is not None
+            and post_exclusion_count != args.expected_task_pool_size
+        ):
+            raise ValueError(
+                "Post-exclusion Harbor task pool has "
+                f"{post_exclusion_count} tasks; expected "
+                f"{args.expected_task_pool_size}"
+            )
+        if holdout_rows:
+            evaluation_rows = holdout_rows
         if args.evaluation_task:
             evaluation_rows = rows_for_tasks(selected_rows, tuple(args.evaluation_task))
-            evaluation_rows = [
-                dict(row)
-                for row in evaluation_rows
-                for _ in range(args.evaluation_repeats)
-            ]
+        evaluation_rows = [
+            dict(row)
+            for row in evaluation_rows
+            for _ in range(args.evaluation_repeats)
+        ]
         if args.cycle_selected_tasks:
             selected = [dict(row) for row in selected_rows]
             random.Random(args.task_seed).shuffle(selected)
@@ -495,6 +584,28 @@ def run() -> None:
             ]
         else:
             rows = selected_rows
+        if args.evaluation_holdout_fraction is not None:
+            split_path = Path(args.log_path).expanduser().resolve() / "task-split.json"
+            split_path.parent.mkdir(parents=True, exist_ok=True)
+            split_path.write_text(
+                json.dumps(
+                    {
+                        "excluded_tasks": sorted(args.exclude_task),
+                        "holdout_fraction": args.evaluation_holdout_fraction,
+                        "seed": args.task_seed,
+                        "train_pool": sorted(
+                            {task_name_from_row(row) for row in selected_rows}
+                        ),
+                        "holdout": sorted(
+                            {task_name_from_row(row) for row in evaluation_rows}
+                        ),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
     if not rows:
         raise ValueError(f"No Harbor tasks found for {args.harbor_dataset!r}")
     if args.harbor_environment == "e2b":
