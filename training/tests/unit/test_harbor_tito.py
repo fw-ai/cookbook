@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import importlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -66,6 +68,32 @@ def _setup(tmp_path: Path | None = None) -> SimpleNamespace:
         model="deployment",
         completions_per_prompt=4,
     )
+
+
+def test_temporary_private_file_falls_back_from_full_tmp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_mkstemp = sidecar_runtime.tempfile.mkstemp
+    calls: list[str | None] = []
+
+    def mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
+        directory = kwargs.get("dir")
+        calls.append(os.fspath(directory) if directory is not None else None)
+        if directory is None:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return original_mkstemp(*args, **kwargs)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sidecar_runtime.tempfile, "mkstemp", mkstemp)
+
+    path = sidecar_runtime._temporary_private_file("private payload")
+    try:
+        assert path.parent == tmp_path
+        assert path.read_text() == "private payload"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert calls == [None, os.fspath(tmp_path)]
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def _artifact(trajectory_id: str = "trajectory-1") -> TITOTrajectoryArtifact:
@@ -366,6 +394,369 @@ def test_sampling_entry_uses_existing_deployment_without_training_shape(
     assert args.harbor_task == ["task-a", "task-b"]
 
 
+def test_task_holdout_excludes_long_tasks_and_is_disjoint() -> None:
+    rows = [
+        {"task_name": f"task-{index}", "harbor_task_config": {}}
+        for index in range(89)
+    ]
+
+    train, holdout = opencode_train.split_task_holdout(
+        rows,
+        excluded_tasks=[f"task-{index}" for index in range(10)],
+        holdout_fraction=0.2,
+        seed=20260808,
+    )
+
+    train_names = {row["task_name"] for row in train}
+    holdout_names = {row["task_name"] for row in holdout}
+    assert len(train_names) == 63
+    assert len(holdout_names) == 16
+    assert not train_names & holdout_names
+    assert not train_names & {f"task-{index}" for index in range(10)}
+    assert not holdout_names & {f"task-{index}" for index in range(10)}
+    assert opencode_train.split_task_holdout(
+        rows,
+        excluded_tasks=[f"task-{index}" for index in range(10)],
+        holdout_fraction=0.2,
+        seed=20260808,
+    ) == (train, holdout)
+
+
+def test_ten_percent_holdout_preserves_unseen_subset_for_unchanged_pool() -> None:
+    rows = [{"task_name": f"task-{index}"} for index in range(79)]
+    previous_train, previous_holdout = opencode_train.split_task_holdout(
+        rows, excluded_tasks=[], holdout_fraction=0.2, seed=20260808
+    )
+    train, holdout = opencode_train.split_task_holdout(
+        rows, excluded_tasks=[], holdout_fraction=0.1, seed=20260808
+    )
+    def names(items):
+        return {row["task_name"] for row in items}
+
+    assert len(train) == 71
+    assert len(holdout) == 8
+    assert names(holdout) <= names(previous_holdout)
+    assert not names(holdout) & names(previous_train)
+    assert not names(train) & names(holdout)
+
+
+@pytest.mark.parametrize(
+    ("reuse_holdout", "evaluation_limit", "exclude_evaluation"),
+    [(False, None, False), (True, None, False), (False, 8, False), (False, 8, True)],
+)
+def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
+    monkeypatch, tmp_path, reuse_holdout, evaluation_limit, exclude_evaluation
+) -> None:
+    rows = [
+        {"task_name": f"task-{index}", "harbor_task_config": {}}
+        for index in range(89)
+    ]
+    captured: dict[str, Any] = {}
+    original_train, original_holdout = opencode_train.split_task_holdout(
+        rows,
+        excluded_tasks=[f"task-{index}" for index in range(10)],
+        holdout_fraction=0.2,
+        seed=20260808,
+    )
+    argv = [
+        "train",
+        "--base-model",
+        "accounts/fireworks/models/kimi-k3",
+        "--tokenizer-model",
+        "moonshotai/Kimi-K3",
+        "--renderer-name",
+        "kimi_k3_preserve_thinking",
+        "--trainer-job-id",
+        "trainer",
+        "--deployment-id",
+        "deployment",
+        "--harbor-dataset",
+        str(tmp_path),
+        "--cycle-selected-tasks",
+        "--task-seed",
+        "20260808",
+        "--expected-task-pool-size",
+        "75" if reuse_holdout else ("78" if exclude_evaluation else "79"),
+        "--evaluation-holdout-fraction",
+        "0.1" if reuse_holdout else "0.2",
+        "--max-rows",
+        "1600",
+        "--completions-per-prompt",
+        "8",
+        "--prompt-groups-per-step",
+        "16",
+        "--max-completion-tokens",
+        "131072",
+        "--max-seq-len",
+        "262144",
+        "--grad-clip-norm",
+        "100",
+        "--evaluation-every",
+        "5",
+        "--dcp-save-interval",
+        "2",
+        "--log-path",
+        str(tmp_path / "run"),
+    ]
+    exclusion_count = 14 if reuse_holdout else 10
+    for index in range(exclusion_count):
+        argv.extend(("--exclude-task", f"task-{index}"))
+    excluded_eval_name = original_holdout[0]["task_name"]
+    if exclude_evaluation:
+        argv.extend(("--evaluation-exclude-task", excluded_eval_name))
+    if evaluation_limit is not None:
+        argv.extend(
+            (
+                "--evaluation-holdout-limit", str(evaluation_limit),
+                "--evaluation-concurrency", "64",
+                "--max-concurrent-trials", "128",
+            )
+        )
+    if reuse_holdout:
+        source = tmp_path / "original-split.json"
+        source.write_text(
+            json.dumps(
+                {
+                    "seed": 20260808,
+                    "holdout": [row["task_name"] for row in original_holdout],
+                }
+            )
+        )
+        argv.extend(("--evaluation-holdout-source", str(source)))
+
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(opencode_train, "load_harbor_rows", lambda *_, **__: rows)
+    monkeypatch.setattr(
+        opencode_train,
+        "make_fixed_evaluation",
+        lambda evaluation_rows, **kwargs: (evaluation_rows, kwargs),
+    )
+
+    def capture_main(config, **kwargs):
+        captured["config"] = config
+        captured.update(kwargs)
+
+    monkeypatch.setattr(opencode_train, "main", capture_main)
+    opencode_train.run()
+
+    config = captured["config"]
+    train_names = {row["task_name"] for row in captured["rows"]}
+    evaluation_rows, evaluation_kwargs = captured["evaluation_fn"]
+    eval_names = {row["task_name"] for row in evaluation_rows}
+    assert len(captured["rows"]) == 1600
+    assert len(train_names) == (67 if reuse_holdout else 63)
+    assert len(eval_names) == (8 if reuse_holdout or evaluation_limit else 16)
+    assert not train_names & eval_names
+    if evaluation_limit is not None:
+        expected_train = list(original_train)
+        opencode_train.random.Random(20260808).shuffle(expected_train)
+        assert captured["rows"] == [expected_train[i % 63] for i in range(1600)]
+        assert eval_names <= {row["task_name"] for row in original_holdout}
+        assert evaluation_kwargs["max_concurrency"] == 64
+        assert captured["rollout_extras"]["max_concurrent_trials"] == 128
+    if reuse_holdout:
+        assert eval_names <= {row["task_name"] for row in original_holdout}
+        assert not eval_names & {row["task_name"] for row in original_train}
+        assert json.loads(source.read_text())["holdout"] == [
+            row["task_name"] for row in original_holdout
+        ]
+    assert config.grad_clip_norm == 100.0
+    assert config.max_completion_tokens == 131072
+    assert config.max_seq_len == 262144
+    assert config.dcp_save_interval == 2
+    assert captured["evaluation_interval"] == 5
+    assert evaluation_kwargs["completions_per_prompt"] == 8
+
+    split = json.loads((tmp_path / "run" / "task-split.json").read_text())
+    assert len(split["train_pool"]) == len(train_names)
+    assert len(split["holdout"]) == len(eval_names)
+    expected_excluded = {f"task-{index}" for index in range(exclusion_count)}
+    if exclude_evaluation:
+        expected_excluded.add(excluded_eval_name)
+        assert excluded_eval_name not in eval_names | train_names
+        assert split["evaluation_excluded_tasks"] == [excluded_eval_name]
+    assert split["excluded_tasks"] == sorted(expected_excluded)
+    if reuse_holdout:
+        assert split["holdout_source"] == str(source.resolve())
+    if evaluation_limit is not None:
+        assert split["evaluation_holdout_limit"] == 8
+        assert len(split["reserved_holdout"]) == (15 if exclude_evaluation else 16)
+        assert len(split["unused_holdout"]) == (7 if exclude_evaluation else 8)
+        assert set(split["unused_holdout"]).isdisjoint(eval_names | train_names)
+        original_rows = list(captured["rows"])
+        original_evaluation = captured["evaluation_fn"]
+        opencode_train.run()
+        assert captured["rows"] == original_rows
+        assert captured["evaluation_fn"] == original_evaluation
+
+
+@pytest.mark.parametrize(
+    ("limit", "fraction", "message"),
+    [
+        (0, "0.2", "must be positive"),
+        (-1, "0.2", "must be positive"),
+        (8, None, "requires --evaluation-holdout-fraction"),
+        (17, "0.2", "exceeds held-out tasks"),
+    ],
+)
+def test_evaluation_holdout_limit_rejects_invalid_configuration(
+    monkeypatch, tmp_path, limit, fraction, message
+) -> None:
+    argv = [
+        "train", "--base-model", "test-model", "--harbor-dataset", str(tmp_path),
+        "--tokenizer-model", "test-tokenizer", "--renderer-name", "test-renderer",
+        "--trainer-job-id", "test-trainer", "--deployment-id", "test-deployment",
+        "--cycle-selected-tasks", "--evaluation-holdout-limit", str(limit),
+    ]
+    if fraction is not None:
+        argv.extend(("--evaluation-holdout-fraction", fraction))
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(
+        opencode_train, "load_harbor_rows",
+        lambda *_, **__: [{"task_name": f"task-{i}"} for i in range(79)],
+    )
+    with pytest.raises(ValueError, match=message):
+        opencode_train.run()
+
+
+@pytest.mark.parametrize(
+    "prior",
+    [[], ["task-0"] * 8, ["missing-task"], [None], [f"task-{i}" for i in range(7)]],
+)
+def test_prior_holdout_rejects_invalid_or_insufficient_unseen_tasks(prior) -> None:
+    with pytest.raises(ValueError):
+        opencode_train.split_task_holdout(
+            [{"task_name": f"task-{i}"} for i in range(79)],
+            excluded_tasks=[],
+            holdout_fraction=0.1,
+            seed=20260808,
+            previous_holdout=prior,
+        )
+
+
+def test_dedicated_full_param_entry_cycles_all_tasks_with_aligned_config(
+    monkeypatch, tmp_path
+) -> None:
+    rows = [
+        {"task_name": "count", "harbor_task_config": {}},
+        {"task_name": "extract", "harbor_task_config": {}},
+        {"task_name": "polyglot", "harbor_task_config": {}},
+    ]
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train",
+            "--base-model",
+            "accounts/fireworks/models/kimi-k3",
+            "--tokenizer-model",
+            "accounts/fireworks/models/kimi-k3",
+            "--tokenizer-revision",
+            "9f62e4e9fffbd0a83ddd60e1c209d828994b3569",
+            "--renderer-name",
+            "kimi_k3_preserve_thinking",
+            "--trainer-job-id",
+            "trainer",
+            "--deployment-id",
+            "deployment",
+            "--deployment-shape",
+            "shape/version",
+            "--harbor-dataset",
+            str(tmp_path),
+            "--harbor-trials-dir",
+            str(tmp_path / "trials"),
+            "--evaluation-task",
+            "count",
+            "--evaluation-task",
+            "extract",
+            "--evaluation-task",
+            "polyglot",
+            "--cycle-selected-tasks",
+            "--max-rows",
+            "16",
+            "--completions-per-prompt",
+            "8",
+            "--prompt-groups-per-step",
+            "16",
+            "--pipeline-chunks-per-step",
+            "4",
+            "--max-concurrent-trials",
+            "128",
+            "--lora-rank",
+            "0",
+            "--max-seq-len",
+            "262144",
+            "--max-completion-tokens",
+            "32768",
+            "--learning-rate",
+            "1e-6",
+            "--policy-loss",
+            "gspo",
+            "--eps-clip",
+            "0.0003",
+            "--eps-clip-high",
+            "0.0004",
+            "--grad-accumulation-normalization",
+            "num_sequences",
+            "--no-router-replay",
+            "--grad-clip-norm",
+            "1.0",
+            "--dcp-save-interval",
+            "10",
+            "--no-cleanup-on-exit",
+        ],
+    )
+    monkeypatch.setattr(opencode_train, "load_harbor_rows", lambda *_, **__: rows)
+    monkeypatch.setattr(
+        opencode_train,
+        "make_fixed_evaluation",
+        lambda evaluation_rows, **kwargs: (evaluation_rows, kwargs),
+    )
+
+    def capture_main(config, **kwargs):
+        captured["config"] = config
+        captured.update(kwargs)
+
+    monkeypatch.setattr(opencode_train, "main", capture_main)
+
+    opencode_train.run()
+
+    config = captured["config"]
+    assert config.trainer.job_id == "trainer"
+    assert config.deployment.deployment_id == "deployment"
+    assert config.cleanup_on_exit is False
+    assert config.lora_rank == 0
+    assert config.max_head_offpolicy_versions == 0
+    assert config.router_replay is False
+    assert config.router_replay_completion_only is True
+    assert config.policy_loss == "gspo"
+    assert config.gspo.clip_ratio_low == pytest.approx(3e-4)
+    assert config.gspo.clip_ratio_high == pytest.approx(4e-4)
+    assert config.grad_accumulation_normalization == "num_sequences"
+    assert config.grad_clip_norm == 1.0
+    assert config.learning_rate == 1e-6
+    assert config.tis.cap == 5.0
+    assert config.shuffle is True
+    assert config.prompt_groups_per_step == 16
+    assert config.pipeline_chunks_per_step == 4
+    assert captured["rollout_extras"]["max_concurrent_trials"] == 128
+    assert len(captured["rows"]) == 16
+    assert {row["task_name"] for row in captured["rows"]} == {
+        "count",
+        "extract",
+        "polyglot",
+    }
+    evaluation_rows, evaluation_kwargs = captured["evaluation_fn"]
+    assert [row["task_name"] for row in evaluation_rows] == [
+        "count",
+        "extract",
+        "polyglot",
+    ]
+    assert evaluation_kwargs["completions_per_prompt"] == 8
+
+
 def test_load_harbor_rows_preserves_requested_task_order(monkeypatch, tmp_path) -> None:
     class FakeTaskConfig:
         def __init__(self, name: str) -> None:
@@ -425,6 +816,7 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
         harbor_environment="e2b",
         tito_debug=False,
         tito_prompt_mode="full_history",
+        router_replay=False,
     )
     captured: dict[str, Any] = {}
 
@@ -461,6 +853,7 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
     assert setup.sampler is None
     assert not hasattr(setup, "max_context_tokens")
     assert setup.sample_kwargs["max_seq_len"] == args.max_seq_len
+    assert setup.sample_kwargs["include_routing_matrix"] is False
     assert setup.extras["harbor_environment"] == "e2b"
     assert setup.extras["tito_prompt_mode"] == "full_history"
     assert captured["evaluate_kwargs"]["max_concurrency"] is None
@@ -469,6 +862,56 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
         json.loads((tmp_path / "logs" / "sampling-result.json").read_text())["mode"]
         == "sampling_only"
     )
+
+
+def test_sampling_only_expands_short_training_deployment_id(
+    monkeypatch, tmp_path
+) -> None:
+    args = SimpleNamespace(
+        deployment_id="policy",
+        trainer_job_id=None,
+        harbor_trials_dir=str(tmp_path / "trials"),
+        tokenizer_model="tokenizer",
+        tokenizer_revision=None,
+        max_completion_tokens=1024,
+        temperature=1.0,
+        sample_timeout=6900,
+        completions_per_prompt=1,
+        max_seq_len=4096,
+        log_path=str(tmp_path / "logs"),
+        renderer_name="renderer",
+        rollout_retries=3,
+        retry_include_exception=None,
+        max_concurrent_trials=4,
+        terminal_failure_reward=None,
+        opencode_version=DEFAULT_OPENCODE_VERSION,
+        harness_tool_timeout_seconds=600,
+        harbor_trial_config=None,
+        harbor_environment="e2b",
+        tito_debug=False,
+        tito_prompt_mode="full_history",
+        router_replay=False,
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setenv("FIREWORKS_API_KEY", "deployment-key")
+    monkeypatch.setattr(opencode_train, "load_tokenizer", lambda *_: object())
+    monkeypatch.setattr(
+        opencode_train,
+        "make_rollout_fn",
+        lambda setup: captured.setdefault("setup", setup) or (lambda: None),
+    )
+
+    async def evaluate(*_args, **_kwargs):
+        return {"sampling/attempted_trajectories": 0}
+
+    async def close(_fn):
+        return None
+
+    monkeypatch.setattr(opencode_train, "evaluate_rows", evaluate)
+    monkeypatch.setattr(opencode_train, "close_rollout_fn", close)
+    opencode_train._run_sampling_only(args, rows=[], selector=None)
+
+    assert captured["setup"].model == "accounts/training/deployments/policy"
 
 
 def test_context_limit_is_shared_by_inference_and_training_retention(
@@ -835,6 +1278,90 @@ def test_agents_write_only_the_loopback_trajectory_endpoint(tmp_path) -> None:
             assert "@opencode-ai/plugin" in uploaded
 
 
+def test_opencode_shell_fix_rejects_missing_or_wrong_binary(tmp_path) -> None:
+    from training.examples.rl.harbor.opencode.config import validate_shell_fix_binary
+
+    with pytest.raises(FileNotFoundError):
+        validate_shell_fix_binary(tmp_path / "missing")
+    binary = tmp_path / "opencode"
+    binary.write_bytes(b"not the verified build")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        validate_shell_fix_binary(binary)
+
+
+def test_opencode_cli_rejects_bad_binary_before_provisioning(tmp_path, monkeypatch) -> None:
+    binary = tmp_path / "bad-build"
+    binary.write_bytes(b"unverified")
+    monkeypatch.setattr(sys, "argv", [
+        "train", "--base-model", "accounts/fireworks/models/kimi-k3",
+        "--tokenizer-model", "moonshotai/Kimi-K3",
+        "--renderer-name", "kimi_k3_preserve_thinking",
+        "--opencode-shell-fix-binary", str(binary),
+    ])
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        opencode_train.parse_args()
+
+
+@pytest.mark.parametrize("patched", [False, True])
+@pytest.mark.parametrize("remote_valid", [False, True])
+def test_opencode_shell_fix_install_is_explicit_and_verified(
+    tmp_path, monkeypatch, patched, remote_valid
+) -> None:
+    pytest.importorskip("harbor")
+    from training.examples.rl.harbor.opencode import agent as agent_module
+    from training.examples.rl.harbor.opencode import config as config_module
+
+    binary = tmp_path / "local-opencode"
+    binary.write_bytes(b"test-build")
+    digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+    monkeypatch.setattr(config_module, "SHELL_FIX_SHA256", digest)
+    monkeypatch.setattr(agent_module, "SHELL_FIX_SHA256", digest)
+    sidecar_calls = []
+
+    async def sidecar(*_args, **_kwargs):
+        sidecar_calls.append(True)
+        return {"openai_base_url": "http://127.0.0.1:1234/v1", "api_key": "test"}
+
+    monkeypatch.setattr(agent_module, "install_sidecar", sidecar)
+
+    class Environment:
+        def __init__(self):
+            self.uploads = []
+            self.commands = []
+
+        async def exec(self, *, command, **_kwargs):
+            self.commands.append(command)
+            if command.startswith("command -v opencode"):
+                return SimpleNamespace(return_code=0, stdout="1.18.8\n")
+            if "--version" in command:
+                assert digest in command and "sha256sum --check --status" in command
+                return SimpleNamespace(return_code=0 if remote_valid else 1,
+                                       stdout=config_module.SHELL_FIX_VERSION + "\n")
+            return SimpleNamespace(return_code=0, stdout="")
+
+        async def upload_file(self, source, target):
+            self.uploads.append((source, target))
+
+    environment = Environment()
+    agent = agent_module.ConfigurableOpenCode(
+        logs_dir=tmp_path, sidecar_bundle_path="unused", sidecar_launch_spec="{}",
+        context_limit=262144, output_limit=131072, tool_timeout_seconds=6900,
+        version="1.18.8", opencode_shell_fix_binary=str(binary) if patched else None,
+    )
+    if patched and not remote_valid:
+        with pytest.raises(RuntimeError, match="failed its version check"):
+            asyncio.run(agent.install(environment))
+        assert not sidecar_calls
+        assert agent._opencode_executable == "opencode"
+        return
+    asyncio.run(agent.install(environment))
+    assert sidecar_calls == [True]
+    assert bool(environment.uploads) == patched
+    assert agent._opencode_executable == (
+        "/tmp/fireworks-tito-opencode/bin/opencode" if patched else "opencode"
+    )
+
+
 def test_opencode_disables_unrelated_remote_bootstrap_requests(tmp_path) -> None:
     pytest.importorskip("harbor")
     from training.examples.rl.harbor.opencode.agent import ConfigurableOpenCode
@@ -843,8 +1370,8 @@ def test_opencode_disables_unrelated_remote_bootstrap_requests(tmp_path) -> None
         logs_dir=tmp_path,
         sidecar_bundle_path=str(tmp_path / "bundle"),
         sidecar_launch_spec="{}",
-        context_limit=4096,
-        output_limit=1024,
+        context_limit=262144,
+        output_limit=32768,
         tool_timeout_seconds=600,
         extra_env={"CUSTOM": "preserved"},
         version=DEFAULT_OPENCODE_VERSION,
@@ -854,12 +1381,14 @@ def test_opencode_disables_unrelated_remote_bootstrap_requests(tmp_path) -> None
     env = agent._agent_env()
     assert env["OPENCODE_DISABLE_MODELS_FETCH"] == "1"
     assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    assert env["OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"] == "1000000"
     assert env["CUSTOM"] == "preserved"
     assert agent._policy_config()["snapshot"] is False
     assert agent._policy_config()["agent"]["title"]["disable"] is True
     assert agent._policy_config()["tools"] == {"task": False}
     model = agent._policy_config()["provider"]["fireworks-rl"]["models"]["policy"]
     assert model["interleaved"] == {"field": "reasoning_content"}
+    assert model["limit"] == {"context": 262144, "output": 32768}
 
 
 def test_pi_preserves_empty_reasoning_on_assistant_replay(tmp_path) -> None:
@@ -937,6 +1466,9 @@ def test_agent_command_promotes_context_marker_to_nonzero_exit(
     )
 
     assert len(commands) == 1
+    if module_name.endswith("opencode.agent"):
+        assert "--dangerously-skip-permissions --" in commands[0]
+        assert "--auto --" not in commands[0]
     assert sidecar_runtime.SIDECAR_CONTEXT_OVERFLOW_PATH in commands[0]
     assert "exit 43" in commands[0]
     assert terminal_states == ["completed"]
@@ -1050,6 +1582,95 @@ def test_recoverable_attempt_gets_a_fresh_sidecar_spec(monkeypatch, tmp_path) ->
     )
     assert result is not None
     assert [item["trajectory_metadata"]["retry_index"] for item in specs] == [0, 1]
+
+
+def test_incomplete_retained_trial_does_not_block_fresh_attempt(
+    monkeypatch, tmp_path
+) -> None:
+    setup = _setup(tmp_path)
+    setup.extras["rollout_retries"] = 0
+    monkeypatch.setattr(
+        rollout,
+        "build_sidecar_bundle",
+        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+    )
+    runner = rollout.make_rollout_fn(setup)
+    runner._trial_start_interval_seconds = 0
+
+    retained = tmp_path / f"{harbor_adapter._safe_trial_name('run')}-cached"
+    retained.mkdir(parents=True)
+    (retained / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "example",
+                "trial_name": retained.name,
+                "verifier_result": {"rewards": {"reward": 1.0}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fresh_attempts = 0
+
+    async def run_trial(**_kwargs):
+        nonlocal fresh_attempts
+        fresh_attempts += 1
+        return _outcome(artifact=_artifact("fresh-trajectory"))
+
+    monkeypatch.setattr(runner, "_run_trial", run_trial)
+    monkeypatch.setattr(tito_rollout, "materialize_tito_trajectory", _sample_rollout)
+
+    result = asyncio.run(
+        runner._run_opencode(task_config={}, task_name="task", run_id="run")
+    )
+
+    assert result is not None
+    assert result.run_id == "run"
+    assert fresh_attempts == 1
+
+
+def test_valid_retained_trial_is_reused_without_fresh_attempt(
+    monkeypatch, tmp_path
+) -> None:
+    setup = _setup(tmp_path)
+    setup.extras["rollout_retries"] = 0
+    monkeypatch.setattr(
+        rollout,
+        "build_sidecar_bundle",
+        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+    )
+    runner = rollout.make_rollout_fn(setup)
+
+    retained = tmp_path / f"{harbor_adapter._safe_trial_name('run')}-cached"
+    retained.mkdir(parents=True)
+    (retained / "result.json").write_text(
+        json.dumps(
+            {
+                "task_name": "example",
+                "trial_name": retained.name,
+                "verifier_result": {"rewards": {"reward": 0.75}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        rollout,
+        "_load_sidecar_artifact",
+        lambda _path: (_artifact("retained-trajectory"), {}),
+    )
+    monkeypatch.setattr(tito_rollout, "materialize_tito_trajectory", _sample_rollout)
+
+    async def unexpected_fresh_attempt(**_kwargs):
+        raise AssertionError("a valid retained trial must not be rerun")
+
+    monkeypatch.setattr(runner, "_run_trial", unexpected_fresh_attempt)
+    result = asyncio.run(
+        runner._run_opencode(task_config={}, task_name="task", run_id="run")
+    )
+
+    assert result is not None
+    assert result.run_id == "run"
+    assert result.segments[0].reward == pytest.approx(0.75)
 
 
 def test_opencode_temporary_trial_survives_through_adapter_metrics(
@@ -1260,6 +1881,38 @@ def _fake_harbor():
     return SimpleNamespace(EnvironmentType=_EnvironmentType, TrialConfig=_Config)
 
 
+def test_trial_agent_options_cannot_override_tito_owned_fields(tmp_path) -> None:
+    config = harbor_adapter._build_trial_config(
+        _fake_harbor(), template=None, task_config={"path": "/tasks/example"},
+        run_id="run", trials_dir=tmp_path, harbor_environment="e2b",
+        sidecar_bundle_path=tmp_path / "bundle",
+        sidecar_launch_spec=json.dumps({"inference_base_url": "https://api.fireworks.ai"}),
+        agent_import_path=OPENCODE_HARBOR_IMPORT_PATH, agent_version="1.18.8",
+        context_limit=262144,
+        agent_options={"opencode_shell_fix_binary": "/verified/opencode", "version": "wrong", "context_limit": 1},
+    )
+    assert config.agent.kwargs["opencode_shell_fix_binary"] == "/verified/opencode"
+    assert config.agent.kwargs["version"] == "1.18.8"
+    assert config.agent.kwargs["context_limit"] == 262144
+
+
+def test_two_hour_terminal_bench_config_covers_timeouts_and_e2b_resources() -> None:
+    config_path = (
+        Path(__file__).parents[2]
+        / "examples/rl/harbor/recipes/terminal_bench/two_hour_trial.yaml"
+    )
+    config = harbor_adapter.load_harbor_trial_config(config_path)
+
+    assert config["agent"]["override_timeout_sec"] == 7200
+    assert config["agent"]["exclude_logs"] == [
+        "**/opencode.db*",
+        "**/tool-output/**",
+    ]
+    assert config["environment"]["override_cpus"] == 4
+    assert config["environment"]["override_memory_mb"] == 8192
+    assert config["verifier"]["override_timeout_sec"] == 7200
+
+
 @pytest.mark.parametrize(
     ("configured_environment", "environment"),
     [("docker", "docker"), ("e2b", "e2b"), ("docker", "e2b")],
@@ -1317,6 +1970,37 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
             "destination": "tito/logs/sidecar.stderr",
         },
     ]
+
+
+def test_repeated_logical_trials_use_distinct_artifact_directories(tmp_path) -> None:
+    sidecar_launch_spec = json.dumps(
+        {
+            "api_key": "secret",
+            "inference_base_url": "https://api.fireworks.ai",
+        }
+    )
+    kwargs = {
+        "harbor": _fake_harbor(),
+        "template": {"environment": {"type": "e2b"}},
+        "task_config": {"path": "/tasks/example"},
+        "run_id": "same-logical-rollout",
+        "trials_dir": tmp_path,
+        "harbor_environment": "e2b",
+        "sidecar_bundle_path": tmp_path / "bundle",
+        "sidecar_launch_spec": sidecar_launch_spec,
+        "context_limit": 4096,
+        "output_limit": 1024,
+        "agent_import_path": OPENCODE_HARBOR_IMPORT_PATH,
+        "agent_version": DEFAULT_OPENCODE_VERSION,
+    }
+
+    first = harbor_adapter._build_trial_config(**kwargs)
+    second = harbor_adapter._build_trial_config(**kwargs)
+
+    assert first.trial_name != second.trial_name
+    assert not (tmp_path / first.trial_name).is_relative_to(
+        tmp_path / second.trial_name
+    )
 
 
 def test_e2b_rejects_compose_task(tmp_path) -> None:
@@ -1574,6 +2258,43 @@ def test_e2b_sidecar_cleanup_stream_timeout_is_retryable() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "timed out",
+        "peer closed connection without sending TLS close_notify",
+    ],
+)
+def test_e2b_command_stream_disconnect_is_retryable(reason: str) -> None:
+    exception = SimpleNamespace(
+        exception_type="ConnectError",
+        exception_message=(
+            "Error reading content: request or response body error: error reading "
+            f"a body from connection: {reason}"
+        ),
+        exception_traceback=(
+            'File "/site-packages/harbor/environments/e2b.py"\n'
+            'File "/site-packages/e2b/sandbox_async/commands/command_handle.py"\n'
+            "connectrpc.errors.ConnectError: Error reading content: request or "
+            f"response body error: error reading a body from connection: {reason}"
+        ),
+    )
+    assert harbor_adapter._is_retryable_e2b_command_stream_disconnect(
+        exception, harbor_environment="e2b"
+    )
+    assert not harbor_adapter._is_retryable_e2b_command_stream_disconnect(
+        exception, harbor_environment="docker"
+    )
+    assert not harbor_adapter._is_retryable_e2b_command_stream_disconnect(
+        SimpleNamespace(
+            exception_type="ConnectError",
+            exception_message=exception.exception_message,
+            exception_traceback="unrelated timeout",
+        ),
+        harbor_environment="e2b",
+    )
+
+
 def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> None:
     marker = "TITO sidecar did not become ready within 600s"
     exception = SimpleNamespace(
@@ -1611,6 +2332,32 @@ def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> Non
     )
     assert harbor_adapter._is_retryable_e2b_sidecar_readiness_timeout(
         inner_only_wrapper,
+        harbor_environment="e2b",
+    )
+
+
+def test_e2b_missing_default_template_tag_requires_exact_error() -> None:
+    exception = SimpleNamespace(
+        exception_type="SandboxException",
+        exception_message=(
+            "404: tag 'default' does not exist for template "
+            "'owner/task__0123456789ab'"
+        ),
+        exception_traceback="",
+    )
+    assert harbor_adapter._is_retryable_e2b_default_tag_not_found(
+        exception,
+        harbor_environment="e2b",
+    )
+    assert not harbor_adapter._is_retryable_e2b_default_tag_not_found(
+        exception,
+        harbor_environment="docker",
+    )
+    assert not harbor_adapter._is_retryable_e2b_default_tag_not_found(
+        SimpleNamespace(
+            exception_type="SandboxException",
+            exception_message="404: template not found",
+        ),
         harbor_environment="e2b",
     )
 
@@ -1737,11 +2484,81 @@ def test_prepared_harness_image_is_pinned_and_preserves_final_user(
     assert expected_marker in dockerfile
     assert expected_package in dockerfile
     assert "jinja2==3.1.6" in dockerfile
-    assert "numpy==2.4.6" in dockerfile
+    assert 'numpy==2.2.6; python_version < "3.11"' in dockerfile
+    assert 'numpy==2.4.6; python_version >= "3.11"' in dockerfile
     assert "import aiohttp, httpx, jinja2," in dockerfile
     assert "zstandard" not in dockerfile
     assert dockerfile.rstrip().endswith("USER task-user")
     assert not (prepared[0] / "solution" / "solve.sh").stat().st_mode & stat.S_IROTH
+
+
+def test_opencode_preparation_replaces_eol_debian_bullseye_base(
+    tmp_path,
+) -> None:
+    source = tmp_path / "source" / "task"
+    environment = source / "environment"
+    environment.mkdir(parents=True)
+    (source / "task.toml").write_text("", encoding="utf-8")
+    (environment / "Dockerfile").write_text(
+        "FROM debian:bullseye-slim\nRUN apt-get install -y netcat\n",
+        encoding="utf-8",
+    )
+
+    prepared = prepare_opencode_tasks.prepare(source, tmp_path / "prepared")
+    dockerfile = (prepared[0] / "environment" / "Dockerfile").read_text()
+
+    assert "FROM debian:bookworm-slim" in dockerfile
+    assert "debian:bullseye" not in dockerfile
+    assert "netcat-openbsd" in dockerfile
+
+
+def test_opencode_preparation_replaces_unsupported_external_uv_copy(
+    tmp_path,
+) -> None:
+    source = tmp_path / "source" / "task"
+    environment = source / "environment"
+    environment.mkdir(parents=True)
+    (source / "task.toml").write_text("", encoding="utf-8")
+    (environment / "Dockerfile").write_text(
+        "FROM python:3.13-slim-bookworm\n"
+        "COPY --from=ghcr.io/astral-sh/uv:0.8.15 /uv /uvx /bin/\n",
+        encoding="utf-8",
+    )
+
+    prepared = prepare_opencode_tasks.prepare(source, tmp_path / "prepared")
+    dockerfile = (prepared[0] / "environment" / "Dockerfile").read_text()
+
+    assert "COPY --from=ghcr.io/astral-sh/uv" not in dockerfile
+    assert "python3 -m pip install --no-cache-dir uv==0.8.15" in dockerfile
+
+
+def test_opencode_preparation_flattens_financial_document_stage(tmp_path) -> None:
+    source = tmp_path / "source" / "financial-document-processor"
+    environment = source / "environment"
+    environment.mkdir(parents=True)
+    (source / "task.toml").write_text("", encoding="utf-8")
+    (environment / "Dockerfile").write_text(
+        "FROM ubuntu:24.04 as build\n"
+        "COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /uvx /bin/\n"
+        "COPY randomize_filenames.py /root\n"
+        "COPY documents/ /tmp/original_documents/\n"
+        "RUN uv run /root/randomize_filenames.py\n"
+        "FROM ubuntu:24.04 AS target\n"
+        "COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /uvx /bin/\n"
+        "COPY --from=build /app/documents /app/documents\n"
+        "WORKDIR /app\n",
+        encoding="utf-8",
+    )
+    (environment / "randomize_filenames.py").write_text("", encoding="utf-8")
+    (environment / "documents").mkdir()
+
+    prepared = prepare_opencode_tasks.prepare(source, tmp_path / "prepared")
+    dockerfile = (prepared[0] / "environment" / "Dockerfile").read_text()
+
+    assert len(re.findall(r"(?im)^FROM\s+", dockerfile)) == 1
+    assert "COPY --from=" not in dockerfile
+    assert "RUN uv run /root/randomize_filenames.py" in dockerfile
+    assert "WORKDIR /app" in dockerfile
 
 
 def test_prepare_pi_tasks_selects_requested_tasks_in_order(tmp_path) -> None:
@@ -1761,6 +2578,66 @@ def test_prepare_pi_tasks_selects_requested_tasks_in_order(tmp_path) -> None:
     )
 
     assert [path.name for path in prepared] == ["task-b", "task-a"]
+
+
+def test_set_task_prebuilt_image_replaces_existing_reference(tmp_path) -> None:
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "task.toml").write_text(
+        'version = "1.0"\n\n[environment]\n'
+        'docker_image = "registry/source:old"\n'
+        "build_timeout_sec = 600\n",
+        encoding="utf-8",
+    )
+
+    harbor_adapter._set_task_prebuilt_image(
+        {"path": str(task)}, "fireworks-harbor-prepared--digest"
+    )
+
+    document = harbor_adapter._task_document({"path": str(task)})
+    assert document["environment"] == {
+        "docker_image": "fireworks-harbor-prepared--digest",
+        "build_timeout_sec": 600,
+    }
+
+
+def test_prepared_docker_image_is_built_once_then_reused(monkeypatch, tmp_path) -> None:
+    task = tmp_path / "task"
+    environment = task / "environment"
+    environment.mkdir(parents=True)
+    (environment / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    (task / "task.toml").write_text(
+        '[environment]\ndocker_image = "registry/source:old"\n'
+        "build_timeout_sec = 123\n",
+        encoding="utf-8",
+    )
+    image = "fireworks-harbor-prepared--digest"
+    builds: list[dict[str, Any]] = []
+
+    async def image_exists(candidate: str) -> bool:
+        return candidate == image and bool(builds)
+
+    async def ensure_image(**kwargs) -> str:
+        builds.append(kwargs)
+        return image
+
+    async def platform() -> str:
+        return "linux/amd64"
+
+    import harbor.environments.docker.utils as docker_utils
+
+    monkeypatch.setattr(docker_utils, "docker_image_exists", image_exists)
+    monkeypatch.setattr(docker_utils, "ensure_docker_image_built", ensure_image)
+    monkeypatch.setattr(docker_utils, "default_docker_platform", platform)
+
+    config = {"path": str(task)}
+    asyncio.run(harbor_adapter.ensure_prepared_docker_task_image(config))
+    asyncio.run(harbor_adapter.ensure_prepared_docker_task_image(config))
+
+    assert len(builds) == 1
+    assert builds[0]["docker_build_context"] == environment
+    assert builds[0]["timeout_sec"] == 123.0
+    assert harbor_adapter._task_prebuilt_image(config) == image
 
 
 def test_e2b_template_prebuild_builds_missing_alias_once(monkeypatch, tmp_path) -> None:
@@ -1807,6 +2684,25 @@ def test_e2b_template_prebuild_builds_missing_alias_once(monkeypatch, tmp_path) 
         lambda _harbor, *, task_config, **_kwargs: {"name": task_config["task_name"]},
     )
 
+    class AsyncTemplate:
+        @staticmethod
+        async def get_tags(template_name):
+            environment = next(
+                item for item in environments if item._template_name == template_name
+            )
+            return [SimpleNamespace(tag="default")] if environment.exists else []
+
+    class AsyncSandbox:
+        @classmethod
+        async def create(cls, **_kwargs):
+            return cls()
+
+        async def kill(self):
+            return None
+
+    monkeypatch.setattr("e2b.AsyncTemplate", AsyncTemplate)
+    monkeypatch.setattr("e2b.AsyncSandbox", AsyncSandbox)
+
     records = asyncio.run(
         e2b_templates.prebuild_e2b_templates(
             [{"task_name": "existing"}, {"task_name": "new"}],
@@ -1824,6 +2720,388 @@ def test_e2b_template_prebuild_builds_missing_alias_once(monkeypatch, tmp_path) 
         ("new", False),
     ]
     assert [environment.builds for environment in environments] == [0, 1]
+
+
+def test_e2b_task_memory_override_is_task_specific_and_immutable() -> None:
+    base = {"environment": {"override_cpus": 4, "override_memory_mb": 8192}}
+    overrides = e2b_templates.parse_e2b_task_memory_overrides(
+        ["rstan-to-pystan=16384"]
+    )
+
+    regular = e2b_templates.e2b_trial_config_for_task(
+        base,
+        task_name="distribution-search",
+        task_memory_mb=overrides,
+    )
+    larger = e2b_templates.e2b_trial_config_for_task(
+        base,
+        task_name="rstan-to-pystan",
+        task_memory_mb=overrides,
+    )
+
+    assert regular["environment"]["override_memory_mb"] == 8192
+    assert larger["environment"]["override_memory_mb"] == 16384
+    assert base["environment"]["override_memory_mb"] == 8192
+
+
+def test_e2b_task_verifier_timeout_is_task_specific_and_immutable() -> None:
+    base = {"verifier": {"override_timeout_sec": 7200}}
+    overrides = e2b_templates.parse_e2b_task_verifier_timeout_overrides(
+        ["torch-tensor-parallelism=1200"]
+    )
+
+    regular = e2b_templates.e2b_trial_config_for_task(
+        base,
+        task_name="distribution-search",
+        task_memory_mb=None,
+        task_verifier_timeout_seconds=overrides,
+    )
+    bounded = e2b_templates.e2b_trial_config_for_task(
+        base,
+        task_name="torch-tensor-parallelism",
+        task_memory_mb=None,
+        task_verifier_timeout_seconds=overrides,
+    )
+
+    assert regular["verifier"]["override_timeout_sec"] == 7200
+    assert bounded["verifier"]["override_timeout_sec"] == 1200
+    assert base["verifier"]["override_timeout_sec"] == 7200
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["rstan-to-pystan", "=16384", "rstan-to-pystan=", "task=zero", "task=0"],
+)
+def test_e2b_task_memory_override_rejects_invalid_values(value) -> None:
+    with pytest.raises(ValueError):
+        e2b_templates.parse_e2b_task_memory_overrides([value])
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["torch-tensor-parallelism", "=1200", "task=", "task=zero", "task=0"],
+)
+def test_e2b_task_verifier_timeout_rejects_invalid_values(value) -> None:
+    with pytest.raises(ValueError):
+        e2b_templates.parse_e2b_task_verifier_timeout_overrides([value])
+
+
+def test_e2b_rollout_uses_task_memory_override(monkeypatch, tmp_path) -> None:
+    setup = _setup(tmp_path)
+    setup.extras.update(
+        harbor_environment="e2b",
+        harbor_trial_config={
+            "environment": {"override_cpus": 4, "override_memory_mb": 8192}
+        },
+        e2b_task_memory_mb={"rstan-to-pystan": 16384},
+    )
+    monkeypatch.setattr(
+        rollout,
+        "build_sidecar_bundle",
+        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+    )
+    captured = {}
+
+    async def run_harbor_trial(**kwargs):
+        captured.update(kwargs)
+        return _outcome(environment_type="e2b")
+
+    monkeypatch.setattr(rollout, "run_harbor_trial", run_harbor_trial)
+    runner = rollout.make_rollout_fn(setup)
+    asyncio.run(
+        runner._run_trial(
+            task_config={},
+            task_name="rstan-to-pystan",
+            inference_key="key",
+            run_id="run",
+        )
+    )
+
+    assert captured["trial_config"]["environment"]["override_cpus"] == 4
+    assert captured["trial_config"]["environment"]["override_memory_mb"] == 16384
+
+
+def test_e2b_rollout_uses_task_verifier_timeout(monkeypatch, tmp_path) -> None:
+    setup = _setup(tmp_path)
+    setup.extras.update(
+        harbor_environment="e2b",
+        harbor_trial_config={"verifier": {"override_timeout_sec": 7200}},
+        e2b_task_verifier_timeout_seconds={"torch-tensor-parallelism": 1200},
+    )
+    monkeypatch.setattr(
+        rollout,
+        "build_sidecar_bundle",
+        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+    )
+    captured = {}
+
+    async def run_harbor_trial(**kwargs):
+        captured.update(kwargs)
+        return _outcome(environment_type="e2b")
+
+    monkeypatch.setattr(rollout, "run_harbor_trial", run_harbor_trial)
+    runner = rollout.make_rollout_fn(setup)
+    asyncio.run(
+        runner._run_trial(
+            task_config={},
+            task_name="torch-tensor-parallelism",
+            inference_key="key",
+            run_id="run",
+        )
+    )
+
+    assert captured["trial_config"]["verifier"]["override_timeout_sec"] == 1200
+
+
+def test_e2b_template_prebuild_repairs_alias_without_default_tag(
+    monkeypatch, tmp_path
+) -> None:
+    environment = None
+
+    class Environment:
+        _template_name = "template-stale"
+
+        def __init__(self):
+            self.ready = False
+            self.builds = 0
+
+        async def _does_template_exist(self):
+            return True
+
+        async def _create_template(self):
+            self.builds += 1
+            self.ready = True
+
+    class Trial:
+        @classmethod
+        async def create(cls, _config):
+            nonlocal environment
+            environment = Environment()
+            return SimpleNamespace(agent_environment=environment)
+
+    class AsyncTemplate:
+        @staticmethod
+        async def get_tags(_template_name):
+            return [SimpleNamespace(tag="default")] if environment.ready else []
+
+    class AsyncSandbox:
+        @classmethod
+        async def create(cls, **_kwargs):
+            return cls()
+
+        async def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        e2b_templates, "_require_harbor", lambda: SimpleNamespace(Trial=Trial)
+    )
+    monkeypatch.setattr(e2b_templates, "task_name_from_row", lambda row: row["task_name"])
+    monkeypatch.setattr(e2b_templates, "task_config_from_row", lambda row: row)
+    monkeypatch.setattr(e2b_templates, "_build_trial_config", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("e2b.AsyncTemplate", AsyncTemplate)
+    monkeypatch.setattr("e2b.AsyncSandbox", AsyncSandbox)
+
+    records = asyncio.run(
+        e2b_templates.prebuild_e2b_templates(
+            [{"task_name": "stale"}],
+            trials_dir=tmp_path,
+            agent_import_path="agent:Class",
+            agent_version="1",
+            agent_provider="provider",
+            context_limit=4096,
+            output_limit=1024,
+        )
+    )
+
+    assert records[0].existed is True
+    assert environment.builds == 1
+
+
+def test_e2b_template_prebuild_repairs_unlaunchable_default_tag(
+    monkeypatch, tmp_path
+) -> None:
+    environment = None
+
+    class Environment:
+        _template_name = "template-stale"
+
+        def __init__(self):
+            self.ready = False
+            self.builds = 0
+
+        async def _does_template_exist(self):
+            return True
+
+        async def _create_template(self):
+            self.builds += 1
+            self.ready = True
+
+    class Trial:
+        @classmethod
+        async def create(cls, _config):
+            nonlocal environment
+            environment = Environment()
+            return SimpleNamespace(agent_environment=environment)
+
+    class AsyncTemplate:
+        @staticmethod
+        async def get_tags(_template_name):
+            return [SimpleNamespace(tag="default")]
+
+    SandboxException = type("SandboxException", (Exception,), {})
+
+    class AsyncSandbox:
+        @classmethod
+        async def create(cls, **_kwargs):
+            if not environment.ready:
+                raise SandboxException(
+                    "404: tag 'default' does not exist for template "
+                    "'owner/template-stale'"
+                )
+            return cls()
+
+        async def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        e2b_templates, "_require_harbor", lambda: SimpleNamespace(Trial=Trial)
+    )
+    monkeypatch.setattr(e2b_templates, "task_name_from_row", lambda row: row["task_name"])
+    monkeypatch.setattr(e2b_templates, "task_config_from_row", lambda row: row)
+    monkeypatch.setattr(e2b_templates, "_build_trial_config", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("e2b.AsyncTemplate", AsyncTemplate)
+    monkeypatch.setattr("e2b.AsyncSandbox", AsyncSandbox)
+
+    records = asyncio.run(
+        e2b_templates.prebuild_e2b_templates(
+            [{"task_name": "stale"}],
+            trials_dir=tmp_path,
+            agent_import_path="agent:Class",
+            agent_version="1",
+            agent_provider="provider",
+            context_limit=4096,
+            output_limit=1024,
+        )
+    )
+
+    assert records[0].existed is True
+    assert environment.builds == 1
+
+
+def test_e2b_template_prebuild_repairs_resource_mismatch(monkeypatch, tmp_path) -> None:
+    environment = None
+    creates = 0
+
+    class Environment:
+        _effective_cpus = 4
+        _effective_memory_mb = 8192
+
+        def __init__(self):
+            marker = tmp_path / ".harbor-e2b-resources.json"
+            self.environment_dir = tmp_path
+            self.task_env_config = SimpleNamespace(docker_image="base:latest")
+            self._template_name = (
+                "template-sized" if marker.exists() else "template-undersized"
+            )
+            self.cpu_count = 4 if marker.exists() else 1
+            self.memory_mb = 8192 if marker.exists() else 2048
+            self.builds = 0
+
+        async def _does_template_exist(self):
+            return True
+
+        async def _create_template(self):
+            self.builds += 1
+            self.cpu_count = self._effective_cpus
+            self.memory_mb = self._effective_memory_mb
+
+    class Trial:
+        @classmethod
+        async def create(cls, _config):
+            nonlocal creates, environment
+            creates += 1
+            environment = Environment()
+            return SimpleNamespace(agent_environment=environment)
+
+    class AsyncTemplate:
+        @staticmethod
+        async def get_tags(_template_name):
+            return [SimpleNamespace(tag="default")]
+
+    class AsyncSandbox:
+        @classmethod
+        async def create(cls, **_kwargs):
+            return cls()
+
+        async def get_info(self):
+            return SimpleNamespace(
+                cpu_count=environment.cpu_count,
+                memory_mb=environment.memory_mb,
+            )
+
+        async def kill(self):
+            return None
+
+    monkeypatch.setattr(
+        e2b_templates, "_require_harbor", lambda: SimpleNamespace(Trial=Trial)
+    )
+    monkeypatch.setattr(e2b_templates, "task_name_from_row", lambda row: row["task_name"])
+    monkeypatch.setattr(e2b_templates, "task_config_from_row", lambda row: row)
+    monkeypatch.setattr(e2b_templates, "_build_trial_config", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("e2b.AsyncTemplate", AsyncTemplate)
+    monkeypatch.setattr("e2b.AsyncSandbox", AsyncSandbox)
+
+    records = asyncio.run(
+        e2b_templates.prebuild_e2b_templates(
+            [{"task_name": "undersized"}],
+            trials_dir=tmp_path,
+            agent_import_path="agent:Class",
+            agent_version="1",
+            agent_provider="provider",
+            context_limit=4096,
+            output_limit=1024,
+        )
+    )
+
+    assert records[0].existed is True
+    assert creates == 2
+    assert environment.builds == 0
+    assert environment._template_name == "template-sized"
+    assert (environment.cpu_count, environment.memory_mb) == (4, 8192)
+
+
+def test_e2b_task_isolation_removes_only_host_local_image_pin(tmp_path) -> None:
+    source = tmp_path / "source" / "task"
+    environment = source / "environment"
+    environment.mkdir(parents=True)
+    (source / "task.toml").write_text(
+        "[environment]\n"
+        'docker_image = "fireworks-harbor-prepared--local-digest"\n'
+        'memory = "2G"\n',
+        encoding="utf-8",
+    )
+    (environment / "Dockerfile").write_text(
+        "FROM python:3.13-slim-bookworm\n", encoding="utf-8"
+    )
+    row = {
+        "task_name": "task",
+        "harbor_task_config": {"path": str(source), "source": "test"},
+    }
+
+    isolated = e2b_templates.isolate_e2b_task_rows(
+        [row, row], task_root=tmp_path / "e2b"
+    )
+
+    isolated_path = Path(isolated[0]["harbor_task_config"]["path"])
+    assert isolated_path != source
+    assert isolated[1]["harbor_task_config"]["path"] == str(isolated_path)
+    assert "fireworks-harbor-prepared--local-digest" in (
+        source / "task.toml"
+    ).read_text(encoding="utf-8")
+    isolated_config = (isolated_path / "task.toml").read_text(encoding="utf-8")
+    assert "docker_image" not in isolated_config
+    assert 'memory = "2G"' in isolated_config
+    assert (isolated_path / "environment" / "Dockerfile").is_file()
 
 
 @pytest.mark.parametrize("base_image", ["mutable:latest", "image@sha256:bad"])

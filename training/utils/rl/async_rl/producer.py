@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Hashable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
 from training.train_loop import DynamicFilterFn
@@ -81,6 +81,7 @@ class _CursorEntry:
     durable_reason: str | None = None
     batch_id: int | None = None
     incomplete_retries: int = 0
+    completed_runs: dict[int, tuple[RolloutRun, int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,7 @@ class _Draw:
     sequence: int
     sub_index: int
     submission_index: int
+    submit_version: int
 
 
 @dataclass(slots=True)
@@ -409,13 +411,29 @@ class RolloutProducer:
         self._submit_attempt(sequence, request)
 
     def _submit_attempt(self, sequence: int, request: RolloutRow) -> None:
+        entry = self._cursor.get(sequence)
+        if entry is None:
+            raise RuntimeError(f"row sequence {sequence} is missing")
         self._reserved_samples += self._cpp
+        first = True
         for sub_index in range(self._cpp):
+            retained = entry.completed_runs.get(sub_index)
+            submit_version = (
+                retained[1] if retained is not None else self._published_version
+            )
             self._assembler.note_started(
                 sequence,
-                submit_version=self._published_version,
-                row_meta=request.row_meta if sub_index == 0 else None,
+                submit_version=submit_version,
+                row_meta=request.row_meta if first else None,
             )
+            first = False
+            if retained is not None:
+                resolution = self._assembler.add_run(sequence, retained[0])
+                if resolution is not None:
+                    raise RuntimeError(
+                        "retained rollout runs unexpectedly resolved a retry"
+                    )
+                continue
             task = asyncio.create_task(
                 self._invoke(request, sub_index),
                 name=f"async-rl-rollout-{sequence}-{sub_index}",
@@ -424,6 +442,7 @@ class RolloutProducer:
                 sequence=sequence,
                 sub_index=sub_index,
                 submission_index=self._next_submission_index,
+                submit_version=submit_version,
             )
             self._next_submission_index += 1
 
@@ -460,6 +479,10 @@ class RolloutProducer:
                 resolution = self._note_trajectory_dropped(draw.sequence)
             elif isinstance(run, RolloutRun):
                 self._breaker.record_success()
+                entry = self._cursor.get(draw.sequence)
+                if entry is None:
+                    raise RuntimeError(f"row sequence {draw.sequence} is missing")
+                entry.completed_runs[draw.sub_index] = (run, draw.submit_version)
                 resolution = self._assembler.add_run(draw.sequence, run)
             else:
                 error = TypeError(
@@ -485,10 +508,17 @@ class RolloutProducer:
             if entry.incomplete_retries < self._max_incomplete_group_retries:
                 entry.incomplete_retries += 1
                 self._stats.incomplete_group_retries += 1
+                # If every rollout completed, assembly failed for a reason other
+                # than an incomplete group (for example non-finite advantages).
+                # Redraw the full group in that case. Otherwise preserve the
+                # successful siblings and retry only the missing sub-indices.
+                if len(entry.completed_runs) == self._cpp:
+                    entry.completed_runs.clear()
                 self._submit_attempt(sequence, entry.request)
                 return
             self._reject_row(entry, reason="none")
             return
+        entry.completed_runs.clear()
         if self._dynamic_filter_fn is not None and not self._dynamic_filter_fn(
             resolution.pg
         ):

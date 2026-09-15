@@ -345,6 +345,37 @@ The async loop owns initial, periodic, and actual-final scheduling and invokes
 the same rollout with `evaluation=True`. OpenCode evaluation uses the supplied
 holdout row directly and never reads or updates the adaptive training selector.
 
+## Archiving live trial artifacts
+
+Do not upload a trial merely because its compact `COMPLETE` or Harbor
+`result.json` exists. Agent completion can precede verification, and Harbor
+writes the result before the adapter finishes scrubbing inference credentials.
+For this TITO adapter, wait for both the compact `COMPLETE` and the redacted
+launch-spec sentinel before archiving:
+
+```bash
+test -f "$trial_dir/artifacts/tito/compact/COMPLETE" &&
+  jq -e 'type == "object" and .config.agent.kwargs.sidecar_launch_spec == "<redacted>"' \
+    "$trial_dir/result.json" >/dev/null
+```
+
+The adapter atomically writes this sentinel after credential scrubbing finishes.
+A missing, partial, or unredacted result is not ready: leave the trial intact
+and check again later. Verify the uploaded artifacts before any local pruning;
+for training continuation, also preserve every trial beyond the persisted
+checkpoint/dataloader cursor. Archiving must not alter task rewards or retry
+behavior.
+
+For read-only per-trial age monitoring, use
+`training.examples.rl.harbor.tito.monitoring.pending_trial_inventory(trials_dir)`.
+It distinguishes pending agent/setup work from verification/finalization using
+local artifact timestamps without reading credential-bearing config contents.
+These ages are estimates, not process liveness checks: confirm the actual E2B
+process before declaring a failure. A compact `COMPLETE` does not mean the
+evaluation sample has finished. Monitor `rollout/*`, `perf/*`, and
+`checkpoint/*` alongside producer counters and host memory/disk; unchanged
+producer counters alone do not explain an evaluation-gated training step.
+
 ## Metric semantics
 
 The async loops put `train/*`, `rollout/*`, `perf/*`, `async/*`, and `eval/*`

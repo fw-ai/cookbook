@@ -11,7 +11,12 @@ import tinker
 from training.utils.rl.losses import PromptGroup
 
 _SKIP_REMOTE_KEYS = {"step_id", "step", "response_tokens", "total_tokens"}
-_SUM_REMOTE_KEYS = {"active_tokens", "total_resp_tokens"}
+_SUM_REMOTE_KEYS = {
+    "active_tokens",
+    "inference_kld_sum",
+    "inference_kld_tokens",
+    "total_resp_tokens",
+}
 _LOOP_STAT_PASSTHROUGH_KEYS = (
     "async/version_offset_mean",
     "async/version_offset_max",
@@ -240,6 +245,20 @@ def add_optimizer_metrics(metrics: dict[str, Any], optim_result: Any) -> None:
     grad_norm = metrics.get("train/grad_norm")
     if post_clip is not None and post_clip != grad_norm:
         metrics["train/grad_norm_post_clip"] = post_clip
+        try:
+            pre_clip_value = float(grad_norm)
+            post_clip_value = float(post_clip)
+        except (TypeError, ValueError):
+            pass
+        else:
+            if (
+                pre_clip_value > 0.0
+                and math.isfinite(pre_clip_value)
+                and math.isfinite(post_clip_value)
+            ):
+                metrics["train/grad_clip_coefficient"] = min(
+                    1.0, post_clip_value / pre_clip_value
+                )
 
 
 def add_train_perf_metrics(metrics: dict[str, Any], *, total_model_tokens: int) -> None:
@@ -312,6 +331,11 @@ def compute_step_metrics(
         response_tokens = metrics.get("train/total_resp_tokens")
         if active_tokens is not None and response_tokens:
             metrics["train/mask_ratio"] = active_tokens / response_tokens
+        kld_sum = metrics.get("train/inference_kld_sum")
+        kld_tokens = metrics.get("train/inference_kld_tokens")
+        if kld_sum is not None and kld_tokens:
+            # Match Harvey's token-weighted KLD across all accumulation chunks.
+            metrics["train/inference_kld"] = kld_sum / kld_tokens
 
     all_rewards: list[float] = []
 

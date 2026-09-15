@@ -21,11 +21,17 @@ def compute_inference_observability_metrics(
     prompt_lens: List[int],
     policy_loss: str,
 ) -> Dict[str, float]:
-    """Report inference k1 and k3 drift from inference to the trainer policy."""
+    """Report train/inference drift from raw sampler and trainer logprobs.
+
+    ``inference_k3`` preserves the historical sample-weighted aggregation.
+    ``inference_kld`` is its token-weighted counterpart, matching the KLD
+    reported by the Harvey recipe.
+    """
     raw_inf_logprobs = raw_inf_logprobs or []
 
     total_k1 = 0.0
     total_k3 = 0.0
+    total_kld = 0.0
     raw_inf_num_samples = 0
     expected_active_tokens = 0
     compared_active_tokens = 0
@@ -81,7 +87,9 @@ def compute_inference_observability_metrics(
         )
         inf_log_diff = resp_pi.detach()[active] - resp_raw_inf[active]
         total_k1 += inf_log_diff.mean().item()
-        total_k3 += (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
+        sample_k3 = (torch.exp(inf_log_diff) - inf_log_diff - 1.0).mean().item()
+        total_k3 += sample_k3
+        total_kld += sample_k3 * active_tokens
         raw_inf_num_samples += 1
         compared_active_tokens += active_tokens
 
@@ -93,6 +101,9 @@ def compute_inference_observability_metrics(
         ),
         "inference_k1": total_k1 / raw_inf_num_samples,
         "inference_k3": total_k3 / raw_inf_num_samples,
+        "inference_kld": total_kld / compared_active_tokens,
+        "inference_kld_sum": total_kld,
+        "inference_kld_tokens": float(compared_active_tokens),
     }
 
 

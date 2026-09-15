@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import math
 import time
@@ -15,11 +16,13 @@ from training.examples.rl.harbor.opencode.constants import (
     OPENCODE_HARBOR_IMPORT_PATH,
 )
 from training.examples.rl.harbor.opencode.artifacts import tool_timeout_count
-from training.examples.rl.harbor.tito.sidecar import (
-    build_launch_spec,
-    build_sidecar_bundle,
-    launch_spec_json,
-    resolve_max_context_tokens,
+from training.examples.rl.harbor.opencode.config import (
+    SHELL_FIX_VERSION,
+    SHELL_FIX_SHA256,
+    validate_shell_fix_binary,
+)
+from training.examples.rl.harbor.tito.e2b_templates import (
+    e2b_trial_config_for_task,
 )
 from training.examples.rl.harbor.tito.rollout import (
     DEFAULT_MAX_CONCURRENT_TRIALS,
@@ -29,10 +32,19 @@ from training.examples.rl.harbor.tito.rollout import (
     run_with_fresh_trajectory_retries,
     trial_workspace,
 )
+from training.examples.rl.harbor.tito.sidecar import (
+    build_launch_spec,
+    build_sidecar_bundle,
+    launch_spec_json,
+    resolve_max_context_tokens,
+)
 from training.examples.rl.harbor.tito.trial import (
     DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
     DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     HarborTrialOutcome,
+    _load_sidecar_artifact,
+    _safe_trial_name,
+    ensure_prepared_docker_task_image,
     load_harbor_trial_config,
     run_harbor_trial,
     task_config_from_row,
@@ -41,6 +53,7 @@ from training.examples.rl.harbor.tito.trial import (
     validate_harbor_retry_exceptions,
 )
 from training.utils.rl.rollout import RolloutRun
+from training.utils.rl.async_rl.errors import RecoverableRolloutError
 from training.utils.rl.rollout.lifecycle import ActiveRolloutTasks
 
 if TYPE_CHECKING:
@@ -96,6 +109,12 @@ class _HarborRolloutRunner:
         self._trial_config = load_harbor_trial_config(
             setup.extras.get("harbor_trial_config")
         )
+        self._e2b_task_memory_mb = dict(
+            setup.extras.get("e2b_task_memory_mb") or {}
+        )
+        self._e2b_task_verifier_timeout_seconds = dict(
+            setup.extras.get("e2b_task_verifier_timeout_seconds") or {}
+        )
         self._harbor_environment = str(
             setup.extras.get("harbor_environment", "docker")
         ).lower()
@@ -123,6 +142,8 @@ class _HarborRolloutRunner:
                 DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
             )
         )
+        binary = setup.extras.get("opencode_shell_fix_binary")
+        self._shell_fix_binary = str(validate_shell_fix_binary(binary)) if binary else None
         if self._tool_timeout_seconds < 1:
             raise ValueError(
                 "rollout_extras['harness_tool_timeout_seconds'] must be positive"
@@ -229,6 +250,80 @@ class _HarborRolloutRunner:
         canonical_initial_prompt_hash: str | None,
         retry_index: int,
     ) -> RolloutRun | None:
+        if self._trials_dir is not None:
+            retained_prefix = _safe_trial_name(run_id)
+            for candidate in sorted(
+                self._trials_dir.glob(f"{retained_prefix}-*"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            ):
+                result_path = candidate / "result.json"
+                if not result_path.is_file():
+                    continue
+                try:
+                    document = json.loads(result_path.read_text(encoding="utf-8"))
+                    raw_rewards = (
+                        (document.get("verifier_result") or {}).get("rewards") or {}
+                    )
+                    if raw_rewards.get("reward") is None:
+                        continue
+                    trajectory_artifact, artifact_manifest = _load_sidecar_artifact(
+                        candidate
+                    )
+                    outcome = HarborTrialOutcome(
+                        task_name=str(document["task_name"]),
+                        trial_name=str(document["trial_name"]),
+                        trial_path=candidate,
+                        reward=float(raw_rewards["reward"]),
+                        rewards={
+                            str(key): float(value)
+                            for key, value in raw_rewards.items()
+                        },
+                        exception_type=None,
+                        exception_message=None,
+                        environment_type=self._harbor_environment,
+                        trajectory_artifact=trajectory_artifact,
+                        artifact_manifest=artifact_manifest,
+                    )
+                    retained = materialize_harbor_trajectory(
+                        outcome,
+                        max_context_tokens=self._context_limit,
+                        debug_enabled=self._tito_debug_enabled,
+                    )
+                except (
+                    json.JSONDecodeError,
+                    KeyError,
+                    OSError,
+                    TypeError,
+                    ValueError,
+                    RecoverableRolloutError,
+                ) as exc:
+                    logger.warning(
+                        "Ignoring incomplete retained Harbor/OpenCode trial %s: %s",
+                        candidate.name,
+                        exc,
+                    )
+                    continue
+                if retained is not None:
+                    logger.info(
+                        "Reusing completed Harbor/OpenCode trial %s", candidate.name
+                    )
+                    retained.run_id = run_id
+                    retained.metadata.update(
+                        {
+                            "task_name": outcome.task_name,
+                            "trial_name": outcome.trial_name,
+                            "harbor_rewards": outcome.rewards,
+                            "harbor_exception_type": None,
+                            "harness_tool_timeout_count": tool_timeout_count(candidate),
+                            "harness_tool_timeout_seconds": self._tool_timeout_seconds,
+                            "tito_harness": "opencode",
+                            "harbor_environment_type": outcome.environment_type,
+                            "tito_retry_index": retry_index,
+                        }
+                    )
+                    return retained
+
         metadata = {
             "harness": "opencode",
             "harbor_environment_type": self._harbor_environment,
@@ -239,6 +334,8 @@ class _HarborRolloutRunner:
             "retry_index": retry_index,
             "evaluation": evaluation,
             "canonical_initial_prompt_hash": canonical_initial_prompt_hash,
+            "opencode_build": SHELL_FIX_VERSION if self._shell_fix_binary else self._opencode_version,
+            "opencode_binary_sha256": SHELL_FIX_SHA256 if self._shell_fix_binary else None,
         }
         launch_spec = launch_spec_json(
             build_launch_spec(
@@ -254,6 +351,7 @@ class _HarborRolloutRunner:
         ) as trial_root:
             outcome = await self._run_admitted_trial(
                 task_config=task_config,
+                task_name=task_name,
                 inference_key=self._setup.api_key,
                 run_id=(f"{run_id}:retry-{retry_index}" if retry_index else run_id),
                 trials_dir=trial_root,
@@ -265,6 +363,10 @@ class _HarborRolloutRunner:
                 agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
                 agent_provider="fireworks-rl",
                 agent_version=self._opencode_version,
+                agent_options=(
+                    {"opencode_shell_fix_binary": self._shell_fix_binary}
+                    if self._shell_fix_binary else None
+                ),
                 tool_timeout_seconds=self._tool_timeout_seconds,
             )
             rollout = materialize_harbor_trajectory(
@@ -303,16 +405,29 @@ class _HarborRolloutRunner:
         self,
         *,
         task_config: Any,
+        task_name: str | None = None,
         inference_key: str,
         run_id: str,
         trials_dir: Path | None = None,
         **agent_kwargs: Any,
     ) -> HarborTrialOutcome:
+        if self._harbor_environment == "docker":
+            task_config = await ensure_prepared_docker_task_image(task_config)
+        trial_config = self._trial_config
+        if self._harbor_environment == "e2b" and task_name is not None:
+            trial_config = e2b_trial_config_for_task(
+                trial_config,
+                task_name=task_name,
+                task_memory_mb=self._e2b_task_memory_mb,
+                task_verifier_timeout_seconds=(
+                    self._e2b_task_verifier_timeout_seconds
+                ),
+            )
         return await run_harbor_trial(
             task_config=task_config,
             inference_key=inference_key,
             run_id=run_id,
-            trial_config=self._trial_config,
+            trial_config=trial_config,
             trials_dir=trials_dir if trials_dir is not None else self._trials_dir,
             terminal_failure_reward=self._terminal_failure_reward,
             retry_include_exceptions=self._retry_include_exceptions,

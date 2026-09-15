@@ -9,6 +9,7 @@ import pytest
 
 from training.utils.runner import UserConfigError
 from training.utils.checkpoints import (
+    CHECKPOINT_ALIASES_BASE_NAME,
     DATALOADER_BASE_NAME,
     ResumeInfo,
     TrainingCheckpoints,
@@ -676,6 +677,18 @@ class TestSave:
         with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
             data = json.load(f)
         assert data == {"step-0": 777}, f"expected server name keyed, got {data}"
+        with open(os.path.join(log_dir, CHECKPOINT_ALIASES_BASE_NAME)) as f:
+            assert json.load(f) == {"step-0": "step-42"}
+
+    def test_resume_renamed_checkpoint_uses_physical_path_and_logical_step(self, log_dir):
+        ckpt, client, _ = _make(log_dir, save_state_renames_to="step-9")
+        ckpt.save("step-8", resumable=True, promotable=False, data_consumed=129)
+
+        resumed = ckpt.resume()
+
+        assert resumed == ResumeInfo(step=8, data_consumed=129, source_job_id="job-1")
+        client.resolve_checkpoint_path.assert_called_with("step-9", source_job_id=None)
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-9")
 
     def test_dataloader_keyed_on_caller_name_when_no_rename(self, log_dir):
         """When the server honors the caller name, ``dataloader.json`` keys

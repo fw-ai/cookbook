@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import re
+import secrets
 import shutil
 import sys
 import tempfile
@@ -58,6 +59,7 @@ logger = logging.getLogger(__name__)
 _COMPACT_ARTIFACT_DESTINATION = Path("tito/compact")
 _DEBUG_ARTIFACT_DESTINATION = Path("tito/debug")
 _LOG_ARTIFACT_DESTINATION = Path("tito/logs")
+_PREPARED_DOCKER_IMAGE_NAME = "fireworks-harbor-prepared"
 
 
 def validate_harbor_retry_exceptions(names: Any) -> frozenset[str]:
@@ -153,6 +155,33 @@ def _is_retryable_e2b_stream_open_timeout(
     return provider_trace or cleanup_trace is not None
 
 
+def _is_retryable_e2b_command_stream_disconnect(
+    exception: Any,
+    *,
+    harbor_environment: str,
+) -> bool:
+    """Recognize a transient E2B command-stream failure after it opened."""
+
+    if harbor_environment != "e2b" or exception is None:
+        return False
+    traceback = str(getattr(exception, "exception_traceback", "") or "")
+    exception_type = str(getattr(exception, "exception_type", "") or "")
+    marker_prefix = (
+        "connectrpc.errors.ConnectError: Error reading content: request or "
+        "response body error: error reading a body from connection: "
+    )
+    retryable_reasons = (
+        "timed out",
+        "peer closed connection without sending TLS close_notify",
+    )
+    return (
+        exception_type == "ConnectError"
+        and "harbor/environments/e2b.py" in traceback
+        and "e2b/sandbox_async/commands/command_handle.py" in traceback
+        and any(marker_prefix + reason in traceback for reason in retryable_reasons)
+    )
+
+
 def _is_retryable_e2b_sidecar_readiness_timeout(
     exception: Any,
     *,
@@ -180,6 +209,27 @@ def _is_retryable_e2b_sidecar_readiness_timeout(
         exception_type == "RuntimeError" and exception_message == "Agent install failed"
     )
     return explicit_wrapper or harbor_wrapper
+
+
+def _is_retryable_e2b_default_tag_not_found(
+    exception: Any,
+    *,
+    harbor_environment: str,
+) -> bool:
+    """Recognize E2B's transient failure to resolve a built template alias."""
+
+    if harbor_environment != "e2b" or exception is None:
+        return False
+    exception_type = str(
+        getattr(exception, "exception_type", type(exception).__name__) or ""
+    )
+    exception_message = str(
+        getattr(exception, "exception_message", str(exception)) or ""
+    )
+    return exception_type == "SandboxException" and re.fullmatch(
+        r"404: tag 'default' does not exist for template '[^']+'",
+        exception_message,
+    ) is not None
 
 
 def _redact_sidecar_spec(result_path: Path) -> None:
@@ -458,6 +508,97 @@ def _task_prebuilt_image(task_config: Any) -> str | None:
     return value or None
 
 
+def _set_task_prebuilt_image(task_config: Any, image: str) -> None:
+    """Atomically pin a prepared local task to its content-addressed image."""
+
+    task_path = _task_local_path(task_config)
+    if task_path is None:
+        raise ValueError("Docker task image caching requires a local Harbor task")
+    config_path = task_path / "task.toml"
+    source = config_path.read_text(encoding="utf-8")
+    replacement = f"docker_image = {json.dumps(image)}\n"
+    section: str | None = None
+    replaced = False
+    output: list[str] = []
+    for line in source.splitlines(keepends=True):
+        header = re.match(r"^\s*\[([^]]+)]\s*(?:#.*)?$", line.rstrip("\r\n"))
+        if header is not None:
+            if section == "environment" and not replaced:
+                output.append(replacement)
+            section = header.group(1).strip()
+        if section == "environment" and re.match(r"^\s*docker_image\s*=", line):
+            if replaced:
+                raise ValueError(f"duplicate environment.docker_image in {config_path}")
+            output.append(replacement)
+            replaced = True
+            continue
+        output.append(line)
+    if section == "environment" and not replaced:
+        output.append(replacement)
+        replaced = True
+    if not replaced:
+        output.extend(("\n[environment]\n", replacement))
+
+    rewritten = "".join(output)
+    parsed = tomllib.loads(rewritten)
+    if parsed.get("environment", {}).get("docker_image") != image:
+        raise ValueError(f"could not pin environment.docker_image in {config_path}")
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=config_path.parent,
+        prefix=f".{config_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        handle.write(rewritten)
+        temporary_path = Path(handle.name)
+    temporary_path.replace(config_path)
+
+
+async def ensure_prepared_docker_task_image(task_config: Any) -> Any:
+    """Build one prepared task image once and reuse it across rollout members."""
+
+    task_path = _task_local_path(task_config)
+    if task_path is None:
+        raise ValueError("Docker task image caching requires a local Harbor task")
+    environment_dir = task_path / "environment"
+    dockerfile = environment_dir / "Dockerfile"
+    if not dockerfile.is_file():
+        return task_config
+
+    harbor = _require_harbor()
+    from harbor.environments.docker.utils import (
+        default_docker_platform,
+        docker_image_exists,
+        ensure_docker_image_built,
+    )
+
+    configured_image = _task_prebuilt_image(task_config)
+    if configured_image and configured_image.startswith(
+        f"{_PREPARED_DOCKER_IMAGE_NAME}--"
+    ) and await docker_image_exists(configured_image):
+        return task_config
+
+    document = _task_document(task_config) or {}
+    environment = document.get("environment")
+    timeout = None
+    if isinstance(environment, Mapping):
+        value = environment.get("build_timeout_sec")
+        timeout = float(value) if value is not None else None
+    image = await ensure_docker_image_built(
+        docker_name=_PREPARED_DOCKER_IMAGE_NAME,
+        docker_build_context=environment_dir,
+        dockerfile_path=dockerfile,
+        build_args={},
+        platform=await default_docker_platform(),
+        timeout_sec=timeout,
+        logger=logger,
+    )
+    _set_task_prebuilt_image(task_config, image)
+    return task_config
+
+
 def _task_uses_compose(task_config: Any) -> bool:
     task_path = _task_local_path(task_config)
     if task_path is None:
@@ -485,6 +626,7 @@ def _build_trial_config(
     agent_version: str,
     agent_provider: str = "fireworks-rl",
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
+    agent_options: Mapping[str, Any] | None = None,
 ) -> Any:
     """Merge a native TrialConfig template with Fireworks-owned runtime fields."""
 
@@ -509,16 +651,18 @@ def _build_trial_config(
         environment["type"] = harbor.EnvironmentType.E2B
     else:
         raise ValueError(f"unsupported Harbor environment {harbor_environment!r}")
-    # Remove trial-local containers and volumes after verification. A task's
-    # explicitly configured prepared image has its own stable reference and is
-    # not the disposable Harbor build tag.
-    environment["delete"] = True
+    prebuilt_image = _task_prebuilt_image(task_config)
+    # ``delete=True`` adds ``--rmi local`` to `docker compose down`. That is
+    # unsafe for a content-addressed image shared by concurrent rollouts:
+    # image removal fails while siblings still use it and leaves containers
+    # behind. Preserve shared images while still removing each Compose project.
+    environment["delete"] = harbor_environment == "docker" and prebuilt_image is None
     # Docker must rebuild an untagged prepared context. Harbor's E2B backend
     # names templates by the environment-content hash, so force_build would
     # defeat safe reuse and rebuild the same task for every rollout member.
     # A changed context naturally gets a new E2B template name.
     environment["force_build"] = (
-        harbor_environment == "docker" and _task_prebuilt_image(task_config) is None
+        harbor_environment == "docker" and prebuilt_image is None
     )
 
     try:
@@ -547,6 +691,7 @@ def _build_trial_config(
         )
     )
     agent["kwargs"] = {
+        **(agent_options or {}),
         "sidecar_bundle_path": str(sidecar_bundle_path),
         "sidecar_launch_spec": sidecar_launch_spec,
         "context_limit": int(context_limit),
@@ -585,8 +730,13 @@ def _build_trial_config(
 
     document.update(
         task=task_config,
+        # A logical rollout may be retried by both the trajectory runner and
+        # the group assembler. Keep every Harbor artifact destination unique;
+        # otherwise a later attempt can validate stale files from an earlier
+        # attempt or collide with an incomplete artifact download.
         trial_name=_safe_trial_name(
-            f"{run_id}-{hashlib.sha256(sidecar_launch_spec.encode()).hexdigest()[:8]}"
+            f"{run_id}-{hashlib.sha256(sidecar_launch_spec.encode()).hexdigest()[:8]}-"
+            f"{secrets.token_hex(4)}"
         ),
         trials_dir=Path(trials_dir),
         agent=agent,
@@ -679,6 +829,7 @@ async def run_harbor_trial(
     terminal_failure_reward: float | None = None,
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     retry_include_exceptions: Any = DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
+    agent_options: Mapping[str, Any] | None = None,
 ) -> HarborTrialOutcome:
     """Run one TITO-backed agent through Harbor's native Trial lifecycle."""
 
@@ -716,6 +867,7 @@ async def run_harbor_trial(
             agent_provider=agent_provider,
             agent_version=agent_version,
             tool_timeout_seconds=tool_timeout_seconds,
+            agent_options=agent_options,
         )
         result = None
         trial_path = trial_root / config.trial_name
@@ -788,7 +940,15 @@ async def run_harbor_trial(
             exception,
             harbor_environment=harbor_environment,
         )
+        retryable_e2b_disconnect = _is_retryable_e2b_command_stream_disconnect(
+            exception,
+            harbor_environment=harbor_environment,
+        )
         retryable_sidecar_readiness = _is_retryable_e2b_sidecar_readiness_timeout(
+            exception,
+            harbor_environment=harbor_environment,
+        )
+        retryable_default_tag = _is_retryable_e2b_default_tag_not_found(
             exception,
             harbor_environment=harbor_environment,
         )
@@ -800,10 +960,18 @@ async def run_harbor_trial(
                     "Harbor E2B command stream did not open before its provider "
                     "request timeout"
                 ) from exc
+            if retryable_e2b_disconnect:
+                raise RecoverableRolloutError(
+                    "Harbor E2B command stream disconnected while waiting for the agent"
+                ) from exc
             if retryable_sidecar_readiness:
                 raise RecoverableRolloutError(
                     "Harbor E2B sidecar did not become ready within its bounded "
                     "startup window"
+                ) from exc
+            if retryable_default_tag:
+                raise RecoverableRolloutError(
+                    "Harbor E2B could not resolve a built template's default tag"
                 ) from exc
             if exception_type and exception_type not in retry_names:
                 raise RuntimeError(
@@ -815,6 +983,10 @@ async def run_harbor_trial(
             raise RecoverableRolloutError(
                 "Harbor E2B command stream did not open before its provider "
                 "request timeout"
+            )
+        if retryable_e2b_disconnect:
+            raise RecoverableRolloutError(
+                "Harbor E2B command stream disconnected while waiting for the agent"
             )
 
         verifier_result = result.verifier_result

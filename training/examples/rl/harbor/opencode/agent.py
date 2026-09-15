@@ -26,7 +26,12 @@ from training.examples.rl.harbor.tito.sidecar import (
     terminalize_sidecar,
     upload_private_text,
 )
-from training.examples.rl.harbor.opencode.config import _TOOL_TIMEOUT_PLUGIN
+from training.examples.rl.harbor.opencode.config import (
+    _TOOL_TIMEOUT_PLUGIN,
+    SHELL_FIX_VERSION,
+    SHELL_FIX_SHA256,
+    validate_shell_fix_binary,
+)
 
 # Keep the per-trajectory credential outside Harbor's collected /logs tree.
 _OPENCODE_CONFIG_HOME = "/tmp/fireworks-tito-opencode/xdg-config"
@@ -63,6 +68,7 @@ class ConfigurableOpenCode(OpenCode):
         context_limit: int,
         output_limit: int,
         tool_timeout_seconds: int,
+        opencode_shell_fix_binary: str | None = None,
         **kwargs: Any,
     ) -> None:
         # Harbor passes its display model through AgentConfig.  OpenCode needs
@@ -80,6 +86,8 @@ class ConfigurableOpenCode(OpenCode):
         self._context_limit = int(context_limit)
         self._output_limit = int(output_limit)
         self._tool_timeout_seconds = int(tool_timeout_seconds)
+        self._shell_fix_binary = opencode_shell_fix_binary
+        self._opencode_executable = "opencode"
 
     def _policy_config(self) -> dict[str, Any]:
         return {
@@ -146,6 +154,22 @@ class ConfigurableOpenCode(OpenCode):
                 "rebuild the Harbor task images with "
                 f"--opencode-version {self._version}"
             )
+        if self._shell_fix_binary is not None:
+            binary = await asyncio.to_thread(validate_shell_fix_binary, self._shell_fix_binary)
+            target = "/tmp/fireworks-tito-opencode/bin/opencode"
+            prepared = await environment.exec(command="mkdir -p /tmp/fireworks-tito-opencode/bin")
+            if prepared.return_code != 0:
+                raise RuntimeError("Failed to prepare the OpenCode shell-fix directory")
+            await environment.upload_file(binary, target)
+            verified = await environment.exec(
+                command=(
+                    f"echo {shlex.quote(SHELL_FIX_SHA256 + '  ' + target)} | sha256sum --check --status "
+                    f"&& chmod 755 {shlex.quote(target)} && {shlex.quote(target)} --version"
+                )
+            )
+            if verified.return_code != 0 or (verified.stdout or "").strip() != SHELL_FIX_VERSION:
+                raise RuntimeError("Uploaded OpenCode shell-fix binary failed its version check")
+            self._opencode_executable = target
         endpoint = await install_sidecar(
             environment,
             bundle_path=self._sidecar_bundle_path,
@@ -204,6 +228,9 @@ class ConfigurableOpenCode(OpenCode):
             # bootstrap, especially when a full Harbor cohort starts at once.
             "OPENCODE_DISABLE_MODELS_FETCH": "1",
             "OPENCODE_DISABLE_AUTOUPDATE": "1",
+            # Keep OpenCode's own per-call ceiling non-binding. The trajectory
+            # sidecar enforces the configured output and context budgets.
+            "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": "1000000",
             "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": str(
                 self._tool_timeout_seconds * 1000
             ),
@@ -237,7 +264,7 @@ class ConfigurableOpenCode(OpenCode):
                     f"rm -f {shlex.quote(_AGENT_STATUS_PATH)}; "
                     '( if [ -f "$HOME/.nvm/nvm.sh" ]; then '
                     '. "$HOME/.nvm/nvm.sh"; fi; '
-                    f"opencode --model={shlex.quote(str(self.model_name))} "
+                    f"{shlex.quote(self._opencode_executable)} --model={shlex.quote(str(self.model_name))} "
                     "run --format=json "
                     f"{resume_flag}{cli_flags_arg}--thinking "
                     "--dangerously-skip-permissions -- "

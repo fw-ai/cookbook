@@ -451,7 +451,9 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
         assert custom_result.metrics["raw_inference_logprob_coverage"] == 1.0
         assert custom_result.metrics["inference_k3"] >= 0.0
         assert "inference_k1" in custom_result.metrics
-        assert "inference_kld" not in custom_result.metrics
+        assert custom_result.metrics["inference_kld"] == pytest.approx(
+            custom_result.metrics["inference_k3"]
+        )
         assert "inference_diff" not in custom_result.metrics
         assert "k1" not in custom_result.metrics
         assert "k3" not in custom_result.metrics

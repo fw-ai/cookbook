@@ -46,6 +46,7 @@ import training.utils.fileio as fileio
 from training.utils.runner import UserConfigError
 
 DATALOADER_BASE_NAME = "dataloader.json"
+CHECKPOINT_ALIASES_BASE_NAME = "checkpoint_aliases.json"
 DATALOADER_HISTORY_KEEP = 20
 
 _RESUMABLE_TYPE_SUFFIXES = ("TRAINING", "TRAINING_LORA")
@@ -436,6 +437,7 @@ class TrainingCheckpoints:
                     poll_s=self._save_poll_s,
                 )
                 self._write_dataloader(actual_name, data_consumed)
+                self._write_checkpoint_alias(actual_name, name)
                 if actual_name != name:
                     logger.info(
                         "DCP server-stored name %r differs from caller name %r; "
@@ -517,8 +519,9 @@ class TrainingCheckpoints:
                 t0 = time.time()
                 self._client.load_state_with_optimizer(path)
                 logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
+                logical_name = self._read_checkpoint_alias(ref.checkpoint_name)
                 return ResumeInfo(
-                    step=_step_from_name(ref.checkpoint_name),
+                    step=_step_from_name(logical_name),
                     data_consumed=self._read_dataloader(ref.checkpoint_name),
                     source_job_id=None if self._serverless else self._trainer_id,
                 )
@@ -547,7 +550,8 @@ class TrainingCheckpoints:
         latest = self._latest_resumable()
         if latest:
             short = _short_name(latest["name"])
-            logical = self._trainer_logical_name(short)
+            physical = self._trainer_logical_name(short)
+            logical = self._read_checkpoint_alias(physical)
             # In serverless mode the pooled multi-session trainer namespaces
             # checkpoints under the current run/session itself and rejects a
             # cross_job://<session_id>/<name> ref (session_id is not a source
@@ -556,14 +560,14 @@ class TrainingCheckpoints:
             # prefix; the dedicated path also uses the local trainer namespace
             # because cross_job://<same-trainer>/<name> points at the global
             # durable checkpoint prefix and can miss still-local trainer state.
-            path = self._client.resolve_checkpoint_path(logical, source_job_id=None)
+            path = self._client.resolve_checkpoint_path(physical, source_job_id=None)
             logger.info("Resuming from control-plane row: %s", short)
             t0 = time.time()
             self._client.load_state_with_optimizer(path)
             logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
             return ResumeInfo(
                 step=_step_from_name(logical),
-                data_consumed=self._read_dataloader(logical),
+                data_consumed=self._read_dataloader(physical),
                 source_job_id=None if self._serverless else self._trainer_id,
             )
 
@@ -828,6 +832,9 @@ class TrainingCheckpoints:
     def _dataloader_path(self) -> str:
         return fileio.join(self._log_path, DATALOADER_BASE_NAME)
 
+    def _checkpoint_aliases_path(self) -> str:
+        return fileio.join(self._log_path, CHECKPOINT_ALIASES_BASE_NAME)
+
     def _read_all_dataloader(self) -> dict[str, int]:
         path = self._dataloader_path()
         raw = fileio.read_text(path)
@@ -851,6 +858,36 @@ class TrainingCheckpoints:
 
     def _read_dataloader(self, name: str) -> int:
         return self._read_all_dataloader().get(name, 0)
+
+    def _read_all_checkpoint_aliases(self) -> dict[str, str]:
+        path = self._checkpoint_aliases_path()
+        raw = fileio.read_text(path)
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.warning("Corrupt %s (%s); treating as empty.", path, e)
+            return {}
+        return {str(k): str(v) for k, v in data.items()}
+
+    def _write_checkpoint_alias(self, physical: str, logical: str) -> None:
+        """Remember the caller's step name when the trainer renames a DCP.
+
+        The physical name remains the lookup key for loading checkpoint bytes and
+        the dataloader cursor.  The logical name is used only for the recipe/W&B
+        step, preventing a trainer-internal counter from skipping a user step.
+        """
+        aliases = self._read_all_checkpoint_aliases()
+        aliases[physical] = logical
+        if len(aliases) > DATALOADER_HISTORY_KEEP:
+            ordered = sorted(aliases.items(), key=lambda kv: _step_from_name(kv[0]))
+            aliases = dict(ordered[-DATALOADER_HISTORY_KEEP:])
+        fileio.makedirs(self._log_path)
+        fileio.write_json(self._checkpoint_aliases_path(), aliases)
+
+    def _read_checkpoint_alias(self, physical: str) -> str:
+        return self._read_all_checkpoint_aliases().get(physical, physical)
 
 
 def _step_from_name(name: str) -> int:

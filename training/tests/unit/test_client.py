@@ -159,6 +159,15 @@ def test_optim_step_accepts_enum_normalization():
     ]
 
 
+def test_optim_step_forwards_grad_norm_metrics():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    client.optim_step("adam", emit_grad_norm_metrics=True)
+
+    assert inner.calls == [("adam", {"emit_grad_norm_metrics": True})]
+
+
 def test_submit_optim_step_converts_normalization_without_waiting():
     inner = _FakeInnerClient()
     client = _make_client(inner)
@@ -173,6 +182,16 @@ def test_submit_optim_step_converts_normalization_without_waiting():
             {"grad_accumulation_normalization": GradAccNormalization.NUM_LOSS_TOKENS},
         )
     ]
+
+
+def test_submit_optim_step_forwards_grad_norm_metrics_without_waiting():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    future = client.submit_optim_step("adam", emit_grad_norm_metrics=True)
+
+    assert future is inner.future
+    assert inner.calls == [("adam", {"emit_grad_norm_metrics": True})]
 
 
 def test_optim_step_rejects_unknown_normalization():

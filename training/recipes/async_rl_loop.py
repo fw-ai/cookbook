@@ -76,6 +76,7 @@ from training.utils.rl.async_rl import (
     RolloutRow,
 )
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
+from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn, validate_gspo_config
 from training.utils.rl.losses import build_grpo_datums, combine_prompt_groups
 from training.utils.rl.observability import compute_server_grpo_observability_metrics
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
@@ -157,6 +158,10 @@ class Config:
     """Lower/upper PPO clip epsilon used by the GRPO update."""
     eps_clip_high: float | None = None
     """Optional asymmetric upper clip epsilon; defaults to ``eps_clip``."""
+    policy_loss: Literal["grpo", "gspo"] = "grpo"
+    """Policy objective. ``grpo`` preserves the existing per-token PPO ratio."""
+    gspo: GSPOConfig = field(default_factory=GSPOConfig)
+    """Sequence-ratio clipping settings used when ``policy_loss='gspo'``."""
     server_side_grpo: bool = False
     """Use the trainer's built-in PPO kernel for the GRPO policy update.
 
@@ -351,6 +356,42 @@ def _run_server_side_grpo(
     return result
 
 
+def _make_client_policy_loss(
+    config: Config,
+    *,
+    advantages,
+    ref_logprobs,
+    prompt_lens,
+    inf_logprobs,
+    raw_inf_logprobs,
+    old_policy_logprobs,
+):
+    """Build the selected client-side policy objective."""
+    if config.policy_loss == "gspo":
+        return make_gspo_loss_fn(
+            advantages=advantages,
+            ref_logprobs=ref_logprobs,
+            prompt_len=prompt_lens,
+            inf_logprobs=inf_logprobs,
+            old_policy_logprobs=old_policy_logprobs,
+            gspo_config=config.gspo,
+            tis_config=config.tis,
+            raw_inf_logprobs=raw_inf_logprobs,
+        )
+    return make_grpo_loss_fn(
+        advantages=advantages,
+        ref_logprobs=ref_logprobs,
+        prompt_len=prompt_lens,
+        inf_logprobs=inf_logprobs,
+        old_policy_logprobs=old_policy_logprobs,
+        kl_beta=config.kl_beta,
+        eps_clip=config.eps_clip,
+        eps_clip_high=config.eps_clip_high,
+        tis_config=config.tis,
+        raw_inf_logprobs=raw_inf_logprobs,
+    )
+
+
 def main(
     config: Config,
     *,
@@ -383,8 +424,24 @@ def main(
         reference_job_id=cfg.trainer.reference_job_id,
         anchor_logp=cfg.anchor_logp,
     )
+    if cfg.policy_loss == "gspo":
+        validate_gspo_config(cfg.gspo)
+        if cfg.kl_beta != 0:
+            raise ValueError("policy_loss='gspo' requires kl_beta=0.")
+        if cfg.grad_accumulation_normalization != "num_sequences":
+            raise ValueError(
+                "policy_loss='gspo' requires "
+                "grad_accumulation_normalization='num_sequences' so the "
+                "paper's outer sequence mean is applied across accumulation chunks."
+            )
+    elif cfg.policy_loss != "grpo":
+        raise ValueError(
+            f"Unknown policy_loss={cfg.policy_loss!r}; expected 'grpo' or 'gspo'."
+        )
     if cfg.server_side_grpo and cfg.kl_beta != 0:
         raise ValueError("server_side_grpo requires kl_beta=0.")
+    if cfg.server_side_grpo and cfg.policy_loss != "grpo":
+        raise ValueError("server_side_grpo only supports policy_loss='grpo'.")
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
         "the Config / RolloutSetup API may change. See "
@@ -442,7 +499,19 @@ def main(
             "tokenizer_id": cfg.deployment.tokenizer_model,
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
-            "algorithm": "grpo",
+            "algorithm": cfg.policy_loss,
+            "clip_ratio_low": (
+                cfg.gspo.clip_ratio_low if cfg.policy_loss == "gspo" else cfg.eps_clip
+            ),
+            "clip_ratio_high": (
+                cfg.gspo.clip_ratio_high
+                if cfg.policy_loss == "gspo"
+                else (cfg.eps_clip if cfg.eps_clip_high is None else cfg.eps_clip_high)
+            ),
+            "grad_accumulation_normalization": (
+                cfg.grad_accumulation_normalization or "none"
+            ),
+            "router_replay_requested": cfg.router_replay,
             "trainer_loss": "server_ppo" if cfg.server_side_grpo else "client",
             "server_side_grpo": cfg.server_side_grpo,
             "kl_beta": cfg.kl_beta,
@@ -576,7 +645,8 @@ def main(
 
         trainer_loss = "server_ppo" if cfg.server_side_grpo else "client"
         logger.info(
-            "algorithm=grpo trainer_loss=%s kl_beta=%g",
+            "algorithm=%s trainer_loss=%s kl_beta=%g",
+            cfg.policy_loss,
             trainer_loss,
             cfg.kl_beta,
         )
@@ -714,7 +784,7 @@ def main(
             old_policy_logprobs,
             precomputed_forward,
         ):
-            """Run GRPO through the configured client or built-in server path."""
+            """Run the selected policy loss through the configured execution path."""
             if cfg.server_side_grpo:
                 return _run_server_side_grpo(
                     policy,
@@ -729,23 +799,20 @@ def main(
 
             return policy.forward_backward_custom(
                 data,
-                make_grpo_loss_fn(
+                _make_client_policy_loss(
+                    cfg,
                     advantages=adv,
                     ref_logprobs=ref_lp,
-                    prompt_len=prompt_lens,
+                    prompt_lens=prompt_lens,
                     inf_logprobs=inf_lp,
-                    old_policy_logprobs=old_policy_logprobs,
-                    kl_beta=cfg.kl_beta,
-                    eps_clip=cfg.eps_clip,
-                    eps_clip_high=cfg.eps_clip_high,
-                    tis_config=cfg.tis,
                     raw_inf_logprobs=raw_inf_lp,
+                    old_policy_logprobs=old_policy_logprobs,
                 ),
                 precomputed_forward=precomputed_forward,
             )
 
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
-            """Run the visible GRPO forward/backward phase for one chunk."""
+            """Run the visible policy forward/backward phase for one chunk."""
 
             prompt_groups = list(chunk.groups)
             with elapsed_timer("ref_forward"):
@@ -812,6 +879,7 @@ def main(
                 result = policy.optim_step(
                     adam_params,
                     grad_accumulation_normalization=cfg.grad_accumulation_normalization,
+                    emit_grad_norm_metrics=True,
                 )
             return {
                 "result": result,

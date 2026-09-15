@@ -196,7 +196,7 @@ class TestValidation:
             RolloutRow(row_id=[], run_factory=lambda _index: None)  # type: ignore[arg-type]
 
 
-def test_incomplete_group_is_rebuilt_before_admission() -> None:
+def test_incomplete_group_retries_only_missing_runs_before_admission() -> None:
     async def scenario() -> None:
         calls = {0: 0, 1: 0}
 
@@ -223,7 +223,7 @@ def test_incomplete_group_is_rebuilt_before_admission() -> None:
             assert snapshot["rows_accepted"] == 1
             assert snapshot["rows_rejected"] == 0
             coordinator.publish(batch)
-        assert calls == {0: 2, 1: 2}
+        assert calls == {0: 1, 1: 2}
 
     _run(scenario())
 
