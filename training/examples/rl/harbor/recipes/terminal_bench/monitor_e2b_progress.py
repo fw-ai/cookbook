@@ -20,12 +20,21 @@ from e2b import Sandbox, SandboxQuery
 
 
 REMOTE = """python3 - <<'REMOTE'
-import json, pathlib, sqlite3, time
+import json, os, pathlib, sqlite3, time
 p = pathlib.Path('/logs/agent/opencode/xdg-data/opencode/opencode.db')
 out = {}
 if p.exists():
     with sqlite3.connect('file:' + str(p) + '?mode=ro', uri=True) as c:
         rows = c.execute('select time_updated,data from part order by time_updated desc limit 3').fetchall()
+        active = c.execute("select data from part where json_extract(data, '$.state.status')='running'").fetchall()
+    out['running_tools'] = []
+    for (raw,) in active:
+        d = json.loads(raw)
+        state = d.get('state', {})
+        start = state.get('time', {}).get('start')
+        out['running_tools'].append({'tool': d.get('tool'), 'start_ms': start,
+            'elapsed_s': round(time.time()-start/1000, 1) if start else None,
+            'timeout_ms': state.get('input', {}).get('timeout')})
     out['activity'] = []
     for updated, raw in rows:
         d = json.loads(raw)
@@ -41,7 +50,10 @@ for p in pathlib.Path('/proc').glob('[0-9]*/status'):
     try:
         fields = dict(line.split(':', 1) for line in p.read_text().splitlines() if ':' in line)
         if int(fields['Pid']) > 1600 and fields['PPid'].strip() != '2':
-            out['processes'].append({k: fields[k].strip() for k in ('Name','Pid','PPid','State','TracerPid')})
+            row = {k: fields[k].strip() for k in ('Name','Pid','PPid','State','TracerPid')}
+            stat = (p.parent / 'stat').read_text().rsplit(')', 1)[1].split()
+            row['cpu_seconds'] = (int(stat[11])+int(stat[12]))/os.sysconf('SC_CLK_TCK')
+            out['processes'].append(row)
     except (OSError, KeyError, ValueError):
         pass
 print(json.dumps(out))
