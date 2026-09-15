@@ -386,6 +386,17 @@ fix. The diagnostic sandbox was deleted, and its result was NOT substituted for
 the live reward. Two other replacement samples finalized with actual scored
 reward0 and no harness exception.
 
+Three further isolated runs passed all13 tests in21.12s,19.65s,19.09s. Thus the
+teardown hang is observed in the live worker but is not reproduced by these
+isolated runs; do not call a workaround validated on the basis of clean runs.
+
+Another step-4 delay was agent-generated: `compile-compcert` issued `sleep900`
+and then `sleep300`, followed by `pgrep -f "make -j4"`. A read-only process
+inspection found that this pattern matched the querying bash itself, with no
+compiler running and the compiler binary already present. Distinguish this
+false-positive polling loop from a harness completion bug; do not rewrite the
+candidate's commands or task result as an infrastructure recovery.
+
 Three `torch-tensor-parallelism` samples reached their existing 1,200-second
 verifier deadline at 11:48:55, 11:49:32, and 11:50:07 UTC. Their result files
 recorded `VerifierTimeoutError` and no reward. The materializer returned `None`:
