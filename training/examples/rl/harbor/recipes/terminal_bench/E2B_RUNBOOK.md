@@ -499,12 +499,22 @@ When the run has the minute-level `health.jsonl` recorder, run
 `python training/examples/rl/harbor/recipes/terminal_bench/monitor_e2b_progress.py --run-dir RUN_DIR --pid HARNESS_PID` in a persistent server session, with
 `E2B_API_KEY` supplied through the environment. Add `--once` for a preflight.
 Redirect stdout to a run-local JSONL artifact. Every three minutes it inspects
-only pending trials older than 15 minutes, matched by their exact E2B session
+only pending phases older than three minutes, matched by their exact E2B session
 metadata. It records tool activity ages, exit status and process/tracer states;
 it never logs tool inputs or credentials, signals processes, changes timeouts,
 or retries samples. Observation errors do not mean the sample failed. Review
 these records alongside CPU progress and verifier logs before any intervention.
 The recorder exits when the original harness PID disappears or is reused.
+
+For plain `timeout DURATION COMMAND` processes it records declared duration and
+process age, not command text. `inner_timeout_overrun` means the wrapper is still
+alive more than30seconds beyond that duration; it is an inspection warning, not
+a new timeout or kill policy. Unknown option forms are skipped. One live MIPS
+sample ran `timeout60 node vm.js` for over15minutes: the generated JS registered
+a SIGTERM callback but blocked its event loop in synchronous execution, preventing
+that callback from exiting. GNU timeout's initial SIGTERM alone did not stop it.
+Do not silently rewrite the candidate or assign a reward; preserve the exact
+process identity and obtain approval for a narrowly scoped intervention.
 
 The recorder also captures assistant-message creation/completion times and
 agent-log size/age, without recording message text or tool inputs. A stale

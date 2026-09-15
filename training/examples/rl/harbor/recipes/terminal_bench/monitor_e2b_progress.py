@@ -22,7 +22,7 @@ from e2b import Sandbox, SandboxQuery
 
 
 REMOTE = """python3 - <<'REMOTE'
-import json, os, pathlib, sqlite3, time
+import json, os, pathlib, re, sqlite3, time
 p = pathlib.Path('/logs/agent/opencode/xdg-data/opencode/opencode.db')
 out = {}
 if p.exists():
@@ -69,6 +69,8 @@ if p.exists():
     value = p.read_text().strip()
     out['agent_exit'] = int(value) if value.lstrip('-').isdigit() else 'non-numeric'
 out['processes'] = []
+uptime = float(pathlib.Path('/proc/uptime').read_text().split()[0])
+hz = os.sysconf('SC_CLK_TCK')
 for p in pathlib.Path('/proc').glob('[0-9]*/status'):
     try:
         fields = dict(line.split(':', 1) for line in p.read_text().splitlines() if ':' in line)
@@ -77,6 +79,15 @@ for p in pathlib.Path('/proc').glob('[0-9]*/status'):
             stat = (p.parent / 'stat').read_text().rsplit(')', 1)[1].split()
             row['cpu_seconds'] = (int(stat[11])+int(stat[12]))/os.sysconf('SC_CLK_TCK')
             row['start_ticks'] = stat[19]
+            row['elapsed_s'] = round(uptime-int(stat[19])/hz, 1)
+            if row['Name'] == 'timeout':
+                args = (p.parent / 'cmdline').read_bytes().split(bytes([0]))
+                # Deliberately recognize only plain `timeout DURATION CMD`.
+                # Unknown option forms are omitted, never guessed. No command
+                # text or child arguments are included in the observation.
+                duration = re.fullmatch(rb'([0-9]+(?:[.][0-9]+)?)([smhd]?)', args[1]) if len(args) > 2 else None
+                if duration:
+                    row['declared_timeout_s'] = float(duration[1]) * {b'':1,b's':1,b'm':60,b'h':3600,b'd':86400}[duration[2]]
             out['processes'].append(row)
     except (OSError, KeyError, ValueError):
         pass
@@ -91,6 +102,19 @@ def identity(pid):
         return None if fields[0] == 'Z' else fields[19]
     except FileNotFoundError:
         return None
+
+
+def timeout_warnings(current):
+    """An overdue inner timeout is an inspection trigger, not a kill policy."""
+    warnings = []
+    for process in current.get('remote', {}).get('processes', []):
+        duration = process.get('declared_timeout_s', 0)
+        elapsed = process.get('elapsed_s', 0)
+        if process.get('Name') == 'timeout' and duration > 0 and elapsed > duration + 30:
+            warnings.append({'code': 'inner_timeout_overrun', 'pid': process['Pid'],
+                             'declared_timeout_s': duration, 'elapsed_s': elapsed,
+                             'action': 'Inspect signal handling; SIGTERM may be ignored. Do not kill automatically'})
+    return warnings
 
 
 def inspect_trial(root, trial):
@@ -174,11 +198,12 @@ def main():
             if age > 180:
                 record['observation_error'] = 'stale_health_record'
             else:
-                pending = [t for t in health['pending_trials'] if t['phase_age_s'] >= 900]
+                pending = [t for t in health['pending_trials'] if t['phase_age_s'] >= 180]
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     record['trials'] = list(pool.map(lambda t: inspect_trial(root, t), pending))
                 for trial in record['trials']:
-                    trial['warnings'] = stall_warnings(previous.get(trial['trial']), trial)
+                    trial['warnings'] = (stall_warnings(previous.get(trial['trial']), trial)
+                                         + timeout_warnings(trial))
         except Exception as error:
             record['observation_error'] = type(error).__name__
         print(json.dumps(record), flush=True)

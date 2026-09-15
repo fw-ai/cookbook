@@ -24,7 +24,11 @@ def test_pid_identity_and_remote_probe_syntax():
 
 
 @pytest.mark.parametrize('completed', [None, 5000])
-def test_remote_probe_reports_message_timing_not_model_text(tmp_path, completed):
+@pytest.mark.parametrize('duration_args,expected_duration', [
+    (['60'], 60), (['2m'], 120), (['1.5s'], 1.5), (['0'], 0),
+    (['--kill-after=5', '60'], None), (['invalid'], None),
+])
+def test_remote_probe_reports_message_timing_not_model_text(tmp_path, completed, duration_args, expected_duration):
     database = tmp_path / 'opencode.db'
     with sqlite3.connect(database) as c:
         c.execute('create table part (time_updated integer, data text)')
@@ -40,6 +44,14 @@ def test_remote_probe_reports_message_timing_not_model_text(tmp_path, completed)
     verifier_log.write_text('private-verifier-output')
     proc = tmp_path / 'proc'
     proc.mkdir()
+    timeout = proc / '2001'
+    timeout.mkdir()
+    (timeout / 'status').write_text('Name:\ttimeout\nPid:\t2001\nPPid:\t1\nState:\tS (sleeping)\nTracerPid:\t0\n')
+    fields = ['S'] + ['0'] * 19
+    fields[19] = '100'
+    (timeout / 'stat').write_text('2001 (timeout) ' + ' '.join(fields))
+    (timeout / 'cmdline').write_bytes(bytes([0]).join(
+        s.encode() for s in ['timeout', *duration_args, 'node', 'private-command', '']))
     code = recorder.REMOTE.split("python3 - <<'REMOTE'\n", 1)[1].rsplit("\nREMOTE", 1)[0]
     code = code.replace('/logs/agent/opencode/xdg-data/opencode/opencode.db', str(database))
     code = code.replace('/logs/agent/opencode.txt', str(log))
@@ -56,8 +68,10 @@ def test_remote_probe_reports_message_timing_not_model_text(tmp_path, completed)
     assert result['verifier_log']['bytes'] == verifier_log.stat().st_size
     assert result['verifier_log']['mtime_ns'] == verifier_log.stat().st_mtime_ns
     assert result['running_tools'] == []
+    assert result['processes'][0].get('declared_timeout_s') == expected_duration
     assert 'private-model-text' not in output.getvalue()
     assert 'private-verifier-output' not in output.getvalue()
+    assert 'private-command' not in output.getvalue()
     assert 'tokens' not in output.getvalue()
 
 
@@ -71,6 +85,22 @@ def test_finalized_trial_never_contacts_e2b(tmp_path, monkeypatch):
     assert result["observation"] == "already_finalized"
     api.list.assert_not_called()
     api.connect.assert_not_called()
+
+
+@pytest.mark.parametrize('duration,elapsed,expected', [(60, 91, True), (60, 90, False),
+    (60, 59, False), (0, 900, False)])
+def test_inner_timeout_warning_never_terminates(duration, elapsed, expected):
+    current = {'remote': {'processes': [{'Name': 'timeout', 'Pid': '2001',
+        'declared_timeout_s': duration, 'elapsed_s': elapsed}]}}
+    warnings = recorder.timeout_warnings(current)
+    assert bool(warnings) == expected
+    if expected:
+        assert warnings[0]['code'] == 'inner_timeout_overrun'
+        assert 'Do not kill automatically' in warnings[0]['action']
+
+
+def test_missing_timeout_metadata_does_not_guess():
+    assert recorder.timeout_warnings({'remote': {'processes': [{'Name': 'timeout'}]}}) == []
 
 
 @pytest.mark.parametrize("matching_count", [0, 2])
