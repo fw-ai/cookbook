@@ -228,6 +228,43 @@ def test_incomplete_group_retries_only_missing_runs_before_admission() -> None:
     _run(scenario())
 
 
+def test_exhausted_missing_member_refills_full_batch_without_redrawing_siblings() -> None:
+    """A failed 8-rollout group releases capacity for the next source row."""
+    async def scenario() -> None:
+        calls = {index: 0 for index in range(8)}
+
+        async def factory(sub_index: int) -> RolloutRun | None:
+            calls[sub_index] += 1
+            if sub_index == 1:
+                return None
+            return _rollout_run(float(sub_index))
+
+        coordinator = _coordinator(
+            [_row(0, run_factory=factory), *(_row(index) for index in range(1, 17))],
+            completions_per_prompt=8,
+            prompt_groups_per_step=16,
+            training_chunks_per_step=16,
+            max_concurrent_rollouts=128,
+            min_group_size=8,
+            max_incomplete_group_retries=2,
+        )
+        async with coordinator:
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=2.0)
+            assert batch is not None
+            assert await asyncio.wait_for(_consume(batch), timeout=2.0) == [1] * 16
+            snapshot = coordinator.snapshot()
+            assert snapshot["incomplete_group_retries"] == 2
+            assert snapshot["trajectory_drops"] == 3
+            assert snapshot["rows_accepted"] == 16
+            assert snapshot["rows_rejected"] == 1
+            assert snapshot["rows_submitted"] == 17
+            coordinator.publish(batch)
+            assert await asyncio.wait_for(coordinator.next_batch(), timeout=2.0) is None
+        assert calls == {index: 3 if index == 1 else 1 for index in range(8)}
+
+    _run(scenario())
+
+
 def test_completion_refills_during_physical_training() -> None:
     """A retired rollout immediately refills capacity while trainer is blocked."""
 

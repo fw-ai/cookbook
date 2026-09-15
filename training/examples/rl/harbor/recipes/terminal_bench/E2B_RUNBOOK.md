@@ -474,6 +474,26 @@ reuse a diagnostic score for training, and do not interpret shell exit 0 as
 test success: this verifier writes reward 0 after pytest failures and then
 exits successfully. Read the actual pytest result and reward file.
 
+The third live attempt (`f3cd6fc0-b4f9561f`) reproduced the same teardown
+deadlock after six tests. Its worker PID 2503 waited in `std::thread::join`
+inside Gloo destruction; thread 2515 waited for the GIL while destroying
+all-gather/barrier work tensors. All three attempts therefore need runtime
+triage, not a larger model-generation timeout. The cleanup workaround remains
+unapplied pending approval; diagnostic outcomes are not live rewards.
+
+**When retries are exhausted:** the coordinator rejects the incomplete prompt
+group and admits the next source row if available. It does not train the seven
+valid siblings as a complete eight-trajectory group. The unit test
+`test_exhausted_missing_member_refills_full_batch_without_redrawing_siblings`
+uses 16 groups × 8 rollouts, two missing-member retries, and a replacement row;
+it verifies a full batch, three dropped attempts, one rejected row, and no
+regeneration of successful siblings. This is a coordinator test, not evidence
+that the live verifier recovered. Monitor `producer/rows_rejected_total` and
+actual batch size. With finite `max_rows`, rejected groups reduce the number
+of accepted groups and can produce a smaller final batch or fewer optimizer
+steps; the initial step estimate is not a completion guarantee. Do not silently
+change the dataset budget to compensate.
+
 ### Sandbox memory pressure versus an observation timeout
 
 In step 5, `mteb-leaderboard` cursor 77 / sample 2 had kernel-confirmed OOM
