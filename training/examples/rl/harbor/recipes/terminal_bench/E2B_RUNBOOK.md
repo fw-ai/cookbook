@@ -219,6 +219,45 @@ not imply the trial, evaluation join, or next weight sync will finish promptly.
 Track the active phase and its result separately. Do not silently shorten the
 verifier budget, edit candidate code, or turn a pending test into a scored zero.
 
+Bounded diagnostic subprocesses in that same E2B sandbox did not establish a
+safe recovery: direct candidate calls sometimes returned normally, while one
+exited with SIGSEGV after returning. The isolated first pytest case timed out
+with plugin autoload disabled and with plain assertions as well. Its
+faulthandler traceback reached the first result assertion; the live process's
+Python stack remained at the candidate-call line with result locals populated.
+These observations do not prove a LAPACK stall or a pytest-plugin bug. Preserve
+the original verifier and candidate; do not substitute a diagnostic result for
+the official trial reward.
+
+### Sampling wall time versus model-request time
+
+For the first 128-trajectory training batch on 2026-09-15, the sampling window
+was 02:57:03.043–04:02:22.562 UTC. All 129 attempts, including the one failed
+attempt and its replacement, had compact TITO artifacts. The union of 1,737
+policy-call intervals measured model-request occupancy, not GPU kernel time.
+The following attribution is non-overlapping, unlike sums of concurrent
+trajectory durations:
+
+| Wall-clock category | Seconds |
+| --- | ---: |
+| At least one training policy request in flight | 1,617.411 |
+| Only the stalled `hf-model-inference` attempt remained | 1,833.294 |
+| Other agent execution/wait with no policy request in flight | 439.569 |
+| Verifier-only time after the categories above | 7.765 |
+| Agent setup after the categories above | 18.353 |
+| Environment setup after the categories above | 2.364 |
+| Remaining handoffs | 0.763 |
+| Total sampling window | 3,919.519 |
+
+Apply attribution in table order, subtracting intervals already attributed.
+The other 127 trajectories finished at 03:30:37 UTC; the stalled attempt ended
+with an E2B command-stream `ConnectError` at 04:01:10 UTC. Its preserved process
+audit showed an orphan shell waiting beside a background server, with the tool
+still marked running. Only the missing trajectory was retried, successfully,
+by 04:02:22 UTC. Its approximately 72 seconds are already included above.
+Do not describe this stall-inflated batch duration as steady-state performance,
+or label all non-model agent time as useful tool computation.
+
 ### Command-stream failure and evaluation coverage
 
 At 04:01:10 UTC, the waiting `hf-model-inference` training trial and one
