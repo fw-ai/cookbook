@@ -278,6 +278,32 @@ observation suppresses the warning. It never terminates a process.
 
 ### Agent completion does not bound verifier duration
 
+### A command's inner GNU timeout may not terminate Node
+
+On September 15, batch 8 of the 78-task run exposed another instance in
+`make-mips-interpreter`, cursor 114, completion 6. The model requested
+`timeout 120 ...`; its Node child was still running after 240 seconds, while
+GNU timeout waited in `sigsuspend`. The child had a SIGTERM handler and kept
+accumulating CPU time. This was an overdue **command**, not a stalled trainer
+or justification to replace the whole trajectory.
+
+Under the user's proactive-recovery instruction, at 17:41:31 UTC we revalidated
+the exact sandbox, Node PID/start time, timeout PID/start time and literal
+120-second argument, and the shell-to-OpenCode ancestry. A pidfd-targeted
+SIGKILL was sent **only to the overdue Node child**, after 270.6 seconds.
+The same OpenCode process immediately resumed and issued another command.
+The agent, sandbox, trainer and rollout were not restarted; no score or
+candidate code was changed. Final task success must still come from the
+verifier, not the fact that tool execution resumed.
+
+This was a scoped operator recovery, **not an enabled automatic timeout
+policy**. The progress monitor's `inner_timeout_overrun` warning remains an
+inspection trigger. A future automatic guard must reject changed identities,
+unknown timeout option forms, verifier processes and commands still within
+their own deadline. Do not apply a generic 30-minute kill limit to valid tasks.
+
+### Independent verifier deadlines
+
 The same run's other pending eigenvalue trial,
 `harbor-opencode-largest-eigenval-0-11-5-32f03a19-0072f9e9`, captured its agent
 trajectory at approximately 05:15:27 UTC, then remained in verification.
