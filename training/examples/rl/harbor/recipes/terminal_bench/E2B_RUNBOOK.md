@@ -237,6 +237,14 @@ Python packages were replaced. The debugger detached and the original process
 continued. The result narrows the observed stall to interpreter execution; it
 does not yet prove which candidate operation or dependency corrupted state.
 
+A bounded `runpy.run_path` probe reproduced the first test's hang without the
+pytest runner: `test_eigen_pair(2)` exceeded six seconds with the candidate.
+A fresh diagnostic subprocess replacing only that test function's in-memory
+candidate binding with the task's `ref_solution` passed its assertions and
+exited zero. No candidate/test file or official reward was changed. This
+isolates the candidate execution as necessary for that reproduction; a passing
+reference control is not a passing evaluation result or an authorized recovery.
+
 ### Sampling wall time versus model-request time
 
 For the first 128-trajectory training batch on 2026-09-15, the sampling window
