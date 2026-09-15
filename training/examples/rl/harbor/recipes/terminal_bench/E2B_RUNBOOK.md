@@ -372,6 +372,28 @@ signal, task-code edit, or trainer/rollout/harness restart was applied here.
 
 ## Retry and progress counters
 
+### Harbor retries can precede producer accounting
+
+Inspect `client.log` and failed trial artifacts even when all producer retry/drop
+counters are zero. `run_with_fresh_trajectory_retries` can recover an individual
+Harbor attempt before returning a result to the producer.
+
+On 2026-09-15, `fix-git` cursor 55 / sample 5 exited with
+`assistant output cannot be represented losslessly on this protocol`. Its TITO
+artifact recorded `model_malformed` / `tito_model_malformed_output`, one model
+call, and **zero trainable segments**. The parser rejected the sampled output
+and its text fallback could not represent it safely. The compact artifact did
+not retain the rejected completion, so it does not establish which tokens or
+parser condition caused rejection; do not call this a proven renderer bug.
+
+Although Harbor's verifier returned reward 0, the materializer rejected the
+empty trajectory rather than admitting that zero as training data. The client
+logged `Harbor task fix-git failed transiently (attempt 1/4)` and retried only
+that sample after 15 seconds. The replacement finished with reward 1 and no
+exception. Producer drop/incomplete-group counters remained zero throughout.
+Check the replacement's artifact and logical sample identity before declaring
+recovery; do not count both physical attempts as separate training trajectories.
+
 ### Trajectories versus gradient-normalization counts
 
 Do not interpret the trainer's `norm_factor` as a Harbor trajectory count. In
