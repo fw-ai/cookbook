@@ -229,13 +229,27 @@ class _Checkpoint:
 
 @dataclass
 class MessageTrajectoryAssembler:
-    """Message-level adapter over the token-native :class:`TrajectoryAssembler`."""
+    """Message-level adapter over the token-native :class:`TrajectoryAssembler`.
+
+    Callers normally append tool, user, or system messages between assistant
+    responses. For compatibility with callers that replace a recent message
+    suffix, the assembler can restore the exact token trajectory saved after a
+    prior assistant response. The rollback depth bounds both that behavior and
+    the number of retained deep-copy checkpoints.
+    """
 
     tito_tokenizer: TITOTokenizer
     trajectory: TrajectoryAssembler = field(default_factory=TrajectoryAssembler)
     max_assistant_rollback_steps: int = 1
     messages: List[dict[str, Any]] = field(default_factory=list)
     checkpoints: List[_Checkpoint] = field(default_factory=list)
+    # Absolute assistant-response index represented by checkpoints[0].
+    _checkpoint_offset: int = field(default=0, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.max_assistant_rollback_steps < 0:
+            raise ValueError("max_assistant_rollback_steps must be >= 0")
+        self._discard_unreachable_checkpoints()
 
     @property
     def token_ids(self) -> List[int]:
@@ -284,6 +298,7 @@ class MessageTrajectoryAssembler:
         )
         self.messages = list(request_messages) + [assistant_message]
         self.checkpoints.append(self._make_checkpoint())
+        self._discard_unreachable_checkpoints()
 
     def to_payload(self, *, total_reward: Optional[float] = None) -> RolloutPayload:
         return self.trajectory.to_payload(total_reward=total_reward)
@@ -309,6 +324,15 @@ class MessageTrajectoryAssembler:
         self.trajectory._seq = list(checkpoint.seq)
         self.trajectory._turns = deepcopy(checkpoint.turns)
 
+    def _discard_unreachable_checkpoints(self) -> None:
+        """Retain only checkpoints allowed by the rollback-depth contract."""
+        keep = self.max_assistant_rollback_steps + 1
+        discard = len(self.checkpoints) - keep
+        if discard <= 0:
+            return
+        del self.checkpoints[:discard]
+        self._checkpoint_offset += discard
+
     def _try_detect_and_rollback_to_assistant_checkpoint(self, request_messages: List[dict[str, Any]]) -> None:
         stored = self.messages
         if not stored or not self.checkpoints:
@@ -332,11 +356,16 @@ class MessageTrajectoryAssembler:
         if checkpoint_index < 0:
             raise MessageValidationError(f"rollback failed: no assistant message found in first {match_len} messages")
 
-        discard_count = len(self.checkpoints) - (checkpoint_index + 1)
+        discard_count = (
+            self._checkpoint_offset + len(self.checkpoints) - (checkpoint_index + 1)
+        )
         if discard_count > self.max_assistant_rollback_steps:
             raise MessageValidationError(
                 f"rollback failed: discard_count={discard_count} exceeds "
                 f"max_assistant_rollback_steps={self.max_assistant_rollback_steps}"
             )
-        self.checkpoints = self.checkpoints[: checkpoint_index + 1]
+        retained_index = checkpoint_index - self._checkpoint_offset
+        if retained_index < 0:
+            raise MessageValidationError("rollback failed: checkpoint is no longer retained")
+        self.checkpoints = self.checkpoints[: retained_index + 1]
         self._restore_checkpoint(self.checkpoints[-1])
