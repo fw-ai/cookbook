@@ -83,6 +83,28 @@ experiment, after checking its config and checkpoint. A reused ID from an older
 run initially displayed seven stale optimizer steps before this run had
 completed its first synchronization. The corrected run is `2ja2bva6`.
 
+## Trainer log observation
+
+If a broad Cloud Logging query returns HTTP 500, treat it as an observation
+failure, not a trainer failure. On this run, querying recent entries succeeded,
+while error searches using only the nested trainer-ID label failed. Reading a
+recent entry supplied the actual pod names; a resource-scoped error query then
+succeeded. Example for the current run (replace the resource labels and start time
+when investigating another run):
+
+```sh
+gcloud logging read \
+  'resource.type="k8s_container" AND resource.labels.cluster_name="gmi-ap-taiwan-1" AND resource.labels.namespace_name="default" AND resource.labels.container_name="trainer" AND resource.labels.pod_name=~"^trainer-training-rlor-efq8pkpso5e2x1ks-0($|-follower-)" AND timestamp>="2026-09-15T02:54:06Z" AND jsonPayload.message=~"ERROR|Traceback|OutOfMemoryError|CUDA out of memory"' \
+  --project=fw-ai-cp-prod --limit=10 \
+  --format='json(timestamp,resource.labels.pod_name,jsonPayload.message)'
+```
+
+This searches message text because not every trainer stdout record has an
+ERROR severity label. An empty successful response proves only that the query
+found no matches in that window; it does not replace live process, heartbeat,
+and optimizer/checkpoint checks. Do not restart a service due to a logging API
+timeout or HTTP 500.
+
 ## Artifact archival safety
 
 Monitor both the harness process's RSS/high-water mark and the host's
