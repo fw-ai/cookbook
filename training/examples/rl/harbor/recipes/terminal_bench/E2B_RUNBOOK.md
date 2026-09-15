@@ -169,12 +169,46 @@ remaining candidate-test Python process, but OpenCode's SQLite tool state was
 still `running`. OpenCode and the TITO sidecar remained alive. This is not
 evidence of a trainer crash, GPU OOM, or active numerical computation.
 
-The candidate-code crash is established by the captured traceback; why OpenCode
-has not finalized the tool result remains unverified. Preserve the tool state,
-captured output, process inventory, and timestamps. Do not repair the model's
-candidate code or silently label the sample completed. Future subprocess-handling
-tests must cover signal-terminated children as well as background servers,
-propagating their failure/output without waiting for the long tool timeout.
+Source inspection found a matching failure mechanism in the pinned release:
+[OpenCode v1.18.8 shell tool](https://github.com/anomalyco/opencode/blob/3c81a5d1ddceab377d9ad71c14899e6935333fdd/packages/opencode/src/tool/shell.ts)
+races `handle.exitCode`, cancellation, and timeout with `Effect.raceAll`.
+In Effect `4.0.0-beta.83`, that operator waits for the first **success**, ignoring
+an early failure while other branches remain pending. The matching
+`@effect/platform-node-shared` process adapter returns a failed effect for a
+signal-terminated child. Consequently, such an exit can be hidden until timeout.
+
+An isolated local reproduction with that exact Effect version and a real
+signal-terminated child reproduced the delay: the child exited after 68 ms, but
+the race returned `timeout` after 605 ms with a 600-ms timer. Racing a captured
+termination outcome (`Effect.exit(handle.exitCode)`) instead returned the failure
+after 68 ms. Normal exits 0 and 3 also passed. This validates the race mechanism,
+not a complete fix in the live OpenCode binary; no runtime patch was applied.
+
+Preserve the captured traceback, tool state, process inventory, and timestamps.
+Do not repair the model's candidate code or silently label the sample completed.
+Any integrated fix must retain output and report signal termination correctly,
+with separate coverage for background-server survival, cancellation, and timeout.
+
+### Command-stream failure and evaluation coverage
+
+At 04:01:10 UTC, the waiting `hf-model-inference` training trial and one
+`configure-git-webserver` evaluation trial failed with
+`connectrpc.errors.ConnectError: Error reading content`, caused by a
+`pyqwest._errors.StreamError` in the E2B command-event stream. This was not the
+6,900-second tool timeout. The exact upstream connection-reset cause is unknown.
+
+The training coordinator retained the seven valid group members and retried the
+missing eighth member. Its new physical trial ended successfully with reward 1
+at approximately 04:02:22 UTC. The cumulative drop and incomplete-group-retry
+counters each became 1; these counters do not imply a seven-member optimizer
+group was accepted. Verify completed batch membership separately.
+
+Evaluation does not use that coordinator-level group retry. In
+`tito/evaluate.py`, a rewardless `None` result contributes to `eval/no_trajectory`
+and is excluded from the denominator of `eval/reward`. Always report attempted,
+completed, failed, and no-trajectory counts with reward; an incomplete evaluation
+must not be presented as full 128-trajectory holdout coverage. No live recovery
+signal, task-code edit, or trainer/rollout/harness restart was applied here.
 
 ## Retry and progress counters
 
