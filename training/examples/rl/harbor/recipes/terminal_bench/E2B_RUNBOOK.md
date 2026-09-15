@@ -103,6 +103,32 @@ delete active or uncheckpointed trials to recover disk space. If GCS credentials
 expire, retain local artifacts and report the upload failure separately from RL
 health.
 
+## Background-server tool waits
+
+The 2026-09-15 first batch included an `hf-model-inference` sample with no new
+agent output for over 17 minutes. The sandbox had ample memory/disk and no
+sidecar exception. Read-only inspection of OpenCode's SQLite `part` records
+identified a still-running bash call with no explicit timeout:
+
+```sh
+cd /app && nohup python3 app.py > /app/server.log 2>&1 & sleep 8 && tail -5 /app/server.log
+```
+
+The server and its launcher shell remained alive after the foreground shell
+exited. This compound-background-command pattern can retain an inherited output
+pipe: a local reproduction using a two-second `sleep` returned foreground exit
+code 0 within 0.3 seconds, but collecting captured output took 2.01 seconds.
+That reproduces the pipe-lifetime hazard, not a full OpenCode fix. The configured
+6,900-second default tool timeout applies when the model omits a timeout;
+`sleep 8` is not an eight-second bound on the whole tool call.
+
+For quiet trials, inspect the actual pending tool and sandbox processes before
+blaming inference or E2B capacity. Record this as a harness/task interaction to
+investigate; do not silently kill the background server, shorten the agreed
+timeout, discard the sample, or restart RL. Any change to tool subprocess/output
+handling needs its own regression test, including intended background-server
+survival, before use in a subsequent run.
+
 ## Retry and progress counters
 
 Do not infer failures from a counter name alone. Use these metrics together:
