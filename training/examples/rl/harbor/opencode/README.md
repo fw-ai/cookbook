@@ -366,6 +366,16 @@ for training continuation, also preserve every trial beyond the persisted
 checkpoint/dataloader cursor. Archiving must not alter task rewards or retry
 behavior.
 
+For read-only per-trial age monitoring, use
+`training.examples.rl.harbor.tito.monitoring.pending_trial_inventory(trials_dir)`.
+It distinguishes pending agent/setup work from verification/finalization using
+local artifact timestamps without reading credential-bearing config contents.
+These ages are estimates, not process liveness checks: confirm the actual E2B
+process before declaring a failure. A compact `COMPLETE` does not mean the
+evaluation sample has finished. Monitor `rollout/*`, `perf/*`, and
+`checkpoint/*` alongside producer counters and host memory/disk; unchanged
+producer counters alone do not explain an evaluation-gated training step.
+
 ## Metric semantics
 
 The async loops put `train/*`, `rollout/*`, `perf/*`, `async/*`, and `eval/*`
