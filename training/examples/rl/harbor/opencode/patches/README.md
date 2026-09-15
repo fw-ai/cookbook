@@ -59,6 +59,8 @@ An unpatched binary is expected to fail these assertions.
 
 - Binary: `1.18.8-fw-shell.2`, Linux x64.
 - SHA-256: `6b160847e94b9ecfa608436d23497de08ff5c93f30d9174bcf3fb0c45134ca88`.
+- Uploaded binary:
+  `gs://fireworks-fine-tuning-profiles/yued-kimi-k3-profiles/harness-fixes/opencode-1.18.8-shell-completion-20260915/opencode-linux-x64`.
 - E2B task template: `7tpfet9m64fl12oaeafj`, 8 GiB; isolated test sandbox
   `i1709jru3sr7soat37b35`.
 - Type check passed; 27 shell-tool tests and 48 generic process/spawner tests
