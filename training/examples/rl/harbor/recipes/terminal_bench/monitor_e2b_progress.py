@@ -140,7 +140,8 @@ def search_wait_warnings(current):
 
 def inspect_trial(root, trial):
     name = trial['trial']
-    result = {'trial': name, 'phase': trial['phase']}
+    result = {'trial': name, 'phase': trial['phase'],
+              'trial_age_s': trial.get('trial_age_s')}
     if (root / 'trials' / name / 'result.json').exists():
         return {**result, 'observation': 'already_finalized'}
     try:
@@ -156,6 +157,24 @@ def inspect_trial(root, trial):
     except Exception as error:
         result['observation_error'] = type(error).__name__
     return result
+
+
+def sampling_budget_warnings(current):
+    """Inspection thresholds only; never change deadlines or discard samples."""
+    if current.get('observation') == 'already_finalized':
+        return []
+    warnings = []
+    if (current.get('trial_age_s') or 0) >= 1800:
+        warnings.append({'code': 'sampling_target_exceeded',
+                         'elapsed_s': current['trial_age_s'],
+                         'action': 'Inspect current phase and critical path; 30 minutes is a target, not a termination deadline'})
+    if current.get('phase') == 'agent_or_setup':
+        for tool in current.get('remote', {}).get('running_tools', []):
+            if (tool.get('elapsed_s') or 0) >= 600:
+                warnings.append({'code': 'long_tool_call', 'tool': tool.get('tool'),
+                                 'elapsed_s': tool['elapsed_s'],
+                                 'action': 'Inspect process progress, explicit deadline and output handling; CPU activity or quiet output alone does not prove a hang'})
+    return warnings
 
 
 def recover_trial_search(root, previous, current, *, node_deadlines=False):
@@ -264,7 +283,8 @@ def main():
                 for trial in record['trials']:
                     trial['warnings'] = (stall_warnings(previous.get(trial['trial']), trial)
                                          + timeout_warnings(trial)
-                                         + search_wait_warnings(trial))
+                                         + search_wait_warnings(trial)
+                                         + sampling_budget_warnings(trial))
                     if args.recover_kernel_stream_grep:
                         trial['recovery_actions'] = recover_trial_search(root, previous.get(trial['trial']), trial)
                     if args.recover_overdue_node:
