@@ -630,6 +630,17 @@ restarted or reloaded. Activate only at an approved checkpoint-safe client
 transition. It does not fix a candidate's blocked SIGTERM handler or authorize
 shortening any live task timeout, replacing its reward, or killing its process.
 
+The same launcher problem recurred in batch 8 at cursor114/index4 and
+cursor119/index2 and index3. All three checksum-validated TITO artifacts ended
+with tool calls containing `pkill -f "node vm.js"`; all recorded model calls
+succeeded. They received real verifier rewards 0, 0, and 1, respectively.
+Cursor119/index2 was misleadingly labeled `ApiRateLimitError`: Harbor's
+`_classify_exec_error` searched all stdout using `rate.?limit` and matched the
+agent's discussion of GitHub repository-search limits. This is not evidence
+of an HTTP429 from rollout. Check structured call outcomes and the final
+emitted tool action before changing capacity, credentials or retry settings.
+These samples were not regenerated, rescored, or silently removed from training.
+
 The read-only observer now audits finalized local results for
 `scored_trial_with_exception`, independently of pending trials and producer
 drop counters. Its scope excludes artifacts already pruned after checkpoint
