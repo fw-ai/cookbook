@@ -50,6 +50,30 @@ restart only the local harness unless remote health evidence requires more.
 
 ## Snapshot synchronization checks
 
+### Reserved-rack launch preflight
+
+Inspect node **labels and taints**, and the rendered GPU pod spec, before
+sampling. A `fullparam-k3-rl=true` node selector restricts placement but does not
+tolerate the separate `fullparam-k3-rl` taint. On 2026-09-15 this omission left
+the fresh rollout pending although the reserved pool contained available nodes.
+The deployment uses `extraNodeSelectors={"fullparam-k3-rl":"true"}` and
+`additional_toleration_keys=fireworks.ai/global-reserved,fullparam-k3-rl`, in
+addition to the existing `fireworks.ai/rftj` toleration. Verify current taints;
+do not treat these historical values as a substitute for a live check.
+
+`firectl-admin deployment update --extra-values ...` replaces the extra-values
+map rather than merging individual keys. Fetch the existing deployment, modify
+the full map, update with `--file`, and read it back. In particular, retain
+fused-base exchange, heartbeat timeout, session routing, and all shape values.
+Use `maxSurge=0,maxUnavailable=1` for an explicitly authorized replacement that
+must fit the same 64 GPUs; this allows downtime and is not permission to restart
+a running experiment. Confirm the latest rendered pod revision, not only the
+control-plane values.
+
+Canceling a trainer can also remove its attached rollout. A deliberately fresh
+experiment must recreate/re-attach the rollout and start from actual base
+weights, not simply create another SDK session on updated resident weights.
+
 Inspect **every** entry in the hot-load status endpoint's `replicas` array.
 For this deployment there must be four peers, each with the requested
 `current_snapshot_identity`, `readiness=true`, and `loading_state.stage=idle`.
