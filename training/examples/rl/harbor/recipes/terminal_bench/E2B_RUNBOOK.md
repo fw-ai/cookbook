@@ -122,6 +122,13 @@ That reproduces the pipe-lifetime hazard, not a full OpenCode fix. The configure
 6,900-second default tool timeout applies when the model omits a timeout;
 `sleep 8` is not an eight-second bound on the whole tool call.
 
+The same run also had three `configure-git-webserver` evaluation samples
+waiting over 30 minutes on compound commands that backgrounded `nohup python3
+-m http.server`, then ran a short `sleep` and a `curl`/`ps` check. Their bash
+parts remained `running` without an explicit timeout. In contrast, pending
+cryptanalysis samples had active CPU-bound search processes. Classify these
+separately rather than treating every long sample as an infrastructure failure.
+
 For quiet trials, inspect the actual pending tool and sandbox processes before
 blaming inference or E2B capacity. Record this as a harness/task interaction to
 investigate; do not silently kill the background server, shorten the agreed
