@@ -141,6 +141,10 @@ def stall_warnings(previous, current):
     """Flag unchanged traced child/parent pairs; never classify task failure."""
     if not previous or previous.get('sandbox_id') != current.get('sandbox_id'):
         return []
+    if (current.get('sandbox_id') and previous.get('observation_error')
+            and current.get('observation_error')):
+        return [{'code': 'repeated_sandbox_observation_error',
+                 'action': 'Inspect sandbox control-plane state and metric freshness; observation errors do not prove failure. Do not restart automatically'}]
     before = previous.get('remote', {})
     after = current.get('remote', {})
     warnings = []
@@ -151,8 +155,10 @@ def stall_warnings(previous, current):
                     for k in ('bytes', 'mtime_ns', 'inode'))):
         warnings.append({'code': 'verifier_log_unchanged',
                          'action': 'Inspect verifier processes and deadline; quiet output alone is not failure'})
-    active = lambda r: {(t.get('tool'), t['start_ms']) for t in r.get('running_tools', [])
-                        if t.get('start_ms') is not None}
+    def active(record):
+        return {(t.get('tool'), t['start_ms']) for t in record.get('running_tools', [])
+                if t.get('start_ms') is not None}
+
     if not active(before).intersection(active(after)):
         return warnings
     old = {p['Pid']: p for p in before.get('processes', [])}

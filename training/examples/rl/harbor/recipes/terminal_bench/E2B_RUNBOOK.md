@@ -463,6 +463,11 @@ observation timeout. Record metric timestamps, kernel OOM evidence when
 available, which process died, whether the agent continues, and the final
 scored/unscored outcome separately.
 
+The read-only observer emits `repeated_sandbox_observation_error` after two
+consecutive failed observations of the same identified sandbox. Recovery or a
+replacement sandbox clears that warning. This flags a monitoring blind spot;
+it does not mark the sample failed, retry it, or authorize a restart.
+
 ### Harbor retries can precede producer accounting
 
 Inspect `client.log` and failed trial artifacts even when all producer retry/drop

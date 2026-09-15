@@ -196,6 +196,31 @@ def traced_observation():
     }}
 
 
+@pytest.mark.parametrize('change,expected', [
+    (None, True), ('recovered', False), ('first_error', False),
+    ('replacement', False), ('unidentified', False),
+])
+def test_repeated_observation_errors_are_not_silent_or_terminal(change, expected):
+    previous = {'sandbox_id': 'ours', 'observation_error': 'TimeoutException'}
+    current = deepcopy(previous)
+    if change == 'recovered':
+        current.pop('observation_error')
+        current['remote'] = {}
+    elif change == 'first_error':
+        previous.pop('observation_error')
+    elif change == 'replacement':
+        current['sandbox_id'] = 'new'
+    elif change == 'unidentified':
+        previous.pop('sandbox_id')
+        current.pop('sandbox_id')
+    warnings = recorder.stall_warnings(previous, current)
+    assert bool(warnings) == expected
+    if expected:
+        assert warnings[0]['code'] == 'repeated_sandbox_observation_error'
+        assert 'Do not restart automatically' in warnings[0]['action']
+        assert 'TimeoutException' not in json.dumps(warnings)
+
+
 def test_traced_child_stall_requires_two_matching_observations():
     current = traced_observation()
     assert recorder.stall_warnings(None, current) == []
