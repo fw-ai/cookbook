@@ -311,6 +311,14 @@ it does not change any agent, verifier, tool or sampling timeout. A cycle that
 takes longer than the interval finishes before another starts (no overlapping
 polls). The original RL-client process identity is still checked each cycle.
 
+Observed live outcome for cursor114/index6: after two operator-triggered child
+recoveries and two periodic guard actions (17:51:17 and 17:57:20 UTC), the same
+agent finished at 18:03:29 UTC with verifier reward 1.0, no Harbor exception,
+and a completed TITO artifact. Total sampling time was about 42 minutes, so
+this does **not** establish the under-30-minute target or prove that recovery
+guarantees success on other tasks. Preserve the intervention audit alongside
+the actual verifier result.
+
 ### Agent completion does not bound verifier duration
 
 The same run's other pending eigenvalue trial,
