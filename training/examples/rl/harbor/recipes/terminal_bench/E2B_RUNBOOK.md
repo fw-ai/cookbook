@@ -836,6 +836,25 @@ and checksum-copy remaining files before completing the relocation. Relative
 submodule Git pointers may need repair. Do not treat a partially moved tree as
 complete or remove its remaining files without verifying their preservation.
 
+## Do not classify model/tool text as a provider failure
+
+Harbor's installed-agent classifier searches the failed command's entire output
+with broad error regexes such as `rate.?limit`. OpenCode JSON output includes
+reasoning and tool results, so an agent mentioning a GitHub download rate limit
+can incorrectly turn an unrelated launcher exit into `ApiRateLimitError`.
+
+The OpenCode adapter now removes recognized JSON **content** events only from
+the classification input for its own JSON-mode launcher. It preserves session
+`error` events, raw startup diagnostics, unknown formats and setup-command
+behavior. Original execution output and trajectory artifacts remain unchanged.
+Tests cover these distinctions and real provider-error preservation. Replaying
+the saved MIPS cursor119/index2 output (478,974 bytes, launcher exit-1) changed
+the classification from `ApiRateLimitError` to `NonZeroAgentExitCodeError`.
+This fixes diagnosis, not the underlying pkill/launcher bug; it is not evidence
+of a throughput improvement. It does not rewrite historical sample results or
+change an already-running client. Verify TITO call outcomes before attributing
+a failure to provider capacity, credentials, or HTTP429.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+from types import SimpleNamespace
 from typing import Any
 
 from harbor.agents.installed.base import with_prompt_template
@@ -69,8 +70,47 @@ def _opencode_1188_stdin_message(instruction: str) -> str:
     return '"' + instruction.replace('"', '\\"') + '"'
 
 
+def _without_opencode_content_events(output: str | None) -> str:
+    """Keep diagnostics, not model/tool text, for Harbor's error regexes.
+
+    OpenCode run.ts emits one JSON envelope per content or session-error event.
+    A tool downloading from GitHub may mention a rate limit without the model
+    provider failing. Only discard recognized content envelopes; preserve raw
+    startup diagnostics, unknown formats, and all session-error events.
+    """
+    kept = []
+    for line in (output or "").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            kept.append(line)
+            continue
+        content = (
+            isinstance(event, dict)
+            and event.get("type") in {"text", "reasoning", "tool_use", "step_start", "step_finish"}
+            and isinstance(event.get("sessionID"), str)
+            and isinstance(event.get("timestamp"), (int, float))
+            and isinstance(event.get("part"), dict)
+        )
+        if not content:
+            kept.append(line)
+    return "\n".join(kept)
+
+
 class ConfigurableOpenCode(OpenCode):
     """OpenCode against one trajectory-scoped loopback sidecar endpoint."""
+
+    def _classify_exec_error(self, command: str, result: Any) -> Any:
+        # Scope to our JSON-mode agent launcher, never installation/setup.
+        # Preserve the original outputs in Harbor artifacts; filtering here
+        # only prevents model/tool content from selecting a provider exception.
+        if _AGENT_STATUS_PATH in command and "run --format=json" in command:
+            result = SimpleNamespace(
+                return_code=result.return_code,
+                stdout=_without_opencode_content_events(result.stdout),
+                stderr=_without_opencode_content_events(result.stderr),
+            )
+        return super()._classify_exec_error(command, result)
 
     def __init__(
         self,
