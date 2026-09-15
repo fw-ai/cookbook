@@ -1,6 +1,10 @@
 import importlib
+import contextlib
 from copy import deepcopy
+import io
+import json
 import os
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -17,6 +21,38 @@ def test_pid_identity_and_remote_probe_syntax():
     assert recorder.identity(2147483647) is None
     code = recorder.REMOTE.split("python3 - <<'REMOTE'\n", 1)[1].rsplit("\nREMOTE", 1)[0]
     compile(code, "<read-only remote probe>", "exec")
+
+
+@pytest.mark.parametrize('completed', [None, 5000])
+def test_remote_probe_reports_message_timing_not_model_text(tmp_path, completed):
+    database = tmp_path / 'opencode.db'
+    with sqlite3.connect(database) as c:
+        c.execute('create table part (time_updated integer, data text)')
+        c.execute('create table message (time_updated integer, data text)')
+        c.execute('insert into message values (?, ?)', (5000, json.dumps({
+            'role': 'assistant', 'time': {'created': 1000, 'completed': completed},
+            'finish': 'stop' if completed is not None else None,
+            'text': 'private-model-text', 'tokens': {'output': 999},
+        })))
+    log = tmp_path / 'opencode.txt'
+    log.write_text('private-model-text')
+    proc = tmp_path / 'proc'
+    proc.mkdir()
+    code = recorder.REMOTE.split("python3 - <<'REMOTE'\n", 1)[1].rsplit("\nREMOTE", 1)[0]
+    code = code.replace('/logs/agent/opencode/xdg-data/opencode/opencode.db', str(database))
+    code = code.replace('/logs/agent/opencode.txt', str(log))
+    code = code.replace('/tmp/fireworks-tito-opencode/agent-status', str(tmp_path / 'absent-status'))
+    code = code.replace("Path('/proc')", f"Path({str(proc)!r})")
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exec(compile(code, '<read-only remote probe>', 'exec'), {})
+    result = json.loads(output.getvalue())
+    assert result['latest_assistant']['completed_ms'] == completed
+    assert result['latest_assistant']['duration_s'] == (4.0 if completed is not None else None)
+    assert result['agent_log']['bytes'] == log.stat().st_size
+    assert result['running_tools'] == []
+    assert 'private-model-text' not in output.getvalue()
+    assert 'tokens' not in output.getvalue()
 
 
 def test_finalized_trial_never_contacts_e2b(tmp_path, monkeypatch):

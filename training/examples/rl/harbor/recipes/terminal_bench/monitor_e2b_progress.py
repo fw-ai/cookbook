@@ -6,6 +6,8 @@ pending trials from health.jsonl and connects only to exact trial session IDs.
 Records activity ages and process states, never tool inputs, model text or
 credentials. It never signals processes, retries samples, or changes timeouts.
 An old activity timestamp is a reason to inspect, not proof of a failed sample.
+Assistant-message timing and log growth help distinguish a long model turn
+from a tool wait; neither alone proves upstream request or GPU activity.
 Exits if the original harness PID exits or is reused. Requires E2B_API_KEY.
 """
 import argparse
@@ -27,6 +29,18 @@ if p.exists():
     with sqlite3.connect('file:' + str(p) + '?mode=ro', uri=True) as c:
         rows = c.execute('select time_updated,data from part order by time_updated desc limit 3').fetchall()
         active = c.execute("select data from part where json_extract(data, '$.state.status')='running'").fetchall()
+        message = c.execute("select time_updated,data from message where json_extract(data, '$.role')='assistant' order by time_updated desc limit 1").fetchone()
+    if message:
+        updated, raw = message
+        d = json.loads(raw)
+        timing = d.get('time', {})
+        created, completed = timing.get('created'), timing.get('completed')
+        out['latest_assistant'] = {
+            'age_s': round(time.time()-updated/1000, 1),
+            'created_ms': created, 'completed_ms': completed,
+            'duration_s': (completed-created)/1000 if created is not None and completed is not None else None,
+            'finish': d.get('finish'),
+        }
     out['running_tools'] = []
     for (raw,) in active:
         d = json.loads(raw)
@@ -41,6 +55,10 @@ if p.exists():
         out['activity'].append({'age_s': round(time.time()-updated/1000, 1),
             'type': d.get('type'), 'tool': d.get('tool'),
             'status': d.get('state', {}).get('status')})
+p = pathlib.Path('/logs/agent/opencode.txt')
+if p.exists():
+    stat = p.stat()
+    out['agent_log'] = {'bytes': stat.st_size, 'age_s': round(time.time()-stat.st_mtime, 1)}
 p = pathlib.Path('/tmp/fireworks-tito-opencode/agent-status')
 if p.exists():
     value = p.read_text().strip()

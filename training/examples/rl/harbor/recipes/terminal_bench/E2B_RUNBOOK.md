@@ -436,6 +436,22 @@ or retries samples. Observation errors do not mean the sample failed. Review
 these records alongside CPU progress and verifier logs before any intervention.
 The recorder exits when the original harness PID disappears or is reused.
 
+The recorder also captures assistant-message creation/completion times and
+agent-log size/age, without recording message text or tool inputs. A stale
+`part` timestamp with no running tool can be a long model turn: one observed
+`circuit-fibsqrt` turn completed normally after 833 seconds and the agent
+continued. Message elapsed time is not GPU-only decode time, and an unfinished
+message alone does not prove that an upstream request is progressing. Compare
+successive observations and finalized TITO request timing; OpenCode message
+token counters were zero in this integration and must not be used for throughput.
+
+Root-disk headroom still matters with remote E2B: the client and monitoring
+tools can write local metadata even when trials live on `/shared`. On the shared
+host, concurrent container activity nearly filled `/`; moving inactive owned
+backup archives intact to `/shared` recovered headroom without restarting RL.
+Inspect both filesystems, preserve active code/checkpoints, and coordinate other
+users' builds instead of pruning shared Docker/containerd storage blindly.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.
