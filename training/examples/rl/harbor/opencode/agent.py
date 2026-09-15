@@ -43,6 +43,7 @@ _OPENCODE_PLUGIN_LOCK_PATH = f"{_OPENCODE_CONFIG_HOME}/opencode/package-lock.jso
 _PROVIDER_ID = "fireworks-rl"
 _MODEL_ID = "policy"
 _AGENT_STATUS_PATH = "/tmp/fireworks-tito-opencode/agent-status"
+_INSTRUCTION_PATH = "/tmp/fireworks-tito-opencode/instruction.txt"
 _OFFLINE_PLUGIN_LOCK = {
     "lockfileVersion": 3,
     "packages": {
@@ -55,6 +56,17 @@ _OFFLINE_PLUGIN_LOCK = {
         }
     },
 }
+
+
+def _opencode_1188_stdin_message(instruction: str) -> str:
+    """Match 1.18.8 run.ts's one-argv message normalization exactly.
+
+    Raw stdin differs: argv containing spaces is quoted and embedded double
+    quotes are escaped by the CLI before constructing the model request.
+    """
+    if " " not in instruction:
+        return instruction
+    return '"' + instruction.replace('"', '\\"') + '"'
 
 
 class ConfigurableOpenCode(OpenCode):
@@ -258,6 +270,17 @@ class ConfigurableOpenCode(OpenCode):
         escaped_instruction = shlex.quote(instruction)
         try:
             await self._write_config(environment, env=env)
+            prompt_input = f"{escaped_instruction} </dev/null"
+            if self.version() == "1.18.8":
+                # Do not expose task text in launcher argv: an agent's pkill
+                # pattern can otherwise match and terminate its own launcher.
+                # Gate this on the version whose normalization we verified.
+                await upload_private_text(
+                    environment,
+                    content=_opencode_1188_stdin_message(instruction),
+                    remote_path=_INSTRUCTION_PATH,
+                )
+                prompt_input = f"< {shlex.quote(_INSTRUCTION_PATH)}"
             await self.exec_as_agent(
                 environment,
                 command=(
@@ -268,7 +291,7 @@ class ConfigurableOpenCode(OpenCode):
                     "run --format=json "
                     f"{resume_flag}{cli_flags_arg}--thinking "
                     "--dangerously-skip-permissions -- "
-                    f"{escaped_instruction} </dev/null; "
+                    f"{prompt_input}; "
                     f"printf '%s\\n' \"$?\" > {shlex.quote(_AGENT_STATUS_PATH)}; "
                     ") 2>&1 | stdbuf -oL tee /logs/agent/opencode.txt; "
                     f"test -s {shlex.quote(_AGENT_STATUS_PATH)} || exit 127; "

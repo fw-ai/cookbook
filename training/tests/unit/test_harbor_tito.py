@@ -1416,6 +1416,7 @@ def test_pi_preserves_empty_reasoning_on_assistant_replay(tmp_path) -> None:
             "ConfigurableOpenCode",
             DEFAULT_OPENCODE_VERSION,
         ),
+        ("training.examples.rl.harbor.opencode.agent", "ConfigurableOpenCode", "1.18.7"),
         ("training.examples.rl.harbor.pi.agent", "ConfigurablePi", "0.84.2"),
     ],
 )
@@ -1440,6 +1441,7 @@ def test_agent_command_promotes_context_marker_to_nonzero_exit(
     )
     commands: list[str] = []
     terminal_states: list[str] = []
+    prompt_uploads: list[dict] = []
 
     async def write_config(*_args, **_kwargs):
         return None
@@ -1452,9 +1454,13 @@ def test_agent_command_promotes_context_marker_to_nonzero_exit(
         del reason
         terminal_states.append(status)
 
+    async def upload_prompt(_environment, **kwargs):
+        prompt_uploads.append(kwargs)
+
     monkeypatch.setattr(agent, "_write_config", write_config)
     monkeypatch.setattr(agent, "exec_as_agent", exec_as_agent)
     monkeypatch.setattr(module, "terminalize_sidecar", terminalize)
+    monkeypatch.setattr(module, "upload_private_text", upload_prompt)
 
     asyncio.run(
         agent_type.run.__wrapped__(
@@ -1469,9 +1475,32 @@ def test_agent_command_promotes_context_marker_to_nonzero_exit(
     if module_name.endswith("opencode.agent"):
         assert "--dangerously-skip-permissions --" in commands[0]
         assert "--auto --" not in commands[0]
+        if version == "1.18.8":
+            assert "solve the task" not in commands[0]
+            assert prompt_uploads == [{
+                "content": '"solve the task"',
+                "remote_path": module._INSTRUCTION_PATH,
+            }]
+            assert f"< {module._INSTRUCTION_PATH}" in commands[0]
+        else:
+            assert "solve the task" in commands[0]
+            assert prompt_uploads == []
     assert sidecar_runtime.SIDECAR_CONTEXT_OVERFLOW_PATH in commands[0]
     assert "exit 43" in commands[0]
     assert terminal_states == ["completed"]
+
+
+@pytest.mark.parametrize("instruction,expected", [
+    ("oneword", "oneword"),
+    ("one\ttwo", "one\ttwo"),
+    ("one\ntwo", "one\ntwo"),
+    ('use "quotes"', '"use \\"quotes\\""'),
+    (" Unicode 文本\\\n", '" Unicode 文本\\\n"'),
+])
+def test_opencode_stdin_preserves_pinned_cli_normalization(instruction, expected):
+    from training.examples.rl.harbor.opencode.agent import _opencode_1188_stdin_message
+
+    assert _opencode_1188_stdin_message(instruction) == expected
 
 
 def test_four_same_prompt_rollouts_build_four_independent_attempt_specs(

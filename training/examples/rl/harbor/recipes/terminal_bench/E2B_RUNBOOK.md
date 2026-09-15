@@ -474,8 +474,30 @@ The existing materializer accepts their exact retained segments: 39,113 and
 73,334 trainable tokens respectively. A scored result therefore does **not**
 prove clean agent completion. Do not relabel these as infrastructure-free
 successes, silently regenerate them, or replace their scores with diagnostics.
-Changing prompt delivery or failure admission needs a separate validated
-change; neither was changed in this live run.
+Neither prompt delivery nor failure admission was changed in this live run.
+
+The PR now contains a separately verified transport fix for pinned OpenCode
+1.18.8: upload the instruction outside `/logs` and feed it on stdin, keeping task
+text out of launcher argv. Preserve the CLI's existing argv normalization first:
+an argument containing an ASCII space is wrapped in double quotes, with embedded
+double quotes escaped. **Sending raw stdin would change the model prompt.**
+Other OpenCode versions retain the original argv path until independently
+verified. No tokenizer, renderer, sampling, permission, or timeout setting changes.
+
+`opencode/prompt_transport_probe.py` exercises the actual patched CLI against a
+loopback provider in an isolated CPU-only E2B sandbox. It verifies equality of
+all initial messages and tool definitions, detects the raw-stdin mismatch, and
+checks that the agent continues after the same broad `pkill` tool command.
+The tool shell may terminate itself; success is agent continuation, not forcing
+the tool to succeed. The verified run used sandbox `iwntjjnhq8yztae6pl86h`, deleted
+afterward; evidence is `run/prompt-transport-full-input-verified.log` in the same
+GCS prefix. The 189-test targeted suite also covers pinned-version normalization,
+other-version fallback, context-overflow exit handling, metrics, and monitoring.
+
+This code is **not active in the existing September 15 client**, which was not
+restarted or reloaded. Activate only at an approved checkpoint-safe client
+transition. It does not fix a candidate's blocked SIGTERM handler or authorize
+shortening any live task timeout, replacing its reward, or killing its process.
 
 The read-only observer now audits finalized local results for
 `scored_trial_with_exception`, independently of pending trials and producer
