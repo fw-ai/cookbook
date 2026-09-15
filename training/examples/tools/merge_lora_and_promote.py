@@ -8,8 +8,8 @@ turns an existing HF PEFT adapter into a deployable full ``HF_BASE_MODEL`` by:
   1. provisioning a short-lived service-mode LoRA trainer from the adapter's
      *base* model (``--base-model``) at the adapter's rank (``--lora-rank``),
   2. explicitly loading the adapter weights into the LoRA session with
-     ``load_adapter(<adapter gcs uri>)`` — there is no shared base LoRA, every
-     adapter is loaded explicitly,
+     ``load_adapter(<PEFT model resource>)`` — there is no shared base LoRA,
+     every adapter is loaded explicitly,
   3. saving a merged-base sampler checkpoint with
      ``save_weights_for_sampler(checkpoint_type="merged_base")``, which folds
      ``W <- W + scaling * (B @ A)`` into the base weights and exports a full HF
@@ -36,20 +36,18 @@ base-identical checkpoint. The supported path is ``base_model`` + explicit
 ``load_adapter`` (this script). The gateway rejects service-mode
 ``warmStartFrom`` of a LoRA addon for the same reason.
 
-Getting the adapter GCS URI: it is the ``gs://`` directory that contains
-``adapter_config.json`` and ``adapter_model*.safetensors``. You can resolve it
-from a Fireworks LoRA model resource via the model ``getDownloadEndpoint`` API:
-
-    curl -s -H "Authorization: Bearer $FIREWORKS_API_KEY" \
-        "$FIREWORKS_BASE_URL/v1/accounts/<acct>/models/<lora-id>:getDownloadEndpoint" \
-        | python -c "import sys,json;print(json.load(sys.stdin))"
+Pass the promoted Fireworks PEFT model resource to ``--adapter-model``
+(``accounts/<acct>/models/<lora-id>``). ``load_adapter`` accepts that name
+directly. A ``gs://`` PEFT directory (``adapter_config.json`` +
+``adapter_model*.safetensors``) still works via ``--adapter-gcs`` for advanced
+use; regular users should not need ``getDownloadEndpoint``.
 
 Usage:
     export FIREWORKS_API_KEY=...
 
     python merge_lora_and_promote.py \
         --base-model accounts/fireworks/models/qwen3-30b-a3b \
-        --adapter-gcs gs://my-bucket/adapters/my-lora \
+        --adapter-model accounts/<acct>/models/my-lora \
         --lora-rank 8 \
         --training-shape accounts/<acct>/trainingShapes/<shape>:<version> \
         --output-model-id my-merged-qwen3-8b
@@ -69,9 +67,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-_COOKBOOK_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..")
-)
+_COOKBOOK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if _COOKBOOK_ROOT not in sys.path:
     sys.path.insert(0, _COOKBOOK_ROOT)
 
@@ -92,7 +88,7 @@ load_dotenv()
 @dataclass(frozen=True)
 class MergeConfig:
     base_model: str
-    adapter_gcs: str
+    adapter: str
     lora_rank: int
     training_shape: str
     output_model_id: str
@@ -121,14 +117,17 @@ def parse_args() -> MergeConfig:
         "--base-model",
         required=True,
         help="The adapter's immediate base model resource "
-             "(e.g. accounts/fireworks/models/qwen3-8b). NOT the LoRA itself.",
+        "(e.g. accounts/fireworks/models/qwen3-8b). NOT the LoRA itself.",
     )
     parser.add_argument(
+        "--adapter-model",
         "--adapter-gcs",
+        dest="adapter",
         required=True,
-        help="gs:// directory holding the HF PEFT adapter "
-             "(adapter_config.json + adapter_model*.safetensors). Passed to "
-             "load_adapter(). See the module docstring for how to resolve it.",
+        help="Fireworks PEFT model resource "
+        "(e.g. accounts/<acct>/models/<lora-id>). Passed to "
+        "load_adapter(). --adapter-gcs is an alias for a gs:// PEFT "
+        "directory in advanced use.",
     )
     parser.add_argument(
         "--lora-rank",
@@ -148,20 +147,19 @@ def parse_args() -> MergeConfig:
         choices=["source", "bf16", "nvfp4", "mxfp8", "fp8_block128"],
         default="source",
         help="Optional final promoted artifact precision (default: source). "
-             "Prefer source. Explicit conversion may not match the model or "
-             "downstream serving precision; validate it before promotion.",
+        "Prefer source. Explicit conversion may not match the model or "
+        "downstream serving precision; validate it before promotion.",
     )
     parser.add_argument(
         "--training-shape",
         default="",
         help="Validated LORA_TRAINER training shape id. Empty = let the backend "
-             "auto-select (may fail if no default shape exists for the model).",
+        "auto-select (may fail if no default shape exists for the model).",
     )
     parser.add_argument(
         "--region",
         default=None,
-        help="Optional explicit trainer region. Leave unset so the backend "
-             "selects placement.",
+        help="Optional explicit trainer region. Leave unset so the backend " "selects placement.",
     )
     parser.add_argument(
         "--snapshot-name",
@@ -181,12 +179,12 @@ def parse_args() -> MergeConfig:
         type=float,
         default=1800,
         help="A large-base promote can outlive the gateway HTTP timeout (502) "
-             "while it keeps running server-side, so we poll the model resource.",
+        "while it keeps running server-side, so we poll the model resource.",
     )
     args = parser.parse_args()
     return MergeConfig(
         base_model=args.base_model,
-        adapter_gcs=args.adapter_gcs,
+        adapter=args.adapter,
         lora_rank=args.lora_rank,
         training_shape=args.training_shape,
         output_model_id=args.output_model_id,
@@ -213,10 +211,7 @@ def _resolve_merged_checkpoint(
     while time.time() < deadline:
         rows = fw_client.list_checkpoints(job_id)
         last_rows = rows
-        matches = [
-            r for r in rows
-            if r.get("name", "").rsplit("/checkpoints/", 1)[-1].startswith(snapshot_name)
-        ]
+        matches = [r for r in rows if r.get("name", "").rsplit("/checkpoints/", 1)[-1].startswith(snapshot_name)]
         promotable = [r for r in matches if r.get("promotable")]
         if promotable:
             chosen = sorted(promotable, key=lambda r: r.get("createTime", ""))[-1]
@@ -224,7 +219,9 @@ def _resolve_merged_checkpoint(
             return chosen
         logger.info(
             "Checkpoint %r not promotable yet (saw %d rows, %d name matches)",
-            snapshot_name, len(rows), len(matches),
+            snapshot_name,
+            len(rows),
+            len(matches),
         )
         time.sleep(15)
     raise TimeoutError(
@@ -279,8 +276,7 @@ def _poll_model_until_ready(
         )
         time.sleep(20)
     raise TimeoutError(
-        f"Promoted model {output_model_id!r} not READY HF_BASE_MODEL within "
-        f"{timeout_s}s. Last: {last}"
+        f"Promoted model {output_model_id!r} not READY HF_BASE_MODEL within " f"{timeout_s}s. Last: {last}"
     )
 
 
@@ -293,7 +289,10 @@ def main() -> None:
     trainer_mgr = TrainerJobManager(api_key=api_key, base_url=base_url)
     logger.info(
         "Merge+promote: base=%s adapter=%s rank=%d precision=%s -> %s",
-        cfg.base_model, cfg.adapter_gcs, cfg.lora_rank, cfg.export_precision,
+        cfg.base_model,
+        cfg.adapter,
+        cfg.lora_rank,
+        cfg.export_precision,
         cfg.output_model_id,
     )
 
@@ -320,13 +319,14 @@ def main() -> None:
     )
 
     try:
+        # Provisioning is lazy: create the LoRA session first so the managed
+        # trainer job exists before we read service.trainer_job_id.
+        policy = service.create_lora_training_client(cfg.base_model, rank=cfg.lora_rank)
         job_id = service.trainer_job_id
         logger.info("Trainer ready: %s", job_id)
 
-        policy = service.create_lora_training_client(cfg.base_model, rank=cfg.lora_rank)
-
-        logger.info("Loading adapter into LoRA session: %s", cfg.adapter_gcs)
-        load_resp = policy.load_adapter(cfg.adapter_gcs).result(timeout=cfg.op_timeout_s)
+        logger.info("Loading adapter into LoRA session: %s", cfg.adapter)
+        load_resp = policy.load_adapter(cfg.adapter).result(timeout=cfg.op_timeout_s)
         logger.info("load_adapter result: %s", load_resp)
 
         logger.info("Saving merged-base checkpoint %r", cfg.snapshot_name)
@@ -337,7 +337,10 @@ def main() -> None:
         logger.info("Saved: path=%s snapshot_name=%s", save.path, save.snapshot_name)
 
         checkpoint = _resolve_merged_checkpoint(
-            fw_client, job_id, save.snapshot_name, cfg.checkpoint_poll_timeout_s,
+            fw_client,
+            job_id,
+            save.snapshot_name,
+            cfg.checkpoint_poll_timeout_s,
         )
 
         logger.info("Promoting %s -> %s", checkpoint["name"], cfg.output_model_id)
@@ -355,12 +358,17 @@ def main() -> None:
             )
 
         model = _poll_model_until_ready(
-            base_url, api_key, fw_client.account_id, cfg.output_model_id,
+            base_url,
+            api_key,
+            fw_client.account_id,
+            cfg.output_model_id,
             cfg.promote_poll_timeout_s,
         )
         logger.info(
             "Promoted merged base: %s state=%s kind=%s",
-            model.get("name"), model.get("state"), model.get("kind"),
+            model.get("name"),
+            model.get("state"),
+            model.get("kind"),
         )
         logger.info(
             "Final merged export ready: %s precision=%s",

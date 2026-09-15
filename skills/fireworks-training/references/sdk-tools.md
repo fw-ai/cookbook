@@ -48,12 +48,12 @@ errors = validate_output_model_id(output_model_id)
 
 ## `merge_lora_and_promote.py`
 
-Turn an existing HF PEFT/LoRA adapter into a deployable full `HF_BASE_MODEL`. Provisions a short-lived service-mode LoRA trainer from the adapter's **base** model, explicitly loads the adapter with `load_adapter(<adapter gcs uri>)`, saves a merged-base sampler checkpoint with `save_weights_for_sampler(checkpoint_type="merged_base")`, then promotes and waits for `READY`.
+Turn an existing HF PEFT/LoRA adapter into a deployable full `HF_BASE_MODEL`. Provisions a short-lived service-mode LoRA trainer from the adapter's **base** model, explicitly loads the adapter with `load_adapter(<PEFT model resource>)`, saves a merged-base sampler checkpoint with `save_weights_for_sampler(checkpoint_type="merged_base")`, then promotes and waits for `READY`.
 
 ```bash
 python training/examples/tools/merge_lora_and_promote.py \
     --base-model accounts/fireworks/models/qwen3-8b \
-    --adapter-gcs gs://my-bucket/adapters/my-lora \
+    --adapter-model accounts/<acct>/models/my-lora \
     --lora-rank 8 \
     --training-shape accounts/<acct>/trainingShapes/<shape>:<version> \
     --output-model-id my-merged-qwen3-8b
@@ -63,7 +63,7 @@ Key points:
 - **Do not** use `warmStartFrom` to merge a LoRA. RLOR `warmStartFrom` of a PEFT addon is not effective — the control plane downloads the adapter but the trainer session never loads it, so the save folds a zero-delta adapter and yields a base-identical checkpoint. The gateway rejects service-mode `warmStartFrom` of a LoRA addon. There is no shared base LoRA; every adapter is loaded explicitly.
 - `merged_base` is LoRA-only: it folds `W <- W + scaling*(B@A)` into the base, strips adapter metadata, and the result promotes as `INFERENCE_BASE` / `HF_BASE_MODEL`. Saving from a fresh LoRA session (without `load_adapter`) exports base-identical weights.
 - `--export-precision` is optional, controls only the final promoted artifact, and defaults to `source`. There is no input-precision flag: the trainer discovers source storage from model metadata. Choices are `source`, `bf16`, `nvfp4`, `mxfp8`, and `fp8_block128`. `source` merges in floating weights, then re-encodes the result to the source format; for a packed-INT4 base it regenerates `weight_packed` and `weight_scale` instead of copying stale source bytes. Prefer `source` whenever possible. Explicit conversion is an advanced, use-at-your-own-risk override because its tensor/config layout may not match the model or downstream serving precision; verify serving load and inference before promotion.
-- Resolve `--adapter-gcs` (the `gs://` dir with `adapter_config.json` + `adapter_model*.safetensors`) from a LoRA model resource via its `getDownloadEndpoint` API. See the script docstring.
+- Pass `--adapter-model` as the Fireworks PEFT model resource (`accounts/<acct>/models/<lora-id>`). `load_adapter` accepts that name directly. `--adapter-gcs` remains an alias for a `gs://` PEFT directory in advanced use; regular users should not need `getDownloadEndpoint`.
 
 Source: `training/examples/tools/merge_lora_and_promote.py`.
 
