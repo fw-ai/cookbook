@@ -151,6 +151,17 @@ parts remained `running` without an explicit timeout. In contrast, pending
 cryptanalysis samples had active CPU-bound search processes. Classify these
 separately rather than treating every long sample as an infrastructure failure.
 
+At approximately 04:55 UTC, the two remaining webserver tools returned through
+their configured timeout without manual intervention. OpenCode's stored tool
+records reported `exceeding timeout`: sample 5 had start/end timestamps
+`1789441194865` / `1789448093927`, and sample 6 had
+`1789441207952` / `1789448106944` (milliseconds since epoch, approximately
+6,899 seconds each). Both original OpenCode processes then executed additional
+tools. This verifies recovery from these two waits, not successful task
+verification or a general fix for background-process handling. Check final
+`result.json` and reward separately; do not equate tool recovery with a completed
+evaluation or optimizer-step publication.
+
 For quiet trials, inspect the actual pending tool and sandbox processes before
 blaming inference or E2B capacity. Record this as a harness/task interaction to
 investigate; do not silently kill the background server, shorten the agreed
