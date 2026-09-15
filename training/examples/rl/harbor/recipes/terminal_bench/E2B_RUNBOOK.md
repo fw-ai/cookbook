@@ -171,9 +171,10 @@ Do not infer failures from a counter name alone. Use these metrics together:
 | `tito/calls/upstream_retries` | Model-request retries inside TITO | A small nonzero count can be transient; sustained growth requires deployment/client-log inspection |
 
 Before restarting a client, record these counters and preserve its run directory.
-Never restart the trainer or rollout for a client-only failure. With DCP saved every
-step, resume from the latest server-confirmed checkpoint and keep the same W&B run
-ID so the next optimizer step remains monotonic.
+Never restart the trainer or rollout for a client-only failure. Resume only from
+the latest server-confirmed DCP checkpoint and keep the same W&B run ID so the
+step numbering remains monotonic. The 100-step run saves DCP every two steps;
+an optimizer-step metric alone does not prove that a resumable checkpoint exists.
 
 ## Launch sequence
 
