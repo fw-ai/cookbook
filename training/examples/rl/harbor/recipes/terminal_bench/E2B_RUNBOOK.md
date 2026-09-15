@@ -372,6 +372,24 @@ signal, task-code edit, or trainer/rollout/harness restart was applied here.
 
 ## Retry and progress counters
 
+### Verifier timeout versus producer retry (2026-09-15, step 4)
+
+Three `torch-tensor-parallelism` samples reached their existing 1,200-second
+verifier deadline at 11:48:55, 11:49:32, and 11:50:07 UTC. Their result files
+recorded `VerifierTimeoutError` and no reward. The materializer returned `None`:
+these attempts were preserved but not trained or assigned synthetic zero reward.
+After the last sibling resolved, the producer retried only missing indices
+3, 5, and 6, retaining the five scored siblings. All three replacement E2B
+sandboxes were independently observed running at 11:50 UTC.
+
+Here `producer/trajectory_drops_total` counts the three unscored attempts and
+`producer/incomplete_group_retries_total` counts the one group-refill attempt;
+neither establishes that the eventual training batch is missing trajectories.
+Verify the final admitted group separately. A successful timeout bounds a stuck
+verifier, not the entire sampling batch: fresh attempts can still exceed the
+30-minute target. Quiet pytest output and sleeping workers did not establish
+the exact blocked collective or an OOM; do not label that root cause proven.
+
 ### Harbor retries can precede producer accounting
 
 Inspect `client.log` and failed trial artifacts even when all producer retry/drop
