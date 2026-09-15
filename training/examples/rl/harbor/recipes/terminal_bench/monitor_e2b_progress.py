@@ -6,6 +6,7 @@ pending trials from health.jsonl and connects only to exact trial session IDs.
 Records activity ages and process states, never tool inputs, model text or
 credentials. By default it never signals processes. Opt-in kernel-stream grep
 recovery terminates only a revalidated stuck search child, never the agent.
+Opt-in kcore recovery terminates only a long-running grep reading /proc/kcore.
 Opt-in overdue-Node recovery enforces only an existing model-authored GNU
 timeout plus a 30-second termination grace; it never caps total sampling time.
 It never retries samples or changes timeouts.
@@ -25,6 +26,7 @@ import time
 from e2b import Sandbox, SandboxQuery
 
 from training.examples.rl.harbor.recipes.terminal_bench import node_timeout_guard
+from training.examples.rl.harbor.recipes.terminal_bench import kernel_core_guard
 
 from training.examples.rl.harbor.recipes.terminal_bench.kernel_stream_guard import (
     recovery_candidates,
@@ -177,10 +179,12 @@ def sampling_budget_warnings(current):
     return warnings
 
 
-def recover_trial_search(root, previous, current, *, node_deadlines=False):
+def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore=False):
     actions = []
     candidates = node_timeout_guard.recovery_candidates if node_deadlines else recovery_candidates
     command = node_timeout_guard.recovery_command if node_deadlines else recovery_command
+    if kcore:
+        candidates, command = kernel_core_guard.recovery_candidates, kernel_core_guard.recovery_command
     for expected in candidates(previous, current):
         if (root / 'trials' / current['trial'] / 'result.json').exists():
             break
@@ -257,6 +261,8 @@ def main():
                         help='Opt in to SIGTERM only for revalidated OpenCode grep children blocked on kernel streams')
     parser.add_argument('--recover-overdue-node', action='store_true',
                         help='Opt in to killing only Node children exceeding their model-authored GNU timeout plus 30s grace')
+    parser.add_argument('--recover-kcore-grep', action='store_true',
+                        help='Opt in to SIGTERM only for revalidated grep children reading /proc/kcore after 10 minutes')
     args = parser.parse_args()
     if not 30 <= args.interval_seconds <= 3600:
         parser.error('--interval-seconds must be between 30 and 3600')
@@ -290,6 +296,9 @@ def main():
                     if args.recover_overdue_node:
                         trial.setdefault('recovery_actions', []).extend(
                             recover_trial_search(root, previous.get(trial['trial']), trial, node_deadlines=True))
+                    if args.recover_kcore_grep:
+                        trial.setdefault('recovery_actions', []).extend(
+                            recover_trial_search(root, previous.get(trial['trial']), trial, kcore=True))
         except Exception as error:
             record['observation_error'] = type(error).__name__
         print(json.dumps(record), flush=True)

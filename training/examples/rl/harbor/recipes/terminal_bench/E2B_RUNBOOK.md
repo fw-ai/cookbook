@@ -561,6 +561,23 @@ of accepted groups and can produce a smaller final batch or fewer optimizer
 steps; the initial step estimate is not a completion guarantee. Do not silently
 change the dataset budget to compensate.
 
+### Recursive grep of kernel memory (September 15, batch 9)
+
+A password-recovery agent's bash pipeline ran `grep` over `/proc/kcore` for
+more than ten minutes, reading over 1.3TB with zero output while downstream
+grep/head waited. CPU activity here was not evidence of useful task progress.
+After two matching process/tool observations and fresh in-sandbox validation,
+SIGTERM was sent through a pidfd to only that grep child. The same OpenCode
+PID/start identity continued and completed subsequent tool work; the sample
+was not restarted or rescored.
+
+`monitor_e2b_progress.py --recover-kcore-grep` enables this narrow guard.
+It requires the unchanged grep→bash→OpenCode chain, a running bash tool older
+than ten minutes, and an exact live `/proc/kcore` descriptor. Ordinary files,
+other devices/processes, changed identities and finalized trials fail closed.
+It is disabled by default and is not a general slow-task termination policy.
+The existing blocked-kernel-stream guard remains separate and unchanged.
+
 ### Sandbox memory pressure versus an observation timeout
 
 In step 5, `mteb-leaderboard` cursor 77 / sample 2 had kernel-confirmed OOM
