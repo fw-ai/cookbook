@@ -320,6 +320,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--evaluation-repeats", type=int, default=1)
     parser.add_argument(
+        "--evaluation-exclude-task", action="append", default=[],
+        help="Exclude an originally held-out task without changing training rows; repeatable",
+    )
+    parser.add_argument(
         "--evaluation-holdout-limit",
         type=int,
         default=None,
@@ -552,6 +556,11 @@ def run() -> None:
         raise ValueError("--evaluation-concurrency must be positive")
     if args.evaluation_repeats < 1:
         raise ValueError("--evaluation-repeats must be positive")
+    evaluation_excluded = set(args.evaluation_exclude_task)
+    if len(evaluation_excluded) != len(args.evaluation_exclude_task):
+        raise ValueError("--evaluation-exclude-task contains duplicates")
+    if evaluation_excluded and args.evaluation_holdout_fraction is None:
+        raise ValueError("--evaluation-exclude-task requires --evaluation-holdout-fraction")
     if args.evaluation_holdout_limit is not None:
         if args.evaluation_holdout_limit < 1:
             raise ValueError("--evaluation-holdout-limit must be positive")
@@ -629,7 +638,17 @@ def run() -> None:
             seed=args.task_seed,
             previous_holdout=previous_holdout,
         )
-        post_exclusion_count = len(selected_rows) + len(holdout_rows)
+        holdout_names = {task_name_from_row(row) for row in holdout_rows}
+        if missing := evaluation_excluded - holdout_names:
+            raise ValueError(
+                "--evaluation-exclude-task must name originally held-out tasks: "
+                f"{sorted(missing)}"
+            )
+        eligible_holdout = [
+            row for row in holdout_rows
+            if task_name_from_row(row) not in evaluation_excluded
+        ]
+        post_exclusion_count = len(selected_rows) + len(eligible_holdout)
         if (
             args.expected_task_pool_size is not None
             and post_exclusion_count != args.expected_task_pool_size
@@ -640,12 +659,16 @@ def run() -> None:
                 f"{args.expected_task_pool_size}"
             )
         if holdout_rows:
-            evaluation_rows = holdout_rows
+            evaluation_rows = eligible_holdout
         if args.evaluation_holdout_limit is not None:
-            if args.evaluation_holdout_limit > len(holdout_rows):
+            if args.evaluation_holdout_limit > len(eligible_holdout):
                 raise ValueError("--evaluation-holdout-limit exceeds held-out tasks")
             candidates = sorted(holdout_rows, key=task_name_from_row)
             random.Random(args.task_seed).shuffle(candidates)
+            candidates = [
+                row for row in candidates
+                if task_name_from_row(row) not in evaluation_excluded
+            ]
             chosen = {
                 task_name_from_row(row)
                 for row in candidates[: args.evaluation_holdout_limit]
@@ -675,7 +698,11 @@ def run() -> None:
             split_path.write_text(
                 json.dumps(
                     {
-                        "excluded_tasks": sorted(args.exclude_task),
+                        "excluded_tasks": sorted(set(args.exclude_task) | evaluation_excluded),
+                        **(
+                            {"evaluation_excluded_tasks": sorted(evaluation_excluded)}
+                            if evaluation_excluded else {}
+                        ),
                         "holdout_fraction": args.evaluation_holdout_fraction,
                         "seed": args.task_seed,
                         **(
@@ -693,10 +720,10 @@ def run() -> None:
                             {
                                 "evaluation_holdout_limit": args.evaluation_holdout_limit,
                                 "reserved_holdout": sorted(
-                                    task_name_from_row(row) for row in holdout_rows
+                                    task_name_from_row(row) for row in eligible_holdout
                                 ),
                                 "unused_holdout": sorted(
-                                    {task_name_from_row(row) for row in holdout_rows}
+                                    {task_name_from_row(row) for row in eligible_holdout}
                                     - {task_name_from_row(row) for row in evaluation_rows}
                                 ),
                             }

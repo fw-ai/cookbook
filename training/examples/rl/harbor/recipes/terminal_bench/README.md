@@ -390,6 +390,16 @@ evaluation-only acceleration during continuation, keep that split and add:
 --max-concurrent-trials 128
 ```
 
+The user subsequently approved excluding `largest-eigenval` after its generated
+candidate hung the verifier. For that continuation, also set
+`--evaluation-exclude-task largest-eigenval --expected-task-pool-size 78`.
+This exclusion is applied only to the original held-out population; it cannot
+remove or reorder training rows. The result is 63 training tasks, 8 active
+evaluation tasks, and 7 unused holdout tasks. Keep the original ten
+`--exclude-task` arguments and the `0.2` split fraction so the original training
+sequence remains reproducible. The seeded evaluation ranking fills the removed
+task's place from the remaining holdout, without using measured rewards.
+
 This evaluates a seeded eight-task subset of the original sixteen held-out
 tasks. The other eight remain unused, so all 1,600 training rows, their order,
 and the 63-task training population are unchanged. The split records the active
@@ -410,15 +420,67 @@ Do not use `--evaluation-holdout-fraction 0.1` for an evaluation-only change:
 that would also expand training to 71 tasks and change the shuffled sequence.
 It is an option for a separately agreed training-population change.
 
-The measured additional exclusion candidates are `largest-eigenval`,
-`feal-linear-cryptanalysis`, `configure-git-webserver`, and `hf-model-inference`.
-The first three produced approximately two-hour evaluation tails; the fourth
+Other measured exclusion candidates are `feal-linear-cryptanalysis`,
+`configure-git-webserver`, and `hf-model-inference`.
+`largest-eigenval`, `feal-linear-cryptanalysis`, and `configure-git-webserver`
+produced approximately two-hour evaluation tails; `hf-model-inference`
 caused the 30-minute training-batch stall documented in
 [the runbook](E2B_RUNBOOK.md#sampling-wall-time-versus-model-request-time).
 The webserver and inference tasks were usually fast, so their exclusion would
 be a temporary throughput-oriented workaround, not a repair for tool handling.
 Excluding all four would leave 75 tasks; eight held out leaves 67 for training.
-These additional exclusions are pending confirmation, not active run settings.
+
+### Approved fresh 78-task run (2026-09-15)
+
+This is a **new experiment**, not a continuation of the 63-training-task run.
+Start from fresh base weights and optimizer state; creating a new SDK client
+alone does not reset a full-parameter trainer's resident weights. Preserve the
+previous run's W&B history and artifacts and use a new W&B ID.
+
+Use the 100-step command above with these explicit changes:
+
+```bash
+--trainer-job-id k3-tb78-fresh-20260915 \
+--deployment-id k3-tb78-mercor-20260915 \
+--deployment-shape accounts/fireworks/deploymentShapes/kimi-k3-rl-mercor-gb300-fp4-w16-p4-tp4-dp4-pair1500/versions/zv8g91nr \
+--exclude-task largest-eigenval \
+--expected-task-pool-size 78 \
+--evaluation-holdout-fraction 0.1 \
+--evaluation-concurrency 64 \
+--max-concurrent-trials 128 \
+--max-rows 1600 \
+--task-seed 20260808 \
+--cycle-selected-tasks \
+--shuffle \
+--opencode-shell-fix-binary <verified-opencode-linux-x64-binary>
+```
+
+Keep the original ten exclusions. Do **not** pass the continuation-only
+`--evaluation-holdout-source`, `--evaluation-holdout-limit`, or
+`--evaluation-exclude-task` flags. This produces 70 training tasks and eight
+held-out tasks: `adaptive-rejection-sampler`, `build-pov-ray`,
+`constraints-scheduling`, `gpt2-codegolf`, `qemu-startup`, `query-optimize`,
+`raman-fitting`, and `video-processing`. Never choose the split using measured
+rewards. The new evaluation aggregate is not directly comparable to the prior
+16-task aggregate.
+
+Use the native binary and SHA verification documented in
+[the patch instructions](../../opencode/patches/README.md). Run one real
+E2B/model/TITO canary before full fanout; a valid scored reward of zero is not a
+harness failure. Keep the certified tokenizer, renderer, optimizer, GSPO,
+131072 completion limit, 262144 context limit, and all other agreed settings.
+
+Target sampling completion within **30 minutes**, without turning this into a
+new timeout. Observe health every minute; investigate individual setup/agent/
+verifier waits by 15 minutes and any batch exceeding 30 minutes. Check remote
+process and tool progress before recovery: local artifact age alone is not a
+liveness signal. Investigate new retry/drop increments immediately, preserve
+successful samples, and retry only failed members. Record setup, model calls,
+tools, verification, training, synchronization, and evaluation separately,
+including overlaps. Never edit candidate solutions, fabricate rewards, or
+silently discard slow samples to meet the wall-time target.
+Only `largest-eigenval` has been approved; the other additional exclusions are
+pending confirmation, not active run settings.
 
 Do not edit the existing `task-split.json` or assume editing this command changes
 a live process: the dataloader and evaluation rows are captured at startup.

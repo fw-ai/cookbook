@@ -441,10 +441,11 @@ def test_ten_percent_holdout_preserves_unseen_subset_for_unchanged_pool() -> Non
 
 
 @pytest.mark.parametrize(
-    ("reuse_holdout", "evaluation_limit"), [(False, None), (True, None), (False, 8)]
+    ("reuse_holdout", "evaluation_limit", "exclude_evaluation"),
+    [(False, None, False), (True, None, False), (False, 8, False), (False, 8, True)],
 )
 def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
-    monkeypatch, tmp_path, reuse_holdout, evaluation_limit
+    monkeypatch, tmp_path, reuse_holdout, evaluation_limit, exclude_evaluation
 ) -> None:
     rows = [
         {"task_name": f"task-{index}", "harbor_task_config": {}}
@@ -475,7 +476,7 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
         "--task-seed",
         "20260808",
         "--expected-task-pool-size",
-        "75" if reuse_holdout else "79",
+        "75" if reuse_holdout else ("78" if exclude_evaluation else "79"),
         "--evaluation-holdout-fraction",
         "0.1" if reuse_holdout else "0.2",
         "--max-rows",
@@ -500,6 +501,9 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
     exclusion_count = 14 if reuse_holdout else 10
     for index in range(exclusion_count):
         argv.extend(("--exclude-task", f"task-{index}"))
+    excluded_eval_name = original_holdout[0]["task_name"]
+    if exclude_evaluation:
+        argv.extend(("--evaluation-exclude-task", excluded_eval_name))
     if evaluation_limit is not None:
         argv.extend(
             (
@@ -566,15 +570,18 @@ def test_kimi_convergence_followup_uses_exact_disjoint_split_and_config(
     split = json.loads((tmp_path / "run" / "task-split.json").read_text())
     assert len(split["train_pool"]) == len(train_names)
     assert len(split["holdout"]) == len(eval_names)
-    assert split["excluded_tasks"] == sorted(
-        f"task-{index}" for index in range(exclusion_count)
-    )
+    expected_excluded = {f"task-{index}" for index in range(exclusion_count)}
+    if exclude_evaluation:
+        expected_excluded.add(excluded_eval_name)
+        assert excluded_eval_name not in eval_names | train_names
+        assert split["evaluation_excluded_tasks"] == [excluded_eval_name]
+    assert split["excluded_tasks"] == sorted(expected_excluded)
     if reuse_holdout:
         assert split["holdout_source"] == str(source.resolve())
     if evaluation_limit is not None:
         assert split["evaluation_holdout_limit"] == 8
-        assert len(split["reserved_holdout"]) == 16
-        assert len(split["unused_holdout"]) == 8
+        assert len(split["reserved_holdout"]) == (15 if exclude_evaluation else 16)
+        assert len(split["unused_holdout"]) == (7 if exclude_evaluation else 8)
         assert set(split["unused_holdout"]).isdisjoint(eval_names | train_names)
         original_rows = list(captured["rows"])
         original_evaluation = captured["evaluation_fn"]
