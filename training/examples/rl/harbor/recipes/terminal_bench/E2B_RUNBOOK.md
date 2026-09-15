@@ -212,6 +212,26 @@ signal, task-code edit, or trainer/rollout/harness restart was applied here.
 
 ## Retry and progress counters
 
+### Trajectories versus gradient-normalization counts
+
+Do not interpret the trainer's `norm_factor` as a Harbor trajectory count. In
+the first batch of this run, all 128 trajectories were available, but 14 of 16
+prompt groups had uniform rewards and therefore zero group-relative advantage.
+Re-materializing the artifacts with the unchanged TITO converter produced 80
+and 33 trainable segments for the two mixed-reward groups, matching the logged
+`num_sequences` factor of 113. The image's custom-gradient counting path counts
+only segments with nonzero incoming gradients; unlike its built-in GSPO path,
+it does not opt into counting zero-gradient sequences. This is an existing
+algorithm/normalization distinction to disclose, not evidence of lost samples.
+Do not change that normalization mid-run or describe the custom path as proven
+equivalent to the built-in GSPO outer mean.
+
+The same optimizer log's `pre_norm=196.97578414` and `post_norm=1.74314853`
+refer to **before/after accumulation normalization**, not before/after clipping.
+Clipping uses the normalized norm, giving coefficient 1 at threshold 100 for
+this step. Check the image's actual logging and clipping code before comparing
+these values with W&B's `grad_norm_post_clip` metric.
+
 ### Initial evaluation and step-publication gates
 
 In `training/recipes/async_rl_loop.py`, initial evaluation starts concurrently
