@@ -78,7 +78,7 @@ Prefer the `source` default whenever possible. Explicit conversion is an advance
 Two ways to use it:
 
 - **During a LoRA training run** — to emit a full `HF_BASE_MODEL` instead of a `HF_PEFT_ADDON`, save the final promotable checkpoint directly with `client.save_weights_for_sampler("final-merged", checkpoint_type="merged_base")`. Source-format export is the default; pass `export_precision` only to request an output override. Do not rely on `TrainingCheckpoints.save(promotable=True)` (which always saves `base`). The adapter is already loaded in-session, so no separate merge step is needed.
-- **Merge an existing adapter** (no further training) — the standalone `training/examples/tools/merge_lora_and_promote.py` script drives it end to end (provision → `load_adapter` → `merged_base` save → promote).
+- **Merge an existing adapter** (no further training) — the standalone `training/examples/tools/merge_lora_and_promote.py` script drives it end to end (provision → `load_adapter` → `merged_base` save → promote). Pass `--adapter-model` as the Fireworks PEFT model resource.
 
 ---
 
@@ -90,12 +90,12 @@ To continue LoRA training from a previously-trained adapter — typically a prom
 cfg = Config(
     base_model="accounts/fireworks/models/qwen3-8b",
     lora_rank=16,
-    warm_start_from_adapter="gs://bucket/path/to/adapter-dir",
+    warm_start_from_adapter="accounts/<acct>/models/my-lora",
     ...
 )
 ```
 
-Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh.
+Semantics: weights-only load — LoRA A/B matrices initialize from the adapter; optimizer, LR schedule, and data cursor start fresh. Prefer a Fireworks PEFT model resource; a `gs://` PEFT directory also works.
 
 Priority inside `TrainingCheckpoints.resume` (highest first):
 

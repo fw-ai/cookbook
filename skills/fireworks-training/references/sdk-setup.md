@@ -19,7 +19,7 @@ The cookbook requires `fireworks-ai[training]>=1.2.11,<2`, available as a stable
 PyPI release. `--pre` is not required. The legacy `0.19.20` package does not
 contain `fireworks.training`; install the cookbook dependencies above to upgrade.
 Training requires Python 3.11+ (the setup examples use 3.12). The cookbook declares
-recipe-only dependencies such as `tinker-cookbook` directly in `pyproject.toml`.
+its runtime and recipe dependencies directly in `pyproject.toml`.
 
 ## Credentials
 

@@ -8,6 +8,7 @@ from training.examples.tools.create_trainer_then_deployment import (
 def test_waits_for_trainer_before_creating_deployment() -> None:
     events: list[str] = []
     profile = SimpleNamespace(
+        training_shape="accounts/fireworks/trainingShapes/shape",
         training_shape_version="accounts/fireworks/trainingShapes/shape/versions/v1",
         deployment_shape="accounts/fireworks/deploymentShapes/shape/versions/v1",
     )

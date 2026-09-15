@@ -15,20 +15,22 @@ A fine-tuned LoRA **cannot run on serverless** — it needs an **on-demand (dedi
 | Perf | Matches base | Slightly higher TTFT; lower max throughput |
 | Best for | Single model in prod | Experiments / many variants |
 
-**One adapter → live merge** (simplest). You **must** pass a deployment shape (or an accelerator type): a bare `firectl deployment create <model>` drops into an **interactive shape picker**, and choosing "Create without using shape" fails with `accelerator_type must be specified for non-embeddings engines`. The interactive prompt also breaks non-interactive / agent / CI use, so always pass the shape explicitly and add `--wait`:
+**One adapter → live merge** (simplest). Always pass a deployment shape: a bare `firectl deployment create <model>` drops into an **interactive shape picker**, and choosing "Create without using shape" fails with `accelerator_type must be specified for non-embeddings engines`. The interactive prompt also breaks non-interactive / agent / CI use, so pass the shape explicitly and add `--wait`. Find a deployable shape first:
 ```bash
-# preferred: an explicit compatible (BF16) deployment shape
+firectl deployment-shape-version match --model "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>"
+```
+```bash
 firectl deployment create "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>" \
   --deployment-id <DEPLOYMENT_ID> \
   --deployment-shape accounts/<ACCOUNT_ID>/deploymentShapes/<SHAPE> --wait
-# fallback (no shape): you MUST set the accelerator explicitly
-firectl deployment create "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>" \
-  --deployment-id <DEPLOYMENT_ID> \
-  --accelerator-type NVIDIA_H100_80GB --wait
 ```
 **Multi-LoRA:**
 ```bash
-firectl deployment create "accounts/fireworks/models/<BASE_MODEL_ID>" --enable-addons
+# BF16 shape (FP8/FP4 reject addons); match --enable-addons lists them
+firectl deployment-shape-version match --model accounts/fireworks/models/<BASE_MODEL_ID> --enable-addons
+firectl deployment create "accounts/fireworks/models/<BASE_MODEL_ID>" \
+  --deployment-shape accounts/<ACCOUNT_ID>/deploymentShapes/<SHAPE> \
+  --enable-addons --wait
 firectl load-lora <FINE_TUNED_MODEL_ID> --deployment <DEPLOYMENT_ID>
 # route per request: model="<model_name>#<deployment_name>"
 ```

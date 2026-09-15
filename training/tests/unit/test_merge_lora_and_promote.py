@@ -19,8 +19,8 @@ def test_parse_args_accepts_final_export_precisions(monkeypatch, precision):
             "merge_lora_and_promote.py",
             "--base-model",
             "accounts/a/models/base",
-            "--adapter-gcs",
-            "gs://bucket/adapter",
+            "--adapter-model",
+            "accounts/a/models/lora",
             "--lora-rank",
             "8",
             "--output-model-id",
@@ -41,6 +41,28 @@ def test_parse_args_defaults_final_export_to_source(monkeypatch):
             "merge_lora_and_promote.py",
             "--base-model",
             "accounts/a/models/base",
+            "--adapter-model",
+            "accounts/a/models/lora",
+            "--lora-rank",
+            "8",
+            "--output-model-id",
+            "merged",
+        ],
+    )
+
+    cfg = merge_tool.parse_args()
+    assert cfg.export_precision == "source"
+    assert cfg.adapter == "accounts/a/models/lora"
+
+
+def test_parse_args_accepts_adapter_gcs_alias(monkeypatch):
+    monkeypatch.setattr(
+        merge_tool.sys,
+        "argv",
+        [
+            "merge_lora_and_promote.py",
+            "--base-model",
+            "accounts/a/models/base",
             "--adapter-gcs",
             "gs://bucket/adapter",
             "--lora-rank",
@@ -50,7 +72,7 @@ def test_parse_args_defaults_final_export_to_source(monkeypatch):
         ],
     )
 
-    assert merge_tool.parse_args().export_precision == "source"
+    assert merge_tool.parse_args().adapter == "gs://bucket/adapter"
 
 
 @pytest.mark.parametrize("precision", ["source", "bf16", "nvfp4", "mxfp8", "fp8_block128"])

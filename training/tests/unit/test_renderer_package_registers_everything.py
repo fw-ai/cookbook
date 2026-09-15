@@ -39,7 +39,9 @@ def _modules_that_register() -> set[str]:
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            name = (
+                func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            )
             if name == "register_renderer":
                 registering.add(path.stem)
                 break
@@ -50,7 +52,9 @@ def _modules_imported_by_init() -> set[str]:
     tree = ast.parse((RENDERER_DIR / "__init__.py").read_text())
     imported = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("training.renderer"):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+            "training.renderer"
+        ):
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.Import):
             for alias in node.names:
@@ -75,12 +79,11 @@ def test_registering_modules_are_actually_found() -> None:
 
 
 def test_importing_the_package_registers_a_local_renderer() -> None:
-    """The end-to-end property callers depend on, for one renderer upstream does
-    not ship. Skipped where the real tinker-cookbook is absent."""
+    """The end-to-end property callers depend on, for one Fireworks renderer."""
 
     renderers = pytest.importorskip(
         "training.renderer",
-        reason="needs the real tinker-cookbook",
+        reason="needs the Fireworks training package dependencies",
     )
     import training.renderer  # noqa: F401  (registers every local renderer)
 

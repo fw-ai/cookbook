@@ -14,15 +14,19 @@ import shutil
 import sys
 import tempfile
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import yaml
 
+from training.examples.rl.harbor.tito._artifact_io import (
+    ArtifactProcessPool,
+    run_artifact_task,
+)
 from training.examples.rl.harbor.tito.sidecar import (
     SIDECAR_ARTIFACT_MANIFEST_PATH,
     SIDECAR_ARTIFACT_PATH,
@@ -32,6 +36,9 @@ from training.examples.rl.harbor.tito.sidecar import (
     SIDECAR_STDOUT_PATH,
 )
 from training.utils.rl.async_rl.errors import RecoverableRolloutError
+
+if TYPE_CHECKING:
+    from training.utils.rl.rollout import RolloutRun
 
 HARBOR_TASK_CONFIG_KEY = "harbor_task_config"
 DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS = 900
@@ -607,6 +614,7 @@ class HarborTrialOutcome:
     environment_type: str = "docker"
     trajectory_artifact: Any | None = None
     artifact_manifest: Mapping[str, Any] | None = None
+    rollout: RolloutRun | None = None
 
 
 def _load_sidecar_artifact(trial_path: Path) -> tuple[Any, dict[str, Any]]:
@@ -679,9 +687,13 @@ async def run_harbor_trial(
     terminal_failure_reward: float | None = None,
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     retry_include_exceptions: Any = DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
+    artifact_processor: ArtifactProcessPool | None = None,
+    materializer: Callable[[HarborTrialOutcome], RolloutRun | None] | None = None,
 ) -> HarborTrialOutcome:
     """Run one TITO-backed agent through Harbor's native Trial lifecycle."""
 
+    if artifact_processor is not None and materializer is None:
+        raise ValueError("process artifact handling requires a rollout materializer")
     harbor = _require_harbor()
     reward_key = str(reward_key).strip()
     if not reward_key:
@@ -792,105 +804,148 @@ async def run_harbor_trial(
             exception,
             harbor_environment=harbor_environment,
         )
-        try:
-            trajectory_artifact, artifact_manifest = _load_sidecar_artifact(trial_path)
-        except RecoverableRolloutError as exc:
-            if retryable_e2b_timeout:
-                raise RecoverableRolloutError(
-                    "Harbor E2B command stream did not open before its provider "
-                    "request timeout"
-                ) from exc
-            if retryable_sidecar_readiness:
-                raise RecoverableRolloutError(
-                    "Harbor E2B sidecar did not become ready within its bounded "
-                    "startup window"
-                ) from exc
-            if exception_type and exception_type not in retry_names:
-                raise RuntimeError(
-                    "Harbor produced no valid TITO artifact after a non-retryable "
-                    f"{exception_type}: {exc}"
-                ) from exc
-            raise
+        verifier_result = result.verifier_result
+        outcome = HarborTrialOutcome(
+            task_name=result.task_name,
+            trial_name=result.trial_name,
+            trial_path=trial_path,
+            reward=None,
+            rewards={},
+            exception_type=exception_type,
+            exception_message=exception.exception_message if exception else None,
+            environment_type=str(config.environment.type.value),
+        )
+        process = artifact_processor.run if artifact_processor else run_artifact_task
+        return await process(
+            _finish_harbor_trial,
+            outcome,
+            raw_rewards=verifier_result.rewards
+            if verifier_result is not None
+            else None,
+            reward_key=reward_key,
+            terminal_failure_reward=terminal_failure_reward,
+            has_exception=exception is not None,
+            retry_names=retry_names,
+            retryable_e2b_timeout=retryable_e2b_timeout,
+            retryable_sidecar_readiness=retryable_sidecar_readiness,
+            materializer=materializer,
+        )
+
+
+def _finish_harbor_trial(
+    outcome: HarborTrialOutcome,
+    *,
+    raw_rewards: Mapping[str, Any] | None,
+    reward_key: str,
+    terminal_failure_reward: float | None,
+    has_exception: bool,
+    retry_names: frozenset[str],
+    retryable_e2b_timeout: bool,
+    retryable_sidecar_readiness: bool,
+    materializer: Callable[[HarborTrialOutcome], RolloutRun | None] | None = None,
+) -> HarborTrialOutcome:
+    """Validate, select rewards and materialize while the artifact stays local."""
+    exception_type = outcome.exception_type
+    try:
+        trajectory_artifact, artifact_manifest = _load_sidecar_artifact(
+            outcome.trial_path
+        )
+    except RecoverableRolloutError as exc:
         if retryable_e2b_timeout:
             raise RecoverableRolloutError(
                 "Harbor E2B command stream did not open before its provider "
                 "request timeout"
-            )
-
-        verifier_result = result.verifier_result
-        raw_rewards = verifier_result.rewards if verifier_result is not None else None
-        context_budget_exhausted = (
-            trajectory_artifact.status == "failed"
-            and trajectory_artifact.terminal_reason == "context_budget_exhausted"
-        )
-        if context_budget_exhausted:
-            if exception is None:
-                raise RecoverableRolloutError(
-                    "context budget exhaustion has no failed agent process"
-                )
-            if exception_type != "NonZeroAgentExitCodeError":
-                logger.warning(
-                    "Harbor misclassified context-budget exhaustion as %s; "
-                    "using the explicit sidecar marker as the terminal authority",
-                    exception_type,
-                )
-            exception_type = "NonZeroAgentExitCodeError"
-        if not raw_rewards or reward_key not in raw_rewards:
-            if (
-                exception_type in _TERMINAL_EXCEPTION_TYPES
-                and terminal_failure_reward is not None
-            ):
-                logger.info(
-                    "Harbor trial %r ended with %s; recording configured terminal "
-                    "reward %s",
-                    result.trial_name,
-                    exception_type,
-                    terminal_failure_reward,
-                )
-                raw_rewards = {
-                    **dict(raw_rewards or {}),
-                    reward_key: float(terminal_failure_reward),
-                }
-            elif exception_type in retry_names:
-                raise RecoverableRolloutError(
-                    f"Harbor trial {result.trial_name!r} ended with retryable "
-                    f"{exception_type}: {exception.exception_message}"
-                )
-            elif exception_type is not None:
-                logger.warning(
-                    "Harbor trial %r ended without reward after non-retryable %s; "
-                    "retaining its exact trajectory artifact",
-                    result.trial_name,
-                    exception_type,
-                )
-                raw_rewards = {}
-            else:
-                raise RecoverableRolloutError(
-                    f"Harbor trial {result.trial_name!r} did not produce a usable "
-                    "reward (verifier produced no reward)"
-                )
-
-        try:
-            rewards = {str(key): float(value) for key, value in raw_rewards.items()}
-        except (TypeError, ValueError) as exc:
-            raise RecoverableRolloutError(
-                f"Harbor trial {result.trial_name!r} produced non-numeric rewards"
             ) from exc
-        reward = rewards.get(reward_key)
-        if reward is not None and not math.isfinite(reward):
+        if retryable_sidecar_readiness:
             raise RecoverableRolloutError(
-                f"Harbor trial {result.trial_name!r} produced a non-finite reward"
+                "Harbor E2B sidecar did not become ready within its bounded "
+                "startup window"
+            ) from exc
+        if exception_type and exception_type not in retry_names:
+            raise RuntimeError(
+                "Harbor produced no valid TITO artifact after a non-retryable "
+                f"{exception_type}: {exc}"
+            ) from exc
+        raise
+    if retryable_e2b_timeout:
+        raise RecoverableRolloutError(
+            "Harbor E2B command stream did not open before its provider request timeout"
+        )
+
+    context_budget_exhausted = (
+        trajectory_artifact.status == "failed"
+        and trajectory_artifact.terminal_reason == "context_budget_exhausted"
+    )
+    if context_budget_exhausted:
+        if not has_exception:
+            raise RecoverableRolloutError(
+                "context budget exhaustion has no failed agent process"
+            )
+        if exception_type != "NonZeroAgentExitCodeError":
+            logger.warning(
+                "Harbor misclassified context-budget exhaustion as %s; "
+                "using the explicit sidecar marker as the terminal authority",
+                exception_type,
+            )
+        exception_type = "NonZeroAgentExitCodeError"
+    if not raw_rewards or reward_key not in raw_rewards:
+        if (
+            exception_type in _TERMINAL_EXCEPTION_TYPES
+            and terminal_failure_reward is not None
+        ):
+            logger.info(
+                "Harbor trial %r ended with %s; recording configured terminal "
+                "reward %s",
+                outcome.trial_name,
+                exception_type,
+                terminal_failure_reward,
+            )
+            raw_rewards = {
+                **dict(raw_rewards or {}),
+                reward_key: float(terminal_failure_reward),
+            }
+        elif exception_type in retry_names:
+            raise RecoverableRolloutError(
+                f"Harbor trial {outcome.trial_name!r} ended with retryable "
+                f"{exception_type}: {outcome.exception_message}"
+            )
+        elif exception_type is not None:
+            logger.warning(
+                "Harbor trial %r ended without reward after non-retryable %s; "
+                "retaining its exact trajectory artifact",
+                outcome.trial_name,
+                exception_type,
+            )
+            raw_rewards = {}
+        else:
+            raise RecoverableRolloutError(
+                f"Harbor trial {outcome.trial_name!r} did not produce a usable "
+                "reward (verifier produced no reward)"
             )
 
-        return HarborTrialOutcome(
-            task_name=result.task_name,
-            trial_name=result.trial_name,
-            trial_path=trial_path,
-            reward=reward,
-            rewards=rewards,
-            exception_type=exception_type,
-            exception_message=exception.exception_message if exception else None,
-            environment_type=str(config.environment.type.value),
-            trajectory_artifact=trajectory_artifact,
-            artifact_manifest=artifact_manifest,
+    try:
+        rewards = {str(key): float(value) for key, value in raw_rewards.items()}
+    except (TypeError, ValueError) as exc:
+        raise RecoverableRolloutError(
+            f"Harbor trial {outcome.trial_name!r} produced non-numeric rewards"
+        ) from exc
+    reward = rewards.get(reward_key)
+    if reward is not None and not math.isfinite(reward):
+        raise RecoverableRolloutError(
+            f"Harbor trial {outcome.trial_name!r} produced a non-finite reward"
         )
+
+    outcome = replace(
+        outcome,
+        reward=reward,
+        rewards=rewards,
+        exception_type=exception_type,
+        trajectory_artifact=trajectory_artifact,
+        artifact_manifest=artifact_manifest,
+    )
+    if materializer is not None:
+        rollout = materializer(outcome)
+        # Returning only the materialized contract releases the large artifact in
+        # this worker before ProcessPoolExecutor serializes the result.
+        return replace(outcome, trajectory_artifact=None, rollout=rollout)
+    return outcome

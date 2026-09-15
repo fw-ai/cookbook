@@ -55,7 +55,7 @@ from training.utils import (
     read_api_extra_headers_env,
     validate_config,
     load_jsonl_dataset,
-    build_datum_from_token_mask,
+    build_training_datum_from_token_mask,
 )
 from training.utils.rl import PromptGroup
 from training.train_loop import TrainStepFns, run_batched_training_loop
@@ -244,11 +244,10 @@ def evaluation_row_to_igpo_training_data(
 
     spans = compute_model_output_spans(token_turn_traces, model_request_traces)
     token_mask = build_ui_token_mask(spans, len(full_tokens))
-    rendered = build_datum_from_token_mask(
+    datum = build_training_datum_from_token_mask(
         full_tokens, token_mask, include_loss_mask=True
     )
-    datum = rendered.datum
-    model_input_len = len(rendered.token_ids) - 1
+    model_input_len = datum.model_input.length
 
     inf_logprobs = [0.0] * model_input_len
     for trace in token_turn_traces:

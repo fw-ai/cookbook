@@ -8,8 +8,10 @@ import json
 import logging
 import math
 from collections.abc import Mapping
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
+from training.examples.rl.harbor.tito._artifact_io import ArtifactProcessPool
 from training.examples.rl.harbor.tito.sidecar import (
     build_launch_spec,
     build_sidecar_bundle,
@@ -27,6 +29,7 @@ from training.examples.rl.harbor.tito.rollout import (
 from training.examples.rl.harbor.tito.trial import (
     DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
     DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
+    HarborTrialOutcome,
     load_harbor_trial_config,
     run_harbor_trial,
     task_config_from_row,
@@ -88,6 +91,40 @@ def _pi_abandoned_turn_ids(event_stream: str) -> set[str]:
             abandoned.add(last_length_response_id[len(_TITO_RESPONSE_ID_PREFIX) :])
             last_length_response_id = None
     return abandoned
+
+
+def _materialize_pi_trajectory(
+    outcome: HarborTrialOutcome,
+    *,
+    max_context_tokens: int,
+    debug_enabled: bool,
+) -> RolloutRun | None:
+    """Reconcile Pi visibility and materialize inside the artifact process."""
+    lifecycle_path = outcome.trial_path / "agent" / "pi.txt"
+    if not lifecycle_path.is_file():
+        raise RecoverableRolloutError(
+            f"Pi trial produced no lifecycle stream: {lifecycle_path}"
+        )
+    try:
+        abandoned_turn_ids = _pi_abandoned_turn_ids(
+            lifecycle_path.read_text(encoding="utf-8", errors="replace")
+        )
+    except ValueError as exc:
+        raise RecoverableRolloutError(
+            f"Pi lifecycle stream could not be reconciled: {exc}"
+        ) from exc
+    rollout = materialize_harbor_trajectory(
+        outcome,
+        max_context_tokens=max_context_tokens,
+        debug_enabled=debug_enabled,
+        harness_abandoned_turn_ids=abandoned_turn_ids,
+    )
+    if rollout is not None:
+        rollout.metadata.update(
+            pi_abandoned_turn_count=len(abandoned_turn_ids),
+            harness_tool_timeout_count=tool_timeout_count(outcome.trial_path),
+        )
+    return rollout
 
 
 class _PiRolloutRunner:
@@ -159,6 +196,7 @@ class _PiRolloutRunner:
         self._trial_semaphore = asyncio.Semaphore(max_concurrent_trials)
         self._sidecar_bundle = build_sidecar_bundle(setup)
         self._active_rollouts = ActiveRolloutTasks()
+        self._artifact_processor = ArtifactProcessPool()
 
     async def __call__(
         self,
@@ -264,26 +302,14 @@ class _PiRolloutRunner:
                     tool_timeout_seconds=self._tool_timeout_seconds,
                     terminal_failure_reward=self._terminal_failure_reward,
                     retry_include_exceptions=self._retry_include_exceptions,
+                    artifact_processor=self._artifact_processor,
+                    materializer=partial(
+                        _materialize_pi_trajectory,
+                        max_context_tokens=self._max_context_tokens,
+                        debug_enabled=self._tito_debug_enabled,
+                    ),
                 )
-            lifecycle_path = outcome.trial_path / "agent" / "pi.txt"
-            if not lifecycle_path.is_file():
-                raise RecoverableRolloutError(
-                    f"Pi trial produced no lifecycle stream: {lifecycle_path}"
-                )
-            try:
-                abandoned_turn_ids = _pi_abandoned_turn_ids(
-                    lifecycle_path.read_text(encoding="utf-8", errors="replace")
-                )
-            except ValueError as exc:
-                raise RecoverableRolloutError(
-                    f"Pi lifecycle stream could not be reconciled: {exc}"
-                ) from exc
-            rollout = materialize_harbor_trajectory(
-                outcome,
-                max_context_tokens=self._max_context_tokens,
-                debug_enabled=self._tito_debug_enabled,
-                harness_abandoned_turn_ids=abandoned_turn_ids,
-            )
+            rollout = outcome.rollout
             if rollout is None:
                 logger.warning(
                     "Harbor/Pi retained an untrained rewardless trajectory for %s",
@@ -297,10 +323,6 @@ class _PiRolloutRunner:
                     "harbor_environment_type": outcome.environment_type,
                     "pi_revision": self._pi_revision,
                     "pi_version": PINNED_PI_VERSION,
-                    "pi_abandoned_turn_count": len(abandoned_turn_ids),
-                    "harness_tool_timeout_count": tool_timeout_count(
-                        outcome.trial_path
-                    ),
                     "harness_tool_timeout_seconds": self._tool_timeout_seconds,
                     "trial_name": outcome.trial_name,
                     "harbor_rewards": outcome.rewards,
@@ -310,7 +332,10 @@ class _PiRolloutRunner:
             return rollout
 
     async def aclose(self) -> None:
-        await self._active_rollouts.cancel_and_wait()
+        try:
+            await self._active_rollouts.cancel_and_wait()
+        finally:
+            await self._artifact_processor.aclose()
 
 
 def make_rollout_fn(setup: RolloutSetup) -> RolloutFn:

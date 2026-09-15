@@ -8,23 +8,26 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "fireworks-ai[training]>=1.2.11,<2",
-    "tinker-cookbook==0.4.3",
-    "tqdm",
-    "torch",
-    "datasets",
-    "tiktoken",
-    "numpy",
+    # Preserve the runtime floors previously supplied by tinker-cookbook.
+    "aiohttp>=3.9.0",
+    "pydantic>=2.0.0",
+    "tinker>=0.22.3",
+    "tqdm>=4.60.0",
+    "torch>=2.0",
+    "datasets>=2.14.0",
+    "tiktoken>=0.12.0",
+    "numpy>=1.24.0",
     "transformers==5.5.4",
     "python-dotenv",
     "wandb",
     "orjson",
     "hydra-core>=1.3,<2",
+    "pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
 eval = [
     "eval-protocol>=0.3.32",
-    "pillow",
 ]
 dev = [
     "fireworks-training-cookbook[eval]",
@@ -33,9 +36,72 @@ dev = [
     "pytest-timeout",
     "math-verify",
 ]
-[tool.setuptools.packages.find]
-where = [".."]
-include = ["training*"]
+
+[tool.setuptools]
+# This pyproject lives inside the import package so users can install from
+# ``cookbook/training``. Keep package paths inside the project root: discovering
+# from ``..`` creates unsafe parent paths in the sdist and an empty rebuilt
+# wheel. The artifact test guards this explicit list against missing modules.
+package-dir = { training = "." }
+packages = [
+    "training",
+    "training._vendor",
+    "training._vendor.tinker_cookbook_0_4_3",
+    "training._vendor.tinker_cookbook_0_4_3.renderers",
+    "training._vendor.tinker_cookbook_0_4_3.supervised",
+    "training.case-studies.agentic_rl_text2sql",
+    "training.case-studies.common",
+    "training.case-studies.dpo_style",
+    "training.case-studies.embedding_support_search",
+    "training.case-studies.reasoning_rl.grpo_math_evaluator",
+    "training.examples",
+    "training.examples.distillation.gsm8k_privileged",
+    "training.examples.distillation.routed_mopd",
+    "training.examples.distillation.serverless_k3_privileged",
+    "training.examples.dpo",
+    "training.examples.embedding",
+    "training.examples.multihop_qa",
+    "training.examples.orpo",
+    "training.examples.orpo.ifeval",
+    "training.examples.rl",
+    "training.examples.rl.deepmath",
+    "training.examples.rl.eval_protocol_chat",
+    "training.examples.rl.eval_protocol_chat.remote_server",
+    "training.examples.rl.frozen_lake",
+    "training.examples.rl.harbor",
+    "training.examples.rl.harbor.mini_swe",
+    "training.examples.rl.harbor.opencode",
+    "training.examples.rl.harbor.pi",
+    "training.examples.rl.harbor.recipes",
+    "training.examples.rl.harbor.recipes.dabstep",
+    "training.examples.rl.harbor.recipes.deep_swe",
+    "training.examples.rl.harbor.recipes.terminal_bench",
+    "training.examples.rl.harbor.tito",
+    "training.examples.rl.single_turn_token_in",
+    "training.examples.rl.visual_toolbench",
+    "training.examples.serverless_dpo",
+    "training.examples.serverless_rl",
+    "training.examples.sft",
+    "training.examples.tools",
+    "training.provision",
+    "training.provision.tests",
+    "training.recipes",
+    "training.recipes.experiment",
+    "training.renderer",
+    "training.renderer.verifier",
+    "training.renderer.verifier.utils",
+    "training.tests",
+    "training.tests.e2e",
+    "training.tests.smoke_test",
+    "training.tests.unit",
+    "training.tito",
+    "training.utils",
+    "training.utils.distillation",
+    "training.utils.rl",
+    "training.utils.rl.agent",
+    "training.utils.rl.async_rl",
+    "training.utils.rl.rollout",
+]
 
 [tool.setuptools.package-data]
 "training.provision" = ["*.yaml"]

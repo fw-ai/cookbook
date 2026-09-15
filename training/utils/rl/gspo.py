@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import torch
 import tinker
 
-from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
+from training.utils.rl.common import _normalize_prompt_lens, masked_mean, run_loss_loop
 from training.utils.rl.tis import TISConfig
 
 
@@ -30,8 +30,8 @@ class GSPOConfig:
     clip epsilons directly. Set them equal for symmetric clipping.
     """
 
-    clip_ratio_low: float = 0.2
-    clip_ratio_high: float = 0.2
+    clip_ratio_low: float = 3e-4
+    clip_ratio_high: float = 4e-4
     seq_ratio_log_cap: float = 10.0
 
 
@@ -65,19 +65,31 @@ def make_gspo_loss_fn(
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
 
     def policy_fn(ctx):
+        # The geometric-mean ratio is a sequence statistic shared by every
+        # token, so masked positions must be excluded from the average: their
+        # old-policy logprobs are padded zeros and would corrupt the ratio for
+        # the whole response (matches the TIS filtering in run_loss_loop).
         log_ratio = ctx.resp_pi - ctx.resp_old_policy
-        seq_log_ratio = log_ratio.mean()
+        seq_log_ratio = masked_mean(log_ratio, ctx.resp_mask)
         log_seq_ratio = ctx.resp_pi - ctx.resp_pi.detach() + seq_log_ratio.detach()
         log_seq_ratio = torch.clamp(log_seq_ratio, max=gspo_config.seq_ratio_log_cap)
         seq_ratio = torch.exp(log_seq_ratio)
 
         clipped_seq_ratio = torch.clamp(seq_ratio, min=1.0 - clip_low, max=1.0 + clip_high)
-        clip_frac = (clipped_seq_ratio != seq_ratio).float().mean().item()
-        ratio_mean = seq_ratio.detach().mean().item()
+        clip_frac = masked_mean((clipped_seq_ratio != seq_ratio).float(), ctx.resp_mask).item()
+        ratio_mean = masked_mean(seq_ratio.detach(), ctx.resp_mask).item()
 
         surr1 = -seq_ratio * ctx.adv
         surr2 = -clipped_seq_ratio * ctx.adv
-        per_token_loss = torch.maximum(surr1, surr2) * ctx.tis_weight * ctx.resp_mask
+        # Token-mean within each response. Sequence means remain additive so
+        # optim_step(num_sequences) can normalize across accumulated batches.
+        response_length = (ctx.resp_mask > 0.5).sum()
+        per_token_loss = (
+            torch.maximum(surr1, surr2)
+            * ctx.tis_weight
+            * ctx.resp_mask
+            / response_length
+        )
         return per_token_loss, {"clip_frac": clip_frac, "ratio_mean": ratio_mean}
 
     def loss_fn(

@@ -21,6 +21,35 @@ def _normalize_prompt_lens(prompt_len: Union[int, List[int]], n: int) -> List[in
     return prompt_lens
 
 
+def _masked_sum(
+    values: torch.Tensor,  # (resp_len,)
+    mask: torch.Tensor,  # (resp_len,)
+) -> torch.Tensor:  # (1,)
+    """Compute the sum of `values` over elements selected by `mask`."""
+    # If NaNs exist out of mask, replace NaNs in values with a value that
+    # won't affect the sum (e.g., 0 for masked regions)
+    valid_values = torch.where(mask > 0.5, values, 0.0)
+    return (valid_values * mask).sum()
+
+
+def masked_mean(
+    values: torch.Tensor,  # (resp_len,)
+    mask: torch.Tensor,  # (resp_len,)
+) -> torch.Tensor:  # (1,)
+    """
+    Compute the mean of `values` over elements selected by `mask`.
+
+    Args:
+        values (Tensor): Input tensor.
+        mask (Tensor): Boolean or numeric mask of the same shape as `values`.
+
+    Returns:
+        Tensor: Masked mean, reduced over all elements.
+    """
+    s = _masked_sum(values, mask)
+    return s / (mask.sum() + 1e-8)
+
+
 def _get_loss_mask(
     datum: tinker.Datum,
     response_start: int,

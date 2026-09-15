@@ -38,6 +38,9 @@ class MultimodalRendererContractTests:
     cases = []
     # Each entry supplies (image dimensions, expected visual token count).
     image_fixtures = []
+    # True when the checkpoint's SFT generation mask includes the same
+    # assistant suffix that build_generation_prompt appends before sampling.
+    sft_trains_generation_suffix = False
 
     def load_image_renderer(self, case):
         """Return (tokenizer, renderer, native request placeholder from config)."""
@@ -135,7 +138,21 @@ class MultimodalRendererContractTests:
         expanded = _expanded_tokens(full_input)
         weights = [float(weight) for weight in full_weights.tolist()]
         observation, completion = _split_by_weights(expanded, weights)
-        assert observation == _expanded_tokens(prompt)
+        prompt_tokens = _expanded_tokens(prompt)
+        assert expanded[: prompt.length] == prompt_tokens
+        if self.sft_trains_generation_suffix:
+            # SFT trains that header, while rollout sampling starts after the
+            # identical suffix already present in the generation prompt.
+            trainable_suffix_length = prompt.length - len(observation)
+            assert trainable_suffix_length > 0
+            assert (
+                completion[:trainable_suffix_length]
+                == prompt_tokens[-trainable_suffix_length:]
+            )
+            rollout_completion = completion[trainable_suffix_length:]
+        else:
+            assert observation == prompt_tokens
+            rollout_completion = completion
         assert completion
 
         # Both hosted SFT and token-in RL must preserve images and use the
@@ -146,17 +163,19 @@ class MultimodalRendererContractTests:
             renderer=renderer,
             train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
         ).datum
-        policy = build_multimodal_policy_datum(prompt, completion)
+        policy = build_multimodal_policy_datum(prompt, rollout_completion)
         for datum in (sft, policy):
             assert list(datum.loss_fn_inputs["target_tokens"].data) == expanded[1:]
-            assert list(datum.loss_fn_inputs["weights"].data) == weights[1:]
             assert datum.model_input.length == len(expanded) - 1
             assert [
                 chunk
                 for chunk in datum.model_input.chunks
                 if isinstance(chunk, tinker.types.ImageChunk)
             ] == image_chunks
-            assert weights[: prompt.length] == [0.0] * prompt.length
+        assert list(sft.loss_fn_inputs["weights"].data) == weights[1:]
+        policy_weights = [0.0] * prompt.length + [1.0] * len(rollout_completion)
+        assert list(policy.loss_fn_inputs["weights"].data) == policy_weights[1:]
+        assert weights[: len(observation)] == [0.0] * len(observation)
 
         # Hosted SFT defaults to training every assistant turn, including the
         # historical tool call. Image positions must remain masked in that mode.

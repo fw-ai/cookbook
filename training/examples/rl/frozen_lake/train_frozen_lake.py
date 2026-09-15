@@ -54,7 +54,7 @@ from training.utils import (
     log_metrics_json,
     build_service_client,
     read_api_extra_headers_env,
-    build_datum_from_token_mask,
+    build_training_datum_from_token_mask,
     validate_config,
 )
 from training.utils.rl import PromptGroup
@@ -298,13 +298,12 @@ def evaluation_row_to_training_data(
     model_request_traces = extra.get("model_request_traces") or []
     spans = compute_model_output_spans(token_turn_traces, model_request_traces)
     token_mask = build_ui_token_mask(spans, len(full_tokens))
-    rendered = build_datum_from_token_mask(
+    datum = build_training_datum_from_token_mask(
         full_tokens,
         token_mask,
         include_loss_mask=True,
     )
-    datum = rendered.datum
-    model_input_len = len(rendered.token_ids) - 1
+    model_input_len = datum.model_input.length
 
     # Reconstruct rollout_logprobs aligned to the full sequence.
     # Pad prompt positions with 0.0, then fill in per-turn completion logprobs.

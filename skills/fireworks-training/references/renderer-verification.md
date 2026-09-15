@@ -163,7 +163,7 @@ you to confirm:
 
 1. **RENDERER**
    - `name`, `status` — `registered ✓` when the name is in the live
-     `tinker_cookbook` renderer registry; otherwise `NOT REGISTERED`
+     Fireworks `training.renderer` registry; otherwise `NOT REGISTERED`
      and the runner aborts.
    - `tokenizer` — the HF tokenizer that will be loaded.
    - `dispatch` — `deployment | explicit` and the resolved model

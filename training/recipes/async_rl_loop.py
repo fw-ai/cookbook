@@ -326,14 +326,17 @@ def _run_server_side_grpo(
         config.tis,
     )
     eps_high = config.eps_clip if config.eps_clip_high is None else config.eps_clip_high
-    result = policy.forward_backward(
-        server_data,
-        "ppo",
-        loss_fn_config={
-            "clip_low_threshold": 1.0 - config.eps_clip,
-            "clip_high_threshold": 1.0 + eps_high,
-        },
-    )
+    # Match the SDK call boundary: submission through decoded result retrieval.
+    # Recipe preparation and local diagnostics do not measure trainer throughput.
+    with elapsed_timer("fwd_bwd"):
+        result = policy.forward_backward(
+            server_data,
+            "ppo",
+            loss_fn_config={
+                "clip_low_threshold": 1.0 - config.eps_clip,
+                "clip_high_threshold": 1.0 + eps_high,
+            },
+        )
     policy_logprobs = [
         output["logprobs"].to_torch() for output in result.loss_fn_outputs
     ]
@@ -727,22 +730,25 @@ def main(
                     config=cfg,
                 )
 
-            return policy.forward_backward_custom(
-                data,
-                make_grpo_loss_fn(
-                    advantages=adv,
-                    ref_logprobs=ref_lp,
-                    prompt_len=prompt_lens,
-                    inf_logprobs=inf_lp,
-                    old_policy_logprobs=old_policy_logprobs,
-                    kl_beta=cfg.kl_beta,
-                    eps_clip=cfg.eps_clip,
-                    eps_clip_high=cfg.eps_clip_high,
-                    tis_config=cfg.tis,
-                    raw_inf_logprobs=raw_inf_lp,
-                ),
-                precomputed_forward=precomputed_forward,
+            loss_fn = make_grpo_loss_fn(
+                advantages=adv,
+                ref_logprobs=ref_lp,
+                prompt_len=prompt_lens,
+                inf_logprobs=inf_lp,
+                old_policy_logprobs=old_policy_logprobs,
+                kl_beta=cfg.kl_beta,
+                eps_clip=cfg.eps_clip,
+                eps_clip_high=cfg.eps_clip_high,
+                tis_config=cfg.tis,
+                raw_inf_logprobs=raw_inf_lp,
             )
+            # The custom-loss SDK call also owns its differentiable callback.
+            with elapsed_timer("fwd_bwd"):
+                return policy.forward_backward_custom(
+                    data,
+                    loss_fn,
+                    precomputed_forward=precomputed_forward,
+                )
 
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
             """Run the visible GRPO forward/backward phase for one chunk."""
@@ -776,21 +782,20 @@ def main(
                     )
                 old_policy_logprobs = inf_lp
 
-            with elapsed_timer("fwd_bwd"):
-                fwd_bwd_result = fwd_bwd_batch(
-                    data,
-                    adv,
-                    ref_lp,
-                    prompt_lens,
-                    inf_lp,
-                    raw_inf_lp,
-                    old_policy_logprobs,
-                    precomputed_forward,
+            fwd_bwd_result = fwd_bwd_batch(
+                data,
+                adv,
+                ref_lp,
+                prompt_lens,
+                inf_lp,
+                raw_inf_lp,
+                old_policy_logprobs,
+                precomputed_forward,
+            )
+            if not cfg.server_side_grpo:
+                fwd_bwd_result.metrics["custom_forward_reused"] = float(
+                    precomputed_forward is not None
                 )
-                if not cfg.server_side_grpo:
-                    fwd_bwd_result.metrics["custom_forward_reused"] = float(
-                        precomputed_forward is not None
-                    )
             return {
                 "prompt_groups": prompt_groups,
                 "fwd_bwd_result": fwd_bwd_result,
