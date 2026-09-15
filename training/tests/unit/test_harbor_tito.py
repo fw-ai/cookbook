@@ -1226,6 +1226,19 @@ def test_opencode_shell_fix_rejects_missing_or_wrong_binary(tmp_path) -> None:
         validate_shell_fix_binary(binary)
 
 
+def test_opencode_cli_rejects_bad_binary_before_provisioning(tmp_path, monkeypatch) -> None:
+    binary = tmp_path / "bad-build"
+    binary.write_bytes(b"unverified")
+    monkeypatch.setattr(sys, "argv", [
+        "train", "--base-model", "accounts/fireworks/models/kimi-k3",
+        "--tokenizer-model", "moonshotai/Kimi-K3",
+        "--renderer-name", "kimi_k3_preserve_thinking",
+        "--opencode-shell-fix-binary", str(binary),
+    ])
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        opencode_train.parse_args()
+
+
 @pytest.mark.parametrize("patched", [False, True])
 @pytest.mark.parametrize("remote_valid", [False, True])
 def test_opencode_shell_fix_install_is_explicit_and_verified(

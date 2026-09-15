@@ -109,9 +109,10 @@ The opt-in installation path was separately tested in E2B sandbox
 `iza3cwadf8pdys1h572sw`: the actual adapter uploaded/verified the binary, and all
 five CLI probes passed against its installed path. The sidecar startup was
 stubbed for this installation-only test; it was not another RL/model test.
-The cookbook Harbor suite passes 109 tests, including opt-in/default behavior,
+The cookbook Harbor suite passes 110 tests, including opt-in/default behavior,
 missing/wrong binary rejection, remote verification failure, and protection of
-TITO-owned configuration fields.
+TITO-owned configuration fields. CLI checksum validation runs before template
+builds or provisioning, so a missing or wrong binary fails without sampling.
 
 ## Activation boundary
 

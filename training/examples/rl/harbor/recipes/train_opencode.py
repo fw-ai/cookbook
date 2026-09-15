@@ -30,6 +30,7 @@ from training.examples.rl.harbor.opencode.constants import (
     DEFAULT_OPENCODE_VERSION,
     OPENCODE_HARBOR_IMPORT_PATH,
 )
+from training.examples.rl.harbor.opencode.config import validate_shell_fix_binary
 from training.examples.rl.harbor.tito.e2b_templates import (
     isolate_e2b_task_rows,
     parse_e2b_task_memory_overrides,
@@ -403,7 +404,13 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("WANDB_PROJECT", "harbor-rl-opencode"),
     )
     parser.add_argument("--wandb-run-name", default=None)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.opencode_shell_fix_binary:
+        # Fail before template builds, provisioning, or rollout fan-out.
+        args.opencode_shell_fix_binary = str(
+            validate_shell_fix_binary(args.opencode_shell_fix_binary)
+        )
+    return args
 
 
 def _rollout_extras(
