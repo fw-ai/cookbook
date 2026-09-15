@@ -855,6 +855,23 @@ of a throughput improvement. It does not rewrite historical sample results or
 change an already-running client. Verify TITO call outcomes before attributing
 a failure to provider capacity, credentials, or HTTP429.
 
+## Distinguish observation failures from normal sandbox teardown
+
+An E2B inspection can time out while Harbor finishes the trial and deletes its
+ephemeral sandbox. Recheck the local finalized result after a list/connect/read
+failure before treating the sandbox as missing. The progress observer reports
+`already_finalized` when that race occurs; it does not infer a successful agent
+exit or a passing reward. The separate finalized-result audit still reports
+recorded exceptions. Without a result, retain the observation error or zero
+sandbox count and investigate; never restart the sample solely on this signal.
+
+Observed example: batch11 `db-wal-recovery` cursor172/member6 finalized at
+2026-09-15 22:57:31 UTC with reward1 and no exception during an observer timeout.
+The subsequent sandbox-not-found response was normal teardown, not lost work.
+Mocked tests cover list, connect and command failures, both with and without a
+newly finalized result, plus sandbox-list disappearance. This is an observer
+diagnostic fix, not a change to sample deadlines, rewards or the RL algorithm.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.

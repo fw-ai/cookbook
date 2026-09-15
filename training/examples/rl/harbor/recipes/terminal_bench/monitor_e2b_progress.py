@@ -144,19 +144,28 @@ def inspect_trial(root, trial):
     name = trial['trial']
     result = {'trial': name, 'phase': trial['phase'],
               'trial_age_s': trial.get('trial_age_s')}
-    if (root / 'trials' / name / 'result.json').exists():
+    result_path = root / 'trials' / name / 'result.json'
+    if result_path.exists():
         return {**result, 'observation': 'already_finalized'}
     try:
         session = name + '__env'
         candidates = Sandbox.list(query=SandboxQuery(metadata={'session_id': session}), limit=2).next_items()
         candidates = [s for s in candidates if s.metadata.get('session_id') == session]
         if len(candidates) != 1:
+            if result_path.exists():
+                return {**result, 'observation': 'already_finalized'}
             return {**result, 'matching_sandboxes': len(candidates)}
         sandbox = Sandbox.connect(candidates[0].sandbox_id)
         result['sandbox_id'] = candidates[0].sandbox_id
         command = sandbox.commands.run(REMOTE, timeout=15)
         result['remote'] = json.loads(command.stdout)
     except Exception as error:
+        # Normal finalization deletes the ephemeral sandbox. Recheck after
+        # remote I/O so that this race is not reported as a live failure.
+        # A finalized result is not necessarily a successful/scored result;
+        # scored_exception_inventory audits its contents separately.
+        if result_path.exists():
+            return {**result, 'observation': 'already_finalized'}
         result['observation_error'] = type(error).__name__
     return result
 
