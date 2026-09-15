@@ -160,6 +160,21 @@ survival, before use in a subsequent run.
 
 ## Retry and progress counters
 
+### Initial evaluation and step-publication gates
+
+In `training/recipes/async_rl_loop.py`, initial evaluation starts concurrently
+with training sampling. The loop consumes the training chunks and calls
+`optimizer_step` **before** joining that evaluation. It then waits for evaluation
+to finish **before** exporting/hot-loading the updated weights and publishing the
+step metrics. This keeps evaluation on the previous rollout snapshot.
+
+Consequently, a pending training sample can delay the optimizer, while a pending
+evaluation sample can delay weight synchronization and the published step even
+after the optimizer has completed. Check trainer operation logs as well as W&B;
+absence of a new published step alone does not prove that no optimizer update
+occurred. Neither an optimizer operation nor a published step proves a DCP save.
+Do not bypass the evaluation join or hot-load new weights into its active trials.
+
 Do not infer failures from a counter name alone. Use these metrics together:
 
 | Metric | Meaning | Failure signal |
