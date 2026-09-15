@@ -232,17 +232,22 @@ def main():
     parser.add_argument('--pid', type=int, required=True)
     parser.add_argument('--run-dir', type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument('--once', action='store_true')
+    parser.add_argument('--interval-seconds', type=int, default=180,
+                        help='Observation cadence, 30–3600s; use 60s for short command-deadline recovery')
     parser.add_argument('--recover-kernel-stream-grep', action='store_true',
                         help='Opt in to SIGTERM only for revalidated OpenCode grep children blocked on kernel streams')
     parser.add_argument('--recover-overdue-node', action='store_true',
                         help='Opt in to killing only Node children exceeding their model-authored GNU timeout plus 30s grace')
     args = parser.parse_args()
+    if not 30 <= args.interval_seconds <= 3600:
+        parser.error('--interval-seconds must be between 30 and 3600')
     root = args.run_dir.resolve()
     original = identity(args.pid)
     if original is None:
         raise SystemExit('Harness PID is not live; no remote inspection started')
     previous = {}
     while identity(args.pid) == original:
+        cycle_started = time.monotonic()
         record = {'time': datetime.now(timezone.utc).isoformat()}
         record['scored_exception_audit'] = scored_exception_inventory(root / 'trials')
         try:
@@ -271,7 +276,7 @@ def main():
         previous = {t['trial']: t for t in record.get('trials', [])}
         if args.once:
             return
-        time.sleep(180)
+        time.sleep(max(1, args.interval_seconds - (time.monotonic() - cycle_started)))
 
 
 def scored_exception_inventory(trials_dir):

@@ -5,6 +5,7 @@ import io
 import json
 import os
 import sqlite3
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -14,6 +15,22 @@ pytest.importorskip("e2b", reason="The read-only E2B recorder requires the optio
 recorder = importlib.import_module(
     "training.examples.rl.harbor.recipes.terminal_bench.monitor_e2b_progress"
 )
+
+
+@pytest.mark.parametrize('interval', [0, 29, 3601])
+def test_rejects_unsafe_poll_interval(monkeypatch, interval):
+    monkeypatch.setattr(sys, 'argv', ['monitor', '--pid', '1', '--interval-seconds', str(interval)])
+    with pytest.raises(SystemExit) as error:
+        recorder.main()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize('interval', [30, 60, 180, 3600])
+def test_interval_preserves_live_client_gate(monkeypatch, interval):
+    monkeypatch.setattr(sys, 'argv', ['monitor', '--pid', '1', '--interval-seconds', str(interval)])
+    monkeypatch.setattr(recorder, 'identity', lambda _: None)
+    with pytest.raises(SystemExit, match='Harness PID is not live'):
+        recorder.main()
 
 
 def test_pid_identity_and_remote_probe_syntax():

@@ -305,6 +305,12 @@ processes and commands still within their deadline fail closed. Actions are
 recorded separately from scores. Do not apply a generic 30-minute kill limit
 to valid tasks or interpret recovery as verifier success.
 
+The observer defaults to 180 seconds between cycle starts. For short explicit
+command deadlines, `--interval-seconds 60` reduces recovery-detection delay;
+it does not change any agent, verifier, tool or sampling timeout. A cycle that
+takes longer than the interval finishes before another starts (no overlapping
+polls). The original RL-client process identity is still checked each cycle.
+
 ### Agent completion does not bound verifier duration
 
 The same run's other pending eigenvalue trial,
