@@ -398,6 +398,19 @@ the latest server-confirmed DCP checkpoint and keep the same W&B run ID so the
 step numbering remains monotonic. The 100-step run saves DCP every two steps;
 an optimizer-step metric alone does not prove that a resumable checkpoint exists.
 
+## Read-only live progress recorder
+
+When the run has the minute-level `health.jsonl` recorder, run
+`python training/examples/rl/harbor/recipes/terminal_bench/monitor_e2b_progress.py --run-dir RUN_DIR --pid HARNESS_PID` in a persistent server session, with
+`E2B_API_KEY` supplied through the environment. Add `--once` for a preflight.
+Redirect stdout to a run-local JSONL artifact. Every three minutes it inspects
+only pending trials older than 15 minutes, matched by their exact E2B session
+metadata. It records tool activity ages, exit status and process/tracer states;
+it never logs tool inputs or credentials, signals processes, changes timeouts,
+or retries samples. Observation errors do not mean the sample failed. Review
+these records alongside CPU progress and verifier logs before any intervention.
+The recorder exits when the original harness PID disappears or is reused.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.
