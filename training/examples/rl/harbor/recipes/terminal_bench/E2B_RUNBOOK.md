@@ -964,6 +964,22 @@ failure is pending approval; no command was signaled or rewritten as part of
 the audit. Keep the existing deadline until authorized otherwise, and record
 any subsequent intervention and actual verifier result separately.
 
+## Preserve scored exceptions when reusing retained trials
+
+A real verifier reward does not imply clean agent execution. Harbor can
+produce a valid score after `AgentTimeoutError` or `NonZeroAgentExitCodeError`.
+The fresh-trial path preserves that exception, but retained-result reuse
+previously replaced it with `None`, hiding the original failure in rollout
+metadata. Reuse now copies the stored exception type/message and reports
+`harbor_exception_type` consistently with a fresh result.
+
+This is a diagnostic correction, not a reward or retry-policy change. Tests
+cover clean reuse, a scored timeout with reward0, and a scored nonzero exit
+with reward1; none launches a fresh trial or alters the verifier reward.
+The currently running Sep15 client predates this fix and has not been
+restarted or hot-reloaded. Inspect its result.json exception_info directly
+when auditing scored failures.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.

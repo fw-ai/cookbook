@@ -1658,8 +1658,16 @@ def test_incomplete_retained_trial_does_not_block_fresh_attempt(
     assert fresh_attempts == 1
 
 
+@pytest.mark.parametrize(
+    ("exception_info", "reward"),
+    [
+        (None, 0.75),
+        ({"exception_type": "AgentTimeoutError", "exception_message": "agent deadline"}, 0.0),
+        ({"exception_type": "NonZeroAgentExitCodeError", "exception_message": "agent exit"}, 1.0),
+    ],
+)
 def test_valid_retained_trial_is_reused_without_fresh_attempt(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, exception_info, reward
 ) -> None:
     setup = _setup(tmp_path)
     setup.extras["rollout_retries"] = 0
@@ -1677,7 +1685,8 @@ def test_valid_retained_trial_is_reused_without_fresh_attempt(
             {
                 "task_name": "example",
                 "trial_name": retained.name,
-                "verifier_result": {"rewards": {"reward": 0.75}},
+                "verifier_result": {"rewards": {"reward": reward}},
+                "exception_info": exception_info,
             }
         ),
         encoding="utf-8",
@@ -1699,7 +1708,10 @@ def test_valid_retained_trial_is_reused_without_fresh_attempt(
 
     assert result is not None
     assert result.run_id == "run"
-    assert result.segments[0].reward == pytest.approx(0.75)
+    assert result.segments[0].reward == pytest.approx(reward)
+    assert result.metadata["harbor_exception_type"] == (
+        exception_info["exception_type"] if exception_info else None
+    )
 
 
 def test_opencode_temporary_trial_survives_through_adapter_metrics(

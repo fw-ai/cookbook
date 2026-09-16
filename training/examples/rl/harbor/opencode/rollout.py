@@ -267,6 +267,9 @@ class _HarborRolloutRunner:
                     )
                     if raw_rewards.get("reward") is None:
                         continue
+                    exception = document.get("exception_info") or {}
+                    if not isinstance(exception, dict):
+                        raise ValueError("Retained Harbor exception_info must be an object")
                     trajectory_artifact, artifact_manifest = _load_sidecar_artifact(
                         candidate
                     )
@@ -279,8 +282,8 @@ class _HarborRolloutRunner:
                             str(key): float(value)
                             for key, value in raw_rewards.items()
                         },
-                        exception_type=None,
-                        exception_message=None,
+                        exception_type=exception.get("exception_type"),
+                        exception_message=exception.get("exception_message"),
                         environment_type=self._harbor_environment,
                         trajectory_artifact=trajectory_artifact,
                         artifact_manifest=artifact_manifest,
@@ -314,7 +317,7 @@ class _HarborRolloutRunner:
                             "task_name": outcome.task_name,
                             "trial_name": outcome.trial_name,
                             "harbor_rewards": outcome.rewards,
-                            "harbor_exception_type": None,
+                            "harbor_exception_type": outcome.exception_type,
                             "harness_tool_timeout_count": tool_timeout_count(candidate),
                             "harness_tool_timeout_seconds": self._tool_timeout_seconds,
                             "tito_harness": "opencode",
