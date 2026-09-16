@@ -47,6 +47,14 @@ try:
     out['guest_memory'] = memory
 except (OSError, ValueError):
     pass
+try:
+    for line in pathlib.Path('/proc/vmstat').read_text().splitlines():
+        key, value = line.split()
+        if key == 'oom_kill':
+            out['guest_oom_kills'] = int(value)
+            break
+except (OSError, ValueError):
+    pass
 if p.exists():
     with sqlite3.connect('file:' + str(p) + '?mode=ro', uri=True) as c:
         rows = c.execute('select time_updated,data from part order by time_updated desc limit 3').fetchall()
@@ -216,6 +224,19 @@ def memory_warnings(current):
     return []
 
 
+def guest_oom_warnings(current):
+    """Guest-lifetime counter: not a trainer OOM or proof this trial caused it.
+
+    Available memory recovers after an OOM kill, so current pressure alone
+    misses repeated candidate failures. Inspect kernel logs for attribution.
+    """
+    count = current.get('remote', {}).get('guest_oom_kills')
+    if type(count) is int and count > 0:
+        return [{'code': 'sandbox_oom_kill_observed', 'guest_lifetime_kills': count,
+                 'action': 'Inspect kernel victim records and verifier coverage; recovered free memory does not imply no OOM. Do not rewrite rewards or terminate/retry automatically'}]
+    return []
+
+
 def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore=False):
     actions = []
     candidates = node_timeout_guard.recovery_candidates if node_deadlines else recovery_candidates
@@ -341,6 +362,7 @@ def main():
                                          + timeout_warnings(trial)
                                          + search_wait_warnings(trial)
                                          + memory_warnings(trial)
+                                         + guest_oom_warnings(trial)
                                          + sampling_budget_warnings(trial))
                     if args.recover_kernel_stream_grep:
                         trial['recovery_actions'] = recover_trial_search(root, previous.get(trial['trial']), trial)

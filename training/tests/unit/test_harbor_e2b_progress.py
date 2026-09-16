@@ -28,6 +28,26 @@ def test_memory_warning_allows_missing_remote_observation():
     compile(monitor.REMOTE.removeprefix("python3 - <<'REMOTE'\n").removesuffix('\nREMOTE'), '<remote-probe>', 'exec')
 
 
+@pytest.mark.parametrize('count,warn', [(4, True), (1, True), (0, False),
+                                     (-1, False), (None, False), ('4', False),
+                                     (True, False)])
+def test_guest_oom_history_survives_recovered_memory(count, warn):
+    current = {'remote': {'guest_oom_kills': count,
+                          'guest_memory': {'MemTotal': 1000, 'MemAvailable': 900}}}
+    original = deepcopy(current)
+    assert monitor.memory_warnings(current) == []
+    warnings = monitor.guest_oom_warnings(current)
+    assert bool(warnings) is warn
+    assert current == original
+    if warn:
+        assert warnings[0]['guest_lifetime_kills'] == count
+        assert 'Do not rewrite rewards' in warnings[0]['action']
+
+
+def test_guest_oom_history_allows_missing_observation():
+    assert monitor.guest_oom_warnings({}) == []
+
+
 @pytest.mark.parametrize("phase", ["list", "connect", "command"])
 @pytest.mark.parametrize("finalized", [False, True])
 def test_inspection_failure_rechecks_finalization(tmp_path, monkeypatch, phase, finalized):
