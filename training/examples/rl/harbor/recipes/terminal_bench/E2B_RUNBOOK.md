@@ -960,9 +960,20 @@ The fault is in generated candidate code, not a demonstrated E2B defect.
 Do not repair the candidate algorithm, fabricate a tool response, or retry a
 valid zero-reward sample to improve its score. For this case, a request to
 interrupt only the search and let the existing agent receive the actual command
-failure is pending approval; no command was signaled or rewritten as part of
-the audit. Keep the existing deadline until authorized otherwise, and record
-any subsequent intervention and actual verifier result separately.
+failure was submitted for approval; no response arrived and no command was
+manually signaled or rewritten. The existing two-hour agent deadline fired
+at2026-09-16 02:50:53UTC. The real verifier then failed `test_attack` and
+returned reward0; finalization completed at02:50:59UTC. The compact artifact
+validated with4segments/11turns and `abandoned/agent_cancelled` status, and
+the ephemeral sandbox was removed normally. The128-sample batch finished
+with one scored AgentTimeoutError, no additional drops/retries, and sampling
+wall time123m10s. All other127 samples took less than30minutes.
+
+This was natural deadline handling, not a successful manual recovery. The
+old command-interruption request is obsolete; never signal its former PID.
+Future deadline or agent-policy changes must be explicit and preserve the
+real reward and exception record. Do not report this batch as meeting the
+thirty-minute target or retry the valid zero merely to improve its score.
 
 ## Preserve scored exceptions when reusing retained trials
 
