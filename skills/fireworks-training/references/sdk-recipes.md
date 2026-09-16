@@ -76,5 +76,6 @@ RL details stay in this skill. Open only the relevant reference when working wit
 - [`rl-concurrency.md`](rl-concurrency.md) — sync batch concurrency vs async sample-level admission
 - [`rl-sampling-timeouts.md`](rl-sampling-timeouts.md) — diagnose `DeploymentSamplerTimeoutError` from request shape and serving metrics
 - [`rl-async.md`](rl-async.md) — `async_rl_loop.py` overlap recipe: sample-level cap, off-policy budget, pipeline chunks
+- [`client-phase-tracing.md`](client-phase-tracing.md) — export client-loop and custom harness spans to Perfetto, with an optional OpenTelemetry mirror
 
 SFT / DPO / ORPO users do not need these.

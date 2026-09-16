@@ -194,6 +194,7 @@ user runs the dry-run and returns its output before final approval.
 | RL losses | `../fireworks-training/references/rl-loss-paths.md`, `../fireworks-training/references/rl-custom-loss.md`, `../fireworks-training/references/rl-gradient-accumulation.md` |
 | Async and agentic RL | `../fireworks-training/references/rl-async.md`, `../fireworks-training/references/rl-agentic.md`, `../fireworks-training/references/rl-concurrency.md`, `../fireworks-training/references/rl-dynamic-filter.md` |
 | Async RL metrics | `../fireworks-training/references/async-rl-metrics.md` |
+| Client phase tracing and Perfetto export | `../fireworks-training/references/client-phase-tracing.md` |
 | Hotload and sampling | `../fireworks-training/references/rl-hotload.md`, `../fireworks-training/references/rl-sampling-timeouts.md` |
 | Renderer work | `../fireworks-training/references/renderer.md` |
 | Renderer verification | `../fireworks-training/references/renderer-verification.md` |

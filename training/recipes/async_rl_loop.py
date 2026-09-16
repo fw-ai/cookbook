@@ -295,7 +295,11 @@ def _save_checkpoint(
     promotable: bool = False,
 ) -> None:
     logger.info("[%s] dcp_save...", name)
-    with wall_timer() as span:
+    with wall_timer(
+        "checkpoint_save",
+        category="checkpoint",
+        attributes={"name": name},
+    ) as span:
         ckpt.save(
             name,
             resumable=resumable,
@@ -625,7 +629,11 @@ def main(
         async def run_evaluation(step: int) -> None:
             if evaluation_fn is None:
                 return
-            with wall_timer() as span:
+            with wall_timer(
+                "evaluation",
+                category="evaluation",
+                attributes={"step": step},
+            ) as span:
                 try:
                     metrics = await evaluation_fn(step, evaluation_rollout_fn)
                 except Exception:
@@ -884,7 +892,11 @@ def main(
 
                         evaluation_step = evaluations.active_step
                         if evaluation_step is not None:
-                            with wall_timer() as span:
+                            with wall_timer(
+                                "evaluation_join",
+                                category="evaluation",
+                                attributes={"step": evaluation_step},
+                            ) as span:
                                 await evaluations.join()
                             log_metrics(
                                 {

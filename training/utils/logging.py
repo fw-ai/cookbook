@@ -12,6 +12,7 @@ from typing import Any
 
 from training.utils.config import WandBConfig
 from training.utils import fileio
+from training.utils.phase_tracing import flush_phase_trace
 from training.utils.runner import WandbConfigError
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,14 @@ def log_metrics(
 
 
 def wandb_finish(*, metrics_file: str | None = None) -> None:
-    """Optionally attach the canonical ledger, then finish W&B if active."""
+    """Flush tracing, optionally attach local artifacts, then finish W&B."""
+    try:
+        flush_phase_trace()
+    except Exception:
+        logger.warning(
+            "Failed to flush client phase trace",
+            exc_info=True,
+        )
     try:
         import wandb
 

@@ -23,13 +23,15 @@ The ``timer`` function doubles as a decorator::
 
 from __future__ import annotations
 
-import time
 import logging
+import time
 from copy import deepcopy
-from typing import Any
+from typing import Any, Iterator
 from functools import wraps
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+
+from training.utils.phase_tracing import phase_span
 
 logger = logging.getLogger(__name__)
 
@@ -73,15 +75,16 @@ class Timer:
         return dict(self.timers)
 
     @contextmanager
-    def context(self, name: str):
-        self.start(name)
-        try:
-            yield
-        finally:
-            self.end(name)
+    def context(self, name: str) -> Iterator[None]:
+        with phase_span(name):
+            self.start(name)
+            try:
+                yield
+            finally:
+                self.end(name)
 
 
-def timer(name_or_func):
+def timer(name_or_func: Any) -> Any:
     """Context manager or decorator -- writes to the global ``Timer`` singleton.
 
     As a context manager::
@@ -114,29 +117,41 @@ class TimerSpan:
 
 
 @contextmanager
-def wall_timer():
-    """Measure elapsed wall time without recording a step metric."""
+def wall_timer(
+    name: str | None = None,
+    *,
+    category: str = "client",
+    attributes: dict[str, Any] | None = None,
+) -> Iterator[TimerSpan]:
+    """Measure wall time and optionally record a named client phase span."""
     span = TimerSpan()
     started = time.perf_counter()
-    try:
-        yield span
-    finally:
-        span.elapsed = time.perf_counter() - started
+    trace = (
+        phase_span(name, category=category, attributes=attributes)
+        if name is not None
+        else nullcontext(None)
+    )
+    with trace:
+        try:
+            yield span
+        finally:
+            span.elapsed = time.perf_counter() - started
 
 
 @contextmanager
-def elapsed_timer(name: str):
+def elapsed_timer(name: str) -> Iterator[TimerSpan]:
     span = TimerSpan()
     t = Timer()
-    t.start(name)
-    try:
-        yield span
-    finally:
-        span.elapsed = t.end(name) or 0.0
+    with phase_span(name):
+        t.start(name)
+        try:
+            yield span
+        finally:
+            span.elapsed = t.end(name) or 0.0
 
 
 @contextmanager
-def inverse_timer(name: str):
+def inverse_timer(name: str) -> Iterator[None]:
     """Measure the gap *between* operations (e.g. wait time).
 
     Ends the named timer on entry, re-starts it on exit.  Pair with
@@ -159,16 +174,17 @@ def flush_timing() -> dict[str, Any]:
 
 
 @contextmanager
-def timed(key: str, metrics: dict[str, Any]):
+def timed(key: str, metrics: dict[str, Any]) -> Iterator[None]:
     """Backward-compatible wrapper: writes to *metrics* **and** the singleton.
 
     Existing DPO/SFT code that still passes a dict keeps working, while the
     singleton also records the duration so ``flush_timing()`` picks it up.
     """
     t = Timer()
-    t.start(key)
-    try:
-        yield
-    finally:
-        t.end(key)
+    with phase_span(key):
+        t.start(key)
+        try:
+            yield
+        finally:
+            t.end(key)
     metrics[f"perf/{key}_time"] = t.timers.get(key, 0.0)

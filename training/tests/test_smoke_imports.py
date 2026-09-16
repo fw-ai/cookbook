@@ -43,6 +43,7 @@ UTIL_MODULES = [
     "training.utils.losses",
     "training.utils.logging",
     "training.utils.checkpoints",
+    "training.utils.phase_tracing",
     "training.utils.timer",
     "training.utils.validation",
     "training.utils.rl",
@@ -89,6 +90,7 @@ EXAMPLE_MODULES = [
     "training.examples.rl.single_turn_token_in.rollout",
     "training.examples.rl.harbor.opencode.rollout",
     "training.examples.rl.harbor.pi.rollout",
+    "training.examples.tools.client_phase_trace_demo",
     "training.examples.tools.promote_checkpoint",
 ]
 

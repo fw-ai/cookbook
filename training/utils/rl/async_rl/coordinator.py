@@ -12,6 +12,7 @@ from typing import Any, TypeVar
 
 from training.train_loop import DynamicFilterFn
 from training.utils.data import compute_advantages
+from training.utils.phase_tracing import bind_phase_trace_context, phase_span
 from training.utils.rl.async_rl.batch import OptimizerBatch
 from training.utils.rl.async_rl.errors import (
     CircuitBreakerConfig,
@@ -164,10 +165,20 @@ class AsyncRLCoordinator:
         if executor is None:
             raise RuntimeError("trainer executor is unavailable")
         self._active_operation = operation
-        call = functools.partial(function, *args, **kwargs)
-        worker_future = executor.submit(call)
         try:
-            result = await self._await_joined(worker_future)
+            attributes = (
+                {"batch_id": optimizer_batch.batch_id}
+                if optimizer_batch is not None
+                else None
+            )
+            with phase_span(
+                operation,
+                category="async",
+                attributes=attributes,
+            ):
+                call = functools.partial(function, *args, **kwargs)
+                worker_future = executor.submit(bind_phase_trace_context(call))
+                result = await self._await_joined(worker_future)
             if optimizer_batch is not None and operation == "optimizer":
                 optimizer_batch._train_finished_at = time.monotonic()
             return result

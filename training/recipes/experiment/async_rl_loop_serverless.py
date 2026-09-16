@@ -801,7 +801,11 @@ def main(
         async def run_evaluation(step: int) -> None:
             if evaluation_fn is None:
                 return
-            with wall_timer() as span:
+            with wall_timer(
+                "evaluation",
+                category="evaluation",
+                attributes={"step": step},
+            ) as span:
                 try:
                     metrics = await evaluation_fn(step, evaluation_rollout_fn)
                 except Exception:
@@ -882,7 +886,11 @@ def main(
                             )
                             evaluation_step = evaluations.active_step
                             if evaluation_step is not None:
-                                with wall_timer() as evaluation_wait_span:
+                                with wall_timer(
+                                    "evaluation_join",
+                                    category="evaluation",
+                                    attributes={"step": evaluation_step},
+                                ) as evaluation_wait_span:
                                     await evaluations.join()
                                 log_metrics(
                                     {
@@ -894,7 +902,10 @@ def main(
                                     step=evaluation_step,
                                     metrics_file=cfg.metrics_file,
                                 )
-                            with wall_timer() as update_span:
+                            with wall_timer(
+                                "weight_update",
+                                attributes={"step": batch.batch_id},
+                            ) as update_span:
                                 (
                                     next_client,
                                     latest_snapshot,
@@ -933,7 +944,11 @@ def main(
                                 and completed_steps > 0
                                 and completed_steps % interval == 0
                             ):
-                                with wall_timer() as checkpoint_span:
+                                with wall_timer(
+                                    "checkpoint",
+                                    category="checkpoint",
+                                    attributes={"step": batch.batch_id},
+                                ) as checkpoint_span:
                                     checkpoint = await coordinator.run_blocking(
                                         "checkpoint",
                                         save_training_state,

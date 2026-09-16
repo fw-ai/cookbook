@@ -77,7 +77,7 @@ except ImportError:
     pass
 
 from training.examples.serverless_rl.countdown_rewards import composite_reward
-from training.utils import resolve_router_replay_enabled
+from training.utils import phase_span, resolve_router_replay_enabled
 from training.utils.rl.router_replay import (
     build_r3_routing_matrices,
     validate_r3_routing_matrices,
@@ -716,7 +716,12 @@ class ServerlessCountdownRL:
         """Save adapter weights plus optimizer state for exact resume."""
         name = f"{self.cfg.training_checkpoint_name}-{completed_step:04d}"
         started = time.time()
-        self.training_client.save_state(name).result(timeout=self.cfg.dcp_timeout_s)
+        with phase_span(
+            "checkpoint_save",
+            category="checkpoint",
+            attributes={"completed_step": completed_step, "resumable": True},
+        ):
+            self.training_client.save_state(name).result(timeout=self.cfg.dcp_timeout_s)
         self.saved_training_checkpoints.append(name)
         print(f"saved training checkpoint {name!r} ({time.time() - started:.1f}s)", flush=True)
         return name
@@ -781,6 +786,21 @@ class ServerlessCountdownRL:
 
     def _evaluate(self, completed_steps: int) -> dict[str, Any]:
         """Sample the fixed held-out carve-out without any optimizer mutation."""
+        with phase_span(
+            "evaluation",
+            category="evaluation",
+            attributes={
+                "completed_steps": completed_steps,
+                "prompt_groups": len(self.eval_rows),
+                "group_size": self.cfg.eval_group_size,
+            },
+        ) as span:
+            result = self._evaluate_impl(completed_steps)
+            if span is not None:
+                span.set_attribute("samples", result["eval/samples"])
+            return result
+
+    def _evaluate_impl(self, completed_steps: int) -> dict[str, Any]:
         cfg = self.cfg
         started = time.time()
         save_name = f"cd-eval-{completed_steps:04d}"
@@ -891,13 +911,34 @@ class ServerlessCountdownRL:
         return rec
 
     def _step(self, step: int) -> dict[str, Any]:
+        with phase_span(
+            "training_step",
+            category="train",
+            attributes={
+                "step": step,
+                "prompt_groups": self.cfg.prompt_groups_per_step,
+                "group_size": self.cfg.group_size,
+            },
+        ) as span:
+            result = self._step_impl(step)
+            if span is not None:
+                span.set_attribute("trained", result["train/trained"])
+                span.set_attribute("rollout_samples", result["rollout/raw_samples"])
+            return result
+
+    def _step_impl(self, step: int) -> dict[str, Any]:
         t0 = time.time()
         cfg = self.cfg
 
         # 1. Save the current LoRA weights so the sampler can serve them, then
         #    open a sampling client bound to that exact snapshot.
         save_name = f"{cfg.checkpoint_name}-{step:04d}"
-        snapshot = self.training_client.save_weights_for_sampler(save_name).result().path
+        with phase_span(
+            "sampler_weight_snapshot",
+            category="weight_sync",
+            attributes={"step": step},
+        ):
+            snapshot = self.training_client.save_weights_for_sampler(save_name).result().path
         if not snapshot:
             raise RuntimeError(f"save_weights_for_sampler({save_name!r}) returned no path")
 
@@ -908,24 +949,33 @@ class ServerlessCountdownRL:
 
         # 2. Roll out `group_size` completions per prompt, a few prompts in
         #    flight at a time.
-        sampler = self.service.create_sampling_client(model_path=snapshot, tokenizer=self.tokenizer)
-        try:
-            params = FiretitanSamplingParams(
-                max_tokens=cfg.max_sample_tokens,
-                temperature=cfg.temperature,
-                stop=self.renderer.get_stop_sequences(),
-                include_routing_matrix=self.router_replay_enabled,
-            )
-            results: list[Any] = []
-            chunk = max(1, cfg.prompt_concurrency)
-            for start in range(0, len(prompts), chunk):
-                futures = [
-                    sampler.sample(prompt=p, num_samples=cfg.group_size, sampling_params=params)
-                    for p in prompts[start : start + chunk]
-                ]
-                results.extend(f.result(timeout=cfg.sampling_timeout_s) for f in futures)
-        finally:
-            sampler.close()
+        with phase_span(
+            "rollout_batch",
+            category="rollout",
+            attributes={
+                "step": step,
+                "prompt_groups": len(prompts),
+                "group_size": cfg.group_size,
+            },
+        ):
+            sampler = self.service.create_sampling_client(model_path=snapshot, tokenizer=self.tokenizer)
+            try:
+                params = FiretitanSamplingParams(
+                    max_tokens=cfg.max_sample_tokens,
+                    temperature=cfg.temperature,
+                    stop=self.renderer.get_stop_sequences(),
+                    include_routing_matrix=self.router_replay_enabled,
+                )
+                results: list[Any] = []
+                chunk = max(1, cfg.prompt_concurrency)
+                for start in range(0, len(prompts), chunk):
+                    futures = [
+                        sampler.sample(prompt=p, num_samples=cfg.group_size, sampling_params=params)
+                        for p in prompts[start : start + chunk]
+                    ]
+                    results.extend(f.result(timeout=cfg.sampling_timeout_s) for f in futures)
+            finally:
+                sampler.close()
 
         # 3. Score each completion and keep only groups with reward spread (a
         #    group where every sample scores the same yields zero advantage and
@@ -1016,12 +1066,22 @@ class ServerlessCountdownRL:
         kld_k1 = None
         kld_k3 = None
         if datums:
-            fb = self.training_client.forward_backward(datums, "importance_sampling").result()
+            with phase_span(
+                "forward_backward",
+                category="train",
+                attributes={"step": step, "datums": len(datums)},
+            ):
+                fb = self.training_client.forward_backward(datums, "importance_sampling").result()
             loss = _mean_loss(fb)
             kld_k1 = _mean_policy_sample_logprob_gap(datums, fb)
             kld_k3 = _mean_policy_sample_k3(datums, fb)
             adam = tinker.AdamParams(learning_rate=cfg.learning_rate, beta1=0.9, beta2=0.95, eps=1e-12, weight_decay=0.0)
-            self.training_client.optim_step(adam).result()
+            with phase_span(
+                "optimizer_step",
+                category="train",
+                attributes={"step": step},
+            ):
+                self.training_client.optim_step(adam).result()
 
         raw_reward = sum(raw_rewards) / len(raw_rewards) if raw_rewards else 0.0
         filtered_reward = sum(filtered_rewards) / len(filtered_rewards) if filtered_rewards else 0.0
@@ -1096,7 +1156,12 @@ class ServerlessCountdownRL:
                 print(f"resume this run with:\n  --resume-from {resume_ref}", flush=True)
                 (self.run_dir / "resume_from.txt").write_text(f"{resume_ref}\n")
 
-            final = self.training_client.save_weights_for_sampler(cfg.final_checkpoint_name).result()
+            with phase_span(
+                "final_sampler_checkpoint",
+                category="checkpoint",
+                attributes={"completed_steps": final_step},
+            ):
+                final = self.training_client.save_weights_for_sampler(cfg.final_checkpoint_name).result()
             final_path = getattr(final, "path", None)
             print(f"final sampler checkpoint: {final_path}", flush=True)
             (self.run_dir / "final_checkpoint.txt").write_text(f"{final_path}\n")

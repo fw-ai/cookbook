@@ -53,6 +53,7 @@ from training.utils import (
     load_jsonl_dataset,
     log_metrics,
     log_metrics_json,
+    phase_span,
     prepare_sampling_messages,
     read_api_extra_headers_env,
     resolve_router_replay_enabled,
@@ -444,12 +445,21 @@ def main(
         async def run_training() -> int:
             step = step_offset
             while True:
-                prompt_groups, row_indices, loop_stats = await collect_prompt_groups(
-                    row_iterator,
-                    target_size=cfg.prompt_groups_per_step,
-                    sample_prompt=sample_one_prompt,
-                    should_accept=should_accept,
-                )
+                with phase_span(
+                    "rollout_batch",
+                    category="rollout",
+                    attributes={"next_step": step + 1},
+                ):
+                    (
+                        prompt_groups,
+                        row_indices,
+                        loop_stats,
+                    ) = await collect_prompt_groups(
+                        row_iterator,
+                        target_size=cfg.prompt_groups_per_step,
+                        sample_prompt=sample_one_prompt,
+                        should_accept=should_accept,
+                    )
                 if not row_indices:
                     break
                 if not prompt_groups:

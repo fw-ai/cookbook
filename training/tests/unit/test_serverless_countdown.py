@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import training.examples.serverless_rl.countdown_rl as countdown_rl
+import training.utils.phase_tracing as phase_tracing
 from training.examples.serverless_rl.countdown_rl import (
     MAX_PROMOTABLE_CHECKPOINT_NAME_LEN,
     Config,
@@ -25,6 +26,7 @@ from training.examples.serverless_rl.countdown_rl import (
     _validate_length,
     _validate_resume_reference,
 )
+from training.utils import configure_phase_tracing
 
 
 def test_serverless_defaults_use_supported_model_and_matching_tokenizer():
@@ -456,7 +458,14 @@ def test_countdown_r3_keeps_each_route_matrix_with_its_sequence(monkeypatch, tmp
     runner.metrics_path = tmp_path / "metrics.jsonl"
     runner._next_batch = lambda: [{"messages": [], "ground_truth": 0}]
 
-    rec = runner._step(0)
+    phase_tracing._reset_phase_tracing_for_tests()
+    recorder = configure_phase_tracing(tmp_path / "trace.json")
+    assert recorder is not None
+    try:
+        rec = runner._step(0)
+        trace_events = recorder.payload()["traceEvents"]
+    finally:
+        phase_tracing._reset_phase_tracing_for_tests()
 
     assert rec["train/trained"] is True
     assert rec["kld/mean_k3"] == rec["train/inference_k3"]
@@ -472,6 +481,16 @@ def test_countdown_r3_keeps_each_route_matrix_with_its_sequence(monkeypatch, tmp
         "",
         *short_seq.routing_matrices,
     ]
+    event_names = {
+        event["name"] for event in trace_events if event.get("ph") == "X"
+    }
+    assert {
+        "training_step",
+        "sampler_weight_snapshot",
+        "rollout_batch",
+        "forward_backward",
+        "optimizer_step",
+    } <= event_names
 
 
 def test_fixed_eval_reuses_carved_rows_without_training(monkeypatch, tmp_path):
