@@ -314,9 +314,9 @@ def stall_warnings(previous, current):
         and all(new_log.get(k) is not None and new_log[k] == old_log.get(k)
                 for k in ('bytes', 'mtime_ns', 'inode'))
     )
-    if verifier_unchanged and new_log.get('age_s', 0) >= 900:
+    if verifier_unchanged and new_log.get('age_s', 0) >= 300:
         warnings.append({'code': 'verifier_log_unchanged',
-                         'action': 'Inspect verifier processes and deadline; quiet output alone is not failure'})
+                         'action': 'Inspect verifier processes and deadline; quiet output alone is not failure. Never terminate automatically'})
     if verifier_unchanged and new_log.get('age_s', 0) >= 300:
         prior_processes = {p['Pid']: p for p in before.get('processes', [])}
         for process in after.get('processes', []):

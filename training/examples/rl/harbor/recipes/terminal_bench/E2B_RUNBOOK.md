@@ -585,6 +585,13 @@ exactly one retained/released pair in each of 28 verifier workers (world sizes
 observing another lucky completion. The hook is scoped to PyTorch 2.7.0 and the
 default Gloo backend; no collective math or assertions are changed.
 
+The observer now alerts after five minutes of unchanged verifier output across
+two matching sandbox observations (previously fifteen minutes). This is an
+inspection trigger, not proof of deadlock or permission to terminate a verifier.
+The change was prompted by batch 18 stopping after six tests while its scoped
+verifier deadline was only twenty minutes; waiting fifteen minutes left little
+time to investigate. The alert does not change task timeouts or rewards.
+
 The workaround remains isolated pending approval for future task verifiers;
 these tests do not establish correctness for every backend or PyTorch version.
 Do not

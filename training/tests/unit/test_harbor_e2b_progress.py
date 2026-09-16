@@ -174,13 +174,26 @@ def _apt_observation():
     }
 
 
-def test_quiet_verifier_apt_warns_before_generic_fifteen_minute_alert():
+def test_quiet_verifier_apt_warns_with_generic_five_minute_alert():
     previous = _apt_observation()
     current = deepcopy(previous)
     warnings = monitor.stall_warnings(previous, current)
-    assert [w["code"] for w in warnings] == ["suspected_verifier_apt_wait"]
-    assert warnings[0]["pid"] == "20"
-    assert "Never terminate automatically" in warnings[0]["action"]
+    assert [w["code"] for w in warnings] == ["verifier_log_unchanged", "suspected_verifier_apt_wait"]
+    assert warnings[1]["pid"] == "20"
+    assert all("Never terminate automatically" in w["action"] for w in warnings)
+
+
+@pytest.mark.parametrize("age,warn", [(299, False), (300, True), (899, True)])
+def test_quiet_verifier_alert_does_not_require_apt_or_fifteen_minutes(age, warn):
+    previous = _apt_observation()
+    previous["remote"]["processes"] = []
+    current = deepcopy(previous)
+    current["remote"]["verifier_log"]["age_s"] = age
+    warnings = monitor.stall_warnings(previous, current)
+    assert bool(warnings) is warn
+    if warn:
+        assert warnings[0]["code"] == "verifier_log_unchanged"
+        assert "quiet output alone is not failure" in warnings[0]["action"]
 
 
 @pytest.mark.parametrize("change", [
