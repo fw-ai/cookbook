@@ -66,6 +66,16 @@ Tests cover the adapter's missing-artifact branch and negative classifications;
 the classifier also matched all 38 retained failures and rejected unrelated
 exceptions in that observation window.
 
+Distinguish **live sandboxes** from **logical samples still needed**. In batch16,
+gcode245/member0 failed setup at06:51:19UTC, while member2 was still running
+after08:00. The producer retires each draw but submits incomplete-group retries
+only after the assembler resolves the whole group (`producer._retire` and
+`_resolve_row`). Thus one live training sandbox did not mean127/128 samples
+were scored: the artifact audit found126scored plus one pending and one missing.
+The adapter-level retry above handles the recognized upload failure before
+returning a dropped draw, without waiting for a slow sibling. Do not change
+whole-group scheduling or resample scored failures silently.
+
 The original live client predates this fix: updating the checkout does **not**
 reload its Python functions. Do not claim the fix is live or restart the
 client/trainer/rollout implicitly. Avoid recurring bulk transfer in a future
