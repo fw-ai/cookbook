@@ -49,6 +49,34 @@ checkpoint-safe, authorized transition and must preserve completed samples.
 | `Sandbox not found` during artifact cleanup | Secondary cleanup after sandbox creation/build failed | Diagnose the earlier exception; do not treat cleanup noise as the root cause | Root exception is absent on rerun |
 | `PyTorch was not found` | Informational Transformers warning in the lightweight sidecar | No fix required; TITO needs tokenizer utilities, not Torch | Ignore unless followed by a different fatal exception |
 
+## Installation-file upload timeout (2026-09-16)
+
+Batch 16 / evaluation 15 hit 38 `AgentSetupTimeoutError` attempts (27 training,
+11 evaluation). Retained tracebacks show the 360-second installation deadline
+expired inside `environment.upload_file` → E2B `files.write_files`, before
+agent execution. The pinned OpenCode shell-fix binary is 149,715,072 bytes and
+is uploaded per sandbox. This identifies the failed stage, not whether the
+underlying bandwidth limit is on the client or provider.
+
+The adapter now recognizes only this exact E2B installation-upload stack as
+recoverable when no valid trajectory is available. Existing bounded per-sample
+retries/backoff apply; successful sibling samples remain preserved. Other
+setup timeouts, task timeouts, and candidate failures are not reclassified.
+Tests cover the adapter's missing-artifact branch and negative classifications;
+the classifier also matched all 38 retained failures and rejected unrelated
+exceptions in that observation window.
+
+The original live client predates this fix: updating the checkout does **not**
+reload its Python functions. Do not claim the fix is live or restart the
+client/trainer/rollout implicitly. Avoid recurring bulk transfer in a future
+approved template by preinstalling the **same checksum-pinned binary**, with
+version/hash verification; retries alone do not remove upload overhead.
+
+An incomplete evaluation's `eval/reward` averages only returned trajectories.
+Always report attempted/completed/no-trajectory counts alongside it, and do not
+compare it as a complete fixed 64-sample evaluation. Never turn setup failures
+into synthetic zero rewards or silently omit them from the report.
+
 ## Snapshot synchronization checks
 
 ### Reserved-rack launch preflight

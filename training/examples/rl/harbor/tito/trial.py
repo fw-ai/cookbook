@@ -211,6 +211,39 @@ def _is_retryable_e2b_sidecar_readiness_timeout(
     return explicit_wrapper or harbor_wrapper
 
 
+def _is_retryable_e2b_setup_upload_timeout(
+    exception: Any,
+    *,
+    harbor_environment: str,
+) -> bool:
+    """Retry bounded agent installation that expired inside E2B file upload.
+
+    Do not broadly retry agent/setup timeouts: require the retained Python
+    stack to identify installation, Harbor's upload, and E2B's file write.
+    This classifier is used only when no valid trajectory was collected.
+    Existing per-trajectory retry limits and backoff still apply.
+    """
+    if harbor_environment != "e2b" or exception is None:
+        return False
+    if getattr(exception, "exception_type", None) != "AgentSetupTimeoutError":
+        return False
+    message = str(getattr(exception, "exception_message", "") or "")
+    if re.fullmatch(r"Agent setup timed out after [0-9]+(?:\.[0-9]+)? seconds", message) is None:
+        return False
+    traceback = str(getattr(exception, "exception_traceback", "") or "")
+    frames = (
+        ("harbor/agents/installed/base.py", "setup"),
+        ("training/examples/rl/harbor/opencode/agent.py", "install"),
+        ("harbor/environments/e2b.py", "upload_file"),
+        ("e2b/sandbox_async/filesystem/filesystem.py", "write_files"),
+    )
+    return all(
+        re.search(rf'(?m)^\s*File "[^"\n]*/{re.escape(path)}", line \d+, in {function}$', traceback)
+        is not None
+        for path, function in frames
+    ) and re.search(r"(?m)^asyncio\.exceptions\.CancelledError\s*$", traceback) is not None
+
+
 def _is_retryable_e2b_default_tag_not_found(
     exception: Any,
     *,
@@ -955,6 +988,12 @@ async def run_harbor_trial(
         try:
             trajectory_artifact, artifact_manifest = _load_sidecar_artifact(trial_path)
         except RecoverableRolloutError as exc:
+            if _is_retryable_e2b_setup_upload_timeout(
+                exception, harbor_environment=harbor_environment
+            ):
+                raise RecoverableRolloutError(
+                    "Harbor E2B agent setup timed out uploading an installation file"
+                ) from exc
             if retryable_e2b_timeout:
                 raise RecoverableRolloutError(
                     "Harbor E2B command stream did not open before its provider "

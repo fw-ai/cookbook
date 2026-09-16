@@ -2377,6 +2377,81 @@ def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> Non
     )
 
 
+def _e2b_setup_upload_timeout():
+    return SimpleNamespace(
+        exception_type="AgentSetupTimeoutError",
+        exception_message="Agent setup timed out after 360.0 seconds",
+        exception_traceback=(
+            '  File "/venv/site-packages/harbor/agents/installed/base.py", line 939, in setup\n'
+            '  File "/repo/training/examples/rl/harbor/opencode/agent.py", line 163, in install\n'
+            '  File "/venv/site-packages/harbor/environments/e2b.py", line 316, in upload_file\n'
+            '  File "/venv/site-packages/e2b/sandbox_async/filesystem/filesystem.py", line 452, in write_files\n'
+            'asyncio.exceptions.CancelledError\n'
+        ),
+    )
+
+
+@pytest.mark.parametrize("changed", ["none", "backend", "type", "message", "upload", "filesystem", "cancelled"])
+def test_e2b_setup_upload_timeout_requires_installation_stack(changed) -> None:
+    exception = _e2b_setup_upload_timeout()
+    backend = "e2b"
+    if changed == "backend":
+        backend = "docker"
+    elif changed == "type":
+        exception.exception_type = "AgentTimeoutError"
+    elif changed == "message":
+        exception.exception_message = "agent tool timeout"
+    elif changed == "upload":
+        exception.exception_traceback = exception.exception_traceback.replace("in upload_file", "in exec")
+    elif changed == "filesystem":
+        exception.exception_traceback = exception.exception_traceback.replace("in write_files", "in read")
+    elif changed == "cancelled":
+        exception.exception_traceback = exception.exception_traceback.replace("asyncio.exceptions.CancelledError", "ValueError: broken installation")
+    assert harbor_adapter._is_retryable_e2b_setup_upload_timeout(
+        exception, harbor_environment=backend
+    ) is (changed == "none")
+
+
+@pytest.mark.parametrize("upload_timeout", [True, False])
+def test_missing_artifact_setup_upload_timeout_retries_only_transport(
+    monkeypatch, tmp_path, upload_timeout
+) -> None:
+    exception = _e2b_setup_upload_timeout()
+    if not upload_timeout:
+        exception.exception_traceback = exception.exception_traceback.replace("in upload_file", "in exec")
+
+    class Trial:
+        def __init__(self, config):
+            self.config = config
+            self._agent_timeout_sec = 7200
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            return SimpleNamespace(
+                task_name="example", trial_name=self.config.trial_name,
+                verifier_result=None, exception_info=exception,
+            )
+
+    harbor = _fake_harbor()
+    harbor.Trial = Trial
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    expected = RecoverableRolloutError if upload_timeout else RuntimeError
+    match = "uploading an installation file" if upload_timeout else "non-retryable"
+    with pytest.raises(expected, match=match):
+        asyncio.run(harbor_adapter.run_harbor_trial(
+            task_config={}, inference_key="inference-key", run_id="upload-timeout",
+            harbor_environment="e2b", sidecar_bundle_path=tmp_path / "bundle.zip",
+            sidecar_launch_spec=json.dumps({"debug_enabled": False,
+                "inference_base_url": "https://api.fireworks.ai"}),
+            trials_dir=tmp_path / "trials",
+            agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
+            agent_version=DEFAULT_OPENCODE_VERSION,
+        ))
+
+
 def test_e2b_missing_default_template_tag_requires_exact_error() -> None:
     exception = SimpleNamespace(
         exception_type="SandboxException",
