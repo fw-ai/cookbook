@@ -35,8 +35,9 @@ only when using the remote backend:
 cd training
 uv sync
 uv pip install --python .venv/bin/python 'harbor==0.21.0' 'dirhash>=0.5,<1'
-# E2B only:
-uv pip install --python .venv/bin/python 'harbor[e2b]==0.21.0'
+# E2B only. Pin e2b below 2.35: newer e2b requires pyqwest>=0.7, which
+# conflicts with the training SDK's pyqwest==0.6.2 pin:
+uv pip install --python .venv/bin/python 'harbor[e2b]==0.21.0' 'e2b<2.35'
 ```
 
 `dirhash` is used only to verify the pinned DABstep task manifest. It is not
