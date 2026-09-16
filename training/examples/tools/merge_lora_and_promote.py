@@ -100,6 +100,7 @@ class MergeConfig:
     op_timeout_s: float
     checkpoint_poll_timeout_s: float
     promote_poll_timeout_s: float
+    trainer_job_id: str | None = None
 
 
 def _training_quant_extra_args(export_precision: str) -> list[str]:
@@ -157,6 +158,11 @@ def parse_args() -> MergeConfig:
         "auto-select (may fail if no default shape exists for the model).",
     )
     parser.add_argument(
+        "--trainer-job-id",
+        default=None,
+        help="Attach to an existing LoRA trainer; its lifecycle remains with the caller.",
+    )
+    parser.add_argument(
         "--region",
         default=None,
         help="Optional explicit trainer region. Leave unset so the backend " "selects placement.",
@@ -196,6 +202,7 @@ def parse_args() -> MergeConfig:
         op_timeout_s=args.op_timeout_s,
         checkpoint_poll_timeout_s=args.checkpoint_poll_timeout_s,
         promote_poll_timeout_s=args.promote_poll_timeout_s,
+        trainer_job_id=args.trainer_job_id,
     )
 
 
@@ -280,8 +287,8 @@ def _poll_model_until_ready(
     )
 
 
-def main() -> None:
-    cfg = parse_args()
+def run(cfg: MergeConfig) -> dict:
+    """Run the cookbook merge workflow and return the READY model resource."""
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
 
@@ -296,7 +303,10 @@ def main() -> None:
         cfg.output_model_id,
     )
 
-    # Provision a short-lived service-mode LoRA trainer from the base model.
+    if cfg.trainer_job_id and trainer_mgr.try_get(cfg.trainer_job_id) is None:
+        raise ValueError(f"Existing trainer job {cfg.trainer_job_id!r} was not found")
+
+    # Provision a short-lived trainer, or reattach to the caller's trainer.
     service = build_service_client(
         api_key=api_key,
         base_url=base_url,
@@ -307,6 +317,7 @@ def main() -> None:
         max_context_length=None,
         learning_rate=1e-5,  # unused: we never take an optimizer step
         trainer=TrainerConfig(
+            job_id=cfg.trainer_job_id,
             training_shape_id=cfg.training_shape or None,
             region=cfg.region,
             timeout_s=cfg.trainer_timeout_s,
@@ -315,7 +326,7 @@ def main() -> None:
             # a time instead of inflating the temporary trainer to full bf16.
             extra_args=_training_quant_extra_args(cfg.export_precision),
         ),
-        cleanup_trainer_on_close=not cfg.keep_trainer,
+        cleanup_trainer_on_close=not cfg.keep_trainer and cfg.trainer_job_id is None,
     )
 
     try:
@@ -375,9 +386,14 @@ def main() -> None:
             model.get("name"),
             cfg.export_precision,
         )
+        return model
     finally:
-        # cleanup_trainer_on_close handles trainer teardown unless --keep-trainer.
+        # Attached trainers remain owned by the caller.
         service.close()
+
+
+def main() -> None:
+    run(parse_args())
 
 
 if __name__ == "__main__":
