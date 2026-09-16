@@ -79,6 +79,23 @@ into synthetic zero rewards or silently omit them from the report.
 
 ## Snapshot synchronization checks
 
+### Candidate hangs inside a verifier
+
+In the 2026-09-16 `filter-js-from-html` sample (cursor 246/member 1), the
+agent exited successfully but its generated parser did not advance its
+cursor on a `>` inside a tag body. A bounded, read-only probe reproduced the
+same non-advancing cursor on the live 352-byte input. The official verifier's
+filtering subprocess has no per-file timeout; its Chrome timeout is separate.
+
+Do not kill just the candidate child to unblock this verifier: this particular
+verifier skips nonzero child exits, potentially producing a misleading pass.
+An early intervention must stop the **whole verifier attempt as unscored**,
+preserve artifacts, and retry only the missing sample, with explicit approval
+when that changes the agreed deadline. Otherwise retain the existing timeout.
+Never edit the candidate solution or verifier, or synthesize a reward. If it
+finishes after a child OOM, audit which cases were actually tested before
+claiming that the reward is valid.
+
 ### Reserved-rack launch preflight
 
 Inspect node **labels and taints**, and the rendered GPU pod spec, before
