@@ -1,3 +1,4 @@
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -57,3 +58,64 @@ def test_missing_sandbox_is_not_assumed_finished(tmp_path, monkeypatch, finalize
     else:
         assert observed["matching_sandboxes"] == 0
         assert "observation" not in observed
+
+
+def _apt_observation():
+    return {
+        "sandbox_id": "sandbox-1", "phase": "verification_or_finalization",
+        "remote": {
+            "verifier_log": {"bytes": 425, "mtime_ns": 123, "inode": 7, "age_s": 301},
+            "processes": [{"Name": "apt-get", "Pid": "20", "PPid": "19",
+                           "start_ticks": "100", "cpu_seconds": 0.06}],
+        },
+    }
+
+
+def test_quiet_verifier_apt_warns_before_generic_fifteen_minute_alert():
+    previous = _apt_observation()
+    current = deepcopy(previous)
+    warnings = monitor.stall_warnings(previous, current)
+    assert [w["code"] for w in warnings] == ["suspected_verifier_apt_wait"]
+    assert warnings[0]["pid"] == "20"
+    assert "Never terminate automatically" in warnings[0]["action"]
+
+
+@pytest.mark.parametrize("change", [
+    "no_previous", "different_sandbox", "agent_phase", "young_log", "new_bytes",
+    "new_mtime", "new_inode", "new_cpu", "pid_reused", "new_parent", "missing_cpu",
+    "missing_process", "not_apt",
+])
+def test_apt_warning_requires_repeated_matching_observations(change):
+    previous = _apt_observation()
+    current = deepcopy(previous)
+    log = current["remote"]["verifier_log"]
+    process = current["remote"]["processes"][0]
+    if change == "no_previous":
+        previous = None
+    elif change == "different_sandbox":
+        current["sandbox_id"] = "sandbox-2"
+    elif change == "agent_phase":
+        current["phase"] = "agent_or_setup"
+    elif change == "young_log":
+        log["age_s"] = 299
+    elif change == "new_bytes":
+        log["bytes"] += 1
+    elif change == "new_mtime":
+        log["mtime_ns"] += 1
+    elif change == "new_inode":
+        log["inode"] += 1
+    elif change == "new_cpu":
+        process["cpu_seconds"] += 0.1
+    elif change == "pid_reused":
+        process["start_ticks"] = "101"
+    elif change == "new_parent":
+        process["PPid"] = "18"
+    elif change == "missing_cpu":
+        del process["cpu_seconds"]
+    elif change == "missing_process":
+        current["remote"]["processes"] = []
+    elif change == "not_apt":
+        process["Name"] = "pytest"
+    assert "suspected_verifier_apt_wait" not in {
+        w["code"] for w in monitor.stall_warnings(previous, current)
+    }

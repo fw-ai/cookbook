@@ -225,12 +225,25 @@ def stall_warnings(previous, current):
     after = current.get('remote', {})
     warnings = []
     old_log, new_log = before.get('verifier_log', {}), after.get('verifier_log', {})
-    if (previous.get('phase') == current.get('phase') == 'verification_or_finalization'
-            and new_log.get('age_s', 0) >= 900
-            and all(new_log.get(k) is not None and new_log[k] == old_log.get(k)
-                    for k in ('bytes', 'mtime_ns', 'inode'))):
+    verifier_unchanged = (
+        previous.get('phase') == current.get('phase') == 'verification_or_finalization'
+        and all(new_log.get(k) is not None and new_log[k] == old_log.get(k)
+                for k in ('bytes', 'mtime_ns', 'inode'))
+    )
+    if verifier_unchanged and new_log.get('age_s', 0) >= 900:
         warnings.append({'code': 'verifier_log_unchanged',
                          'action': 'Inspect verifier processes and deadline; quiet output alone is not failure'})
+    if verifier_unchanged and new_log.get('age_s', 0) >= 300:
+        prior_processes = {p['Pid']: p for p in before.get('processes', [])}
+        for process in after.get('processes', []):
+            prior = prior_processes.get(process['Pid'], {})
+            if (process.get('Name') == prior.get('Name') == 'apt-get'
+                    and all(process.get(k) is not None and process[k] == prior.get(k)
+                            for k in ('start_ticks', 'PPid', 'cpu_seconds'))):
+                warnings.append({
+                    'code': 'suspected_verifier_apt_wait', 'pid': process['Pid'],
+                    'action': 'Inspect APT subcommand, child progress and repository access; unchanged parent CPU is not proof of failure. Never terminate automatically',
+                })
     def active(record):
         return {(t.get('tool'), t['start_ms']) for t in record.get('running_tools', [])
                 if t.get('start_ms') is not None}

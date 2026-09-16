@@ -872,6 +872,41 @@ Mocked tests cover list, connect and command failures, both with and without a
 newly finalized result, plus sandbox-list disappearance. This is an observer
 diagnostic fix, not a change to sample deadlines, rewards or the RL algorithm.
 
+## APT setup can stall before verifier tests start
+
+Batch12 `sqlite-db-truncate`, cursor180/member6, stopped in the official
+verifier's `apt-get update`: stdout stayed at425 bytes for nearly11 minutes,
+with the parent and HTTP/acquisition workers waiting in `select`. A fresh GET
+of the same Debian InRelease file returned151075 bytes in36ms. The sandbox
+was not frozen, CPU-throttled or memory-constrained. This was not a model
+request or an executing pytest test.
+
+A single idle TCP connection was reset after PID/start-time/socket checks;
+**that did not unblock APT**. Idle socket counters alone do not establish the
+root cause. Workers were waiting on parent IPC, not actively reading that
+socket; do not turn TCP reset into an automatic recovery policy.
+
+After verifying `curl` was already installed, only the exact stalled
+`apt-get update` process was sent SIGTERM through a revalidated pidfd. The
+unchanged official `test.sh` does not use `set -e` and continued normally:
+`apt-get install` reported **zero package changes**, pinned uv/pytest setup
+completed, and the real test passed (CTRF:1 passed,0 failed;0.01s).
+The trial finalized2026-09-16 00:07:44UTC with reward1 and no exception.
+Agent output, tests, verifier shell, trainer and rollout were not restarted
+or rewritten. No reward was assigned by the recovery code.
+
+This is a case-specific setup recovery, **not permission to kill arbitrary
+APT operations**. Never interrupt package unpack/configure operations based
+only on elapsed time. Inspect the exact subcommand, parent/child progress,
+locks, repository access, installed dependencies and verifier error handling;
+preserve the real test result and intervention audit.
+
+The observer now warns after two matching observations of a quiet verifier
+log (five minutes) plus the same APT PID/start-time/parent and unchanged CPU
+counter. It does not classify a failed sample or send signals. Tests cover
+progress, process reuse, missing fields, differing phases and sandbox changes.
+Updating this module does not hot-reload an already-running observer/client.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.
