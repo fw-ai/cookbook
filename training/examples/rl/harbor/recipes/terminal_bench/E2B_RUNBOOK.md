@@ -1214,6 +1214,30 @@ Tests cover repeated timestamp resets, identity boundaries, malformed times,
 legacy observations and missing history. Activate an updated observer
 separately; the RL client/trainer/rollout do not need a restart.
 
+## Explicit SIGINT timeout can leave a Node child running
+
+Sep16 batch23, cursor357/member3 (`make-mips-interpreter`) ran
+`timeout -s INT 60 node /app/vm.js ... | head -50`. The same tool and Node
+process remained active for over ten minutes. The timeout requested SIGINT
+after 60 seconds but supplied no kill-after fallback; process observations
+showed Node still consuming CPU. This is an overrun of the agent's own
+deadline, not grounds to shorten the overall sampling deadline.
+
+The current observer/parser and `node_timeout_guard` deliberately recognize
+only plain `timeout DURATION node ...`. They reject the `-s INT` form, so the
+existing guard did not recover this sample. Long-tool inspection did flag it.
+Do not report this option form as covered, or bypass the guard with a broad
+process kill. Recovery approval and any narrowly tested parser extension
+must preserve the exact sandbox/tool/process identities and target only the
+overdue child, never the agent, verifier, process group, or RL services.
+
+Two separate batch23 attempts also lost their E2B command streams at
+22:18:11–12 UTC (`ConnectError`, peer closed without TLS close notification).
+The existing inner Harbor retry handler retried only the affected members.
+These retries can occur without increasing outer producer counters. Inspect
+physical attempts, exception metadata and replacement results; a valid
+trajectory artifact from an unscored failed attempt is not proof of admission.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.
