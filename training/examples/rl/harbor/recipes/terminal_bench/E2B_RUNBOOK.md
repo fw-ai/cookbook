@@ -1134,6 +1134,23 @@ run's deadlines or repair candidate code. When inspecting configuration or
 process environments, select named non-secret fields only: agent kwargs also
 contain credential-bearing sidecar launch metadata and must not be dumped.
 
+### Candidate PTY polling can spin without consuming output
+
+Batch21 `headless-terminal`, cursor336/member7, ran a generated Python test
+whose terminal implementation called `read_available(timeout=0.0)` from
+`read_until_idle()`. The reader checked its expired deadline before reading;
+the caller repeatedly saw the still-readable PTY and reset its deadline.
+Read-only source inspection demonstrated this unbounded-loop mechanism,
+while the matching Python child consumed approximately625 CPU seconds in625
+wall seconds. Its exact instruction pointer was not captured.
+
+This is a candidate-code defect, not evidence of a broken E2B transport.
+Do not edit the solution or silently replace its timeout. A scoped request
+to interrupt only the test process was submitted; no intervention is implied
+by this diagnosis. Revalidate sandbox, tool ID and process identity before
+acting on any later approval. Preserve the real tool failure and verifier
+result rather than discarding or rerunning a valid scored sample.
+
 ## Preserve scored exceptions when reusing retained trials
 
 A real verifier reward does not imply clean agent execution. Harbor can
