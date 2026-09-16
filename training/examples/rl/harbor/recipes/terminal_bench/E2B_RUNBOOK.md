@@ -96,6 +96,13 @@ Never edit the candidate solution or verifier, or synthesize a reward. If it
 finishes after a child OOM, audit which cases were actually tested before
 claiming that the reward is valid.
 
+For that attempt, the E2B verifier command stream eventually failed with
+`ConnectError: Error reading content`; no verifier reward was returned. The
+client retained the exact artifact untrained and retried only the two missing
+members of its eight-sample group. No manual interruption occurred. This
+transport message alone does not establish why the stream failed. A compact
+artifact marked `completed` means agent completion, not successful verification.
+
 ### Reserved-rack launch preflight
 
 Inspect node **labels and taints**, and the rendered GPU pod spec, before
