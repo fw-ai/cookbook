@@ -1068,6 +1068,26 @@ Future deadline or agent-policy changes must be explicit and preserve the
 real reward and exception record. Do not report this batch as meeting the
 thirty-minute target or retry the valid zero merely to improve its score.
 
+Batch 18 reproduced the same source-level risk in cursor 288/member 1:
+the generated `trail` program had all 8,388,608 hash slots occupied, and its
+linear-probing insertion loop had no full-table escape. This was measured
+read-only from the matching live executable's `hused` array; it was not
+inferred from CPU utilization alone. The instruction pointer was not captured,
+so distinguish the demonstrated saturation/code defect from the inferred
+current spin. At the audit, the original process remained live and a scoped
+interruption request was unanswered; no manual recovery was claimed.
+
+The trial config and two allowlisted fields from the live OpenCode process
+also confirmed a 6,900-second default bash-tool timeout inside a 7,200-second
+agent limit. A command started more than five minutes into the agent budget
+can reach the outer deadline before its own timeout, leaving no recovery turn.
+Frequent observation alone cannot make this meet a thirty-minute sampling
+target. A future shorter command budget or remaining-budget-aware recovery
+policy requires an explicit, recorded change; do not silently shorten this
+run's deadlines or repair candidate code. When inspecting configuration or
+process environments, select named non-secret fields only: agent kwargs also
+contain credential-bearing sidecar launch metadata and must not be dumped.
+
 ## Preserve scored exceptions when reusing retained trials
 
 A real verifier reward does not imply clean agent execution. Harbor can
