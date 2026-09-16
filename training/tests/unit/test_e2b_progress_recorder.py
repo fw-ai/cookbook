@@ -245,6 +245,7 @@ def test_observation_error_does_not_log_credentials_or_retry(tmp_path, monkeypat
     monkeypatch.setattr(recorder, "Sandbox", api)
     result = recorder.inspect_trial(tmp_path, {"trial": "ours", "phase": "agent_or_setup"})
     assert result == {"trial": "ours", "phase": "agent_or_setup",
+                      "trial_age_s": None,
                       "observation_error": "RuntimeError"}
     assert api.list.call_count == 1
     api.connect.assert_not_called()

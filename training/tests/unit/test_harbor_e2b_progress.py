@@ -6,6 +6,28 @@ import pytest
 from training.examples.rl.harbor.recipes.terminal_bench import monitor_e2b_progress as monitor
 
 
+@pytest.mark.parametrize('total,available,warn', [
+    (1000, 100, True), (1000, 0, True), (1000, 101, False),
+    (1000, -1, False), (0, 0, False), (None, 0, False),
+    (1000, None, False), (1000, 1001, False),
+])
+def test_guest_memory_warning_is_inspection_only(total, available, warn):
+    current = {'remote': {'guest_memory': {
+        'MemTotal': total, 'MemAvailable': available}}}
+    original = deepcopy(current)
+    warnings = monitor.memory_warnings(current)
+    assert bool(warnings) is warn
+    assert current == original
+    if warn:
+        assert warnings[0]['code'] == 'sandbox_memory_pressure'
+        assert 'do not kill, retry or increase task resources' in warnings[0]['action']
+
+
+def test_memory_warning_allows_missing_remote_observation():
+    assert monitor.memory_warnings({}) == []
+    compile(monitor.REMOTE.removeprefix("python3 - <<'REMOTE'\n").removesuffix('\nREMOTE'), '<remote-probe>', 'exec')
+
+
 @pytest.mark.parametrize("phase", ["list", "connect", "command"])
 @pytest.mark.parametrize("finalized", [False, True])
 def test_inspection_failure_rechecks_finalization(tmp_path, monkeypatch, phase, finalized):

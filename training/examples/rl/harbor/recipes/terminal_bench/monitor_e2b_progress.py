@@ -38,6 +38,15 @@ REMOTE = """python3 - <<'REMOTE'
 import json, os, pathlib, re, sqlite3, time
 p = pathlib.Path('/logs/agent/opencode/xdg-data/opencode/opencode.db')
 out = {}
+try:
+    memory = {}
+    for line in pathlib.Path('/proc/meminfo').read_text().splitlines():
+        key, value = line.split(':', 1)
+        if key in ('MemTotal', 'MemAvailable'):
+            memory[key] = int(value.split()[0]) * 1024
+    out['guest_memory'] = memory
+except (OSError, ValueError):
+    pass
 if p.exists():
     with sqlite3.connect('file:' + str(p) + '?mode=ro', uri=True) as c:
         rows = c.execute('select time_updated,data from part order by time_updated desc limit 3').fetchall()
@@ -89,6 +98,9 @@ for p in pathlib.Path('/proc').glob('[0-9]*/status'):
         fields = dict(line.split(':', 1) for line in p.read_text().splitlines() if ':' in line)
         if int(fields['Pid']) > 1600 and fields['PPid'].strip() != '2':
             row = {k: fields[k].strip() for k in ('Name','Pid','PPid','State','TracerPid')}
+            for key in ('VmRSS', 'VmPeak'):
+                if key in fields:
+                    row[key + '_bytes'] = int(fields[key].split()[0]) * 1024
             stat = (p.parent / 'stat').read_text().rsplit(')', 1)[1].split()
             row['cpu_seconds'] = (int(stat[11])+int(stat[12]))/os.sysconf('SC_CLK_TCK')
             row['start_ticks'] = stat[19]
@@ -186,6 +198,22 @@ def sampling_budget_warnings(current):
                                  'elapsed_s': tool['elapsed_s'],
                                  'action': 'Inspect process progress, explicit deadline and output handling; CPU activity or quiet output alone does not prove a hang'})
     return warnings
+
+
+def memory_warnings(current):
+    """Guest available-memory warning, not an OOM diagnosis or kill policy.
+
+    Use MemAvailable rather than summing process RSS (shared pages overlap).
+    This describes the E2B guest, not trainer GPU memory or a cgroup limit.
+    """
+    memory = current.get('remote', {}).get('guest_memory', {})
+    total, available = memory.get('MemTotal'), memory.get('MemAvailable')
+    if (isinstance(total, int) and isinstance(available, int)
+            and total > 0 and 0 <= available <= total * 0.1):
+        return [{'code': 'sandbox_memory_pressure',
+                 'available_bytes': available, 'total_bytes': total,
+                 'action': 'Inspect candidate-process RSS, progress and kernel OOM evidence; do not kill, retry or increase task resources automatically'}]
+    return []
 
 
 def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore=False):
@@ -312,6 +340,7 @@ def main():
                     trial['warnings'] = (stall_warnings(previous.get(trial['trial']), trial)
                                          + timeout_warnings(trial)
                                          + search_wait_warnings(trial)
+                                         + memory_warnings(trial)
                                          + sampling_budget_warnings(trial))
                     if args.recover_kernel_stream_grep:
                         trial['recovery_actions'] = recover_trial_search(root, previous.get(trial['trial']), trial)

@@ -599,6 +599,13 @@ consecutive failed observations of the same identified sandbox. Recovery or a
 replacement sandbox clears that warning. This flags a monitoring blind spot;
 it does not mark the sample failed, retry it, or authorize a restart.
 
+The observer also records guest `MemTotal`/`MemAvailable` and each observed
+process's `VmRSS_bytes`/`VmPeak_bytes`. `sandbox_memory_pressure` warns when
+available guest memory falls to 10% or less. Inspect process growth and kernel
+OOM evidence; the warning is not proof of OOM and never kills a process,
+changes task resources, or retries a sample. Do not sum process RSS to estimate
+guest usage: shared pages overlap. This is sandbox RAM, not trainer GPU memory.
+
 ### Harbor retries can precede producer accounting
 
 Inspect `client.log` and failed trial artifacts even when all producer retry/drop
