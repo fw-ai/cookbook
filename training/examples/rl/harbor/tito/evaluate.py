@@ -21,7 +21,12 @@ async def evaluate_rows(
     step: int,
     max_concurrency: int | None = None,
 ) -> dict[str, float | int]:
-    """Run fixed rows without assembling a train batch or mutating weights."""
+    """Run fixed rows without assembling a train batch or mutating weights.
+
+    Reward is the mean over returned trajectories, not missing attempts.
+    Interpret it alongside step, coverage and completeness; a partial evaluation
+    is not directly comparable with a complete evaluation of the fixed pool.
+    """
     if completions_per_prompt < 1:
         raise ValueError("completions_per_prompt must be >= 1")
     if max_concurrency is not None and max_concurrency < 1:
@@ -66,10 +71,13 @@ async def evaluate_rows(
     trainable_tokens = [count_trainable_tokens(run) for run in runs]
 
     metrics: dict[str, float | int] = {
+        f"{metric_prefix}/step": step,
         f"{metric_prefix}/attempted_trajectories": len(results),
         f"{metric_prefix}/completed_trajectories": len(runs),
         f"{metric_prefix}/failed_trajectories": len(failures),
         f"{metric_prefix}/no_trajectory": no_trajectory,
+        f"{metric_prefix}/coverage": len(runs) / len(results) if results else 0.0,
+        f"{metric_prefix}/is_complete": int(bool(results) and len(runs) == len(results)),
         f"{metric_prefix}/reward": statistics.fmean(rewards) if rewards else 0.0,
     }
     tito_summaries: list[Mapping[str, Any]] = []

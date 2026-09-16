@@ -604,6 +604,9 @@ def test_evaluate_rows_aggregates_logical_run_lengths_and_failures():
     assert metrics["eval/completed_trajectories"] == 2
     assert metrics["eval/failed_trajectories"] == 2
     assert metrics["eval/no_trajectory"] == 0
+    assert metrics["eval/step"] == 0
+    assert metrics["eval/coverage"] == 0.5
+    assert metrics["eval/is_complete"] == 0
     assert metrics["eval/failure/TimeoutError"] == 2
     assert metrics["eval/trainable_tokens_mean"] == 2
     assert metrics["eval/trainable_tokens_min"] == 2
@@ -614,6 +617,44 @@ def test_evaluate_rows_aggregates_logical_run_lengths_and_failures():
     assert metrics["tito/turn/output_tokens_min"] == 2
     assert metrics["tito/turn/output_tokens_max"] == 3
     assert not any(name.startswith("tito/debug/") for name in metrics)
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_evaluation_coverage_does_not_rewrite_missing_rewards(missing):
+    async def rollout_fn(row, *, sample_index, **kwargs):
+        if missing and sample_index == 1:
+            return None
+        return RolloutRun(
+            segments=[RolloutSample(
+                tokens=[1, 2], logprobs=[0.0, -0.1],
+                loss_mask=[0, 1], reward=1.0,
+            )],
+            run_id=f"coverage-{sample_index}",
+        )
+
+    metrics = asyncio.run(evaluate_rows(
+        rollout_fn, [{"task_name": "test"}], completions_per_prompt=2,
+        metric_prefix="heldout", step=15,
+    ))
+    assert metrics["heldout/step"] == 15
+    assert metrics["heldout/attempted_trajectories"] == 2
+    assert metrics["heldout/no_trajectory"] == int(missing)
+    assert metrics["heldout/coverage"] == (0.5 if missing else 1.0)
+    assert metrics["heldout/is_complete"] == int(not missing)
+    assert metrics["heldout/reward"] == 1.0
+
+
+def test_empty_evaluation_is_not_complete():
+    async def rollout_fn(*args, **kwargs):
+        raise AssertionError("No samples should be requested")
+
+    metrics = asyncio.run(evaluate_rows(
+        rollout_fn, [], completions_per_prompt=1, metric_prefix="eval", step=5,
+    ))
+    assert metrics["eval/step"] == 5
+    assert metrics["eval/attempted_trajectories"] == 0
+    assert metrics["eval/coverage"] == 0.0
+    assert metrics["eval/is_complete"] == 0
 
 
 def test_fixed_evaluation_keeps_one_sample_count_per_call():

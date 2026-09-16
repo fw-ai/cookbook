@@ -1067,6 +1067,28 @@ The currently running Sep15 client predates this fix and has not been
 restarted or hot-reloaded. Inspect its result.json exception_info directly
 when auditing scored failures.
 
+## Evaluation coverage and stale dashboard summaries
+
+An evaluation can lose setup attempts while later samples are still running.
+In the Sep16 evaluation15 audit, 52/64 logical samples had scores, eleven had
+AgentSetupTimeoutError during installation upload, and one was still running.
+The dashboard continued showing evaluation10's completed64/reward0.578125:
+those summary gauges did not establish evaluation15 progress or success.
+
+Evaluation now emits `eval/step`, `eval/coverage` (returned trajectories divided
+by attempted trajectories), and `eval/is_complete`. Empty evaluations are not
+complete. These are final evaluation metrics, not live progress counters.
+Interpret reward alongside coverage and the evaluation step; reward remains
+the mean over returned scored trajectories. Missing samples are not silently
+converted to zero, retried for reward improvement, or treated as successes.
+Partial evaluations are not directly comparable with the complete fixed pool.
+
+Tests cover complete, partial/None, raised-exception and empty evaluations,
+including a custom metric prefix. This is diagnostic-only: no changes to
+sampling, retries, tokenizer, weight versions or reward calculation. The
+original Sep15 RL client predates these metrics and has not been restarted
+or hot-reloaded; inspect its artifacts and exact log epoch for live coverage.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.
