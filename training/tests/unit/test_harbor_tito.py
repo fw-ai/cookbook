@@ -2496,6 +2496,81 @@ def test_missing_artifact_setup_timeout_retries_only_recognized_stages(
         ))
 
 
+def test_e2b_readiness_retry_does_not_wait_for_healthy_sibling(
+    monkeypatch, tmp_path
+) -> None:
+    """A setup failure retries locally while a healthy group member keeps running."""
+    class Trial:
+        def __init__(self, config):
+            self.config = config
+            self._agent_timeout_sec = 7200
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            return SimpleNamespace(
+                task_name="example", trial_name=self.config.trial_name,
+                verifier_result=None, exception_info=_e2b_outer_sidecar_timeout(),
+            )
+
+    harbor = _fake_harbor()
+    harbor.Trial = Trial
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    delays = []
+
+    async def record_backoff(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(tito_rollout.asyncio, "sleep", record_backoff)
+
+    async def exercise():
+        sibling_started, release_sibling = asyncio.Event(), asyncio.Event()
+        attempts, sibling_attempts = [], []
+
+        async def healthy(attempt):
+            sibling_attempts.append(attempt)
+            sibling_started.set()
+            await release_sibling.wait()
+            return "healthy-result"
+
+        async def recovering(attempt):
+            attempts.append(attempt)
+            await sibling_started.wait()
+            if attempt == 0:
+                return await harbor_adapter.run_harbor_trial(
+                    task_config={}, inference_key="inference-key", run_id="readiness-timeout",
+                    harbor_environment="e2b", sidecar_bundle_path=tmp_path / "bundle.zip",
+                    sidecar_launch_spec=json.dumps({"debug_enabled": False,
+                        "inference_base_url": "https://api.fireworks.ai"}),
+                    trials_dir=tmp_path / "trials",
+                    agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
+                    agent_version=DEFAULT_OPENCODE_VERSION,
+                )
+            return "recovered-result"
+
+        sibling = asyncio.create_task(tito_rollout.run_with_fresh_trajectory_retries(
+            healthy, task_name="healthy-sibling", retries=1,
+        ))
+        try:
+            result = await asyncio.wait_for(
+                tito_rollout.run_with_fresh_trajectory_retries(
+                    recovering, task_name="setup-failure", retries=1,
+                ), timeout=3,
+            )
+            assert result == "recovered-result"
+            assert attempts == [0, 1]
+            assert delays == [15]
+            assert sibling_attempts == [0]
+            assert not sibling.done()
+        finally:
+            release_sibling.set()
+            assert await sibling == "healthy-result"
+
+    asyncio.run(exercise())
+
+
 def test_e2b_missing_default_template_tag_requires_exact_error() -> None:
     exception = SimpleNamespace(
         exception_type="SandboxException",
