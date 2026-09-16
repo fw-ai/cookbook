@@ -938,6 +938,32 @@ Before changing the agent prompt, task code, or polling policy, record the
 change and its effect on comparability. These observations do not justify
 discarding samples, fabricating build success, or altering verifier tests.
 
+## CPU usage is not sufficient evidence of useful agent progress
+
+Batch13 `feal-linear-cryptanalysis`, cursor204/member0, ran a generated C
+search with a fixed4194304-entry hash table. The insertion loop had no
+full-table termination condition. A read-only live audit found every slot
+occupied; the whole96MiB table checksum and output remained unchanged over
+75seconds while the process consumed another75CPU-seconds. This strongly
+supports a capacity-probing spin, not useful enumeration. The current key and
+instruction pointer were not sampled, so keep that inference distinct from
+the directly measured saturation and unchanged state.
+
+Do not call a long-running tool healthy solely because its CPU counter rises.
+Check boundedness, output/state progress and the existing deadline. Conversely,
+an unchanged output file alone does not prove a hang: valid programs buffer
+output or compute before writing. This diagnosis involved task-specific source
+and memory inspection; it is **not an automatic arbitrary-memory-reading or
+process-killing rule** for the monitor.
+
+The fault is in generated candidate code, not a demonstrated E2B defect.
+Do not repair the candidate algorithm, fabricate a tool response, or retry a
+valid zero-reward sample to improve its score. For this case, a request to
+interrupt only the search and let the existing agent receive the actual command
+failure is pending approval; no command was signaled or rewritten as part of
+the audit. Keep the existing deadline until authorized otherwise, and record
+any subsequent intervention and actual verifier result separately.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.
