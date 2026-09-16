@@ -136,9 +136,11 @@ for p in pathlib.Path('/proc').glob('[0-9]*/status'):
             row['elapsed_s'] = round(uptime-int(stat[19])/hz, 1)
             if row['Name'] == 'timeout':
                 args = (p.parent / 'cmdline').read_bytes().split(bytes([0]))
-                # Deliberately recognize only plain `timeout DURATION CMD`.
+                # Recognize plain timeout and the observed `-s INT` form.
                 # Unknown option forms are omitted, never guessed. No command
                 # text or child arguments are included in the observation.
+                if args[1:3] == [b'-s', b'INT']:
+                    args = args[:1] + args[3:]
                 duration = re.fullmatch(rb'([0-9]+(?:[.][0-9]+)?)([smhd]?)', args[1]) if len(args) > 2 else None
                 if duration:
                     row['declared_timeout_s'] = float(duration[1]) * {b'':1,b's':1,b'm':60,b'h':3600,b'd':86400}[duration[2]]

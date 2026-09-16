@@ -26,6 +26,9 @@ def overdue_node(expected, proc_root=Path('/proc')):
     if any(int(records[i][1][1]) != expected['chain'][i + 1]['pid'] for i in range(3)):
         return False
     args = (records[1][0] / 'cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+    # Support the observed SIGINT form only; other options still fail closed.
+    if args[1:3] == [b'-s', b'INT']:
+        args = args[:1] + args[3:]
     match = re.fullmatch(rb'([0-9]+(?:[.][0-9]+)?)([smhd]?)', args[1]) if len(args) >= 3 else None
     if not match or Path(os.fsdecode(args[2])).name != 'node':
         return False

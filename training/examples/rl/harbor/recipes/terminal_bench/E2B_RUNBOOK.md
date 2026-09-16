@@ -1223,13 +1223,22 @@ after 60 seconds but supplied no kill-after fallback; process observations
 showed Node still consuming CPU. This is an overrun of the agent's own
 deadline, not grounds to shorten the overall sampling deadline.
 
-The current observer/parser and `node_timeout_guard` deliberately recognize
-only plain `timeout DURATION node ...`. They reject the `-s INT` form, so the
-existing guard did not recover this sample. Long-tool inspection did flag it.
-Do not report this option form as covered, or bypass the guard with a broad
-process kill. Recovery approval and any narrowly tested parser extension
-must preserve the exact sandbox/tool/process identities and target only the
-overdue child, never the agent, verifier, process group, or RL services.
+The original observer/parser recognized only plain `timeout DURATION node ...`
+and rejected `-s INT`, so it did not recover this sample. The updated parser
+and guard also recognize exactly `timeout -s INT DURATION node ...`; other
+option forms still fail closed. Tests verify the 30-second grace period,
+child-only signal and rejection of unsupported forms. Existing sandbox,
+tool and process-identity checks remain mandatory. Reload only the observer
+to activate this change; do not restart the RL client or either service.
+
+At 23:27 UTC, user-approved recovery killed only the overdue Node child and
+one independently verified FEAL search child with a saturated hash table.
+Both original agents issued new tool calls afterward. This proves agent
+continuation, not successful task completion. The FEAL shell's exit zero came
+from its trailing `tail` command, not successful search execution. Do not
+rewrite tool results or rewards. The user authorized subsequent equivalent
+targeted recoveries without another approval provided training is not
+interrupted; this is not permission to terminate healthy long computations.
 
 Two separate batch23 attempts also lost their E2B command streams at
 22:18:11–12 UTC (`ConnectError`, peer closed without TLS close notification).

@@ -41,6 +41,18 @@ def test_positive_and_remote_serialization(evidence):
     compile(command.split('\n', 1)[1].rsplit('\nRECOVER', 1)[0], '<remote>', 'exec')
 
 
+def test_explicit_sigint_timeout_preserves_child_only_revalidation(evidence):
+    root, expected, _ = evidence
+    (root / '11' / 'cmdline').write_bytes(b'timeout\0-s\0INT\0' + b'120\0node\0candidate.js\0')
+    assert guard.overdue_node(expected, root)
+    with patch.object(guard.os, 'pidfd_open', return_value=99), \
+            patch.object(guard.signal, 'pidfd_send_signal') as sent, patch.object(guard.os, 'close'):
+        assert guard.signal_overdue_node(expected, root)['action'] == 'SIGKILL'
+        sent.assert_called_once_with(99, signal.SIGKILL)
+    (root / 'uptime').write_text('849 0')
+    assert not guard.overdue_node(expected, root)
+
+
 @pytest.mark.parametrize('change', ['sandbox', 'phase', 'tool', 'child', 'timer', 'shell', 'agent', 'parent', 'deadline'])
 def test_candidate_rejects_changed_evidence(evidence, change):
     _, _, before = evidence
@@ -61,7 +73,11 @@ def test_candidate_rejects_changed_evidence(evidence, change):
 
 
 @pytest.mark.parametrize('args', [b'timeout\0--preserve-status\0node', b'timeout\0nan\0node',
-                                  b'timeout\0' + b'0\0node', b'timeout\0' + b'120\0python', b'timeout'])
+                                  b'timeout\0' + b'0\0node', b'timeout\0' + b'120\0python', b'timeout',
+                                  b'timeout\0-s\0TERM\0' + b'120\0node',
+                                  b'timeout\0-s\0INT\0--foreground\0' + b'120\0node',
+                                  b'timeout\0-s\0INT',
+                                  b'timeout\0-s\0INT\0' + b'120\0python'])
 def test_rejects_unknown_command(evidence, args):
     root, expected, _ = evidence
     (root / '11' / 'cmdline').write_bytes(args)
