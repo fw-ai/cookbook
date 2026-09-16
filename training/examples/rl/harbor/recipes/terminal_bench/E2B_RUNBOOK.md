@@ -606,6 +606,23 @@ OOM evidence; the warning is not proof of OOM and never kills a process,
 changes task resources, or retries a sample. Do not sum process RSS to estimate
 guest usage: shared pages overlap. This is sandbox RAM, not trainer GPU memory.
 
+### SSH askpass can loop on a host-key confirmation
+
+In batch 14, `git-multibranch` cursor 219 / sample 0 created an askpass
+helper that always returned `password`, then ran `git clone` over local SSH
+with `SSH_ASKPASS_REQUIRE=force` and no explicit tool timeout. After more
+than ten minutes, direct `/proc` inspection caught that helper being called
+with `Please type 'yes', 'no' or the fingerprint:`. The response did not answer
+the question, causing repeated helper launches. Git and `head -5` waited for
+output; this was not a rollout, verifier, or E2B-capacity stall.
+
+Inspect the exact SSH child's identity, parent chain, and helper prompt before
+diagnosing this loop. Do not fix the candidate solution, accept its host key,
+change SSH security settings, or terminate the agent. A narrowly approved
+recovery may stop only the identified SSH child and let the original tool
+failure reach the agent. At diagnosis time no such signal had been sent;
+approval and actual subsequent tool/sample outcomes must be recorded separately.
+
 ### Harbor retries can precede producer accounting
 
 Inspect `client.log` and failed trial artifacts even when all producer retry/drop
