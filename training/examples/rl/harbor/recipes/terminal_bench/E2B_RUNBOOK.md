@@ -49,6 +49,35 @@ checkpoint-safe, authorized transition and must preserve completed samples.
 | `Sandbox not found` during artifact cleanup | Secondary cleanup after sandbox creation/build failed | Diagnose the earlier exception; do not treat cleanup noise as the root cause | Root exception is absent on rerun |
 | `PyTorch was not found` | Informational Transformers warning in the lightweight sidecar | No fix required; TITO needs tokenizer utilities, not Torch | Ignore unless followed by a different fatal exception |
 
+## Sidecar readiness timeout (batch19, 2026-09-16)
+
+Thirty original batch19 attempts reached the existing 360-second agent-setup
+deadline while `install_sidecar()` was sleeping in its readiness loop. All30
+retained tracebacks identify this same stage, **not** `upload_file` or E2B
+`files.write_files`. Do not attribute these failures to the earlier upload issue
+or broaden the upload-specific retry classifier to include them.
+
+One inspected retained sidecar log had only the informational no-PyTorch warning
+and no exception stack; this does not locate the underlying startup stall.
+The outer setup deadline can expire before the sidecar's own600-second readiness
+deadline. No deadline was changed. Existing incomplete-group handling retries
+missing members after their group resolves and preserves successful siblings;
+at13:08UTC cumulative drops were68, retries33, and rejected rows remained1.
+
+The read-only observer now records endpoint **existence only**, numeric PID,
+process state/start identity and CPU time. It warns when the endpoint is absent
+after four minutes, allowing inspection before the setup deadline when the
+observation arrives in time. It never reads endpoint/spec contents, sends a
+signal, retries a sample, or changes a timeout as a result of this warning.
+An existing PID or `kill -0` success alone does not prove a healthy sidecar:
+inspect zombie state as well. Missing readiness is a diagnostic, not a proven
+deadlock or permission to discard a sample.
+
+All65 monitor unit tests and Ruff passed. A read-only live E2B probe returned
+an existing endpoint and sleeping sidecar PID1644, with no warning; no
+candidate, scoring or RL-client behavior changed. This improves diagnosis,
+not a demonstrated fix for the underlying readiness failure.
+
 ## Installation-file upload timeout (2026-09-16)
 
 Batch 16 / evaluation 15 hit 38 `AgentSetupTimeoutError` attempts (27 training,

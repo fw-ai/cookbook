@@ -56,6 +56,26 @@ try:
             break
 except (OSError, ValueError):
     pass
+root = pathlib.Path('/tmp/fireworks-tito-sidecar')
+try:
+    # Never read endpoint.json/spec.json: both can contain credentials.
+    boot = {'endpoint_present': (root / 'endpoint.json').is_file(),
+            'pid_file_present': (root / 'sidecar.pid').is_file()}
+    if boot['pid_file_present']:
+        raw_pid = (root / 'sidecar.pid').read_text().strip()
+        if raw_pid.isdigit() and int(raw_pid) > 0:
+            pid = int(raw_pid)
+            boot['pid'] = pid
+            try:
+                fields = pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+                boot['process_state'] = fields[0]
+                boot['start_ticks'] = fields[19]
+                boot['cpu_seconds'] = (int(fields[11]) + int(fields[12])) / os.sysconf('SC_CLK_TCK')
+            except FileNotFoundError:
+                boot['process_state'] = 'missing'
+    out['sidecar_readiness'] = boot
+except (OSError, ValueError, IndexError):
+    out['sidecar_readiness'] = {'observation_error': 'unavailable'}
 if p.exists():
     with sqlite3.connect('file:' + str(p) + '?mode=ro', uri=True) as c:
         rows = c.execute('select time_updated,data from part order by time_updated desc limit 3').fetchall()
@@ -259,6 +279,22 @@ def memory_warnings(current):
     return []
 
 
+def sidecar_readiness_warnings(current):
+    """Expose slow startup before the outer setup deadline; never signal/retry."""
+    if (current.get('observation') == 'already_finalized'
+            or current.get('phase') != 'agent_or_setup'
+            or (current.get('trial_age_s') or 0) < 240):
+        return []
+    boot = current.get('remote', {}).get('sidecar_readiness', {})
+    if boot.get('endpoint_present') is not False:
+        return []
+    return [{'code': 'sidecar_not_ready_after_four_minutes',
+             'trial_age_s': current['trial_age_s'],
+             'pid_file_present': boot.get('pid_file_present'),
+             'process_state': boot.get('process_state'),
+             'action': 'Inspect setup stage, sidecar process and sanitized startup logs; missing endpoint alone does not prove a hang. Do not terminate, retry or change deadlines automatically'}]
+
+
 def guest_oom_warnings(current):
     """Guest-lifetime counter: not a trainer OOM or proof this trial caused it.
 
@@ -398,6 +434,7 @@ def main():
                                          + timeout_warnings(trial)
                                          + search_wait_warnings(trial)
                                          + memory_warnings(trial)
+                                         + sidecar_readiness_warnings(trial)
                                          + guest_oom_warnings(trial)
                                          + sampling_budget_warnings(trial))
                     if args.recover_kernel_stream_grep:

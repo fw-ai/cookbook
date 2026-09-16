@@ -89,6 +89,33 @@ def test_memory_warning_allows_missing_remote_observation():
     compile(monitor.REMOTE.removeprefix("python3 - <<'REMOTE'\n").removesuffix('\nREMOTE'), '<remote-probe>', 'exec')
 
 
+@pytest.mark.parametrize('state', ['S', 'R', 'Z', 'missing', None])
+def test_sidecar_readiness_warning_never_assumes_process_is_healthy(state):
+    current = {'phase': 'agent_or_setup', 'trial_age_s': 240,
+               'remote': {'sidecar_readiness': {'endpoint_present': False,
+                          'pid_file_present': state is not None,
+                          'process_state': state}}}
+    original = deepcopy(current)
+    warning, = monitor.sidecar_readiness_warnings(current)
+    assert warning['code'] == 'sidecar_not_ready_after_four_minutes'
+    assert warning['process_state'] == state
+    assert 'Do not terminate, retry or change deadlines' in warning['action']
+    assert current == original
+
+
+@pytest.mark.parametrize('patch', [
+    {'trial_age_s': 239}, {'phase': 'verification_or_finalization'},
+    {'observation': 'already_finalized'}, {'remote': {}},
+    {'remote': {'sidecar_readiness': {'endpoint_present': True}}},
+    {'remote': {'sidecar_readiness': {'observation_error': 'unavailable'}}},
+])
+def test_sidecar_readiness_skips_ready_unknown_early_and_finalized(patch):
+    current = {'phase': 'agent_or_setup', 'trial_age_s': 300,
+               'remote': {'sidecar_readiness': {'endpoint_present': False}}}
+    current.update(patch)
+    assert monitor.sidecar_readiness_warnings(current) == []
+
+
 @pytest.mark.parametrize('count,warn', [(4, True), (1, True), (0, False),
                                      (-1, False), (None, False), ('4', False),
                                      (True, False)])
