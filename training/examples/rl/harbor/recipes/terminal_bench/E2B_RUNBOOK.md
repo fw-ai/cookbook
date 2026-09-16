@@ -1099,6 +1099,31 @@ sampling, retries, tokenizer, weight versions or reward calculation. The
 original Sep15 RL client predates these metrics and has not been restarted
 or hot-reloaded; inspect its artifacts and exact log epoch for live coverage.
 
+## OpenCode tool timestamps reset by progress metadata
+
+In the Sep16 regex-chess audit, live snapshots observed a model-authored
+`timeout 900 python3 fuzz.py ... | tail ...` running for about 900 seconds.
+After it returned, the completed SQLite tool state reported only 9 ms.
+The local OpenCode metadata callback in `src/session/tools.ts` writes
+`time.start = Date.now()` on progress updates; completion retains the latest
+value. Do not infer actual tool duration from completed start/end alone.
+Likewise, the pipeline's exit 0 can be tail's status, not a passed fuzz test.
+
+The E2B observer preserves the earliest recorded start across consecutive
+observations, keyed by trial, sandbox and unique tool-part ID. It logs this
+as `observed_elapsed_s_lower_bound` alongside unmodified raw `start_ms` and
+`elapsed_s`, and uses the lower bound for inspection-only long-tool warnings.
+Calls with the same tool name never share timing state. Missing observations
+or observer restarts can still underestimate elapsed time; this is not an
+exact profiler. A late first observation cannot reconstruct earlier resets.
+
+This correction changes no agent binary, rollout settings, deadlines,
+rewards, retries, or process-based recovery guards. A long-tool warning is
+not authorization to terminate a candidate's legitimate computation.
+Tests cover repeated timestamp resets, identity boundaries, malformed times,
+legacy observations and missing history. Activate an updated observer
+separately; the RL client/trainer/rollout do not need a restart.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.

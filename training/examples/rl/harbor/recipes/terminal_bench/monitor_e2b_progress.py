@@ -20,6 +20,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import time
 
@@ -37,7 +38,7 @@ from training.examples.rl.harbor.recipes.terminal_bench.kernel_stream_guard impo
 REMOTE = """python3 - <<'REMOTE'
 import json, os, pathlib, re, sqlite3, time
 p = pathlib.Path('/logs/agent/opencode/xdg-data/opencode/opencode.db')
-out = {}
+out = {'observed_at_ms': time.time() * 1000}
 try:
     memory = {}
     for line in pathlib.Path('/proc/meminfo').read_text().splitlines():
@@ -58,7 +59,7 @@ except (OSError, ValueError):
 if p.exists():
     with sqlite3.connect('file:' + str(p) + '?mode=ro', uri=True) as c:
         rows = c.execute('select time_updated,data from part order by time_updated desc limit 3').fetchall()
-        active = c.execute("select data from part where json_extract(data, '$.state.status')='running'").fetchall()
+        active = c.execute("select id,data from part where json_extract(data, '$.state.status')='running'").fetchall()
         message = c.execute("select time_updated,data from message where json_extract(data, '$.role')='assistant' order by time_updated desc limit 1").fetchone()
     if message:
         updated, raw = message
@@ -72,11 +73,11 @@ if p.exists():
             'finish': d.get('finish'),
         }
     out['running_tools'] = []
-    for (raw,) in active:
+    for part_id, raw in active:
         d = json.loads(raw)
         state = d.get('state', {})
         start = state.get('time', {}).get('start')
-        out['running_tools'].append({'tool': d.get('tool'), 'start_ms': start,
+        out['running_tools'].append({'part_id': part_id, 'tool': d.get('tool'), 'start_ms': start,
             'elapsed_s': round(time.time()-start/1000, 1) if start else None,
             'timeout_ms': state.get('input', {}).get('timeout')})
     out['activity'] = []
@@ -190,6 +191,38 @@ def inspect_trial(root, trial):
     return result
 
 
+def retain_tool_start(previous, current):
+    """Keep a lower-bound tool age when OpenCode metadata resets start_ms.
+
+    Match the trial, sandbox and unique part ID, never the tool name. Raw
+    timestamps remain intact. Missing history (including observer restart)
+    can underestimate duration; this diagnostic never changes a deadline or
+    the process-based recovery guards.
+    """
+    def valid(value):
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+
+    remote = current.get('remote', {})
+    now = remote.get('observed_at_ms')
+    if not valid(now):
+        return
+    previous = previous or {}
+    same_trial = (current.get('trial') is not None
+                  and current.get('trial') == previous.get('trial')
+                  and current.get('sandbox_id') is not None
+                  and current.get('sandbox_id') == previous.get('sandbox_id'))
+    old = {tool.get('part_id'): tool for tool in
+           previous.get('remote', {}).get('running_tools', [])} if same_trial else {}
+    for tool in remote.get('running_tools', []):
+        part_id, start = tool.get('part_id'), tool.get('start_ms')
+        if not part_id or not valid(start) or start > now:
+            continue
+        prior = old.get(part_id, {}).get('earliest_recorded_start_ms')
+        earliest = min(start, prior) if valid(prior) else start
+        tool['earliest_recorded_start_ms'] = earliest
+        tool['observed_elapsed_s_lower_bound'] = round((now - earliest) / 1000, 1)
+
+
 def sampling_budget_warnings(current):
     """Inspection thresholds only; never change deadlines or discard samples."""
     if current.get('observation') == 'already_finalized':
@@ -201,9 +234,11 @@ def sampling_budget_warnings(current):
                          'action': 'Inspect current phase and critical path; 30 minutes is a target, not a termination deadline'})
     if current.get('phase') == 'agent_or_setup':
         for tool in current.get('remote', {}).get('running_tools', []):
-            if (tool.get('elapsed_s') or 0) >= 600:
+            elapsed = max(tool.get('elapsed_s') or 0,
+                          tool.get('observed_elapsed_s_lower_bound') or 0)
+            if elapsed >= 600:
                 warnings.append({'code': 'long_tool_call', 'tool': tool.get('tool'),
-                                 'elapsed_s': tool['elapsed_s'],
+                                 'elapsed_s': elapsed,
                                  'action': 'Inspect process progress, explicit deadline and output handling; CPU activity or quiet output alone does not prove a hang'})
     return warnings
 
@@ -358,6 +393,7 @@ def main():
                 with ThreadPoolExecutor(max_workers=4) as pool:
                     record['trials'] = list(pool.map(lambda t: inspect_trial(root, t), pending))
                 for trial in record['trials']:
+                    retain_tool_start(previous.get(trial['trial']), trial)
                     trial['warnings'] = (stall_warnings(previous.get(trial['trial']), trial)
                                          + timeout_warnings(trial)
                                          + search_wait_warnings(trial)

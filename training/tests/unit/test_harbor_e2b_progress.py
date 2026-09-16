@@ -6,6 +6,67 @@ import pytest
 from training.examples.rl.harbor.recipes.terminal_bench import monitor_e2b_progress as monitor
 
 
+def _tool_observation(start=1000, now=901000, part_id='part-1'):
+    return {'trial': 'trial-1', 'sandbox_id': 'sandbox-1', 'phase': 'agent_or_setup',
+            'remote': {'observed_at_ms': now, 'running_tools': [
+                {'part_id': part_id, 'tool': 'bash', 'start_ms': start,
+                 'elapsed_s': (now - start) / 1000}]}}
+
+
+def test_tool_metadata_refresh_does_not_hide_long_running_tool():
+    previous = _tool_observation(now=301000)
+    monitor.retain_tool_start(None, previous)
+    saved = deepcopy(previous)
+    current = _tool_observation(start=900000)
+    monitor.retain_tool_start(previous, current)
+    tool = current['remote']['running_tools'][0]
+    assert tool['start_ms'] == 900000  # Preserve the raw, reset timestamp.
+    assert tool['elapsed_s'] == 1
+    assert tool['earliest_recorded_start_ms'] == 1000
+    assert tool['observed_elapsed_s_lower_bound'] == 900
+    assert previous == saved
+    warnings = monitor.sampling_budget_warnings(current)
+    assert warnings[0]['code'] == 'long_tool_call'
+    assert warnings[0]['elapsed_s'] == 900
+    assert 'does not prove a hang' in warnings[0]['action']
+    latest = _tool_observation(start=950000, now=960000)
+    monitor.retain_tool_start(current, latest)
+    assert latest['remote']['running_tools'][0]['observed_elapsed_s_lower_bound'] == 959
+
+
+@pytest.mark.parametrize('field', ['trial', 'sandbox_id', 'part_id'])
+def test_tool_start_never_crosses_trial_sandbox_or_call(field):
+    previous = _tool_observation(now=301000)
+    monitor.retain_tool_start(None, previous)
+    current = _tool_observation(start=900000)
+    if field == 'part_id':
+        current['remote']['running_tools'][0][field] = 'part-2'
+    else:
+        current[field] = 'different'
+    monitor.retain_tool_start(previous, current)
+    assert current['remote']['running_tools'][0]['observed_elapsed_s_lower_bound'] == 1
+    assert monitor.sampling_budget_warnings(current) == []
+
+
+@pytest.mark.parametrize('value', [None, -1, True, '1000', float('nan'), float('inf'), 9999999])
+def test_invalid_tool_start_is_not_used(value):
+    current = _tool_observation()
+    tool = current['remote']['running_tools'][0]
+    tool['start_ms'] = value
+    monitor.retain_tool_start(None, current)
+    assert 'earliest_recorded_start_ms' not in tool
+
+
+def test_missing_history_and_legacy_observations_are_safe():
+    monitor.retain_tool_start(None, {})
+    current = _tool_observation(part_id=None)
+    monitor.retain_tool_start(None, current)
+    assert 'observed_elapsed_s_lower_bound' not in current['remote']['running_tools'][0]
+    current = _tool_observation(start=900000)
+    monitor.retain_tool_start({'observation_error': 'TimeoutError'}, current)
+    assert current['remote']['running_tools'][0]['observed_elapsed_s_lower_bound'] == 1
+
+
 @pytest.mark.parametrize('total,available,warn', [
     (1000, 100, True), (1000, 0, True), (1000, 101, False),
     (1000, -1, False), (0, 0, False), (None, 0, False),
