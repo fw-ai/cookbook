@@ -907,6 +907,37 @@ counter. It does not classify a failed sample or send signals. Tests cover
 progress, process reuse, missing fields, differing phases and sandbox changes.
 Updating this module does not hot-reload an already-running observer/client.
 
+## Process-name polling can match the waiting shell itself
+
+Batch12 `compile-compcert`, cursor185/member5, ran
+`while pgrep -f "make -j4 all" >/dev/null; do sleep 10; done`.
+The shell command line itself contained the search string. A `/proc` audit
+found only that waiting shell matching it, with no matching build process.
+Consequently the loop could not report completion even after the build ended.
+This was a model-authored shell command, not an E2B capacity problem.
+
+A local CPU-only reproduction confirmed that the original loop exceeded a
+five-second test deadline with no build running, while the same test with
+`pgrep --ignore-ancestors -f` exited normally. Prefer waiting for the actual
+captured build PID and collecting its exit status; a process-name search
+does not establish build success. Ancestor exclusion is supported by the
+tested procps version, not necessarily every sandbox implementation.
+
+The live command reached its existing ten-minute tool timeout and the agent
+continued. The real verifier subsequently passed; the trial finalized at
+2026-09-16 00:32:40 UTC with reward1 and no exception. A proposed targeted
+recovery failed an argv identity check **before sending any signal**; no live
+recovery or command rewrite was applied. Do not credit this completion to an
+intervention, and do not signal the PID after sandbox finalization.
+
+Another sample in the same batch repeatedly used fixed 570–590-second sleeps
+before checking a background build. These sleeps can outlive the build and
+delay sampling without any hung process. They are distinct from the self-match
+bug: do not terminate valid commands merely to meet a thirty-minute target.
+Before changing the agent prompt, task code, or polling policy, record the
+change and its effect on comparability. These observations do not justify
+discarding samples, fabricating build success, or altering verifier tests.
+
 ## Launch sequence
 
 1. Run unit tests for task rewrites, timeout ordering, resource overrides, and the dedicated config.
