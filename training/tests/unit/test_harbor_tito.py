@@ -2377,6 +2377,46 @@ def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> Non
     )
 
 
+def _e2b_outer_sidecar_timeout():
+    return SimpleNamespace(
+        exception_type="AgentSetupTimeoutError",
+        exception_message="Agent setup timed out after 360.0 seconds",
+        exception_traceback=(
+            '  File "/venv/site-packages/harbor/agents/installed/base.py", line 939, in setup\n'
+            '  File "/repo/training/examples/rl/harbor/opencode/agent.py", line 173, in install\n'
+            '  File "/repo/training/examples/rl/harbor/tito/sidecar.py", line 473, in install_sidecar\n'
+            '  File "/usr/lib/python3.12/asyncio/tasks.py", line 665, in sleep\n'
+            'asyncio.exceptions.CancelledError\n'
+        ),
+    )
+
+
+@pytest.mark.parametrize("changed", [
+    "none", "backend", "type", "message", "setup", "install", "sidecar", "sleep", "cancelled",
+])
+def test_outer_sidecar_timeout_requires_exact_setup_readiness_stack(changed):
+    exception = _e2b_outer_sidecar_timeout()
+    backend = "e2b"
+    if changed == "backend":
+        backend = "docker"
+    elif changed == "type":
+        exception.exception_type = "AgentTimeoutError"
+    elif changed == "message":
+        exception.exception_message = "agent execution timed out"
+    elif changed in {"setup", "install", "sidecar", "sleep"}:
+        function = "install_sidecar" if changed == "sidecar" else changed
+        exception.exception_traceback = exception.exception_traceback.replace(
+            f"in {function}\n", "in unrelated\n"
+        )
+    elif changed == "cancelled":
+        exception.exception_traceback = exception.exception_traceback.replace(
+            "asyncio.exceptions.CancelledError", "ValueError: invalid configuration"
+        )
+    assert harbor_adapter._is_retryable_e2b_sidecar_readiness_timeout(
+        exception, harbor_environment=backend
+    ) is (changed == "none")
+
+
 def _e2b_setup_upload_timeout():
     return SimpleNamespace(
         exception_type="AgentSetupTimeoutError",
@@ -2412,12 +2452,14 @@ def test_e2b_setup_upload_timeout_requires_installation_stack(changed) -> None:
     ) is (changed == "none")
 
 
-@pytest.mark.parametrize("upload_timeout", [True, False])
-def test_missing_artifact_setup_upload_timeout_retries_only_transport(
-    monkeypatch, tmp_path, upload_timeout
+@pytest.mark.parametrize("stage", ["upload", "sidecar", "unrelated"])
+def test_missing_artifact_setup_timeout_retries_only_recognized_stages(
+    monkeypatch, tmp_path, stage
 ) -> None:
     exception = _e2b_setup_upload_timeout()
-    if not upload_timeout:
+    if stage == "sidecar":
+        exception = _e2b_outer_sidecar_timeout()
+    elif stage == "unrelated":
         exception.exception_traceback = exception.exception_traceback.replace("in upload_file", "in exec")
 
     class Trial:
@@ -2438,8 +2480,10 @@ def test_missing_artifact_setup_upload_timeout_retries_only_transport(
     harbor = _fake_harbor()
     harbor.Trial = Trial
     monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
-    expected = RecoverableRolloutError if upload_timeout else RuntimeError
-    match = "uploading an installation file" if upload_timeout else "non-retryable"
+    expected = RuntimeError if stage == "unrelated" else RecoverableRolloutError
+    match = {"upload": "uploading an installation file",
+             "sidecar": "sidecar did not become ready",
+             "unrelated": "non-retryable"}[stage]
     with pytest.raises(expected, match=match):
         asyncio.run(harbor_adapter.run_harbor_trial(
             task_config={}, inference_key="inference-key", run_id="upload-timeout",

@@ -78,6 +78,23 @@ an existing endpoint and sleeping sidecar PID1644, with no warning; no
 candidate, scoring or RL-client behavior changed. This improves diagnosis,
 not a demonstrated fix for the underlying readiness failure.
 
+The adapter also recognizes the **outer** `AgentSetupTimeoutError` only when
+the exact setup/install/sidecar-readiness/sleep cancellation frames match and
+no valid TITO artifact exists. It then uses existing bounded per-trajectory
+retries rather than first returning a missing group member and waiting for
+potentially long siblings. This is a recovery fix, not a diagnosis or cure of
+the underlying startup stall. It preserves deadlines, task code and scores;
+ordinary agent/verifier timeouts and unrelated setup failures are excluded.
+All30 retained batch19 setup failures match this narrow classifier.
+The original live RL client predates this change: it is **not live**, and
+applying it requires an explicitly approved client transition. No restart or
+hotpatch is authorized by updating the checkout.
+Validation: all143 Harbor/TITO unit tests passed, including strict negative
+classifier cases and missing-artifact adapter behavior. The changed test file
+passes Ruff. `trial.py` has an existing unrelated F841 unused assignment in
+the template-build path (also reproduced from the prior HEAD); lint passes
+with only that pre-existing rule violation excluded. It was not silently fixed.
+
 ## Installation-file upload timeout (2026-09-16)
 
 Batch 16 / evaluation 15 hit 38 `AgentSetupTimeoutError` attempts (27 training,

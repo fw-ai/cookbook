@@ -194,6 +194,26 @@ def _is_retryable_e2b_sidecar_readiness_timeout(
     traceback = str(getattr(exception, "exception_traceback", "") or "")
     exception_type = str(getattr(exception, "exception_type", "") or "")
     exception_message = str(getattr(exception, "exception_message", "") or "")
+    # Harbor's outer setup deadline can expire before the sidecar's own
+    # readiness deadline. Match only cancellation inside that readiness wait,
+    # not arbitrary setup work or an agent/verifier execution timeout.
+    if exception_type == "AgentSetupTimeoutError":
+        if re.fullmatch(
+            r"Agent setup timed out after [0-9]+(?:\.[0-9]+)? seconds",
+            exception_message,
+        ) is None:
+            return False
+        frames = (
+            ("harbor/agents/installed/base.py", "setup"),
+            ("training/examples/rl/harbor/opencode/agent.py", "install"),
+            ("training/examples/rl/harbor/tito/sidecar.py", "install_sidecar"),
+            ("asyncio/tasks.py", "sleep"),
+        )
+        return all(
+            re.search(rf'(?m)^\s*File "[^"\n]*/{re.escape(path)}", line \d+, in {function}$', traceback)
+            is not None
+            for path, function in frames
+        ) and re.search(r"(?m)^asyncio\.exceptions\.CancelledError\s*$", traceback) is not None
     marker = r"TITO sidecar did not become ready within [0-9]+(?:\.[0-9]+)?s"
     inner_timeout = (
         "training/examples/rl/harbor/tito/sidecar.py" in traceback
