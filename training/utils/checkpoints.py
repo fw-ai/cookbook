@@ -4,9 +4,9 @@ Collapses the old three-way split (DCP / sampler-full / sampler-LoRA) behind
 two user-facing axes: ``resumable`` and ``promotable``. The control plane
 (``FireworksClient.list_checkpoints(job_id)``) is the source of truth for
 what checkpoints exist, their type, and promotability. The only
-locally-persisted file is ``dataloader.json``, which maps checkpoint name
-to the cookbook's ``data_consumed`` counter (no server-side
-representation).
+locally-persisted file is ``dataloader.json``, which maps checkpoint names
+to the cookbook-owned recovery state that has no server-side representation:
+the recipe step and ``data_consumed`` cursor.
 
 The helpers centralize checkpoint naming and resume metadata handling.
 
@@ -47,6 +47,7 @@ from training.utils.runner import UserConfigError
 
 DATALOADER_BASE_NAME = "dataloader.json"
 DATALOADER_HISTORY_KEEP = 20
+DATALOADER_SCHEMA_VERSION = 1
 
 _RESUMABLE_TYPE_SUFFIXES = ("TRAINING", "TRAINING_LORA")
 
@@ -95,6 +96,17 @@ class ResumeInfo:
     #: Cumulative raw rows from the source dataset (incl. drops / sample failures), across all runs.
     data_consumed: int = 0
     source_job_id: str | None = None
+
+
+@dataclass(frozen=True)
+class CheckpointClientState:
+    """Cookbook-owned state committed for one resumable DCP checkpoint."""
+
+    step: int
+    data_consumed: int
+
+    def to_json(self) -> dict[str, int]:
+        return {"step": self.step, "data_consumed": self.data_consumed}
 
 
 class _CheckpointLister(Protocol):
@@ -408,15 +420,22 @@ class TrainingCheckpoints:
         plane with ``promotable=True`` (e.g. produced earlier by
         RL weight sync in the same loop).
 
-        ``data_consumed`` is persisted to ``dataloader.json`` keyed on
-        ``name`` so the corresponding resume call can recover the cookbook's
-        rollouts-consumed counter. Ignored when ``resumable=False``.
+        ``data_consumed`` and the recipe step are persisted to
+        ``dataloader.json`` under the resolved control-plane checkpoint name.
+        That record commits the client half of the recovery point. Ignored
+        when ``resumable=False``.
         """
         if not (resumable or promotable):
             raise ValueError("save() requires at least one of resumable/promotable")
 
         t0 = time.time()
         if resumable:
+            if data_consumed is not None:
+                # Write/migrate the versioned manifest before starting the DCP
+                # save. If the process dies after the DCP becomes visible but
+                # before its client state commits, resume can distinguish that
+                # incomplete checkpoint from legacy state and fall back.
+                self._ensure_dataloader_manifest()
             # Record save start time so we can wait for the control plane to
             # reflect a row newer than this save. The trainer may rename to its
             # internal step counter (caller passes "step-42", service stores
@@ -435,7 +454,13 @@ class TrainingCheckpoints:
                     stabilize_s=self._save_stabilize_s,
                     poll_s=self._save_poll_s,
                 )
-                self._write_dataloader(actual_name, data_consumed)
+                self._write_dataloader(
+                    actual_name,
+                    CheckpointClientState(
+                        step=_step_from_name(name),
+                        data_consumed=data_consumed,
+                    ),
+                )
                 if actual_name != name:
                     logger.info(
                         "DCP server-stored name %r differs from caller name %r; "
@@ -509,6 +534,16 @@ class TrainingCheckpoints:
                 trainer_id=self._trainer_id,
             )
             if ref.restore_recipe_state and restore_optimizer:
+                state, manifest_is_versioned = self._read_dataloader(
+                    ref.checkpoint_name
+                )
+                if state is None and manifest_is_versioned:
+                    raise UserConfigError(
+                        "Checkpoint "
+                        f"{ref.checkpoint_name!r} has no committed client recovery "
+                        "state. Choose a checkpoint present in dataloader.json or "
+                        "use a weights-only initialization."
+                    )
                 path = self._client.resolve_checkpoint_path(ref.checkpoint_name)
                 logger.info(
                     "Resuming from explicit same-trainer checkpoint: %s",
@@ -518,8 +553,12 @@ class TrainingCheckpoints:
                 self._client.load_state_with_optimizer(path)
                 logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
                 return ResumeInfo(
-                    step=_step_from_name(ref.checkpoint_name),
-                    data_consumed=self._read_dataloader(ref.checkpoint_name),
+                    step=(
+                        state.step
+                        if state is not None
+                        else _step_from_name(ref.checkpoint_name)
+                    ),
+                    data_consumed=state.data_consumed if state is not None else 0,
                     source_job_id=None if self._serverless else self._trainer_id,
                 )
             path = self._client.resolve_checkpoint_path(
@@ -544,10 +583,14 @@ class TrainingCheckpoints:
                 source_job_id=ref.source_job_id,
             )
 
-        latest = self._latest_resumable()
+        client_states, manifest_is_versioned = self._read_all_dataloader()
+        latest = self._latest_resumable(
+            committed_names=set(client_states) if manifest_is_versioned else None
+        )
         if latest:
             short = _short_name(latest["name"])
             logical = self._trainer_logical_name(short)
+            state = client_states.get(logical)
             # In serverless mode the pooled multi-session trainer namespaces
             # checkpoints under the current run/session itself and rejects a
             # cross_job://<session_id>/<name> ref (session_id is not a source
@@ -562,8 +605,8 @@ class TrainingCheckpoints:
             self._client.load_state_with_optimizer(path)
             logger.info("Checkpoint loaded: %s (%.1fs)", path, time.time() - t0)
             return ResumeInfo(
-                step=_step_from_name(logical),
-                data_consumed=self._read_dataloader(logical),
+                step=state.step if state is not None else _step_from_name(logical),
+                data_consumed=state.data_consumed if state is not None else 0,
                 source_job_id=None if self._serverless else self._trainer_id,
             )
 
@@ -755,7 +798,9 @@ class TrainingCheckpoints:
         )
         return None
 
-    def _latest_resumable(self) -> dict | None:
+    def _latest_resumable(
+        self, *, committed_names: set[str] | None = None
+    ) -> dict | None:
         try:
             rows = [
                 r
@@ -770,6 +815,27 @@ class TrainingCheckpoints:
             )
             return None
         rows = _newest_first(rows)
+        if committed_names is not None:
+            committed_rows = [
+                row
+                for row in rows
+                if self._trainer_logical_name(_short_name(row.get("name", "")))
+                in committed_names
+            ]
+            if rows and not committed_rows:
+                raise UserConfigError(
+                    "Resumable DCP checkpoints exist, but none has committed "
+                    "client recovery state in dataloader.json. The latest save "
+                    "may have been interrupted; explicitly choose a known-good "
+                    "checkpoint or start a weights-only initialization."
+                )
+            if len(committed_rows) != len(rows):
+                logger.warning(
+                    "Ignoring %d DCP checkpoint(s) without committed client "
+                    "recovery state; resuming the newest complete pair.",
+                    len(rows) - len(committed_rows),
+                )
+            rows = committed_rows
         return rows[0] if rows else None
 
     def _row_matches_current_run(self, row: dict) -> bool:
@@ -828,29 +894,92 @@ class TrainingCheckpoints:
     def _dataloader_path(self) -> str:
         return fileio.join(self._log_path, DATALOADER_BASE_NAME)
 
-    def _read_all_dataloader(self) -> dict[str, int]:
+    def _read_all_dataloader(self) -> tuple[dict[str, CheckpointClientState], bool]:
         path = self._dataloader_path()
         raw = fileio.read_text(path)
         if not raw:
-            return {}
+            return {}, False
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
-            logger.warning("Corrupt %s (%s); treating as empty.", path, e)
-            return {}
-        return {k: int(v) for k, v in data.items()}
+            raise UserConfigError(
+                f"Cannot read client recovery state from corrupt {path}: {e}"
+            ) from e
 
-    def _write_dataloader(self, name: str, data_consumed: int) -> None:
-        data = self._read_all_dataloader()
-        data[name] = data_consumed
-        if len(data) > DATALOADER_HISTORY_KEEP:
-            ordered = sorted(data.items(), key=lambda kv: _step_from_name(kv[0]))
-            data = dict(ordered[-DATALOADER_HISTORY_KEEP:])
+        if not isinstance(data, dict):
+            raise UserConfigError(
+                f"Client recovery state in {path} must be a JSON object."
+            )
+
+        if "schema_version" in data and (
+            data.get("schema_version") != DATALOADER_SCHEMA_VERSION
+            or not isinstance(data.get("checkpoints"), dict)
+        ):
+            raise UserConfigError(
+                f"Unsupported or malformed client recovery state in {path}."
+            )
+
+        manifest_is_versioned = (
+            data.get("schema_version") == DATALOADER_SCHEMA_VERSION
+            and isinstance(data.get("checkpoints"), dict)
+        )
+        entries = data["checkpoints"] if manifest_is_versioned else data
+        states: dict[str, CheckpointClientState] = {}
+        for name, value in entries.items():
+            try:
+                if isinstance(value, dict):
+                    state = CheckpointClientState(
+                        step=int(value["step"]),
+                        data_consumed=int(value["data_consumed"]),
+                    )
+                else:
+                    # Backward compatibility with the original
+                    # ``{"step-N": data_consumed}`` representation.
+                    state = CheckpointClientState(
+                        step=_step_from_name(name),
+                        data_consumed=int(value),
+                    )
+            except (KeyError, TypeError, ValueError):
+                logger.warning(
+                    "Ignoring invalid client recovery state for checkpoint %r in %s.",
+                    name,
+                    path,
+                )
+                continue
+            states[name] = state
+        return states, manifest_is_versioned
+
+    def _write_all_dataloader(
+        self, states: dict[str, CheckpointClientState]
+    ) -> None:
+        payload = {
+            "schema_version": DATALOADER_SCHEMA_VERSION,
+            "checkpoints": {name: state.to_json() for name, state in states.items()},
+        }
         fileio.makedirs(self._log_path)
-        fileio.write_json(self._dataloader_path(), data)
+        fileio.write_json(self._dataloader_path(), payload)
 
-    def _read_dataloader(self, name: str) -> int:
-        return self._read_all_dataloader().get(name, 0)
+    def _ensure_dataloader_manifest(self) -> None:
+        states, manifest_is_versioned = self._read_all_dataloader()
+        if not manifest_is_versioned:
+            self._write_all_dataloader(states)
+
+    def _write_dataloader(self, name: str, state: CheckpointClientState) -> None:
+        states, _ = self._read_all_dataloader()
+        # Dict order is the recovery-point commit order. Refresh an existing
+        # name as well: a same-trainer run can reuse checkpoint names after its
+        # recipe step resets.
+        states.pop(name, None)
+        states[name] = state
+        if len(states) > DATALOADER_HISTORY_KEEP:
+            states = dict(list(states.items())[-DATALOADER_HISTORY_KEEP:])
+        self._write_all_dataloader(states)
+
+    def _read_dataloader(
+        self, name: str
+    ) -> tuple[CheckpointClientState | None, bool]:
+        states, manifest_is_versioned = self._read_all_dataloader()
+        return states.get(name), manifest_is_versioned
 
 
 def _step_from_name(name: str) -> int:
