@@ -174,11 +174,27 @@ def _is_retryable_e2b_command_stream_disconnect(
         "timed out",
         "peer closed connection without sending TLS close_notify",
     )
+    # Some pyqwest versions omit the transport detail. Require the chained
+    # stream error, not a generic ConnectError from an unrelated API call.
+    bare_stream_error = (
+        "connectrpc/_client_async.py" in traceback
+        and re.search(
+            r"(?m)^pyqwest\._errors\.StreamError: Error reading content$", traceback
+        )
+        is not None
+        and re.search(
+            r"(?m)^connectrpc\.errors\.ConnectError: Error reading content$", traceback
+        )
+        is not None
+    )
     return (
         exception_type == "ConnectError"
         and "harbor/environments/e2b.py" in traceback
         and "e2b/sandbox_async/commands/command_handle.py" in traceback
-        and any(marker_prefix + reason in traceback for reason in retryable_reasons)
+        and (
+            bare_stream_error
+            or any(marker_prefix + reason in traceback for reason in retryable_reasons)
+        )
     )
 
 

@@ -2336,6 +2336,34 @@ def test_e2b_command_stream_disconnect_is_retryable(reason: str) -> None:
     )
 
 
+def test_e2b_bare_content_error_requires_provider_stream_cause() -> None:
+    frames = (
+        'File "/site-packages/harbor/environments/e2b.py"\n'
+        'File "/site-packages/e2b/sandbox_async/commands/command_handle.py"\n'
+        'File "/site-packages/connectrpc/_client_async.py"\n'
+    )
+    cause = "pyqwest._errors.StreamError: Error reading content\n"
+    final = "connectrpc.errors.ConnectError: Error reading content\n"
+
+    def matches(traceback: str, environment: str = "e2b") -> bool:
+        return harbor_adapter._is_retryable_e2b_command_stream_disconnect(
+            SimpleNamespace(
+                exception_type="ConnectError",
+                exception_message="Error reading content",
+                exception_traceback=traceback,
+            ),
+            harbor_environment=environment,
+        )
+
+    assert matches(cause + frames + final)
+    assert not matches(frames + final)
+    assert not matches(cause + final)
+    assert not matches(cause + frames + final, "docker")
+    assert not matches(cause + frames + final.replace("content", "content: denied"))
+    for frame in frames.splitlines(keepends=True):
+        assert not matches(cause + frames.replace(frame, "") + final)
+
+
 def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> None:
     marker = "TITO sidecar did not become ready within 600s"
     exception = SimpleNamespace(
