@@ -187,6 +187,7 @@ HISTORICAL_PARSE_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
 }
 
 OBSERVATION_EXPECTED_DIVERGENCES: dict[tuple[str, str], str] = {
+    ("qwen3", "consecutive_assistant"): "consecutive assistant turns break the observation==generation-prompt invariant for qwen3: the HF template inserts the empty think wrapper on the final assistant whenever it lacks reasoning, so a prefix whose last message is that assistant renders differently from the same turn rendered mid-conversation. Position-dependent by HF template design, same shape as the qwen3_disable_thinking entry below.",
     ("qwen3_disable_thinking", "consecutive_assistant"): "consecutive assistant turns break the observation==generation-prompt invariant for qwen3_disable_thinking: the interior assistant header in the supervised observation differs from a fresh generation prompt.",
 }
 
