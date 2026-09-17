@@ -5,8 +5,9 @@ import json
 import pytest
 
 from fireworks.training.sdk import TITOChatRequest
-from training.tito import renderer as renderer_runtime
-from training.tito.renderer import (
+from training.renderer.tito import registry as renderer_runtime_registry
+from training.renderer.tito import shared as renderer_runtime_shared
+from training.renderer.tito import (
     GLM52TITORenderer,
     TITORendererCertification,
     build_sidecar_tito_renderer,
@@ -322,12 +323,12 @@ def test_certified_renderer_dispatches_through_its_registered_factory(
         renderer_factory=factory,
     )
     monkeypatch.setitem(
-        renderer_runtime._TITO_CERTIFICATION_BY_RENDERER,
+        renderer_runtime_registry._TITO_CERTIFICATION_BY_RENDERER,
         "test-renderer",
         certification,
     )
     monkeypatch.setattr(
-        renderer_runtime,
+        renderer_runtime_shared,
         "_tokenizer_fingerprint",
         lambda _tokenizer: "test-fingerprint",
     )

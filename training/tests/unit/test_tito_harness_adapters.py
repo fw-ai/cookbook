@@ -17,7 +17,7 @@ from training.examples.rl.harbor.pi.artifacts import (
 from training.examples.rl.harbor.tito.sidecar import (
     build_call_classifier,
 )
-from training.tito.renderer import (
+from training.renderer.tito.shared import (
     _ensure_tool_call_ids,
 )
 

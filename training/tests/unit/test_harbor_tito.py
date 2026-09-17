@@ -206,7 +206,9 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
         names = set(archive.namelist())
         bundled_sdk_init = archive.read("python-sdk/fireworks/training/sdk/__init__.py")
         archive.extractall(extracted)
-    assert "cookbook/training/tito/renderer.py" in names
+    assert "cookbook/training/renderer/tito/__init__.py" in names
+    assert "cookbook/training/renderer/tito/glm52.py" in names
+    assert "cookbook/training/renderer/tito/registry.py" in names
     assert "cookbook/training/examples/rl/harbor/tito/sidecar.py" in names
     assert "tokenizer/chat_template.jinja" in names
     assert not any("model_formats/" in name for name in names)
@@ -214,7 +216,12 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
     assert "python-sdk/fireworks/__init__.py" in names
     assert "python-sdk/fireworks/training/__init__.py" in names
     assert "python-sdk/fireworks/_client.py" not in names
-    assert not any("training/renderer/" in name for name in names)
+    assert not any(
+        "training/renderer/" in name
+        and "training/renderer/tito/" not in name
+        and name != "cookbook/training/renderer/__init__.py"
+        for name in names
+    )
     assert not any("/tests/" in name for name in names)
     imported_sdk = importlib.import_module("fireworks.training.sdk")
     assert bundled_sdk_init == Path(imported_sdk.__file__).read_bytes()
@@ -225,7 +232,7 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
             (
                 "from fireworks.training.sdk import "
                 "TITOSidecar, TrajectoryDriftPolicy; "
-                "from training.tito.renderer import "
+                "from training.renderer.tito import "
                 "build_sidecar_tito_renderer; "
                 "import training.examples.rl.harbor.tito.sidecar"
             ),
@@ -704,7 +711,7 @@ def test_quiesce_harness_rejects_multiline_process_signature() -> None:
 def test_sidecar_serve_closes_runtime_when_trajectory_creation_fails(
     monkeypatch, tmp_path
 ) -> None:
-    from training.tito import renderer as renderer_runtime
+    from training.renderer import tito as renderer_runtime
 
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()

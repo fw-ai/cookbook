@@ -181,6 +181,20 @@ def _copy_sdk_runtime(sdk_source: Path, destination: Path) -> None:
 def _copy_cookbook_runtime(training_source: Path, destination: Path) -> None:
     training_target = destination / "training"
     _copy_source_tree(training_source / "tito", training_target / "tito")
+    # TITO renderers live under training/renderer/tito. The parent
+    # training/renderer package eagerly imports heavyweight training renderers
+    # (tinker/torch), which the sandbox must not load -- ship a minimal stub
+    # for the parent and only the tito subtree.
+    renderer_target = training_target / "renderer"
+    renderer_target.mkdir(parents=True, exist_ok=True)
+    (renderer_target / "__init__.py").write_text(
+        '"""Minimal package root for the immutable TITO sidecar bundle."""\n',
+        encoding="utf-8",
+    )
+    _copy_source_tree(
+        training_source / "renderer" / "tito",
+        renderer_target / "tito",
+    )
     for name in _COOKBOOK_RUNTIME_FILES:
         relative = Path(name)
         source = training_source / relative
@@ -219,6 +233,11 @@ def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
         "python-sdk/fireworks/training/sdk/tito",
     )
     _update_tree_hash(digest, training_source / "tito", "cookbook/training/tito")
+    _update_tree_hash(
+        digest,
+        training_source / "renderer" / "tito",
+        "cookbook/training/renderer/tito",
+    )
     for name in _COOKBOOK_RUNTIME_FILES:
         source = training_source / name
         digest.update(f"cookbook/training/{name}\0".encode())
@@ -674,7 +693,7 @@ async def serve(spec_path: Path) -> None:
         TITOSidecar,
         TrajectoryDriftPolicy,
     )
-    from training.tito.renderer import (
+    from training.renderer.tito import (
         build_sidecar_tito_renderer,
         load_sidecar_tokenizer,
     )

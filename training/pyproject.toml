@@ -88,6 +88,7 @@ packages = [
     "training.recipes",
     "training.recipes.experiment",
     "training.renderer",
+    "training.renderer.tito",
     "training.renderer.verifier",
     "training.renderer.verifier.utils",
     "training.tests",
