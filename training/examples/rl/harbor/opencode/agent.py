@@ -100,6 +100,33 @@ def _without_opencode_content_events(output: str | None) -> str:
 class ConfigurableOpenCode(OpenCode):
     """OpenCode against one trajectory-scoped loopback sidecar endpoint."""
 
+    def _parse_stdout(self) -> list[dict[str, Any]]:
+        """Parse complete JSON events even if the captured tail is torn.
+
+        Harbor collects ``opencode.txt`` from a remote sandbox.  If the final
+        UTF-8 code point is truncated while that file is copied, upstream
+        ``OpenCode._parse_stdout`` raises ``UnicodeDecodeError`` and discards
+        an otherwise completed trajectory.  Decode lossily at this diagnostic
+        boundary; malformed/torn JSON lines are skipped, while every complete
+        event remains byte-for-byte JSON-equivalent.
+        """
+        output_path = self.logs_dir / self._OUTPUT_FILENAME
+        if not output_path.exists():
+            return []
+
+        events: list[dict[str, Any]] = []
+        for line in output_path.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return events
+
     def _classify_exec_error(self, command: str, result: Any) -> Any:
         # Scope to our JSON-mode agent launcher, never installation/setup.
         # Preserve the original outputs in Harbor artifacts; filtering here

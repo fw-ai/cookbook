@@ -63,3 +63,32 @@ def test_setup_commands_keep_original_classification(agent):
 def test_unknown_or_partial_format_is_not_silently_discarded(agent, output):
     result = SimpleNamespace(return_code=1, stdout=output, stderr="")
     assert isinstance(agent._classify_exec_error(LAUNCHER, result), ApiRateLimitError)
+
+
+def test_stdout_parser_preserves_complete_events_before_torn_utf8_tail(agent):
+    output_path = agent.logs_dir / agent._OUTPUT_FILENAME
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    complete = {"type": "text", "part": {"text": "complete"}}
+    output_path.write_bytes(
+        json.dumps(complete).encode("utf-8")
+        + b"\n"
+        + b'{"type":"text","part":{"text":"torn '
+        + b"\xe2"
+    )
+
+    assert agent._parse_stdout() == [complete]
+
+
+def test_stdout_parser_ignores_invalid_bytes_between_complete_events(agent):
+    output_path = agent.logs_dir / agent._OUTPUT_FILENAME
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    first = {"type": "step_start", "timestamp": 1}
+    second = {"type": "step_finish", "timestamp": 2}
+    output_path.write_bytes(
+        json.dumps(first).encode("utf-8")
+        + b"\ninvalid-\xff-line\n"
+        + json.dumps(second).encode("utf-8")
+        + b"\n"
+    )
+
+    assert agent._parse_stdout() == [first, second]
