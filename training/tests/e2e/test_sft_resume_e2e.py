@@ -31,15 +31,6 @@ from training.recipes.sft_loop import Config, main
 
 logger = logging.getLogger(__name__)
 
-
-def _max_data_consumed(payload: dict) -> int:
-    entries = payload.get("checkpoints", payload)
-    return max(
-        int(value["data_consumed"] if isinstance(value, dict) else value)
-        for value in entries.values()
-    )
-
-
 DEFAULT_TOKENIZER = "Qwen/Qwen3-30B-A3B"
 
 
@@ -116,7 +107,7 @@ class TestSFTResumeE2E:
 
             # Read the persisted raw_rows_consumed from dataloader.json.
             # In the new model, dataloader.json holds the only cookbook-side
-            # state — one record per checkpoint name.
+            # state — one int per checkpoint name.
             dataloader_path = os.path.join(log_dir, DATALOADER_BASE_NAME)
             assert os.path.exists(dataloader_path), (
                 f"Phase 1 should have written {DATALOADER_BASE_NAME} under {log_dir}"
@@ -124,7 +115,7 @@ class TestSFTResumeE2E:
             with open(dataloader_path) as f:
                 phase1_dataloader = json.load(f)
             assert phase1_dataloader, "dataloader.json should be non-empty after phase 1"
-            phase1_raw_rows = _max_data_consumed(phase1_dataloader)
+            phase1_raw_rows = max(int(v) for v in phase1_dataloader.values())
 
             # Verify the control plane has at least one resumable row for the
             # phase-1 trainer — that is what phase 2's resume will read.
@@ -173,7 +164,7 @@ class TestSFTResumeE2E:
 
             with open(dataloader_path) as f:
                 phase2_dataloader = json.load(f)
-            phase2_raw_rows = _max_data_consumed(phase2_dataloader)
+            phase2_raw_rows = max(int(v) for v in phase2_dataloader.values())
             assert phase2_raw_rows > phase1_raw_rows, (
                 f"Phase 2 raw_rows_consumed ({phase2_raw_rows}) should exceed "
                 f"phase 1's ({phase1_raw_rows}); dataloader cursor should advance."
