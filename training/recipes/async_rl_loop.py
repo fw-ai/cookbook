@@ -189,6 +189,14 @@ class Config:
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
     dcp_save_interval: int = 0
+    sampler_base_checkpoint_interval: int = 0
+    """Write a full sampler base every N optimizer steps (0 disables).
+
+    Delta sampler checkpoints depend on the most recent full base. Dedicated
+    trainer checkpoint retention can eventually delete an old base while
+    retaining newer deltas. Periodic rebasing keeps every live delta chain
+    self-contained without changing optimizer or training numerics.
+    """
     weight_sync_timeout: int = 600
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
     cleanup_on_exit: bool = True
@@ -308,6 +316,16 @@ def _save_checkpoint(
             data_consumed=data_consumed,
         )
     logger.info("[%s] dcp_save: done (%.1fs)", name, span.elapsed)
+
+
+def _sampler_checkpoint_type(step: int, base_interval: int) -> str | None:
+    """Return ``base`` at configured rebase boundaries, else delta default."""
+
+    if base_interval < 0:
+        raise ValueError("sampler_base_checkpoint_interval must be >= 0")
+    if base_interval and step % base_interval == 0:
+        return "base"
+    return None
 
 
 def _run_server_side_grpo(
@@ -888,7 +906,14 @@ def main(
 
         def sync_weights(step: int) -> float:
             with wall_timer() as span:
-                saved = policy.save_weights_for_sampler(f"step-{step}")
+                checkpoint_type = _sampler_checkpoint_type(
+                    step,
+                    cfg.sampler_base_checkpoint_interval,
+                )
+                saved = policy.save_weights_for_sampler(
+                    f"step-{step}",
+                    checkpoint_type=checkpoint_type,
+                )
                 service.hotload_sampler_snapshot(saved.path)
             return span.elapsed
 

@@ -96,7 +96,28 @@ class TestConfigDefaults:
 
         assert cfg.warm_start_from_adapter is None
         assert cfg.dcp_save_interval == 0
+        assert cfg.sampler_base_checkpoint_interval == 0
         assert cfg.weight_sync_timeout == 600
+
+    @pytest.mark.parametrize(
+        ("step", "interval", "expected"),
+        [
+            (1, 0, None),
+            (15, 16, None),
+            (16, 16, "base"),
+            (32, 16, "base"),
+        ],
+    )
+    def test_sampler_checkpoint_type(
+        self, step: int, interval: int, expected: str | None
+    ) -> None:
+        assert async_rl_loop._sampler_checkpoint_type(step, interval) == expected
+
+    def test_sampler_checkpoint_type_rejects_negative_interval(self) -> None:
+        with pytest.raises(
+            ValueError, match="sampler_base_checkpoint_interval must be >= 0"
+        ):
+            async_rl_loop._sampler_checkpoint_type(1, -1)
 
     def test_config_pipeline_chunks_default_to_one(self) -> None:
         cfg = async_rl_loop.Config(log_path="gs://logs")

@@ -377,6 +377,15 @@ def parse_args() -> argparse.Namespace:
         help="Save resumable optimizer state every N steps (0 disables it)",
     )
     parser.add_argument(
+        "--sampler-base-checkpoint-interval",
+        type=int,
+        default=0,
+        help=(
+            "Write a full sampler base every N optimizer steps so retained "
+            "deltas never outlive their base (0 disables periodic rebasing)"
+        ),
+    )
+    parser.add_argument(
         "--weight-sync-timeout",
         type=int,
         default=600,
@@ -833,6 +842,7 @@ def run() -> None:
             else args.grad_accumulation_normalization
         ),
         dcp_save_interval=args.dcp_save_interval,
+        sampler_base_checkpoint_interval=args.sampler_base_checkpoint_interval,
         weight_sync_timeout=args.weight_sync_timeout,
         init_from_checkpoint=args.init_from_checkpoint,
         cleanup_on_exit=args.cleanup_on_exit,
