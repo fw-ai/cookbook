@@ -233,6 +233,7 @@ examples/rl/harbor/mini_swe/            Multi-turn Mini-SWE-Agent through a TITO
 examples/rl/harbor/recipes/             DABstep and Terminal-Bench RL recipes
 examples/serverless_rl/                 Serverless (Tinker-style) RL on Countdown -- no provisioning
 examples/serverless_dpo/                Serverless DPO preference training -- no provisioning
+examples/serverless_sft/               Serverless (Tinker-style) SFT with DCP checkpoints, resume, promote
 examples/distillation/                  Distillation examples, including routed MOPD
 examples/multihop_qa/                   Multi-hop QA async RL (+ optional IGPO turn-level scoring)
 examples/manual/                        Manual hotload-scope tests (PER_TRAINER / PER_DEPLOYMENT)

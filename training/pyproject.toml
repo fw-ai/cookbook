@@ -81,6 +81,7 @@ packages = [
     "training.examples.rl.visual_toolbench",
     "training.examples.serverless_dpo",
     "training.examples.serverless_rl",
+    "training.examples.serverless_sft",
     "training.examples.sft",
     "training.examples.tools",
     "training.provision",
