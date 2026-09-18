@@ -2,16 +2,35 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from collections.abc import Callable
 from functools import wraps
+from pathlib import Path
 from typing import Any
 
 import transformers
+from huggingface_hub import errors as hf_errors
+
+logger = logging.getLogger(__name__)
 
 
 _HTTP_STATUS_PATTERN = re.compile(r"\b([45]\d\d)\b")
 _MISTRAL_TOKENIZER_NAME_PARTS = ("mistral", "ministral")
+
+# A repo file that simply is not there answers the backend question ("no
+# declaration, use AutoTokenizer"). Any other failure does not: it means we
+# could not read the declaration, and guessing would silently change token
+# identity. Those propagate instead.
+_MISSING_REPO_FILE_ERRORS: tuple[type[BaseException], ...] = (
+    hf_errors.EntryNotFoundError,  # covers the local (cache-miss) subclass too
+    hf_errors.RepositoryNotFoundError,  # covers GatedRepoError
+    hf_errors.RevisionNotFoundError,
+    hf_errors.DisabledRepoError,
+    hf_errors.HFValidationError,
+    hf_errors.OfflineModeIsEnabled,
+)
 
 
 def patch_kimi_tokenizer_bytes_to_unicode() -> None:
@@ -52,6 +71,176 @@ def needs_mistral_regex_fix(tokenizer_model: str | None) -> bool:
         return False
     normalized_model = tokenizer_model.casefold()
     return any(part in normalized_model for part in _MISTRAL_TOKENIZER_NAME_PARTS)
+
+
+def _read_repo_json(
+    tokenizer_model: str,
+    filename: str,
+    *,
+    revision: str | None,
+    local_files_only: bool,
+) -> dict[str, Any] | None:
+    """Read one JSON file from a local tokenizer dir or the HuggingFace Hub.
+
+    ``None`` means the file is absent. A file that exists but cannot be
+    fetched or parsed raises: backend selection changes token identity, so an
+    unreadable declaration must not be answered by falling through to the
+    default path.
+    """
+    local_dir = Path(tokenizer_model)
+    if local_dir.is_dir():
+        path = local_dir / filename
+        if not path.is_file():
+            return None
+    else:
+        # lazy: hub import only on the hub path
+        from huggingface_hub import hf_hub_download
+
+        try:
+            path = Path(
+                hf_hub_download(
+                    tokenizer_model,
+                    filename,
+                    revision=revision,
+                    local_files_only=local_files_only,
+                )
+            )
+        except _MISSING_REPO_FILE_ERRORS:
+            return None
+        except Exception:
+            # Surface the Hub failure unchanged so existing callers and the
+            # managed-adapter status mapping keep classifying it, rather than
+            # guessing a backend and silently changing token identity.
+            logger.error(
+                "Could not fetch %s for tokenizer %r while selecting the "
+                "tokenizer backend; refusing to guess.",
+                filename,
+                tokenizer_model,
+            )
+            raise
+
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"could not parse {filename} for tokenizer {tokenizer_model!r} "
+            "while selecting the tokenizer backend"
+        ) from exc
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _declared_tokenizer_class(tokenizer_config: dict[str, Any]) -> str | None:
+    """The declared ``tokenizer_class`` that needs a model-type check."""
+    if tokenizer_config.get("auto_map") is not None:
+        # Remote-code tokenizers own their own loading path.
+        return None
+    declared = tokenizer_config.get("tokenizer_class")
+    if not isinstance(declared, str) or not declared:
+        return None
+    return declared
+
+
+def _mismatches_model_type(declared: str, model_type: str) -> bool:
+    from transformers.models.auto import tokenization_auto
+
+    mapping_name = tokenization_auto.TOKENIZER_MAPPING_NAMES.get(model_type)
+    return (mapping_name or "").replace("Fast", "") != declared.replace("Fast", "")
+
+
+def _tokenizer_selection_is_ambiguous(
+    tokenizer_model: str,
+    tokenizer_config: dict[str, Any],
+    *,
+    revision: str | None,
+    local_files_only: bool,
+) -> bool:
+    """Serving's tokenizer-backend rule, ported from ``py/fireworks/text/tokenizer.py``.
+
+    Transformers >= 5.9 honors ``tokenizer_config.json``'s declared
+    ``tokenizer_class`` and rebuilds the tokenizer from that class's hardcoded
+    pre-tokenizer instead of reading ``tokenizer.json`` verbatim (<= 5.5.4
+    ignored the declaration). When the declared class does not match the
+    model-type mapping -- Qwen3.8 declares ``Qwen2Tokenizer`` while its
+    ``qwen3_5`` model type maps to ``Qwen3_5Tokenizer`` -- serving keeps
+    loading ``tokenizer.json`` verbatim via ``TokenizersBackend`` on every
+    Transformers version. Training must resolve to the same artifact so its
+    tokens stay byte-identical to inference.
+
+    Deviation from serving: serving reads ``model_type`` through
+    ``AutoConfig``, which raises for model types its Transformers pin does not
+    register. The cookbook reads the declared ``model_type`` directly, which
+    returns the same answer for every model serving can actually serve without
+    depending on the cookbook's older Transformers pin.
+    """
+    declared = _declared_tokenizer_class(tokenizer_config)
+    if declared is None:
+        return False
+
+    model_config = _read_repo_json(
+        tokenizer_model,
+        "config.json",
+        revision=revision,
+        local_files_only=local_files_only,
+    )
+    model_type = (model_config or {}).get("model_type")
+    if not isinstance(model_type, str) or not model_type:
+        # Serving's fallback for local tokenizer-only dirs whose tokenizer
+        # config implies a fast tokenizer but that carry no model config.
+        return Path(tokenizer_model).is_dir() and declared.endswith("Fast")
+    return _mismatches_model_type(declared, model_type)
+
+
+def _declared_post_processor_kwargs(tokenizer_config: dict[str, Any]) -> dict[str, Any]:
+    """``add_bos_token``/``add_eos_token`` exactly as serving forwards them.
+
+    Transformers only rebuilds the post-processor when these arrive as
+    explicit kwargs (``TokenizersBackend.__init__`` gates on
+    ``"add_bos_token" in kwargs``); the values in ``tokenizer_config.json`` are
+    otherwise ignored. Dropping them diverges from serving in both directions:
+    DeepSeek-V3.1 (``add_bos_token: true``) loses its BOS, and
+    Nemotron-Nano-9B-v2 (``add_bos_token: false``) gains one. Presence, not
+    truthiness, is the trigger -- same as serving.
+    """
+    return {
+        key: tokenizer_config[key]
+        for key in ("add_bos_token", "add_eos_token")
+        if key in tokenizer_config
+    }
+
+
+def _load_tokenizer_json_verbatim(
+    tokenizer_model: str,
+    kwargs: dict[str, Any],
+) -> Any | None:
+    """Load ``tokenizer.json`` verbatim via ``TokenizersBackend``.
+
+    ``None`` means the caller should fall through to ``AutoTokenizer``, which
+    is what serving does when the artifact cannot be loaded verbatim -- an
+    ambiguous sentencepiece-only checkpoint such as
+    ``mistralai/Ministral-8B-Instruct-2410`` ships no ``tokenizer.json`` at
+    all. Falling back is logged at warning level because it restores the
+    divergent path; TITO certification catches it downstream through the
+    tokenizer fingerprint.
+
+    A Hub transport failure is not an artifact failure, so it propagates.
+    Serving only ever loads local directories and cannot hit this; falling
+    back on it would let a rate-limited download silently pick a different
+    tokenizer than inference uses.
+    """
+    from transformers.tokenization_utils_tokenizers import TokenizersBackend
+
+    try:
+        return TokenizersBackend.from_pretrained(tokenizer_model, **kwargs)
+    except Exception as exc:
+        if _huggingface_http_status_code(exc) is not None:
+            raise
+        logger.warning(
+            "Failed to load tokenizer.json verbatim for %r; falling back to "
+            "AutoTokenizer, which may not match inference tokens.",
+            tokenizer_model,
+            exc_info=True,
+        )
+        return None
 
 
 def _huggingface_http_status_code(exc: BaseException) -> int | None:
@@ -153,6 +342,27 @@ def load_tokenizer(
         kwargs["fix_mistral_regex"] = True
 
     patch_kimi_tokenizer_bytes_to_unicode()
+
+    if tokenizer_model is not None:
+        tokenizer_config = _read_repo_json(
+            tokenizer_model,
+            "tokenizer_config.json",
+            revision=kwargs["revision"],
+            local_files_only=local_files_only,
+        )
+        if tokenizer_config is not None and _tokenizer_selection_is_ambiguous(
+            tokenizer_model,
+            tokenizer_config,
+            revision=kwargs["revision"],
+            local_files_only=local_files_only,
+        ):
+            tokenizer = _load_tokenizer_json_verbatim(
+                tokenizer_model,
+                {**kwargs, **_declared_post_processor_kwargs(tokenizer_config)},
+            )
+            if tokenizer is not None:
+                return tokenizer
+
     try:
         return transformers.AutoTokenizer.from_pretrained(tokenizer_model, **kwargs)
     except AttributeError as exc:

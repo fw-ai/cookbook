@@ -245,12 +245,12 @@ def test_certification_registry_resolves_qwen3_8(monkeypatch) -> None:
     monkeypatch.setattr(
         "training.renderer.tito.shared._tokenizer_fingerprint",
         lambda _tokenizer: (
-            "90e8dd75a5fa5c8009f981975336de7177bb5ab04d41940e49c9a6e2d37325c7"
+            "572e8b1a43a756b093105d29a62ebbc4cda02aae8870b5009089430a8405de49"
         ),
     )
     renderer = build_sidecar_tito_renderer(_QwenTokenizer(), "qwen3_8")
     assert isinstance(renderer, Qwen38TITORenderer)
-    assert renderer.certification_id == "qwen3.8-27b-preserved@1d4bf0f2-v1"
+    assert renderer.certification_id == "qwen3.8-27b-preserved@1d4bf0f2-v2"
 
 
 def test_certification_rejects_tokenizer_fingerprint_mismatch(monkeypatch) -> None:
@@ -269,14 +269,18 @@ def test_unknown_renderer_still_fails_closed() -> None:
 
 @pytest.mark.timeout(180)
 def test_pinned_tokenizer_fingerprint_matches_certification() -> None:
-    """The certification pins the Qwen/Qwen3.8-27B tokenizer contract."""
+    """The certification pins the Qwen/Qwen3.8-27B tokenizer contract.
+
+    Load through ``load_tokenizer``, not ``AutoTokenizer``: Qwen3.8 declares a
+    ``tokenizer_class`` that Transformers >= 5.9 rebuilds from, so only the
+    production loader pins a contract that survives a Transformers bump.
+    """
     pytest.importorskip("transformers")
     try:
-        from transformers import AutoTokenizer
-
         from training.renderer.tito.shared import _tokenizer_fingerprint
+        from training.utils.tokenizers import load_tokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.8-27B", revision=_QWEN38_REVISION)
+        tokenizer = load_tokenizer("Qwen/Qwen3.8-27B", _QWEN38_REVISION, False)
         fingerprint = _tokenizer_fingerprint(tokenizer)
     except (OSError, ValueError, RuntimeError) as exc:
         pytest.skip(f"tokenizer unavailable: {exc}")
@@ -290,9 +294,9 @@ def test_render_matches_hf_chat_template_token_for_token() -> None:
     """render_conversation_tokens must equal the authoritative HF render."""
     pytest.importorskip("transformers")
     try:
-        from transformers import AutoTokenizer
+        from training.utils.tokenizers import load_tokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3.8-27B", revision=_QWEN38_REVISION)
+        tokenizer = load_tokenizer("Qwen/Qwen3.8-27B", _QWEN38_REVISION, False)
     except (OSError, ValueError, RuntimeError) as exc:
         pytest.skip(f"tokenizer unavailable: {exc}")
 

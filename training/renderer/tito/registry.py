@@ -41,10 +41,14 @@ _TITO_RENDERER_CERTIFICATIONS = (
         renderer_factory=_build_glm52_tito_renderer,
     ),
     TITORendererCertification(
-        certification_id="qwen3.8-27b-preserved@1d4bf0f2-v1",
+        certification_id="qwen3.8-27b-preserved@1d4bf0f2-v2",
         renderer_names=frozenset({QWEN38_RENDERER_NAME}),
+        # v2: same model revision and identical tokens/offsets, re-pinned
+        # because load_tokenizer now honors the declared add_bos_token like
+        # serving does, which rebuilds the (behaviorally equivalent)
+        # post-processor and therefore the serialized backend hash.
         tokenizer_fingerprint=(
-            "90e8dd75a5fa5c8009f981975336de7177bb5ab04d41940e49c9a6e2d37325c7"
+            "572e8b1a43a756b093105d29a62ebbc4cda02aae8870b5009089430a8405de49"
         ),
         renderer_factory=_build_qwen38_tito_renderer,
     ),

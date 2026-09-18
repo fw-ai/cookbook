@@ -48,11 +48,26 @@ class TITORendererCertification:
 
 
 def load_sidecar_tokenizer(path: str | Path) -> Any:
-    """Load the pinned tokenizer and its bundled authoritative chat template."""
-    from transformers import AutoTokenizer
+    """Load the pinned tokenizer and its bundled authoritative chat template.
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        Path(path),
+    The bundle is written by ``save_pretrained`` from an already-certified
+    tokenizer, so ``tokenizer.json`` is always present (certification requires
+    a serializable backend) and already carries that tokenizer's live
+    post-processor. Load it verbatim rather than through ``AutoTokenizer``:
+    Transformers >= 5.9 honors a declared ``tokenizer_class`` (Qwen3.8 declares
+    ``Qwen2Tokenizer``) and would rebuild the tokenizer from that class's
+    hardcoded pre-tokenizer, silently invalidating the certified contract.
+
+    Fail closed here, unlike ``load_tokenizer``: a sidecar that cannot load its
+    own pinned artifact has no certified token contract to fall back to.
+    """
+    from transformers.tokenization_utils_tokenizers import TokenizersBackend
+
+    root = Path(path)
+    if not (root / "tokenizer.json").is_file():
+        raise ValueError(f"TITO sidecar bundle is missing tokenizer.json: {root}")
+    tokenizer = TokenizersBackend.from_pretrained(
+        root,
         local_files_only=True,
         trust_remote_code=False,
     )

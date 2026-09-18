@@ -18,6 +18,9 @@ dependencies = [
     "tiktoken>=0.12.0",
     "numpy>=1.24.0",
     "transformers==5.5.4",
+    # Imported directly by utils.tokenizers to read tokenizer declarations
+    # before choosing a backend; range matches transformers==5.5.4's own.
+    "huggingface-hub>=1.5.0,<2.0",
     "python-dotenv",
     "wandb>=0.28.2",
     "orjson",
