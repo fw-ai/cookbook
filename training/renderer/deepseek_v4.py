@@ -80,6 +80,8 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     RenderedMessage,
     Renderer,
     Role,
+    TextPart,
+    ThinkingPart,
     ToolCall,
     ToolSpec,
     TrainOnWhat,
@@ -674,14 +676,55 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         else:
             content = text
 
-        message = Message(role="assistant", content=content)
+        structured_content: str | list[ThinkingPart | TextPart] = content
         if reasoning:
-            message["reasoning_content"] = reasoning
+            structured_content = [ThinkingPart(type="thinking", thinking=reasoning)]
+            if content:
+                structured_content.append(TextPart(type="text", text=content))
+
+        message = Message(role="assistant", content=structured_content)
         if tool_calls:
             message["tool_calls"] = tool_calls
         if unparsed:
             message["unparsed_tool_calls"] = unparsed
         return message, ok
+
+    def to_openai_message(self, message: Message) -> dict[str, Any]:
+        """Convert structured reasoning to DeepSeek's OpenAI-compatible shape."""
+        result: dict[str, Any] = {"role": message["role"]}
+        content = message["content"]
+        if isinstance(content, str):
+            result["content"] = content
+        else:
+            thinking_parts: list[str] = []
+            text_parts: list[str] = []
+            for part in content:
+                if part["type"] == "thinking":
+                    thinking_parts.append(part["thinking"])
+                elif part["type"] == "text":
+                    text_parts.append(part["text"])
+            result["content"] = "".join(text_parts)
+            if thinking_parts:
+                result["reasoning_content"] = "".join(thinking_parts)
+
+        if message.get("tool_calls"):
+            result["tool_calls"] = [
+                {
+                    "type": "function",
+                    "id": tool_call.id,
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    },
+                }
+                for tool_call in message["tool_calls"]
+            ]
+        if message["role"] == "tool":
+            if "tool_call_id" in message:
+                result["tool_call_id"] = message["tool_call_id"]
+            if "name" in message:
+                result["name"] = message["name"]
+        return result
 
     # ---- internal helpers -----------------------------------------------------
 
