@@ -193,8 +193,8 @@ def _default_output_model_id(base_model: str, checkpoint_name: str) -> str:
     )[:63].rstrip("-")
 
 
-def run(cfg: PromoteConfig) -> dict:
-    """Run the cookbook promotion workflow and return its model resource."""
+def main() -> None:
+    cfg = parse_args()
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -242,11 +242,6 @@ def run(cfg: PromoteConfig) -> dict:
         model.get("state", "UNKNOWN"),
         model.get("kind", "UNKNOWN"),
     )
-    return model
-
-
-def main() -> None:
-    run(parse_args())
 
 
 if __name__ == "__main__":
