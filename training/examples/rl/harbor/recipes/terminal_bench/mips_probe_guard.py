@@ -42,15 +42,29 @@ def overdue_mips_node(expected, proc_root=Path('/proc')):
         return False
     child_args = records[0][0].joinpath('cmdline').read_bytes().rstrip(b'\0').split(b'\0')
     parent_args = records[1][0].joinpath('cmdline').read_bytes().rstrip(b'\0').split(b'\0')
-    if not child_args or Path(os.fsdecode(child_args[0])).name != 'node' or len(parent_args) < 3:
+    if not child_args or Path(os.fsdecode(child_args[0])).name != 'node':
         return False
     child = b' '.join(child_args)
-    command = parent_args[-1]
-    known_vm = (b'vm.js' in child or (b'node -e' in child and b'while(true)' in child))
+    quadratic_probe = (
+        b'node -e' in child
+        and b'for (let i = 0; i < 200000; i++)' in child
+        and b'for (const a of vals) for (const b of vals)' in child
+    )
+    if len(parent_args) < 3 and not quadratic_probe:
+        return False
+    command = parent_args[-1] if parent_args else b''
+    known_vm = (b'vm.js' in child
+                or (b'node -e' in child and b'while(true)' in child)
+                or quadratic_probe)
     if not known_vm:
         return False
     elapsed = (float((proc_root / 'uptime').read_text().split()[0])
                - int(records[0][1][19]) / os.sysconf('SC_CLK_TCK'))
+    # The observed arithmetic self-test appends 200k values and then executes
+    # their Cartesian product (~40B iterations). It is an exploratory probe,
+    # not the task workload, and has no practical completion time.
+    if quadratic_probe:
+        return elapsed > 60
     # The agent explicitly requested a short run and SIGINT, but the synchronous
     # VM prevented Node from servicing the signal.  Preserve 30 seconds of grace.
     sleep = re.search(rb'(?:^|[;&|] *)sleep +([0-9]+(?:[.][0-9]+)?)', command)

@@ -61,6 +61,24 @@ def test_direct_foreground_vm_is_recovered(evidence):
     assert guard.overdue_mips_node(expected, root)
 
 
+def test_quadratic_node_probe_is_recovered(evidence):
+    root, _, record = evidence
+    node, _, opencode = record['remote']['processes']
+    node['PPid'] = opencode['Pid']
+    direct = {'kind': 'node', 'chain': [
+        {'pid': int(node['Pid']), 'start_ticks': node['start_ticks'], 'name': 'node'},
+        {'pid': int(opencode['Pid']), 'start_ticks': opencode['start_ticks'],
+         'name': 'opencode'},
+    ]}
+    (root / '10' / 'stat').write_text(
+        (root / '10' / 'stat').read_text().replace(' S 11 ', ' S 12 ', 1))
+    (root / '10' / 'cmdline').write_bytes(
+        b'node\0-e\0for (let i = 0; i < 200000; i++) vals.push(i); '
+        b'for (const a of vals) for (const b of vals) { work(a, b); }\0')
+    assert guard.overdue_mips_node(direct, root)
+    assert guard.recovery_candidates(record, record) == [direct]
+
+
 @pytest.mark.parametrize('change', ['task', 'sandbox', 'phase', 'tool', 'child', 'parent'])
 def test_candidate_fails_closed(evidence, change):
     _, _, before = evidence
