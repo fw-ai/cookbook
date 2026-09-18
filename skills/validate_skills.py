@@ -211,7 +211,9 @@ def check_carrier(errors: list[str]) -> None:
 
 def check_cookbook_routes(errors: list[str]) -> None:
     required = (
-        "training/case-studies/sft_prompt_router/prompt_router_sft_sdk.ipynb",
+        "training/case-studies/sft_prompt_router/prompt_router_dedicated.ipynb",
+        "training/case-studies/sft_prompt_router/prompt_router_serverless.ipynb",
+        "training/case-studies/multilora_fleet/multilora_fleet.ipynb",
         "training/case-studies/sft_cord_receipts/cord_receipt_sft_sdk.ipynb",
         "training/case-studies/dpo_style/dpo_helpsteer3_sdk.ipynb",
         "training/case-studies/reasoning_rl/rft_grpo_math.ipynb",
@@ -251,8 +253,7 @@ def check_cookbook_routes(errors: list[str]) -> None:
         )
     )
     for stale in (
-        "prompt_router_dedicated.ipynb",
-        "prompt_router_serverless.ipynb",
+        "prompt_router_sft_sdk.ipynb",
         "rl/coding_agent/",
         "rl/multi_turn_message_in/",
         "intake-questions.md",

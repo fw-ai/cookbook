@@ -53,6 +53,7 @@ packages = [
     "training.case-studies.common",
     "training.case-studies.dpo_style",
     "training.case-studies.embedding_support_search",
+    "training.case-studies.multilora_fleet",
     "training.case-studies.reasoning_rl.grpo_math_evaluator",
     "training.examples",
     "training.examples.distillation.gsm8k_privileged",

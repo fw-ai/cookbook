@@ -39,6 +39,15 @@ from training.tests.async_grpo_helpers import (
 
 logger = logging.getLogger(__name__)
 
+
+def _max_data_consumed(payload: dict) -> int:
+    entries = payload.get("checkpoints", payload)
+    return max(
+        int(value["data_consumed"] if isinstance(value, dict) else value)
+        for value in entries.values()
+    )
+
+
 _TRAINER_CLEANUP_STATES = {
     "JOB_STATE_ARCHIVED",
     "JOB_STATE_DELETING",
@@ -172,7 +181,7 @@ class TestGRPOResumeE2E:
             )
 
             # Read the persisted rollout cursor from dataloader.json — the only
-            # cookbook-side state in the new model (one int per checkpoint name).
+            # cookbook-side state in the new model (one record per checkpoint).
             dataloader_path = os.path.join(log_dir, DATALOADER_BASE_NAME)
             assert os.path.exists(dataloader_path), (
                 f"Phase 1 should have written {DATALOADER_BASE_NAME} under {log_dir}"
@@ -180,7 +189,7 @@ class TestGRPOResumeE2E:
             with open(dataloader_path) as f:
                 phase1_dataloader = json.load(f)
             assert phase1_dataloader, "dataloader.json should be non-empty after phase 1"
-            phase1_data_consumed = max(int(v) for v in phase1_dataloader.values())
+            phase1_data_consumed = _max_data_consumed(phase1_dataloader)
 
             # Verify the control plane has at least one resumable row for the
             # phase-1 policy trainer — phase 2's resume reads from there.
@@ -245,7 +254,7 @@ class TestGRPOResumeE2E:
 
             with open(dataloader_path) as f:
                 phase2_dataloader = json.load(f)
-            phase2_data_consumed = max(int(v) for v in phase2_dataloader.values())
+            phase2_data_consumed = _max_data_consumed(phase2_dataloader)
             assert phase2_data_consumed >= phase1_data_consumed, (
                 f"Phase 2 data_consumed ({phase2_data_consumed}) should not regress "
                 f"from phase 1's ({phase1_data_consumed}); rollout cursor should remain aligned."
