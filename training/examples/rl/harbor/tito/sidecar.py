@@ -159,11 +159,19 @@ def _copy_source_tree(source: Path, destination: Path) -> None:
     )
 
 
-def _copy_sdk_runtime(sdk_source: Path, destination: Path) -> None:
+def _sdk_runtime_files(sdk_source: Path) -> tuple[str, ...]:
+    # Older supported SDK releases predate compact routing references.
+    routing_files = ("routing.py",) if (sdk_source / "routing.py").is_file() else ()
+    return _SDK_RUNTIME_FILES + routing_files
+
+
+def _copy_sdk_runtime(
+    sdk_source: Path, destination: Path, runtime_files: tuple[str, ...]
+) -> None:
     """Copy only the lightweight training SDK needed by the sidecar."""
     sdk_target = destination / "fireworks" / "training" / "sdk"
     sdk_target.mkdir(parents=True)
-    for name in _SDK_RUNTIME_FILES:
+    for name in runtime_files:
         shutil.copy2(sdk_source / name, sdk_target / name)
     _copy_source_tree(sdk_source / "tito", sdk_target / "tito")
     for package_root in (
@@ -221,9 +229,10 @@ def _write_deterministic_zip(source: Path, destination: Path) -> None:
 def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
     """Create one content-addressed source/tokenizer bundle shared by trials."""
     sdk_source, training_source = _source_roots()
+    runtime_files = _sdk_runtime_files(sdk_source)
     digest = hashlib.sha256()
     digest.update(f"tito-sidecar-bundle-v{_BUNDLE_VERSION}\0".encode())
-    for name in _SDK_RUNTIME_FILES:
+    for name in runtime_files:
         source = sdk_source / name
         digest.update(f"python-sdk/fireworks/training/sdk/{name}\0".encode())
         digest.update(source.read_bytes())
@@ -283,7 +292,7 @@ def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
     os.close(descriptor)
     temporary_archive = Path(raw_archive_path)
     try:
-        _copy_sdk_runtime(sdk_source, temporary / "python-sdk")
+        _copy_sdk_runtime(sdk_source, temporary / "python-sdk", runtime_files)
         _copy_cookbook_runtime(training_source, temporary / "cookbook")
         tokenizer_dir = temporary / "tokenizer"
         setup.tokenizer.save_pretrained(tokenizer_dir)
