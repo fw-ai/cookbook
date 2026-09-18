@@ -10,7 +10,8 @@ Opt-in kcore recovery terminates only a long-running grep reading /proc/kcore.
 Opt-in overdue-Node recovery enforces only an existing model-authored GNU
 timeout plus a 30-second termination grace; it never caps total sampling time.
 Opt-in MIPS-probe recovery handles only revalidated unbounded Node VM probes
-inside ``make-mips-interpreter`` and signals only the exact Node leaf.
+or frame polling left behind after a bounded VM exits inside
+``make-mips-interpreter`` and signals only the exact stuck leaf.
 It never retries samples or changes timeouts.
 An old activity timestamp is a reason to inspect, not proof of a failed sample.
 Assistant-message timing and log growth help distinguish a long model turn
