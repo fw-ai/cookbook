@@ -13,6 +13,10 @@ from fireworks.training.sdk import TITORenderer
 
 from training.renderer.tito import shared
 from training.renderer.tito.glm52 import GLM52_RENDERER_NAME, GLM52TITORenderer
+from training.renderer.tito.muse_glimmer import (
+    MUSE_GLIMMER_RENDERER_NAME,
+    MuseGlimmerTITORenderer,
+)
 from training.renderer.tito.qwen38 import QWEN38_RENDERER_NAME, Qwen38TITORenderer
 from training.renderer.tito.shared import TITORendererCertification
 
@@ -22,6 +26,13 @@ def _build_glm52_tito_renderer(
     certification: TITORendererCertification,
 ) -> TITORenderer:
     return GLM52TITORenderer(tokenizer, certification=certification)
+
+
+def _build_muse_glimmer_tito_renderer(
+    tokenizer: Any,
+    certification: TITORendererCertification,
+) -> TITORenderer:
+    return MuseGlimmerTITORenderer(tokenizer, certification=certification)
 
 
 def _build_qwen38_tito_renderer(
@@ -39,6 +50,14 @@ _TITO_RENDERER_CERTIFICATIONS = (
             "5591741bd28d5acb92d4b7d735e0084d4d76d9ce50e2afe99aec6b01e1ef3ef0"
         ),
         renderer_factory=_build_glm52_tito_renderer,
+    ),
+    TITORendererCertification(
+        certification_id="muse-glimmer-30b-preserved@a4e59da5-v1",
+        renderer_names=frozenset({MUSE_GLIMMER_RENDERER_NAME}),
+        tokenizer_fingerprint=(
+            "2fec80a849b8cb52120e297e001ce675c0ee1b0de067aed449d7f1e756b04e3a"
+        ),
+        renderer_factory=_build_muse_glimmer_tito_renderer,
     ),
     TITORendererCertification(
         certification_id="qwen3.8-27b-preserved@1d4bf0f2-v2",

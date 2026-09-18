@@ -70,8 +70,10 @@ subagent that can be trained as an independent trajectory.
 ### Current support boundary
 
 Production TITO support is deliberately narrower than the cookbook's general
-renderer registry. The lightweight sidecar runtime currently implements only
-`glm_moe_dsa_preserve_thinking` with the pinned GLM-5.2 tokenizer revision.
+renderer registry. The lightweight sidecar runtime currently implements
+`glm_moe_dsa_preserve_thinking` (GLM-5.2), `qwen3_8` (Qwen3.8-27B), and
+`muse_glimmer` (Muse Glimmer 30B, full-history only), each with its pinned
+tokenizer revision.
 Other renderer names in the offline SFT/DPO registry are not thereby available
 through the sidecar. Interleaved GLM history remains uncertified. A renderer
 name existing for SFT or DPO does **not** make it safe for TITO, and an offline

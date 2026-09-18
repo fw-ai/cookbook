@@ -110,9 +110,10 @@ template while active trials may reuse it.
 
 ## Train
 
-The environment-sidecar runtime in this change currently includes one live
-model implementation: GLM-5.2 with
-`glm_moe_dsa_preserve_thinking`. The renderer registry also retains offline
+The environment-sidecar runtime in this change currently includes live model
+implementations: GLM-5.2 (`glm_moe_dsa_preserve_thinking`), Qwen3.8-27B
+(`qwen3_8`), and Muse Glimmer 30B (`muse_glimmer`, full-history only). The
+renderer registry also retains offline
 characterization for additional model families, but that does not make those
 families supported by the sidecar. A different model/template pair needs its own
 lightweight conversation renderer, tokenizer-bound certificate, parser and

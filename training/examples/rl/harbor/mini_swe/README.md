@@ -18,5 +18,6 @@ The Mini-SWE-Agent CLI itself remains owned and installed by Harbor. Cookbook
 users construct the rollout through
 `training.examples.rl.harbor.mini_swe.rollout.make_rollout_fn` and pass it to
 the existing async RL loop. The current sidecar renderer support boundary is
-the same as OpenCode and Pi: GLM-5.2 with
-`glm_moe_dsa_preserve_thinking`; unsupported model/template pairs fail closed.
+the same as OpenCode and Pi: GLM-5.2 (`glm_moe_dsa_preserve_thinking`),
+Qwen3.8-27B (`qwen3_8`), and Muse Glimmer 30B (`muse_glimmer`, full-history
+only); unsupported model/template pairs fail closed.
