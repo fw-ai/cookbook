@@ -259,3 +259,36 @@ def test_pi_process_reconciles_lifecycle_and_timeout_metadata(pool, tmp_path):
     assert result.rollout.metadata["pi_abandoned_turn_count"] == 0
     assert result.rollout.metadata["harness_tool_timeout_count"] == 1
     assert result.rollout.segments[0].routing_matrices == ["", "route-3", "route-4"]
+
+
+def test_drain_bound_discards_a_wedged_worker(pool, tmp_path, monkeypatch):
+    """A worker that outlives the drain bound must not own the pool's process."""
+
+    from training.examples.rl.harbor.tito import _artifact_io
+
+    monkeypatch.setattr(_artifact_io, "_DRAIN_TIMEOUT_SECONDS", 1.0)
+    started, release, finished = (
+        tmp_path / name for name in ("start", "release", "end")
+    )
+
+    async def check():
+        task = asyncio.create_task(
+            pool.run(_wait_for_release, started, release, finished)
+        )
+        async with asyncio.timeout(20):
+            while not started.exists():
+                await asyncio.sleep(0.01)
+        wedged_pid = int(started.read_text())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The wedged worker is still running: the pool must have dropped it.
+        assert not finished.exists()
+        assert pool._executor is None  # noqa: SLF001
+        async with asyncio.timeout(60):
+            assert await pool.run(os.getpid) != wedged_pid
+
+    try:
+        asyncio.run(check())
+    finally:
+        release.touch()

@@ -538,4 +538,4 @@ def test_sidecar_metrics_reach_common_step_reducer() -> None:
     assert metrics["tito/turn/input_tokens_mean"] == 2
     assert metrics["tito/turn/output_tokens_mean"] == 2
     assert metrics["tito/turn/runtime_seconds_mean"] == pytest.approx(0.1)
-    assert "tito/debug/calls/total" not in metrics
+    assert "debug/tito/calls/total" not in metrics

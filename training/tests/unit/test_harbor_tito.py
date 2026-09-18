@@ -213,6 +213,10 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
     assert "tokenizer/chat_template.jinja" in names
     assert not any("model_formats/" in name for name in names)
     assert "python-sdk/fireworks/training/sdk/tito/_sidecar.py" in names
+    with zipfile.ZipFile(first.path) as archive:
+        assert all(
+            info.compress_type == zipfile.ZIP_LZMA for info in archive.infolist()
+        )
     assert "python-sdk/fireworks/__init__.py" in names
     assert "python-sdk/fireworks/training/__init__.py" in names
     assert "python-sdk/fireworks/_client.py" not in names
@@ -1846,3 +1850,152 @@ def test_prepared_task_rejects_mutable_base_image(tmp_path, base_image) -> None:
             tmp_path / "prepared",
             base_image=base_image,
         )
+
+
+def _bound_probe_trial(run):
+    """Minimal Harbor stand-in whose ``run`` behavior the test controls."""
+
+    class Trial:
+        def __init__(self, config):
+            self.config = config
+            self._agent_timeout_sec = 7200
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            return await run(self)
+
+    return Trial
+
+
+def _bound_probe_kwargs(tmp_path):
+    return dict(
+        task_config={},
+        inference_key="inference-key",
+        run_id="bound-test",
+        harbor_environment="e2b",
+        sidecar_bundle_path=tmp_path / "bundle.zip",
+        sidecar_launch_spec=json.dumps(
+            {"debug_enabled": False, "inference_base_url": "https://api.fireworks.ai"}
+        ),
+        trials_dir=tmp_path / "trials",
+        agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
+        agent_version=DEFAULT_OPENCODE_VERSION,
+    )
+
+
+def test_whole_trial_bound_fires_and_is_counted(monkeypatch, tmp_path) -> None:
+    from training.utils.rl import trial_events
+
+    async def hang(_trial):
+        await asyncio.sleep(30)
+
+    harbor = _fake_harbor()
+    harbor.Trial = _bound_probe_trial(hang)
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    monkeypatch.setattr(harbor_adapter, "_trial_run_timeout_seconds", lambda _c: 0.2)
+    trial_events.reset()
+    with pytest.raises(RecoverableRolloutError, match="whole-trial bound") as raised:
+        asyncio.run(harbor_adapter.run_harbor_trial(**_bound_probe_kwargs(tmp_path)))
+    assert raised.value.reason == "whole_trial_bound"
+    drained = trial_events.drain()
+    assert drained["tito/trial/whole_trial_bound_firings"] == 1.0
+    assert drained["tito/trial_failed/trial_wall_seconds_count"] == 1.0
+    assert drained["tito/trial_failed/trial_wall_seconds_max"] >= 0.2
+    assert not trial_events.drain()
+
+
+def test_foreign_timeout_is_not_reported_as_the_trial_bound(
+    monkeypatch, tmp_path
+) -> None:
+    """Harbor's unwrapped verifier-env timeout must classify, not masquerade."""
+
+    from training.utils.rl import trial_events
+
+    async def raise_timeout(_trial):
+        raise asyncio.TimeoutError("verifier environment start timed out")
+
+    harbor = _fake_harbor()
+    harbor.Trial = _bound_probe_trial(raise_timeout)
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    trial_events.reset()
+    with pytest.raises(RuntimeError, match="non-retryable error: TimeoutError") as err:
+        asyncio.run(harbor_adapter.run_harbor_trial(**_bound_probe_kwargs(tmp_path)))
+    assert not isinstance(err.value, RecoverableRolloutError)
+    assert not trial_events.drain()
+
+
+def test_trial_bound_comes_from_the_trial_not_the_task_source() -> None:
+    """A DeepSWE-shaped trial must bound above its own agent budget.
+
+    The task source object carries no phase budgets, so reading them there
+    returned the same default for every task -- below a DeepSWE agent budget,
+    which made the bound fire on healthy trials.
+    """
+    trial = SimpleNamespace(
+        _agent_timeout_sec=5400.0,
+        _verifier_timeout_sec=1800.0,
+        _agent_setup_timeout_sec=1800.0,
+        _environment_build_timeout_sec=1800.0,
+    )
+    bound = harbor_adapter._trial_run_timeout_seconds(trial)
+    # agent + verifier + setup + 2 builds + artifact slack
+    assert bound == pytest.approx(5400.0 + 1800.0 + 1800.0 + 3600.0 + 900.0)
+    assert bound > trial._agent_timeout_sec
+
+    task_source = SimpleNamespace(name="deepswe", git_url="https://example/x")
+    # The old source of truth yields no budgets at all, hence the guard below.
+    assert harbor_adapter._trial_run_timeout_seconds(task_source) is None
+
+
+def test_trial_bound_never_undercuts_the_agent_budget() -> None:
+    trial = SimpleNamespace(
+        _agent_timeout_sec=5400.0,
+        _verifier_timeout_sec=0.0,
+        _agent_setup_timeout_sec=0.0,
+        _environment_build_timeout_sec=0.0,
+    )
+    assert harbor_adapter._trial_run_timeout_seconds(trial) == pytest.approx(
+        5400.0 + 900.0
+    )
+
+
+def test_unbounded_agent_budget_leaves_the_trial_unbounded(
+    monkeypatch, tmp_path
+) -> None:
+    """No declared agent budget means no derived bound, not an invented one."""
+    artifact = _artifact("unbounded-agent")
+
+    class Trial:
+        def __init__(self, config):
+            self.config = config
+            self._agent_timeout_sec = None
+            self.timeout_passed = "unset"
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            trial_path = Path(self.config.trials_dir) / self.config.trial_name
+            _write_collected_artifact(trial_path, artifact)
+            return SimpleNamespace(
+                task_name="example",
+                trial_name=self.config.trial_name,
+                verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+                exception_info=None,
+            )
+
+    assert harbor_adapter._trial_run_timeout_seconds(Trial(None)) is None
+
+    harbor = _fake_harbor()
+    harbor.Trial = Trial
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    outcome = asyncio.run(
+        harbor_adapter.run_harbor_trial(**_bound_probe_kwargs(tmp_path))
+    )
+    assert outcome.reward == 1.0
+    # No bound was derived, so no bound utilization is reported for it.
+    assert "bound_utilization" not in outcome.phase_timings

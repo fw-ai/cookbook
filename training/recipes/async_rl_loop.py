@@ -55,6 +55,7 @@ from training.utils import (
     WandBConfig,
     ReconnectableClient,
     build_service_client,
+    flush_phase_trace,
     log_metrics,
     load_deployment_tokenizer,
     load_jsonl_dataset,
@@ -838,15 +839,18 @@ def main(
             return span.elapsed
 
         async def run_training() -> tuple[int, dict[str, Any]]:
+            def _step_metrics(metrics: dict[str, Any], step: int) -> None:
+                log_metrics(metrics, step=step)
+                # Flush the client phase trace at each optimizer-step boundary
+                # so the trace file is inspectable while the run is in flight.
+                flush_phase_trace()
+
             telemetry = AsyncRLTelemetry(
                 producer_metrics_fn=lambda metrics: log_metrics(
                     metrics,
                     step=int(metrics["producer/event"]),
                 ),
-                step_metrics_fn=lambda metrics, step: log_metrics(
-                    metrics,
-                    step=step,
-                ),
+                step_metrics_fn=_step_metrics,
             )
             coordinator = AsyncRLCoordinator(
                 rows=make_row_requests(),

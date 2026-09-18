@@ -7,7 +7,7 @@ name = "fireworks-training-cookbook"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fireworks-ai[training]>=1.2.11,<2",
+    "fireworks-ai[training]>=1.2.13,<2",
     # Preserve the runtime floors previously supplied by tinker-cookbook.
     "aiohttp>=3.9.0",
     "pydantic>=2.0.0",

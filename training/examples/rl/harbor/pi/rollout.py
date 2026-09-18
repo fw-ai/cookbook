@@ -37,6 +37,7 @@ from training.examples.rl.harbor.tito.trial import (
     task_name_from_row,
     validate_harbor_retry_exceptions,
 )
+from training.utils.phase_tracing import phase_span
 from training.utils.rl.async_rl.errors import RecoverableRolloutError
 from training.utils.rl.rollout import RolloutRun
 from training.utils.rl.rollout.lifecycle import ActiveRolloutTasks
@@ -285,30 +286,37 @@ class _PiRolloutRunner:
         )
         with trial_workspace(self._trials_dir, prefix="harbor-pi-tito-") as trial_root:
             async with self._trial_semaphore:
-                outcome = await run_harbor_trial(
-                    task_config=task_config,
-                    inference_key=self._setup.api_key,
-                    run_id=(f"{run_id}:retry-{retry_index}" if retry_index else run_id),
-                    harbor_environment=self._harbor_environment,
-                    sidecar_bundle_path=self._sidecar_bundle.path,
-                    sidecar_launch_spec=launch_spec,
-                    trial_config=self._trial_config,
-                    trials_dir=trial_root,
-                    context_limit=self._max_context_tokens,
-                    output_limit=int(self._setup.sample_kwargs["max_tokens"]),
-                    agent_import_path=PI_HARBOR_IMPORT_PATH,
-                    agent_provider="fireworks-tito",
-                    agent_version=PINNED_PI_VERSION,
-                    tool_timeout_seconds=self._tool_timeout_seconds,
-                    terminal_failure_reward=self._terminal_failure_reward,
-                    retry_include_exceptions=self._retry_include_exceptions,
-                    artifact_processor=self._artifact_processor,
-                    materializer=partial(
-                        _materialize_pi_trajectory,
-                        max_context_tokens=self._max_context_tokens,
-                        debug_enabled=self._tito_debug_enabled,
-                    ),
-                )
+                with phase_span(
+                    "harbor_trial",
+                    category="rollout",
+                    attributes={"task_name": task_name, "retry_index": retry_index},
+                ):
+                    outcome = await run_harbor_trial(
+                        task_config=task_config,
+                        inference_key=self._setup.api_key,
+                        run_id=(
+                            f"{run_id}:retry-{retry_index}" if retry_index else run_id
+                        ),
+                        harbor_environment=self._harbor_environment,
+                        sidecar_bundle_path=self._sidecar_bundle.path,
+                        sidecar_launch_spec=launch_spec,
+                        trial_config=self._trial_config,
+                        trials_dir=trial_root,
+                        context_limit=self._max_context_tokens,
+                        output_limit=int(self._setup.sample_kwargs["max_tokens"]),
+                        agent_import_path=PI_HARBOR_IMPORT_PATH,
+                        agent_provider="fireworks-tito",
+                        agent_version=PINNED_PI_VERSION,
+                        tool_timeout_seconds=self._tool_timeout_seconds,
+                        terminal_failure_reward=self._terminal_failure_reward,
+                        retry_include_exceptions=self._retry_include_exceptions,
+                        artifact_processor=self._artifact_processor,
+                        materializer=partial(
+                            _materialize_pi_trajectory,
+                            max_context_tokens=self._max_context_tokens,
+                            debug_enabled=self._tito_debug_enabled,
+                        ),
+                    )
             rollout = outcome.rollout
             if rollout is None:
                 logger.warning(

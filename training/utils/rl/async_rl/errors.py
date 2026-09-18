@@ -20,7 +20,16 @@ class ErrorDisposition(str, Enum):
 
 
 class RecoverableRolloutError(RuntimeError):
-    """Explicitly mark a rollout-infrastructure failure as recoverable."""
+    """Explicitly mark a rollout-infrastructure failure as recoverable.
+
+    ``reason`` is an optional stable slug for failure telemetry. It survives
+    only in-process: an error pickled back from an artifact worker rebuilds
+    from ``args`` alone, so the catch site labels those itself.
+    """
+
+    def __init__(self, *args: object, reason: str | None = None) -> None:
+        super().__init__(*args)
+        self.reason = reason
 
 
 @dataclass(frozen=True, slots=True)

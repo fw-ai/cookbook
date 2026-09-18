@@ -38,9 +38,10 @@ The synchronous and asynchronous RL recipes emit their existing coarse phases:
 - evaluation and evaluation joins;
 - checkpoint saves.
 
-The trace is flushed when the recipe calls `wandb_finish()` and again at normal
-process exit. It remains local unless the client separately configures the
-optional OpenTelemetry bridge.
+The trace is flushed at each async optimizer-step boundary, when the recipe
+calls `wandb_finish()`, and again at normal process exit, so the file is
+inspectable mid-run. It remains local unless the client separately configures
+the optional OpenTelemetry bridge.
 
 Open the result:
 
@@ -121,8 +122,9 @@ receive metadata; further thread/task contexts share overflow lane `0`.
   rollout function when that detail is needed.
 - The trace clock is process-local. Use the OpenTelemetry mirror when traces
   must join another process or service.
-- A hard kill can lose the unflushed tail. Normal completion and exceptions
-  that unwind Python contexts retain completed spans.
+- A hard kill can lose spans recorded since the last step-boundary flush.
+  Normal completion and exceptions that unwind Python contexts retain
+  completed spans.
 - Built-in instrumentation stays phase-level. Per-rollout and per-tool spans
   require explicit harness instrumentation to control trace size and sensitive
   attributes.
