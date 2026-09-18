@@ -16,6 +16,8 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
+from fireworks.training.sdk.routing import concat_routing, copy_routing, mask_routing
+
 logger = logging.getLogger(__name__)
 
 
@@ -238,7 +240,7 @@ def _required_output_values(
             f"{attribute} has length {len(values)} for "
             f"{len(turn.output_ids)} output tokens"
         )
-    return list(values)
+    return copy_routing(values)
 
 
 @dataclasses.dataclass
@@ -297,7 +299,7 @@ class _MergeState:
         if self.rollout_raw_log_probs is not None:
             self.rollout_raw_log_probs.extend([0.0] * len(token_ids))
         if self.routing_matrices is not None:
-            self.routing_matrices.extend([""] * len(token_ids))
+            self.routing_matrices = concat_routing(self.routing_matrices, [""] * len(token_ids))
 
     def append_output(
         self,
@@ -324,8 +326,8 @@ class _MergeState:
                 turn,
                 "output_routing_matrices",
             )
-            self.routing_matrices.extend(
-                routing_matrices if train_output else [""] * len(turn.output_ids)
+            self.routing_matrices = concat_routing(
+                self.routing_matrices, routing_matrices if train_output else [""] * len(turn.output_ids)
             )
         self.output_spans.append((turn_index, output_start, len(self.response_ids)))
         self.num_turns += 1
@@ -381,18 +383,7 @@ class _MergeState:
                 if self.rollout_raw_log_probs is not None
                 else None
             ),
-            routing_matrices=(
-                [
-                    value if mask else ""
-                    for value, mask in zip(
-                        self.routing_matrices,
-                        self.loss_mask,
-                        strict=True,
-                    )
-                ]
-                if self.routing_matrices is not None
-                else None
-            ),
+            routing_matrices=mask_routing(self.routing_matrices, self.loss_mask),
             metadata=segment_metadata,
             trainable_turn_indices=sorted(
                 turn_index

@@ -496,11 +496,18 @@ def test_context_limit_is_shared_by_inference_and_training_retention(
     assert runner._context_limit == 4096
 
 
-def test_full_sequence_router_replay_is_rejected(monkeypatch, tmp_path) -> None:
+def test_full_sequence_router_replay_enables_incremental_prompt_capture(monkeypatch, tmp_path) -> None:
     setup = _setup(tmp_path)
     setup.sample_kwargs["echo"] = True
-    with pytest.raises(ValueError, match="completion-only Router Replay"):
-        rollout.make_rollout_fn(setup)
+    monkeypatch.setattr(rollout, "build_sidecar_bundle", lambda _setup: _fake_bundle(tmp_path / "bundle"))
+    setup.sampler = SimpleNamespace(routing_matrix_format="parquet_v1", r3_store_id="shared-test")
+    rollout.make_rollout_fn(setup)
+    spec = sidecar_runtime.build_launch_spec(
+        setup, _fake_bundle(tmp_path / "launch"), call_classifier="all_policy", metadata={}
+    )
+    assert spec.routing_matrix_format == "parquet_v1"
+    assert spec.r3_store_id == "shared-test"
+    assert spec.sampling_defaults["incremental_prompt_routing"] is True
 
 
 def test_opencode_classifier_contract_rejects_unpinned_versions(

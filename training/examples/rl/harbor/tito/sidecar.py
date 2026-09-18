@@ -62,6 +62,7 @@ _SDK_RUNTIME_FILES = (
     "concurrency.py",
     "errors.py",
     "sampling.py",
+    "routing.py",
     "sampling_observability.py",
     "tito_debug.py",
 )
@@ -104,6 +105,8 @@ class TITOSidecarLaunchSpec:
     debug_max_local_bytes: int | None
     debug_min_free_bytes: int | None
     debug_redact_text: bool
+    routing_matrix_format: str = "base64_inline"
+    r3_store_id: str | None = None
 
 
 def _source_roots() -> tuple[Path, Path]:
@@ -341,6 +344,8 @@ def build_launch_spec(
         for key, value in setup.sample_kwargs.items()
         if key not in {"max_tokens", "max_seq_len", "echo"}
     }
+    if setup.sample_kwargs.get("include_routing_matrix") and setup.sample_kwargs.get("echo"):
+        sampling_defaults["incremental_prompt_routing"] = True
     debug_enabled = bool(setup.extras.get("tito_debug_enabled", False))
     max_masked_tokens = int(setup.extras.get("tito_max_masked_tokens", 1024))
     if max_masked_tokens < 0:
@@ -358,6 +363,8 @@ def build_launch_spec(
         raise ValueError("rollout_extras['tito_keepalive_seconds'] must be positive")
     return TITOSidecarLaunchSpec(
         schema_version=2,
+        routing_matrix_format=getattr(setup.sampler, "routing_matrix_format", "base64_inline"),
+        r3_store_id=getattr(setup.sampler, "r3_store_id", None),
         bundle_digest=bundle.digest,
         inference_base_url=setup.inference_base_url,
         api_key=setup.api_key,
@@ -735,6 +742,8 @@ async def serve(spec_path: Path) -> None:
         api_key=str(spec["api_key"]),
         tokenizer=tokenizer,
     )
+    sampler.routing_matrix_format = spec.get("routing_matrix_format", "base64_inline")
+    sampler.r3_store_id = spec.get("r3_store_id")
     observer = None
     if bool(spec.get("debug_enabled")):
         observer = TITOLocalDebugSink(

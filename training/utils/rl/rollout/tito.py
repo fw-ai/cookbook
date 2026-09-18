@@ -5,6 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from fireworks.training.sdk.routing import (
+    RoutingReferences,
+    concat_routing,
+    copy_routing,
+    routing_has_gaps,
+)
+
 from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 
 if TYPE_CHECKING:
@@ -82,7 +89,8 @@ class _SampleBuilder:
     logprobs: list[float]
     raw_logprobs: list[float] | None
     loss_mask: list[int]
-    response_routes: list[str] | None
+    response_routes: list[str] | RoutingReferences | None
+    initial_routes: list[str] | RoutingReferences | None = None
     turns: list[TITOTurn] = field(default_factory=list)
     masked_fail_closed_turns: int = 0
     realigned_masked_tokens: int = 0
@@ -141,7 +149,7 @@ class _SampleBuilder:
             route_start = start - len(self.prompt_ids)
             if route_start < 0:
                 raise ValueError("realignment cannot replace the initial prompt")
-            self.response_routes[route_start:] = [""] * len(replacement)
+            self.response_routes = concat_routing(self.response_routes[:route_start], [""] * len(replacement))
         self.realigned_masked_tokens += turn.realigned_masked_tokens
         self._append_completion(turn, trainable=trainable)
 
@@ -166,7 +174,7 @@ class _SampleBuilder:
                     raise ValueError(
                         "incremental checkpoint trim exceeds response routes"
                     )
-                del self.response_routes[-trim_tokens:]
+                self.response_routes = self.response_routes[:-trim_tokens]
             self.incremental_checkpoint_trimmed_tokens += trim_tokens
         suffix = prompt[len(self.tokens) :]
         self.tokens.extend(suffix)
@@ -182,13 +190,27 @@ class _SampleBuilder:
                 raise ValueError(
                     "R3 must be present for every turn in one TITO segment"
                 )
-            self.response_routes.extend([""] * len(suffix))
+            self.response_routes = concat_routing(self.response_routes, [""] * len(suffix))
         elif turn.routing_matrices is not None:
             raise ValueError("R3 cannot begin partway through one TITO segment")
 
         self._append_completion(turn, trainable=trainable)
 
     def _append_completion(self, turn: TITOTurn, *, trainable: bool) -> None:
+        if turn.prompt_routing_matrices is not None:
+            start = turn.prompt_routing_start
+            routes = copy_routing(turn.prompt_routing_matrices)
+            if start is None or start < 0 or start + len(routes) != len(self.tokens) - 1:
+                raise ValueError("Incremental prompt routes do not cover the prompt suffix")
+            if self.response_routes is None:
+                raise ValueError("Prompt R3 requires completion R3")
+            boundary = len(self.prompt_ids) - 1
+            if self.initial_routes is None:
+                self.initial_routes = [""] * boundary
+            first_count = max(0, boundary - start)
+            if first_count:
+                self.initial_routes = concat_routing(self.initial_routes[:start], routes[:first_count])
+            self.response_routes = concat_routing(self.response_routes[:max(0, start - boundary)], routes[first_count:])
         completion = list(turn.exact_completion_ids)
         self.tokens.extend(completion)
         self.logprobs.extend(_required_sampling_logprobs(turn))
@@ -211,7 +233,7 @@ class _SampleBuilder:
                 raise ValueError(
                     f"turn {turn.turn_id} has completion-misaligned R3 matrices"
                 )
-            self.response_routes.extend(turn.routing_matrices)
+            self.response_routes = concat_routing(self.response_routes, turn.routing_matrices)
         self.turns.append(turn)
 
     def build(self, reward: float) -> RolloutSample:
@@ -220,7 +242,10 @@ class _SampleBuilder:
             # Trainer model_input has len(tokens)-1 positions. Completion-only
             # R3 is padded here for the first prompt and for every later
             # external/tool suffix while retaining one route per sampled token.
-            routing = [""] * (len(self.prompt_ids) - 1) + self.response_routes
+            initial = self.initial_routes if self.initial_routes is not None else [""] * (len(self.prompt_ids) - 1)
+            routing = concat_routing(initial, self.response_routes)
+            if self.initial_routes is not None and routing_has_gaps(routing):
+                raise ValueError("Incremental prompt R3 left an uncovered input token")
             if len(routing) != len(self.tokens) - 1:
                 raise ValueError(
                     "materialized R3 does not align with model-input positions"
@@ -324,6 +349,7 @@ def materialize_tito_trajectory(
         builders: list[_SampleBuilder] = []
         builder: _SampleBuilder | None = None
         prior_turn: TITOTurn | None = None
+        routing_history: list[str] | RoutingReferences | None = None
         for turn_index, turn in enumerate(retained):
             if turn_index == 0:
                 if turn.prompt_disposition != "new_segment":
@@ -337,6 +363,30 @@ def materialize_tito_trajectory(
                     "turn disposition does not continue its exact prior checkpoint"
                 )
             prior_turn = turn
+
+            # Routing follows the logical lineage, including turns omitted from
+            # training. A physical sample after a retention split needs that prefix.
+            prompt_routes = None
+            if turn.prompt_routing_matrices is not None:
+                start = turn.prompt_routing_start
+                if (
+                    start is None
+                    or start < 0
+                    or start + len(turn.prompt_routing_matrices)
+                    != len(turn.exact_prompt_ids) - 1
+                ):
+                    raise ValueError(
+                        "Incremental prompt routes do not cover the prompt suffix"
+                    )
+                prefix = routing_history[:start] if routing_history is not None else []
+                if len(prefix) != start:
+                    raise ValueError(
+                        "Incremental prompt R3 has no routing history for its prefix"
+                    )
+                prompt_routes = concat_routing(prefix, turn.prompt_routing_matrices)
+                routing_history = concat_routing(prompt_routes, turn.routing_matrices)
+            else:
+                routing_history = None
 
             if (
                 max_context_tokens is not None
@@ -357,6 +407,7 @@ def materialize_tito_trajectory(
                 # prompt after an over-limit turn.  The complete prompt becomes
                 # masked context; no sampled token or aligned array is rebuilt.
                 builder = _SampleBuilder.from_turn(turn)
+                builder.initial_routes = prompt_routes
                 if turn.prompt_disposition == "realign":
                     builder.realigned_masked_tokens += turn.realigned_masked_tokens
                 builder.append(turn, trainable=trainable)

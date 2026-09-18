@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from fireworks.training.sdk.routing import (
+    RoutingReferences,
+    concat_routing,
+    copy_routing,
+)
+
 from training.utils.rl.agent.trajectory import TokenSegment
 from training.utils.rl.rollout.types import RolloutSample
 
@@ -45,13 +51,13 @@ def completion_routes(
     completion: Any,
     *,
     output_len: int,
-) -> list[str] | None:
+) -> list[str] | RoutingReferences | None:
     """Return completion-only routing matrices from an SDK completion."""
     raw_routes = getattr(completion, "routing_matrices", None)
     if raw_routes is None:
         return None
 
-    routes = list(raw_routes)
+    routes = copy_routing(raw_routes)
     prompt_len = int(completion.prompt_len)
     full_len = len(completion.full_tokens)
     if getattr(completion, "logprobs_echoed", False):
@@ -60,12 +66,19 @@ def completion_routes(
         elif len(routes) == max(0, full_len - 1):
             routes = routes[max(0, prompt_len - 1) :]
 
-    if len(routes) != output_len or any(route is None for route in routes):
+    if len(routes) != output_len or (
+        not isinstance(routes, RoutingReferences)
+        and any(route is None for route in routes)
+    ):
         raise ValueError(
             "completion routing matrices are misaligned "
             f"({len(routes)} values for {output_len} output tokens)"
         )
-    return [str(route) for route in routes]
+    return (
+        routes
+        if isinstance(routes, RoutingReferences)
+        else [str(route) for route in routes]
+    )
 
 
 def token_segment_to_sample(
@@ -95,7 +108,7 @@ def token_segment_to_sample(
         else None
     )
     routing_matrices = (
-        [""] * max(0, prompt_len - 1) + segment.routing_matrices
+        concat_routing([""] * max(0, prompt_len - 1), segment.routing_matrices)
         if segment.routing_matrices is not None
         else None
     )

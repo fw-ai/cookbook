@@ -223,6 +223,24 @@ def test_artifact_failures_leave_worker_usable(pool, tmp_path):
     )
 
 
+def test_setup_timeout_preserves_retry_policy(tmp_path):
+    outcome = HarborTrialOutcome(
+        "task", "trial", tmp_path, None, {}, "AgentSetupTimeoutError", "setup timed out"
+    )
+    with pytest.raises(RecoverableRolloutError):
+        _finish_harbor_trial(
+            outcome,
+            materializer=lambda _: pytest.fail(
+                "setup failure must not be materialized"
+            ),
+            **_completion_options(
+                raw_rewards=None,
+                has_exception=True,
+                retry_names=frozenset({"AgentSetupTimeoutError"}),
+            ),
+        )
+
+
 def test_pi_process_reconciles_lifecycle_and_timeout_metadata(pool, tmp_path):
     from training.examples.rl.harbor.pi.rollout import _materialize_pi_trajectory
 

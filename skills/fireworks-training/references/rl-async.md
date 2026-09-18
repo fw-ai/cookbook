@@ -82,6 +82,11 @@ For every returned trajectory:
 - non-generated positions should use `0.0` logprobs;
 - all trajectories in one run must share the same scalar reward.
 
+When carrying R3, keep `routing_matrices` aligned with the trajectory through
+slicing and materialization. Use the existing datum builders and
+`fireworks.training.sdk.routing` helpers: payloads may contain compact file
+references, so converting them with `list()` or `tuple()` is not supported.
+
 `RolloutRun` is the reward, advantage, and GRPO group-member boundary; it is
 not restricted to one trainer trajectory. Group assembly computes one
 advantage per surviving run and broadcasts it to every trajectory in that
@@ -96,6 +101,12 @@ training and evaluation trajectory and do not close it. The endpoint, model,
 and key fields remain available for older rollout factories and manually
 constructed setups, but a factory must not construct another sampler or
 adaptive-concurrency controller when `setup.sampler` is present.
+
+R3 uses the same sampler setup. Format negotiation belongs in the SDK: it
+selects Parquet when the SDK, trainer, and inference support it and the trainer
+and inference share an R3 store. Older peers use inline routing. Parquet R3
+files expire six hours after creation by default; override retention with
+`r3_ttl_seconds` in sampling kwargs when needed.
 
 The rollout may optionally declare any of these keyword parameters when it
 needs dataset position context: `cursor_index`, `row_index`, `epoch`,
@@ -201,7 +212,8 @@ Router Replay (R3) is a numerics-alignment setting, not a scheduling knob.
 Both RL recipes default `router_replay=True` and
 `router_replay_completion_only=True`, replaying MoE routes for generated
 tokens without the serving cost of `echo=True`. Use full-sequence replay only
-when the extra alignment is worth that throughput cost.
+when the extra alignment is worth that throughput cost. For Harbor/TITO prompt
+capture, see the [agentic rollout example](rl-agentic.md#cookbook-example).
 
 One optimizer batch requests `B = P × G` logical rollout results. The number of
 trainer trajectories can be larger when a result contains multiple
@@ -313,6 +325,11 @@ failures explicitly or let programming errors remain fatal.
 Agentic adapters may own a broader trajectory boundary than generic rollouts.
 Keep that policy in the adapter and follow [`rl-agentic.md`](rl-agentic.md);
 malformed R3 data is still discarded at async admission before group assembly.
+
+If a Parquet R3 file expires before the trainer reads it, the trainer warns
+the client with the request, file, and expiry time, then continues with natural
+routing for the affected data. An unexpired missing or invalid file remains an
+error; expiry fallback does not make a malformed trajectory valid.
 
 Incomplete-group retries are bounded and `min_group_size` counts surviving
 `RolloutRun`s, not their contained trajectories. After that budget is

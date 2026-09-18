@@ -132,8 +132,6 @@ class _PiRolloutRunner:
     """Allocate one independent sidecar trajectory per Harbor/Pi attempt."""
 
     def __init__(self, setup: RolloutSetup) -> None:
-        if setup.sample_kwargs.get("echo"):
-            raise ValueError("Pi TITO supports completion-only Router Replay")
         self._setup = setup
         self._tito_debug_enabled = bool(setup.extras.get("tito_debug_enabled", False))
         self._max_context_tokens = resolve_max_context_tokens(setup)

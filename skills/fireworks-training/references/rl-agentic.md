@@ -9,7 +9,7 @@ scheduler, batching, off-policy, optimizer, and publication behavior.
 
 - [Boundary and invariants](#boundary-and-invariants)
 - [Choose an architecture](#choose-an-architecture)
-- [Choose a token-mismatch policy](#choose-a-token-mismatch-policy)
+- [Choose prompt construction and a token-mismatch policy](#choose-prompt-construction-and-a-token-mismatch-policy)
 - [Linear V1 and future trees](#linear-v1-and-future-trees)
 - [Session and prompt-cache identity](#session-and-prompt-cache-identity)
 - [Failure and retry policy](#failure-and-retry-policy)
@@ -70,16 +70,14 @@ subagent that can be trained as an independent trajectory.
 
 ### Current support boundary
 
-Production TITO support is deliberately narrower than the cookbook's general
-renderer registry. The lightweight sidecar runtime currently implements
-`glm_moe_dsa_preserve_thinking` (GLM-5.2), `qwen3_8` (Qwen3.8-27B), and
-`muse_glimmer` (Muse Glimmer 30B, full-history only), each with its pinned
-tokenizer revision.
-Other renderer names in the offline SFT/DPO registry are not thereby available
-through the sidecar. Interleaved GLM history remains uncertified. A renderer
-name existing for SFT or DPO does **not** make it safe for TITO, and an offline
-renderer alone does not imply a lightweight sidecar implementation. Both
-builders fail closed at their respective unsupported boundary.
+Select a renderer/tokenizer pair from `training/renderer/tito/registry.py`.
+Each entry pins the renderer implementation and tokenizer/template fingerprint.
+The lightweight sidecar supports `glm_moe_dsa_preserve_thinking` (GLM-5.2),
+`glm53_preserve_thinking` (GLM-5.3), `qwen3_8` (Qwen3.8-27B), and
+`muse_glimmer` (Muse Glimmer 30B). Use `full_history` for GLM-5.3 and
+Muse Glimmer. Interleaved GLM history remains uncertified.
+The offline SFT/DPO renderer registry does not establish TITO or lightweight
+sidecar support. Both builders reject unsupported or mismatched pairs.
 
 For another model family, implement the shared loss-agnostic conversation and
 assistant-parse primitives, characterize complete multi-turn
@@ -322,6 +320,13 @@ are concrete adapters over the same sidecar contract:
   incremental mode joins the stored checkpoint to a model-owned suffix; any
   incompatible boundary closes the segment and uses a full-rendered current
   prompt as the next masked segment within the same logical run.
+
+For R3, the Harbor adapters follow the recipe's `router_replay` and
+`router_replay_completion_only` settings. Set completion-only to `False` to
+also capture the initial prompt and newly added user/tool context. The sidecar
+captures those routes incrementally, and the materializer preserves their token
+alignment. Prompt/tool tokens remain loss-masked; prompt construction stays in
+the selected renderer mode.
 
 The DABstep and Terminal-Bench entrypoints keep their task selection and
 experiment defaults in `harbor/recipes/dabstep/` and

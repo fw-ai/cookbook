@@ -28,6 +28,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 import tinker
+from fireworks.training.sdk.routing import routing_has_gaps
 
 from training.examples.rl.vanilla_sampler import build_deployment_sampler
 from training.examples.rl.visual_toolbench.image_tools import (
@@ -439,7 +440,7 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                             f"matrices ({len(routing_matrices)} routes; expected "
                             f"{expected_routes})."
                         )
-                    if any(not route for route in routing_matrices):
+                    if routing_has_gaps(routing_matrices):
                         raise RuntimeError(
                             "Router Replay returned empty routing matrices for "
                             "replayed positions."

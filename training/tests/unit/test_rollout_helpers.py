@@ -12,6 +12,8 @@ Locks in the token / logprob alignment contract:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from training.utils.rl.rollout import (
@@ -20,7 +22,7 @@ from training.utils.rl.rollout import (
     extract_completion,
     rollout_to_prompt_group,
 )
-from training.utils.rl.agent.sampling import token_segment_to_sample
+from training.utils.rl.agent.sampling import completion_routes, token_segment_to_sample
 from training.utils.rl.agent.trajectory import TokenSegment
 
 
@@ -125,6 +127,27 @@ def test_logprob_list_too_short_raises():
             ),
             input_tokens=[1],
         )
+
+
+def test_agent_completion_preserves_echoed_parquet_ranges():
+    from fireworks.training.sdk.routing import RoutingReferences
+
+    routes = RoutingReferences(
+        4,
+        ({"format": "parquet_v1", "row_count": 4, "artifact_id": "capture"},),
+        ({"input_token_start": 0, "count": 4, "file_index": 0, "file_row_start": 0},),
+    )
+    completion = SimpleNamespace(
+        routing_matrices=routes,
+        prompt_len=3,
+        full_tokens=[1, 2, 3, 4, 5],
+        logprobs_echoed=True,
+    )
+
+    result = completion_routes(completion, output_len=2)
+
+    assert isinstance(result, RoutingReferences)
+    assert result == routes[2:]
 
 
 def test_agent_routes_use_full_model_input_after_leading_response_is_masked(

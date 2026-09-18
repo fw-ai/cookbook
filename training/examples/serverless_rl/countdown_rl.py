@@ -64,10 +64,11 @@ from fireworks.training.sdk import (
     FiretitanServiceClient,
     validate_output_model_id,
 )
-from training.renderer import get_renderer, get_text_content
+from fireworks.training.sdk.routing import copy_routing, routing_model_input_kwargs
 
 # Registers the cookbook-local renderers ("kimi_k3", "kimi_k3_disable_thinking", ...).
 import training.renderer  # noqa: F401
+from training.renderer import get_renderer, get_text_content
 
 try:  # Load FIREWORKS_API_KEY / FIREWORKS_BASE_URL from a local .env if present.
     from dotenv import load_dotenv
@@ -1004,7 +1005,7 @@ class ServerlessCountdownRL:
                 logprobs_g.append([float(x) for x in logprobs])
                 routing_matrices = getattr(seq, "routing_matrices", None)
                 routing_matrices_g.append(
-                    list(routing_matrices) if routing_matrices is not None else None
+                    copy_routing(routing_matrices)
                 )
                 rewards_g.append(reward)
                 raw_rewards.append(reward)
@@ -1043,7 +1044,7 @@ class ServerlessCountdownRL:
                         completion_only=True,
                     )
                     model_input = model_input.model_copy(
-                        update={"routing_matrices": aligned_routes}
+                        update=routing_model_input_kwargs(aligned_routes)
                     )
                 response_len = model_input.length - response_start
                 datums.append(

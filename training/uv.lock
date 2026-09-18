@@ -914,7 +914,7 @@ wheels = [
 
 [[package]]
 name = "fireworks-ai"
-version = "1.2.13"
+version = "1.2.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -926,15 +926,17 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/f0/87bfcdf8fe2d37297606fb56ee8dc24d8e89d759cd51d6b8a3428755394d/fireworks_ai-1.2.13.tar.gz", hash = "sha256:d2f4cdcf978058f9b28896c896e9d67d48ca5f6b7412129c61b9f8c3bad7dd28", size = 584868, upload-time = "2026-09-18T22:29:15.319Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/40/83/a40e83bd0517f864b799590024f89b8f40612ce100f0fd055af60ed47ec2/fireworks_ai-1.2.14.tar.gz", hash = "sha256:6645840552455fc85ea94fb2326ed9cacd3ea776533ed0e2a9dd6b66952591ed", size = 594264, upload-time = "2026-09-18T23:31:49.914Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/f4/7b26ec98d702164c56bc813aba8726a3ed045d4ce4d51ca38b13ade812b7/fireworks_ai-1.2.13-py3-none-any.whl", hash = "sha256:d60a634009e4f607c8095c8bfe52a8342b4e957a8aab27cf47c610b84ae35667", size = 550936, upload-time = "2026-09-18T22:29:13.673Z" },
+    { url = "https://files.pythonhosted.org/packages/88/67/b681e2fdc60f31080452e5a553eb3d535104b765141427cd496ebf3b9e87/fireworks_ai-1.2.14-py3-none-any.whl", hash = "sha256:28c3691ee27264ff08416ccb2d2285a996ef4ced720ac9efc9c1e167f456be09", size = 557127, upload-time = "2026-09-18T23:31:48.602Z" },
 ]
 
 [package.optional-dependencies]
 training = [
     { name = "datasets" },
     { name = "numpy" },
+    { name = "orjson" },
+    { name = "pydantic" },
     { name = "pyqwest" },
     { name = "requests" },
     { name = "tiktoken" },
@@ -953,6 +955,7 @@ dependencies = [
     { name = "aiohttp" },
     { name = "datasets" },
     { name = "fireworks-ai", extra = ["training"] },
+    { name = "huggingface-hub" },
     { name = "hydra-core" },
     { name = "numpy" },
     { name = "orjson" },
@@ -984,8 +987,9 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.9.0" },
     { name = "datasets", specifier = ">=2.14.0" },
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = ">=0.3.32" },
-    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.13,<2" },
+    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.14,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
+    { name = "huggingface-hub", specifier = ">=1.5.0,<2.0" },
     { name = "hydra-core", specifier = ">=1.3,<2" },
     { name = "math-verify", marker = "extra == 'dev'" },
     { name = "numpy", specifier = ">=1.24.0" },

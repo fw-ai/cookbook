@@ -12,6 +12,7 @@ and template normalization; ``<model>.py`` holds each certified renderer;
 """
 
 from training.renderer.tito.glm52 import GLM52TITORenderer
+from training.renderer.tito.glm53 import GLM53TITORenderer
 from training.renderer.tito.muse_glimmer import MuseGlimmerTITORenderer
 from training.renderer.tito.qwen38 import Qwen38TITORenderer
 from training.renderer.tito.registry import (
@@ -25,6 +26,7 @@ from training.renderer.tito.shared import (
 
 __all__ = [
     "GLM52TITORenderer",
+    "GLM53TITORenderer",
     "MuseGlimmerTITORenderer",
     "Qwen38TITORenderer",
     "TITORendererCertification",
