@@ -962,6 +962,26 @@ message alone does not prove that an upstream request is progressing. Compare
 successive observations and finalized TITO request timing; OpenCode message
 token counters were zero in this integration and must not be used for throughput.
 
+### Unbounded `make-mips-interpreter` probes
+
+The task's generated VM runs a persistent Doom/MIPS program. Several otherwise
+healthy samples lost tens of minutes when exploratory commands ran `node vm.js`
+in the foreground, piped it into `tail`, or sent SIGINT and then waited. A
+synchronous VM loop may not service Node's signal callback, and a pipeline that
+waits for EOF cannot finish while the VM remains alive. CPU progress in this
+case proves that the subprocess is running, not that the probe can complete.
+
+`monitor_e2b_progress.py --recover-mips-vm-probes` enables a narrow opt-in
+guard. It applies only to `make-mips-interpreter`, requires the same active Bash
+tool and full Node-to-OpenCode ancestry on two observations, then revalidates
+PID start times, parent links and the known VM command inside the exact sandbox.
+It honors explicit GNU `timeout` wrappers (handled by the separate timeout
+guard). For an unbounded foreground/pipeline VM after 60 seconds, or a short
+SIGINT probe after its requested sleep plus 30 seconds, it sends SIGKILL only
+to the Node leaf through a pidfd. The agent and trajectory continue normally;
+the guard never restarts or signals the sandbox, RL client, trainer, or rollout.
+Every action is recorded in `recovery_actions` without logging command text.
+
 Root-disk headroom still matters with remote E2B: the client and monitoring
 tools can write local metadata even when trials live on `/shared`. On the shared
 host, concurrent container activity nearly filled `/`; moving inactive owned

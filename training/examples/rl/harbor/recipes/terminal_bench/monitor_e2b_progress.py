@@ -9,6 +9,8 @@ recovery terminates only a revalidated stuck search child, never the agent.
 Opt-in kcore recovery terminates only a long-running grep reading /proc/kcore.
 Opt-in overdue-Node recovery enforces only an existing model-authored GNU
 timeout plus a 30-second termination grace; it never caps total sampling time.
+Opt-in MIPS-probe recovery handles only revalidated unbounded Node VM probes
+inside ``make-mips-interpreter`` and signals only the exact Node leaf.
 It never retries samples or changes timeouts.
 An old activity timestamp is a reason to inspect, not proof of a failed sample.
 Assistant-message timing and log growth help distinguish a long model turn
@@ -28,6 +30,7 @@ from e2b import Sandbox, SandboxQuery
 
 from training.examples.rl.harbor.recipes.terminal_bench import node_timeout_guard
 from training.examples.rl.harbor.recipes.terminal_bench import kernel_core_guard
+from training.examples.rl.harbor.recipes.terminal_bench import mips_probe_guard
 
 from training.examples.rl.harbor.recipes.terminal_bench.kernel_stream_guard import (
     recovery_candidates,
@@ -310,12 +313,15 @@ def guest_oom_warnings(current):
     return []
 
 
-def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore=False):
+def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore=False,
+                         mips_probes=False):
     actions = []
     candidates = node_timeout_guard.recovery_candidates if node_deadlines else recovery_candidates
     command = node_timeout_guard.recovery_command if node_deadlines else recovery_command
     if kcore:
         candidates, command = kernel_core_guard.recovery_candidates, kernel_core_guard.recovery_command
+    if mips_probes:
+        candidates, command = mips_probe_guard.recovery_candidates, mips_probe_guard.recovery_command
     for expected in candidates(previous, current):
         if (root / 'trials' / current['trial'] / 'result.json').exists():
             break
@@ -407,6 +413,8 @@ def main():
                         help='Opt in to killing only Node children exceeding their model-authored GNU timeout plus 30s grace')
     parser.add_argument('--recover-kcore-grep', action='store_true',
                         help='Opt in to SIGTERM only for revalidated grep children reading /proc/kcore after 10 minutes')
+    parser.add_argument('--recover-mips-vm-probes', action='store_true',
+                        help='Opt in to SIGKILL only for revalidated unbounded Node probes in make-mips-interpreter')
     args = parser.parse_args()
     if not 30 <= args.interval_seconds <= 3600:
         parser.error('--interval-seconds must be between 30 and 3600')
@@ -447,6 +455,9 @@ def main():
                     if args.recover_kcore_grep:
                         trial.setdefault('recovery_actions', []).extend(
                             recover_trial_search(root, previous.get(trial['trial']), trial, kcore=True))
+                    if args.recover_mips_vm_probes:
+                        trial.setdefault('recovery_actions', []).extend(
+                            recover_trial_search(root, previous.get(trial['trial']), trial, mips_probes=True))
         except Exception as error:
             record['observation_error'] = type(error).__name__
         print(json.dumps(record), flush=True)
