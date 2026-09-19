@@ -1,12 +1,13 @@
 """Opt-in recovery for unbounded MIPS task probes authored by OpenCode.
 
 The ``make-mips-interpreter`` task legitimately runs persistent programs, but
-an exploratory shell probe must still return to the agent.  This guard handles
-only the observed Node probes whose shell requested a short SIGINT shutdown,
-piped an endless VM into ``tail``, or kept polling for a frame after a bounded
-VM exited. It revalidates exact process ancestry and command evidence inside
-the exact E2B sandbox and signals only the stuck leaf. It never signals
-OpenCode, the sandbox, the trainer, the rollout, or a process group.
+an exploratory shell probe must still return to the agent. This guard handles
+only observed Node probes whose shell requested a short SIGINT shutdown, piped
+an endless VM into ``tail``, kept polling for a frame after a bounded VM
+exited, or directly launched a native Doom image while expecting it to crash.
+It revalidates exact process ancestry and command evidence inside the exact E2B
+sandbox and signals only the stuck leaf. It never signals OpenCode, the
+sandbox, the trainer, the rollout, or a process group.
 """
 import inspect
 import json
@@ -109,6 +110,30 @@ def overdue_mips_frame_wait(expected, proc_root=Path('/proc')):
     return elapsed > duration + 30
 
 
+def overdue_mips_native_crash_probe(expected, proc_root=Path('/proc')):
+    """Confirm a persistent native Doom run launched only to obtain a core."""
+    records = _chain(expected, proc_root)
+    names = [item['name'] for item in expected['chain']]
+    if not records or names != ['doom_x86', 'bash', 'bash', 'opencode']:
+        return False
+    child_args = records[0][0].joinpath('cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+    parent_args = records[1][0].joinpath('cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+    tool_args = records[2][0].joinpath('cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+    if child_args != [b'./doom_x86'] or len(parent_args) < 3 or len(tool_args) < 3:
+        return False
+    if os.readlink(records[0][0] / 'cwd') != '/tmp/opencode/native':
+        return False
+    parent_command, tool_command = parent_args[-1], tool_args[-1]
+    if (parent_command != b'ulimit -c unlimited; ./doom_x86 >/dev/null 2>&1'
+            or b'rm -f core' not in tool_command
+            or b'ld -static' not in tool_command
+            or b'./doom_x86 >/dev/null 2>&1' not in tool_command):
+        return False
+    elapsed = (float((proc_root / 'uptime').read_text().split()[0])
+               - int(records[0][1][19]) / os.sysconf('SC_CLK_TCK'))
+    return elapsed > 60
+
+
 def signal_overdue_mips_node(expected, proc_root=Path('/proc')):
     descriptor = None
     try:
@@ -143,6 +168,23 @@ def signal_overdue_mips_frame_wait(expected, proc_root=Path('/proc')):
             os.close(descriptor)
 
 
+def signal_overdue_mips_native_crash_probe(expected, proc_root=Path('/proc')):
+    descriptor = None
+    try:
+        descriptor = os.pidfd_open(expected['chain'][0]['pid'])
+        if not overdue_mips_native_crash_probe(expected, proc_root):
+            return {'action': 'none', 'reason': 'evidence_changed'}
+        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        return {'action': 'SIGTERM', 'pid': expected['chain'][0]['pid'],
+                'start_ticks': expected['chain'][0]['start_ticks'],
+                'reason': 'unbounded_native_doom_crash_probe'}
+    except (OSError, ValueError, KeyError, IndexError, AttributeError) as error:
+        return {'action': 'none', 'reason': type(error).__name__}
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def recovery_candidates(previous, current):
     """Require the same task, tool and process ancestry on two observations."""
     if (not previous or not current.get('trial', '').startswith(TASK_PREFIX)
@@ -162,7 +204,7 @@ def recovery_candidates(previous, current):
     candidates = []
     for process in new.values():
         leaf_name = process.get('Name')
-        if leaf_name not in ('node', 'bash') or (process.get('elapsed_s') or 0) <= 30:
+        if leaf_name not in ('node', 'bash', 'doom_x86') or (process.get('elapsed_s') or 0) <= 30:
             continue
         chain = [process]
         for _ in range(3):
@@ -177,6 +219,8 @@ def recovery_candidates(previous, current):
             continue
         if leaf_name == 'node' and any(name != 'bash' for name in names[1:-1]):
             continue
+        if leaf_name == 'doom_x86' and names != ['doom_x86', 'bash', 'bash', 'opencode']:
+            continue
         # A frame-wait shell is recoverable only after the bounded VM process
         # has disappeared. While any Node process remains, leave the tool alone.
         if leaf_name == 'bash' and (node_present or names != ['bash', 'opencode']):
@@ -186,7 +230,10 @@ def recovery_candidates(previous, current):
                    and item.get('PPid') == old.get(item['Pid'], {}).get('PPid')
                    for item in chain):
             continue
-        candidates.append({'kind': ('node' if leaf_name == 'node' else 'frame_wait_shell'),
+        kind = ('node' if leaf_name == 'node' else
+                'native_crash_probe' if leaf_name == 'doom_x86' else
+                'frame_wait_shell')
+        candidates.append({'kind': kind,
                            'chain': [
             {'pid': int(item['Pid']), 'start_ticks': item['start_ticks'], 'name': item['Name']}
             for item in chain]})
@@ -202,9 +249,12 @@ def recovery_command(expected):
     return ("python3 - <<'RECOVER'\nimport os, re, signal, json\nfrom pathlib import Path\n"
             + inspect.getsource(_chain) + '\n' + inspect.getsource(overdue_mips_node) + '\n'
             + inspect.getsource(overdue_mips_frame_wait) + '\n'
+            + inspect.getsource(overdue_mips_native_crash_probe) + '\n'
             + inspect.getsource(signal_overdue_mips_node) + '\n'
             + inspect.getsource(signal_overdue_mips_frame_wait) + '\n'
+            + inspect.getsource(signal_overdue_mips_native_crash_probe) + '\n'
             + f"expected = json.loads({json.dumps(payload)!r})\n"
-            + "signal_fn = (signal_overdue_mips_frame_wait if expected['kind'] == 'frame_wait_shell' "
-              "else signal_overdue_mips_node)\n"
+            + "signal_fn = ({'frame_wait_shell': signal_overdue_mips_frame_wait, "
+              "'native_crash_probe': signal_overdue_mips_native_crash_probe}.get("
+              "expected['kind'], signal_overdue_mips_node))\n"
             + "print(json.dumps(signal_fn(expected)))\nRECOVER")
