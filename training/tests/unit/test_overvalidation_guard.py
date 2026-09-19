@@ -99,3 +99,60 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         opened.assert_called_once_with(10)
         sent.assert_called_once_with(99, signal.SIGINT)
         closed.assert_called_once_with(99)
+
+
+def test_regex_stress_variant_is_revalidated_independently(
+    tmp_path, monkeypatch,
+):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    process.mkdir(parents=True)
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(b"python3\0stress.py\0" b"150\0")
+    (process / "cwd").symlink_to("/tmp/opencode")
+    script = tmp_path / "stress.py"
+    script.write_text('print("TOTAL tested:", tested, "fails:", fails)\n')
+    policies = list(guard.POLICIES)
+    stress_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"] == "regex_chess_150_game_post_check_stress"
+    )
+    policies[stress_index] = {
+        **policies[stress_index], "required_file": str(script),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    record = {
+        "trial": "harbor-opencode-regex-chess-0-test",
+        "sandbox_id": "exact",
+        "phase": "agent_or_setup",
+        "remote": {
+            "running_tools": [
+                {"tool": "bash", "start_ms": 10, "elapsed_s": 1300},
+            ],
+            "processes": [{
+                "Pid": "10", "PPid": "20", "Name": "python3",
+                "start_ticks": stat[19], "elapsed_s": 1300,
+            }],
+        },
+    }
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": stress_index,
+    }
+    candidates = guard.recovery_candidates(record, record)
+    assert expected in candidates
+    assert guard.is_known_overvalidation(expected, proc)
+
+    wrong_variant = next(
+        candidate
+        for candidate in candidates
+        if candidate["policy_index"] != stress_index
+    )
+    assert not guard.is_known_overvalidation(wrong_variant, proc)

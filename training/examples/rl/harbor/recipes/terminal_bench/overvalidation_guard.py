@@ -37,6 +37,15 @@ POLICIES = (
         "reason": "regex_chess_400_game_fuzz",
     },
     {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "stress.py", "150"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/stress.py",
+        "required_markers": ["TOTAL tested:", "fails:"],
+        "reason": "regex_chess_150_game_post_check_stress",
+    },
+    {
         "task_prefix": "harbor-opencode-circuit-fibsqrt-",
         "min_elapsed_s": 1200,
         "cmdline": ["python3", "-"],
@@ -48,8 +57,12 @@ POLICIES = (
 )
 
 
-def _policy_for_trial(trial):
-    return next((policy for policy in POLICIES if trial.startswith(policy["task_prefix"])), None)
+def _policies_for_trial(trial):
+    return [
+        (index, policy)
+        for index, policy in enumerate(POLICIES)
+        if trial.startswith(policy["task_prefix"])
+    ]
 
 
 def is_known_overvalidation(expected, proc_root=Path("/proc")):
@@ -103,8 +116,8 @@ def signal_known_overvalidation(expected, proc_root=Path("/proc")):
 
 def recovery_candidates(previous, current):
     """Require a stable bash tool and stable leaf identity across two polls."""
-    policy = _policy_for_trial(current.get("trial", ""))
-    if (policy is None or not previous or not current.get("sandbox_id")
+    policies = _policies_for_trial(current.get("trial", ""))
+    if (not policies or not previous or not current.get("sandbox_id")
             or previous.get("sandbox_id") != current["sandbox_id"]
             or previous.get("phase") != "agent_or_setup"
             or current.get("phase") != "agent_or_setup"):
@@ -116,20 +129,20 @@ def recovery_candidates(previous, current):
                for tool in after.get("running_tools", [])):
         return []
     old = {process["Pid"]: process for process in before.get("processes", [])}
-    policy_index = POLICIES.index(policy)
     result = []
     for process in after.get("processes", []):
         prior = old.get(process["Pid"], {})
-        if (process.get("Name") == "python3"
-                and (process.get("elapsed_s") or 0) >= policy["min_elapsed_s"]
-                and process.get("start_ticks") is not None
-                and process["start_ticks"] == prior.get("start_ticks")
-                and process.get("PPid") == prior.get("PPid")):
-            result.append({
-                "pid": int(process["Pid"]),
-                "start_ticks": process["start_ticks"],
-                "policy_index": policy_index,
-            })
+        for policy_index, policy in policies:
+            if (process.get("Name") == "python3"
+                    and (process.get("elapsed_s") or 0) >= policy["min_elapsed_s"]
+                    and process.get("start_ticks") is not None
+                    and process["start_ticks"] == prior.get("start_ticks")
+                    and process.get("PPid") == prior.get("PPid")):
+                result.append({
+                    "pid": int(process["Pid"]),
+                    "start_ticks": process["start_ticks"],
+                    "policy_index": policy_index,
+                })
     return result
 
 
