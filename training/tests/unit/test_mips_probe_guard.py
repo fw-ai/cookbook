@@ -143,6 +143,27 @@ def test_frame_wait_after_bounded_vm_is_recovered(tmp_path):
     sent.assert_called_once_with(99, signal.SIGTERM)
 
 
+def test_repeated_frame_poll_after_bounded_vm_is_recovered(tmp_path):
+    hz = os.sysconf('SC_CLK_TCK')
+    (tmp_path / 'uptime').write_text('1000 0')
+    chain = []
+    for pid, name in ((20, 'bash'), (21, 'opencode')):
+        process = tmp_path / str(pid)
+        process.mkdir()
+        stat = ['0'] * 20
+        stat[0], stat[1], stat[19] = 'S', str(pid + 1), str(300 * hz)
+        (process / 'stat').write_text(f'{pid} ({name}) ' + ' '.join(stat))
+        (process / 'comm').write_text(name)
+        (process / 'cmdline').write_bytes(name.encode() + b'\0')
+        chain.append({'pid': pid, 'start_ticks': str(300 * hz), 'name': name})
+    command = (b'rm -f /tmp/frame.bmp; timeout 150 node /app/vm.js 2>&1 | tail -3 & '
+               b'while true; do if [ -f /tmp/frame.bmp ]; then stat /tmp/frame.bmp; '
+               b'sleep 10; fi; done')
+    (tmp_path / '20' / 'cmdline').write_bytes(b'/bin/bash\0-c\0' + command + b'\0')
+    expected = {'kind': 'frame_wait_shell', 'chain': chain}
+    assert guard.overdue_mips_frame_wait(expected, tmp_path)
+
+
 @pytest.mark.parametrize('command', [
     b'timeout 600 node server.js & while [ ! -f /tmp/frame.bmp ]; do sleep 1; done',
     b'timeout 600 node vm.js',

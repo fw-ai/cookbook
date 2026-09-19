@@ -100,7 +100,12 @@ def overdue_mips_frame_wait(expected, proc_root=Path('/proc')):
         rb'(?:^|[;&|] *)timeout +([0-9]+(?:[.][0-9]+)?)([smhd]?) +node +[^;&|]*vm[.]js',
         command,
     )
-    if not timeout or b'while [ ! -f /tmp/frame.bmp ]' not in command:
+    missing_frame_wait = b'while [ ! -f /tmp/frame.bmp ]' in command
+    repeated_frame_poll = (
+        b'while true; do if [ -f /tmp/frame.bmp ]' in command
+        and b'sleep ' in command
+    )
+    if not timeout or not (missing_frame_wait or repeated_frame_poll):
         return False
     duration = float(timeout[1]) * {
         b'': 1, b's': 1, b'm': 60, b'h': 3600, b'd': 86400,
