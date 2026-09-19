@@ -613,7 +613,7 @@ def test_evaluate_rows_aggregates_logical_run_lengths_and_failures():
     assert metrics["tito/turn/output_tokens_mean"] == 2.5
     assert metrics["tito/turn/output_tokens_min"] == 2
     assert metrics["tito/turn/output_tokens_max"] == 3
-    assert not any(name.startswith("tito/debug/") for name in metrics)
+    assert not any(name.startswith("debug/tito/") for name in metrics)
 
 
 def test_fixed_evaluation_keeps_one_sample_count_per_call():

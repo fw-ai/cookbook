@@ -16,7 +16,7 @@ import tempfile
 import tomllib
 from collections.abc import Callable, Mapping
 from contextlib import nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -35,6 +35,7 @@ from training.examples.rl.harbor.tito.sidecar import (
     SIDECAR_STDERR_PATH,
     SIDECAR_STDOUT_PATH,
 )
+from training.utils.rl import trial_events
 from training.utils.rl.async_rl.errors import RecoverableRolloutError
 
 if TYPE_CHECKING:
@@ -51,6 +52,11 @@ DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS = frozenset(
         "ApiRateLimitError",
         "ApiResponseStalledError",
         "UnknownApiError",
+        # Provider stream breaks (e2b exec/download transports) are transient
+        # by construction; the retry runs a fresh trial with a fresh sandbox.
+        "ProtocolError",
+        "LocalProtocolError",
+        "RemoteProtocolError",
     }
 )
 _TERMINAL_EXCEPTION_TYPES = frozenset(
@@ -602,6 +608,80 @@ def _build_trial_config(
     return harbor.TrialConfig.model_validate(document)
 
 
+def _timing_bracket_seconds(timing: Any) -> float | None:
+    if timing is None:
+        return None
+    started_at = getattr(timing, "started_at", None)
+    finished_at = getattr(timing, "finished_at", None)
+    if started_at is None or finished_at is None:
+        return None
+    return max(0.0, (finished_at - started_at).total_seconds())
+
+
+def _trial_phase_timings(result: Any) -> dict[str, float]:
+    """Extract Harbor's TrialResult phase brackets as plain seconds."""
+    phases: dict[str, float] = {}
+    for name, timing in (
+        ("environment_setup_seconds", getattr(result, "environment_setup", None)),
+        ("agent_setup_seconds", getattr(result, "agent_setup", None)),
+        ("agent_execution_seconds", getattr(result, "agent_execution", None)),
+        ("verifier_seconds", getattr(result, "verifier", None)),
+    ):
+        seconds = _timing_bracket_seconds(timing)
+        if seconds is not None:
+            phases[name] = seconds
+    wall = _timing_bracket_seconds(result)
+    if wall is not None:
+        phases["trial_wall_seconds"] = wall
+    return phases
+
+
+_TRIAL_ARTIFACT_SLACK_SECONDS = 900.0
+
+
+def _trial_run_timeout_seconds(trial: Any) -> float | None:
+    """Whole-trial bound from the budgets Harbor computed for *this* trial.
+
+    Harbor times the agent/verifier/build phases individually, but the gaps
+    between them (artifact collection, provider round trips) can hang forever
+    on a silently broken provider stream — no exception, no retry. This bound
+    converts the infinite hang into a bounded one; the retry machinery runs a
+    fresh trial.
+
+    The budgets must come from the trial, not from the task source: a
+    ``TaskConfig`` carries ``name``/``git_url``/``path`` and nothing about
+    phase timeouts, so reading them there silently produced the same default
+    bound for every task. That default (5400s) sits *below* a DeepSWE agent
+    budget, so the bound fired on healthy trials and discarded up to 90
+    minutes of work per firing. Harbor already resolves each budget in
+    ``Trial._compute_*_timeout_sec``.
+
+    Returns ``None`` when Harbor leaves the agent unbounded: no declared
+    budget means no derivable bound, and an invented one would truncate work
+    the task explicitly allowed.
+    """
+
+    def _budget(name: str, default: float | None) -> float | None:
+        value = getattr(trial, name, None)
+        if value is None:
+            return default
+        return max(0.0, float(value))
+
+    agent = _budget("_agent_timeout_sec", None)
+    if agent is None:
+        return None
+    verifier = _budget("_verifier_timeout_sec", 600.0) or 0.0
+    setup = _budget("_agent_setup_timeout_sec", 900.0) or 0.0
+    build = _budget("_environment_build_timeout_sec", 600.0) or 0.0
+    # A task with a separate verifier environment builds twice, each under its
+    # own build timeout. Budget both so a slow second build cannot make the
+    # bound fire on a healthy trial.
+    bound = agent + verifier + setup + 2.0 * build + _TRIAL_ARTIFACT_SLACK_SECONDS
+    # Never bound below the agent's own budget plus collection slack, however
+    # the other phases are configured.
+    return max(bound, agent + _TRIAL_ARTIFACT_SLACK_SECONDS)
+
+
 @dataclass(frozen=True)
 class HarborTrialOutcome:
     task_name: str
@@ -615,6 +695,10 @@ class HarborTrialOutcome:
     trajectory_artifact: Any | None = None
     artifact_manifest: Mapping[str, Any] | None = None
     rollout: RolloutRun | None = None
+    phase_timings: Mapping[str, float] = field(default_factory=dict)
+    """Client-observed Harbor phase brackets in seconds (environment/agent
+    setup, agent execution, verifier, trial wall). Empty when Harbor did not
+    record them."""
 
 
 def _load_sidecar_artifact(trial_path: Path) -> tuple[Any, dict[str, Any]]:
@@ -743,8 +827,33 @@ async def run_harbor_trial(
                 trial,
                 tool_timeout_seconds=tool_timeout_seconds,
             )
+            trial_bound_seconds = _trial_run_timeout_seconds(trial)
+            run_started_at = asyncio.get_running_loop().time()
             try:
-                result = await trial.run()
+                # An unbounded agent budget leaves no bound to derive, so the
+                # trial runs under Harbor's own phase timeouts alone.
+                result = await asyncio.wait_for(
+                    trial.run(),
+                    timeout=trial_bound_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                elapsed = asyncio.get_running_loop().time() - run_started_at
+                if trial_bound_seconds is None or elapsed < trial_bound_seconds:
+                    # Not our bound: a socket timeout, or the one Harbor phase
+                    # timeout it does not wrap in a named error (verifier
+                    # environment start). Classify it like any other trial
+                    # exception instead of reporting a bound that never fired.
+                    _raise_trial_execution_failure(
+                        "before producing a trial result", exc, retry_names
+                    )
+                trial_events.record_trial_timeout()
+                trial_events.record_failed_trial_wall(elapsed)
+                raise RecoverableRolloutError(
+                    "Harbor trial exceeded its whole-trial bound "
+                    f"({trial_bound_seconds:.0f}s from task phase budgets + "
+                    "setup/artifact slack); retrying with a fresh trial",
+                    reason="whole_trial_bound",
+                ) from exc
             except Exception as exc:
                 _raise_trial_execution_failure(
                     "before producing a trial result", exc, retry_names
@@ -805,6 +914,13 @@ async def run_harbor_trial(
             harbor_environment=harbor_environment,
         )
         verifier_result = result.verifier_result
+        phase_timings = _trial_phase_timings(result)
+        if trial_bound_seconds and "trial_wall_seconds" in phase_timings:
+            # How close this trial ran to its bound: the signal that says
+            # whether the bound is near-firing on healthy trials.
+            phase_timings["bound_utilization"] = (
+                phase_timings["trial_wall_seconds"] / trial_bound_seconds
+            )
         outcome = HarborTrialOutcome(
             task_name=result.task_name,
             trial_name=result.trial_name,
@@ -814,22 +930,32 @@ async def run_harbor_trial(
             exception_type=exception_type,
             exception_message=exception.exception_message if exception else None,
             environment_type=str(config.environment.type.value),
+            phase_timings=phase_timings,
         )
         process = artifact_processor.run if artifact_processor else run_artifact_task
-        return await process(
-            _finish_harbor_trial,
-            outcome,
-            raw_rewards=verifier_result.rewards
-            if verifier_result is not None
-            else None,
-            reward_key=reward_key,
-            terminal_failure_reward=terminal_failure_reward,
-            has_exception=exception is not None,
-            retry_names=retry_names,
-            retryable_e2b_timeout=retryable_e2b_timeout,
-            retryable_sidecar_readiness=retryable_sidecar_readiness,
-            materializer=materializer,
-        )
+        try:
+            return await process(
+                _finish_harbor_trial,
+                outcome,
+                raw_rewards=verifier_result.rewards
+                if verifier_result is not None
+                else None,
+                reward_key=reward_key,
+                terminal_failure_reward=terminal_failure_reward,
+                has_exception=exception is not None,
+                retry_names=retry_names,
+                retryable_e2b_timeout=retryable_e2b_timeout,
+                retryable_sidecar_readiness=retryable_sidecar_readiness,
+                materializer=materializer,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # The trial ran but produced no trajectory. Its phase brackets are
+            # only visible here, in the parent: the worker that raised is a
+            # separate process whose counters die with it.
+            trial_events.record_failed_trial_phases(outcome.phase_timings)
+            raise
 
 
 def _finish_harbor_trial(

@@ -218,6 +218,28 @@ def test_wandb_finish_attaches_the_canonical_ledger(tmp_path, monkeypatch):
     assert calls[3] == ("finish",)
 
 
+def test_wandb_finish_does_not_mask_run_when_trace_flush_fails(
+    monkeypatch,
+    caplog,
+):
+    def fail_trace_flush():
+        raise OSError("trace disk full")
+
+    monkeypatch.setattr(logging_utils, "flush_phase_trace", fail_trace_flush)
+    fake = _install_fake_wandb(monkeypatch)
+    calls: list[tuple] = []
+
+    fake.run = types.SimpleNamespace(
+        id="run-123",
+    )
+    fake.finish = lambda: calls.append(("finish",))
+
+    logging_utils.wandb_finish()
+
+    assert calls == [("finish",)]
+    assert "Failed to flush client phase trace" in caplog.text
+
+
 def test_metric_step_is_explicit_and_overrides_payload_step():
     record = logging_utils._normalize_metrics(
         {"step": 1, "train/step": 2, "rollout/step": 3},

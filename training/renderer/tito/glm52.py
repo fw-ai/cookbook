@@ -1,10 +1,7 @@
-"""Model rendering and parsing for TITO.
+"""Pinned GLM-5.2 preserved-thinking TITO model-format primitive.
 
-Prompt construction delegates to the pinned tokenizer's authoritative chat
-template.  This module owns only protocol normalization plus the GLM output
-parser; importing it must not load Tinker or Torch. Full-history rendering is
-the production default. Incremental rendering is experimental and requires a
-model/template-specific suffix-and-junction implementation.
+Moved unchanged from the original monolithic ``tito/renderer.py``; template
+normalization helpers are shared in ``training.renderer.tito.shared``.
 """
 
 from __future__ import annotations
@@ -12,145 +9,31 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fireworks.training.sdk import (
     TITOChatRequest,
-    TITOError,
     TITOIncrementalPrompt,
     TITOParsedAssistant,
-    TITORenderer,
-    normalize_openai_tool_arguments,
 )
 
+from training.renderer.tito.shared import (
+    _ensure_tool_call_ids,
+    _normalize_template_messages,
+    _normalize_template_tools,
+    _plain,
+    validate_no_dynamic_template_fields,
+    TITORendererCertification,
+)
 
-_GLM52_RENDERER = "glm_moe_dsa_preserve_thinking"
-_INCREMENTAL_ANCHOR_SYSTEM = {"role": "system", "content": "TITO anchor"}
+GLM52_RENDERER_NAME = "glm_moe_dsa_preserve_thinking"
 _GLM_TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 _GLM_TOOL_ARG_RE = re.compile(
     r"<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>",
     re.DOTALL,
 )
-_DYNAMIC_TEMPLATE_FIELDS = frozenset(
-    {
-        "chat_template_kwargs",
-        "clear_thinking",
-        "drop_thinking",
-        "enable_thinking",
-        "preserve_thinking",
-        "reasoning_effort",
-        "response_format",
-        "thinking",
-    }
-)
-
-
-@dataclass(frozen=True)
-class TITORendererCertification:
-    """Reviewed full-history capability for one renderer/tokenizer contract.
-
-    This base certification does not certify the experimental incremental
-    method; renderer authors own that additional model-specific contract.
-    """
-
-    certification_id: str
-    renderer_names: frozenset[str]
-    tokenizer_fingerprint: str
-    renderer_factory: Callable[[Any, "TITORendererCertification"], TITORenderer]
-
-
-def load_sidecar_tokenizer(path: str | Path) -> Any:
-    """Load the pinned tokenizer and its bundled authoritative chat template."""
-    from transformers import AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        Path(path),
-        local_files_only=True,
-        trust_remote_code=False,
-    )
-    if not getattr(tokenizer, "chat_template", None):
-        raise ValueError("TITO sidecar tokenizer has no bundled chat template")
-    return tokenizer
-
-
-def _tokenizer_fingerprint(tokenizer: Any) -> str:
-    backend = getattr(tokenizer, "backend_tokenizer", None)
-    if backend is None or not hasattr(backend, "to_str"):
-        raise ValueError(
-            "production TITO certification requires a fast tokenizer with a "
-            "serializable backend"
-        )
-    contract = {
-        "backend": json.loads(backend.to_str()),
-        "chat_template": getattr(tokenizer, "chat_template", None),
-        "special_tokens_map": tokenizer.special_tokens_map,
-    }
-    encoded = json.dumps(
-        contract,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def get_tito_renderer_certification(
-    renderer_name: str,
-    tokenizer: Any,
-) -> TITORendererCertification:
-    """Resolve and verify the source-controlled production artifact."""
-    certification = _TITO_CERTIFICATION_BY_RENDERER.get(renderer_name)
-    if certification is None:
-        raise ValueError(
-            f"renderer {renderer_name!r} has no production TITO certification"
-        )
-    actual = _tokenizer_fingerprint(tokenizer)
-    if actual != certification.tokenizer_fingerprint:
-        raise ValueError(
-            "tokenizer does not match TITO certification "
-            f"{certification.certification_id!r}"
-        )
-    return certification
-
-
-def _ensure_tool_call_ids(
-    message: Mapping[str, Any],
-    completion_ids: Sequence[int],
-) -> dict[str, Any]:
-    calls = message.get("tool_calls") or []
-    if not calls:
-        return dict(message)
-    normalized_calls: list[dict[str, Any]] = []
-    for index, raw_call in enumerate(calls):
-        call = dict(raw_call)
-        function = dict(call.get("function") or {})
-        call["function"] = function
-        if not call.get("id"):
-            identity_function = {
-                **function,
-                "arguments": normalize_openai_tool_arguments(
-                    function.get("arguments", "")
-                ),
-            }
-            identity = {
-                "completion_ids": [int(token) for token in completion_ids],
-                "index": index,
-                "function": identity_function,
-            }
-            digest = hashlib.sha256(
-                json.dumps(
-                    identity,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode()
-            ).hexdigest()
-            call["id"] = f"call_{digest[:24]}"
-        normalized_calls.append(call)
-    return {**message, "tool_calls": normalized_calls}
+_INCREMENTAL_ANCHOR_SYSTEM = {"role": "system", "content": "TITO anchor"}
 
 
 class GLM52TITORenderer:
@@ -163,7 +46,7 @@ class GLM52TITORenderer:
         certification: TITORendererCertification,
     ) -> None:
         self.tokenizer = tokenizer
-        self.renderer_id = _GLM52_RENDERER
+        self.renderer_id = GLM52_RENDERER_NAME
         self.certification_id = certification.certification_id
         self.tokenizer_fingerprint = certification.tokenizer_fingerprint
         self._user_token = self._single_token("<|user|>")
@@ -183,73 +66,24 @@ class GLM52TITORenderer:
         ]
 
     def _validate_request(self, request: TITOChatRequest) -> None:
-        fields = sorted(_DYNAMIC_TEMPLATE_FIELDS.intersection(request.sampling_fields))
-        if fields:
-            raise TITOError(
-                "tito_invalid_request",
-                400,
-                "TITO renderer/template options are fixed by the certified "
-                "renderer contract; unsupported per-request fields: "
-                + ", ".join(fields),
-            )
+        validate_no_dynamic_template_fields(request)
 
     @staticmethod
     def _plain(value: Any) -> Any:
-        if isinstance(value, Mapping):
-            return {
-                str(key): GLM52TITORenderer._plain(item) for key, item in value.items()
-            }
-        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-            return [GLM52TITORenderer._plain(item) for item in value]
-        return value
+        return _plain(value)
 
     @classmethod
     def _template_tools(
         cls,
         tools: Sequence[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
-        normalized: list[dict[str, Any]] = []
-        for raw_tool in tools:
-            tool = cls._plain(raw_tool)
-            function = tool.get("function")
-            if isinstance(function, dict):
-                # Match ChatCompletionTool.model_dump() field order at Fireworks
-                # chat admission. The GLM template renders this function object
-                # directly, so its envelope order is prompt-visible too.
-                parameters = function.get("parameters") or {}
-                tool["function"] = {
-                    "name": function.get("name"),
-                    "description": function.get("description"),
-                    # ChatCompletionFunction treats parameters as an opaque
-                    # mapping, so request admission preserves its key order.
-                    "parameters": cls._plain(parameters),
-                }
-                normalized.append(tool)
-                continue
-            normalized.append(tool)
-        return normalized
+        return _normalize_template_tools(tools)
 
     def _template_messages(
         self,
         messages: Sequence[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
-        normalized = [self._plain(message) for message in messages]
-        for message in normalized:
-            if message.get("role") != "assistant":
-                continue
-            for call in message.get("tool_calls") or ():
-                function = call.get("function") or {}
-                arguments = function.get("arguments")
-                if isinstance(arguments, str):
-                    try:
-                        function["arguments"] = json.loads(arguments)
-                    except json.JSONDecodeError as exc:
-                        raise TITOError(
-                            "tito_invalid_request",
-                            400,
-                            "historical assistant tool arguments are not valid JSON",
-                        ) from exc
-        return normalized
+        return _normalize_template_messages(messages)
 
     def _template_inputs(
         self,
@@ -551,45 +385,3 @@ class GLM52TITORenderer:
     def stop_sequences(self, request: TITOChatRequest) -> Sequence[str]:
         del request
         return tuple(str(self.tokenizer.decode([token])) for token in self._stop)
-
-
-def _build_glm52_tito_renderer(
-    tokenizer: Any,
-    certification: TITORendererCertification,
-) -> TITORenderer:
-    return GLM52TITORenderer(tokenizer, certification=certification)
-
-
-_TITO_RENDERER_CERTIFICATIONS = (
-    TITORendererCertification(
-        certification_id="glm-5.2-preserved@b4734de4-v7",
-        renderer_names=frozenset({_GLM52_RENDERER}),
-        tokenizer_fingerprint=(
-            "5591741bd28d5acb92d4b7d735e0084d4d76d9ce50e2afe99aec6b01e1ef3ef0"
-        ),
-        renderer_factory=_build_glm52_tito_renderer,
-    ),
-)
-_TITO_CERTIFICATION_BY_RENDERER = {
-    renderer_name: certification
-    for certification in _TITO_RENDERER_CERTIFICATIONS
-    for renderer_name in certification.renderer_names
-}
-
-
-def build_sidecar_tito_renderer(
-    tokenizer: Any,
-    renderer_name: str,
-) -> TITORenderer:
-    """Build a renderer admitted to the lightweight agent-sidecar runtime."""
-    certification = get_tito_renderer_certification(renderer_name, tokenizer)
-    return certification.renderer_factory(tokenizer, certification)
-
-
-__all__ = [
-    "GLM52TITORenderer",
-    "TITORendererCertification",
-    "build_sidecar_tito_renderer",
-    "get_tito_renderer_certification",
-    "load_sidecar_tokenizer",
-]

@@ -206,15 +206,26 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
         names = set(archive.namelist())
         bundled_sdk_init = archive.read("python-sdk/fireworks/training/sdk/__init__.py")
         archive.extractall(extracted)
-    assert "cookbook/training/tito/renderer.py" in names
+    assert "cookbook/training/renderer/tito/__init__.py" in names
+    assert "cookbook/training/renderer/tito/glm52.py" in names
+    assert "cookbook/training/renderer/tito/registry.py" in names
     assert "cookbook/training/examples/rl/harbor/tito/sidecar.py" in names
     assert "tokenizer/chat_template.jinja" in names
     assert not any("model_formats/" in name for name in names)
     assert "python-sdk/fireworks/training/sdk/tito/_sidecar.py" in names
+    with zipfile.ZipFile(first.path) as archive:
+        assert all(
+            info.compress_type == zipfile.ZIP_LZMA for info in archive.infolist()
+        )
     assert "python-sdk/fireworks/__init__.py" in names
     assert "python-sdk/fireworks/training/__init__.py" in names
     assert "python-sdk/fireworks/_client.py" not in names
-    assert not any("training/renderer/" in name for name in names)
+    assert not any(
+        "training/renderer/" in name
+        and "training/renderer/tito/" not in name
+        and name != "cookbook/training/renderer/__init__.py"
+        for name in names
+    )
     assert not any("/tests/" in name for name in names)
     imported_sdk = importlib.import_module("fireworks.training.sdk")
     assert bundled_sdk_init == Path(imported_sdk.__file__).read_bytes()
@@ -225,7 +236,7 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
             (
                 "from fireworks.training.sdk import "
                 "TITOSidecar, TrajectoryDriftPolicy; "
-                "from training.tito.renderer import "
+                "from training.renderer.tito import "
                 "build_sidecar_tito_renderer; "
                 "import training.examples.rl.harbor.tito.sidecar"
             ),
@@ -485,11 +496,18 @@ def test_context_limit_is_shared_by_inference_and_training_retention(
     assert runner._context_limit == 4096
 
 
-def test_full_sequence_router_replay_is_rejected(monkeypatch, tmp_path) -> None:
+def test_full_sequence_router_replay_enables_incremental_prompt_capture(monkeypatch, tmp_path) -> None:
     setup = _setup(tmp_path)
     setup.sample_kwargs["echo"] = True
-    with pytest.raises(ValueError, match="completion-only Router Replay"):
-        rollout.make_rollout_fn(setup)
+    monkeypatch.setattr(rollout, "build_sidecar_bundle", lambda _setup: _fake_bundle(tmp_path / "bundle"))
+    setup.sampler = SimpleNamespace(routing_matrix_format="parquet_v1", r3_store_id="shared-test")
+    rollout.make_rollout_fn(setup)
+    spec = sidecar_runtime.build_launch_spec(
+        setup, _fake_bundle(tmp_path / "launch"), call_classifier="all_policy", metadata={}
+    )
+    assert spec.routing_matrix_format == "parquet_v1"
+    assert spec.r3_store_id == "shared-test"
+    assert spec.sampling_defaults["incremental_prompt_routing"] is True
 
 
 def test_opencode_classifier_contract_rejects_unpinned_versions(
@@ -704,7 +722,7 @@ def test_quiesce_harness_rejects_multiline_process_signature() -> None:
 def test_sidecar_serve_closes_runtime_when_trajectory_creation_fails(
     monkeypatch, tmp_path
 ) -> None:
-    from training.tito import renderer as renderer_runtime
+    from training.renderer import tito as renderer_runtime
 
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
@@ -1839,3 +1857,152 @@ def test_prepared_task_rejects_mutable_base_image(tmp_path, base_image) -> None:
             tmp_path / "prepared",
             base_image=base_image,
         )
+
+
+def _bound_probe_trial(run):
+    """Minimal Harbor stand-in whose ``run`` behavior the test controls."""
+
+    class Trial:
+        def __init__(self, config):
+            self.config = config
+            self._agent_timeout_sec = 7200
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            return await run(self)
+
+    return Trial
+
+
+def _bound_probe_kwargs(tmp_path):
+    return dict(
+        task_config={},
+        inference_key="inference-key",
+        run_id="bound-test",
+        harbor_environment="e2b",
+        sidecar_bundle_path=tmp_path / "bundle.zip",
+        sidecar_launch_spec=json.dumps(
+            {"debug_enabled": False, "inference_base_url": "https://api.fireworks.ai"}
+        ),
+        trials_dir=tmp_path / "trials",
+        agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
+        agent_version=DEFAULT_OPENCODE_VERSION,
+    )
+
+
+def test_whole_trial_bound_fires_and_is_counted(monkeypatch, tmp_path) -> None:
+    from training.utils.rl import trial_events
+
+    async def hang(_trial):
+        await asyncio.sleep(30)
+
+    harbor = _fake_harbor()
+    harbor.Trial = _bound_probe_trial(hang)
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    monkeypatch.setattr(harbor_adapter, "_trial_run_timeout_seconds", lambda _c: 0.2)
+    trial_events.reset()
+    with pytest.raises(RecoverableRolloutError, match="whole-trial bound") as raised:
+        asyncio.run(harbor_adapter.run_harbor_trial(**_bound_probe_kwargs(tmp_path)))
+    assert raised.value.reason == "whole_trial_bound"
+    drained = trial_events.drain()
+    assert drained["tito/trial/whole_trial_bound_firings"] == 1.0
+    assert drained["tito/trial_failed/trial_wall_seconds_count"] == 1.0
+    assert drained["tito/trial_failed/trial_wall_seconds_max"] >= 0.2
+    assert not trial_events.drain()
+
+
+def test_foreign_timeout_is_not_reported_as_the_trial_bound(
+    monkeypatch, tmp_path
+) -> None:
+    """Harbor's unwrapped verifier-env timeout must classify, not masquerade."""
+
+    from training.utils.rl import trial_events
+
+    async def raise_timeout(_trial):
+        raise asyncio.TimeoutError("verifier environment start timed out")
+
+    harbor = _fake_harbor()
+    harbor.Trial = _bound_probe_trial(raise_timeout)
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    trial_events.reset()
+    with pytest.raises(RuntimeError, match="non-retryable error: TimeoutError") as err:
+        asyncio.run(harbor_adapter.run_harbor_trial(**_bound_probe_kwargs(tmp_path)))
+    assert not isinstance(err.value, RecoverableRolloutError)
+    assert not trial_events.drain()
+
+
+def test_trial_bound_comes_from_the_trial_not_the_task_source() -> None:
+    """A DeepSWE-shaped trial must bound above its own agent budget.
+
+    The task source object carries no phase budgets, so reading them there
+    returned the same default for every task -- below a DeepSWE agent budget,
+    which made the bound fire on healthy trials.
+    """
+    trial = SimpleNamespace(
+        _agent_timeout_sec=5400.0,
+        _verifier_timeout_sec=1800.0,
+        _agent_setup_timeout_sec=1800.0,
+        _environment_build_timeout_sec=1800.0,
+    )
+    bound = harbor_adapter._trial_run_timeout_seconds(trial)
+    # agent + verifier + setup + 2 builds + artifact slack
+    assert bound == pytest.approx(5400.0 + 1800.0 + 1800.0 + 3600.0 + 900.0)
+    assert bound > trial._agent_timeout_sec
+
+    task_source = SimpleNamespace(name="deepswe", git_url="https://example/x")
+    # The old source of truth yields no budgets at all, hence the guard below.
+    assert harbor_adapter._trial_run_timeout_seconds(task_source) is None
+
+
+def test_trial_bound_never_undercuts_the_agent_budget() -> None:
+    trial = SimpleNamespace(
+        _agent_timeout_sec=5400.0,
+        _verifier_timeout_sec=0.0,
+        _agent_setup_timeout_sec=0.0,
+        _environment_build_timeout_sec=0.0,
+    )
+    assert harbor_adapter._trial_run_timeout_seconds(trial) == pytest.approx(
+        5400.0 + 900.0
+    )
+
+
+def test_unbounded_agent_budget_leaves_the_trial_unbounded(
+    monkeypatch, tmp_path
+) -> None:
+    """No declared agent budget means no derived bound, not an invented one."""
+    artifact = _artifact("unbounded-agent")
+
+    class Trial:
+        def __init__(self, config):
+            self.config = config
+            self._agent_timeout_sec = None
+            self.timeout_passed = "unset"
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            trial_path = Path(self.config.trials_dir) / self.config.trial_name
+            _write_collected_artifact(trial_path, artifact)
+            return SimpleNamespace(
+                task_name="example",
+                trial_name=self.config.trial_name,
+                verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+                exception_info=None,
+            )
+
+    assert harbor_adapter._trial_run_timeout_seconds(Trial(None)) is None
+
+    harbor = _fake_harbor()
+    harbor.Trial = Trial
+    monkeypatch.setattr(harbor_adapter, "_require_harbor", lambda: harbor)
+    outcome = asyncio.run(
+        harbor_adapter.run_harbor_trial(**_bound_probe_kwargs(tmp_path))
+    )
+    assert outcome.reward == 1.0
+    # No bound was derived, so no bound utilization is reported for it.
+    assert "bound_utilization" not in outcome.phase_timings

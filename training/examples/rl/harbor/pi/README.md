@@ -6,9 +6,10 @@ Harbor lifecycle. Docker and E2B use the
 same environment-local loopback endpoint, immutable runtime bundle, artifact
 collection, trial cleanup, and exact-token trajectory rules.
 
-The current environment-sidecar runtime supports only GLM-5.2
-with `glm_moe_dsa_preserve_thinking`. Offline renderer characterization is not
-sidecar support. Other model/template pairs require a lightweight renderer,
+The current environment-sidecar runtime supports GLM-5.2
+(`glm_moe_dsa_preserve_thinking`), Qwen3.8-27B (`qwen3_8`), and Muse Glimmer
+30B (`muse_glimmer`, full-history only). Offline renderer characterization is
+not sidecar support. Other model/template pairs require a lightweight renderer,
 tokenizer-bound certificate, complete-render/parser/stop/truncation coverage,
 exact sampled-array checks, and live validation, or must wait for support.
 Full-history prompt construction is the default. Incremental construction is

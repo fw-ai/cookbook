@@ -30,6 +30,9 @@ from dataclasses import dataclass
 from typing import Callable, List
 
 import tinker
+from fireworks.training.sdk.routing import (
+    routing_model_input_kwargs,
+)
 
 from training.utils.data import compute_advantages
 from training.utils.rl.losses import PromptGroup
@@ -419,7 +422,7 @@ def rollout_to_prompt_group(
                     )
                     datum = tinker.Datum(
                         model_input=datum.model_input.model_copy(
-                            update={"routing_matrices": rm}
+                            update=routing_model_input_kwargs(rm)
                         ),
                         loss_fn_inputs=datum.loss_fn_inputs,
                     )

@@ -504,6 +504,10 @@ RENDERER_MATRIX: list[RendererCase] = [
     RendererCase(
         renderer="deepseek_v4",
         tokenizer_model="deepseek-ai/DeepSeek-V4-Flash",
+        # Route through the cookbook's production tokenizer loader. Transformers
+        # 5.5 cannot resolve the preview model config directly, but the tokenizer
+        # itself is standard and load_tokenizer supplies the config-only fallback.
+        tokenizer_trust_remote_code=True,
         supports_thinking=True,
         supports_tools=True,
         has_extension_property=False,

@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 from fireworks.training.sdk import (
     TITOChatRequest,
     TITOCallRecord,
@@ -17,9 +16,8 @@ from fireworks.training.sdk import (
     TITOTrajectoryArtifact,
     TITOTurn,
 )
-
-from training.utils.rl.rollout.tito import materialize_tito_trajectory
 from training.utils.rl.metrics import compute_step_metrics
+from training.utils.rl.rollout.tito import materialize_tito_trajectory
 from training.utils.rl.rollout.types import Rollout, rollout_to_prompt_group
 
 
@@ -38,6 +36,8 @@ def _turn(
     completion: tuple[int, ...],
     *,
     routes: tuple[str, ...] | None = None,
+    prompt_routes: tuple[str, ...] | None = None,
+    prompt_route_start: int | None = None,
     finish_reason: str = "stop",
     messages: tuple[dict[str, Any], ...] | None = None,
     disposition: str = "new_segment",
@@ -59,6 +59,8 @@ def _turn(
         inference_logprobs=tuple(-0.1 for _ in completion),
         sampling_logprobs=tuple(-0.2 for _ in completion),
         routing_matrices=routes,
+        prompt_routing_matrices=prompt_routes,
+        prompt_routing_start=prompt_route_start,
         response_id=f"response-{turn_id}",
         finish_reason=finish_reason,
         prompt_disposition=disposition,  # type: ignore[arg-type]
@@ -463,11 +465,21 @@ def test_training_sequence_limit_omits_whole_turn_without_truncation() -> None:
 
 
 def test_training_limit_resumes_from_a_later_exact_prompt() -> None:
-    first = _turn("one", (1, 2), (3, 4))
+    first = _turn(
+        "one",
+        (1, 2),
+        (3, 4),
+        routes=("r1", "r2"),
+        prompt_routes=("r0",),
+        prompt_route_start=0,
+    )
     second = _turn(
         "two",
         (1, 2, 3, 4, 5),
         (6, 7, 8),
+        routes=("r4", "r5", "r6"),
+        prompt_routes=("r3",),
+        prompt_route_start=3,
         disposition="append",
         prefix_match_tokens=4,
     )
@@ -475,6 +487,9 @@ def test_training_limit_resumes_from_a_later_exact_prompt() -> None:
         "three",
         (1, 2, 3, 4, 5, 9),
         (10,),
+        routes=("r9",),
+        prompt_routes=("r8",),
+        prompt_route_start=4,
         disposition="realign",
         prefix_match_tokens=5,
         realign_from_token=5,
@@ -494,6 +509,10 @@ def test_training_limit_resumes_from_a_later_exact_prompt() -> None:
         [1, 2, 3, 4, 5, 9, 10],
     ]
     assert run.segments[1].loss_mask == [0, 0, 0, 0, 0, 0, 1]
+    assert [sample.routing_matrices for sample in run.segments] == [
+        ["r0", "r1", "r2"],
+        ["r0", "r1", "r2", "r3", "r8", "r9"],
+    ]
     assert run.metadata["tito_retention_dropped_turn_count"] == 1
     assert run.metadata["tito_retention_dropped_trainable_tokens"] == 3
     assert [
@@ -538,4 +557,64 @@ def test_sidecar_metrics_reach_common_step_reducer() -> None:
     assert metrics["tito/turn/input_tokens_mean"] == 2
     assert metrics["tito/turn/output_tokens_mean"] == 2
     assert metrics["tito/turn/runtime_seconds_mean"] == pytest.approx(0.1)
-    assert "tito/debug/calls/total" not in metrics
+    assert "debug/tito/calls/total" not in metrics
+
+
+def test_full_prompt_parquet_routes_cover_tools_and_survive_materialization():
+    from dataclasses import replace
+
+    from fireworks.training.sdk.routing import RoutingReferences
+
+    def refs(length: int, start: int = 0) -> RoutingReferences:
+        return RoutingReferences.from_dict(
+            {
+                "length": length,
+                "files": [
+                    {
+                        "store_id": "test",
+                        "file_id": "00000000-0000-0000-0000-000000000001",
+                        "format": "parquet_v1",
+                        "row_count": start + length,
+                        "expires_at": 9999999999,
+                    }
+                ],
+                "spans": [
+                    {
+                        "input_token_start": 0,
+                        "file_index": 0,
+                        "file_row_start": start,
+                        "count": length,
+                    }
+                ],
+            }
+        )
+
+    first = replace(
+        _turn("one", (1, 2), (3, 4), routes=refs(2, 1)),
+        prompt_routing_start=0,
+        prompt_routing_matrices=refs(1),
+    )
+    second = replace(
+        _turn(
+            "two",
+            (1, 2, 3, 4, 5),
+            (6, 7),
+            routes=refs(2, 4),
+            disposition="append",
+            prefix_match_tokens=4,
+        ),
+        prompt_routing_start=3,
+        prompt_routing_matrices=refs(1, 3),
+    )
+    run = materialize_tito_trajectory(
+        _result((first, second), (_attempt("one"), _attempt("two"))), reward=1.0
+    )
+    sample = run.segments[0]
+    assert isinstance(sample.routing_matrices, RoutingReferences)
+    rows = [
+        row
+        for span in sample.routing_matrices.spans
+        for row in range(span["file_row_start"], span["file_row_start"] + span["count"])
+    ]
+    assert rows == list(range(len(sample.tokens) - 1))
+    assert sample.loss_mask == [0, 0, 1, 1, 0, 1, 1]

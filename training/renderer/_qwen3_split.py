@@ -20,6 +20,8 @@ import json
 from dataclasses import replace
 from typing import Any, Mapping, cast
 
+import tinker
+
 from training.renderer import register_renderer
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Message,
@@ -47,7 +49,274 @@ from training.renderer._think_prefill import (
 )
 
 
-class Qwen3SplitRenderer(DisaggregateMultiTurnMixin, Qwen3Renderer):
+def _fold_consecutive_tool_messages(messages: list[Message]) -> list[Message]:
+    """Merge consecutive tool results into one message, matching the HF template.
+
+    HF renders back-to-back tool results as one ``user`` turn with stacked
+    ``<tool_response>`` blocks; upstream tinker gives each its own turn.
+    Re-joining inside a single outer ``_wrap_qwen_tool_response`` is
+    byte-identical. Tool turns carry no loss either way.
+    """
+
+    folded: list[Message] = []
+    for message in messages:
+        prev = folded[-1] if folded else None
+        if (
+            message.get("role") == "tool"
+            and prev is not None
+            and prev.get("role") == "tool"
+            and isinstance(prev.get("content"), str)
+            and isinstance(message.get("content"), str)
+            # Folding keeps only the first message's metadata; refuse to fold
+            # when trainable flags differ (CUSTOMIZED weighting semantics).
+            and prev.get("trainable") == message.get("trainable")
+        ):
+            merged = dict(prev)
+            merged["content"] = (
+                prev["content"]
+                + "\n</tool_response>\n<tool_response>\n"
+                + message["content"]
+            )
+            folded[-1] = cast(Message, merged)
+            continue
+        folded.append(message)
+    return folded
+
+
+def _assistant_has_thinking(message: Message) -> bool:
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return "<think>" in content
+    if isinstance(content, list):
+        return any(
+            isinstance(part, Mapping) and part.get("type") == "thinking"
+            for part in content
+        )
+    return False
+
+
+_EMPTY_THINK_WRAPPER = "<think>\n\n</think>\n\n"
+
+
+def _lstrip_leading_newlines(message: Message) -> Message:
+    """Strip leading newlines from assistant content, matching HF's template."""
+
+    content = message.get("content", "")
+    if isinstance(content, str):
+        if not content.startswith("\n"):
+            return message
+        updated = dict(message)
+        updated["content"] = content.lstrip("\n")
+        return cast(Message, updated)
+    if isinstance(content, list):
+        first_text = next(
+            (
+                i
+                for i, part in enumerate(content)
+                if isinstance(part, Mapping) and part.get("type") == "text"
+            ),
+            None,
+        )
+        if first_text is None:
+            return message
+        text = str(content[first_text].get("text", ""))
+        if not text.startswith("\n"):
+            return message
+        parts = [dict(part) if isinstance(part, Mapping) else part for part in content]
+        parts[first_text]["text"] = text.lstrip("\n")
+        updated = dict(message)
+        updated["content"] = parts
+        return cast(Message, updated)
+    return message
+
+
+def _hf_style_thinking_parts(message: Message) -> Message:
+    """Reformat surviving thinking parts to the HF template's byte layout.
+
+    Upstream renders a thinking part as ``<think>{text}</think>``. HF renders
+    ``<think>\\n{text}\\n</think>\\n\\n`` before whatever follows. Rewriting the
+    parts keeps upstream's rendering path (and tool-call newline) intact: the
+    ``\\n\\n`` after ``</think>`` comes from a following text part when one
+    exists, or from a one-newline text part plus upstream's unconditional
+    tool-call separator.
+    """
+
+    content = message.get("content", "")
+    if not isinstance(content, list):
+        return message
+    think_idx = next(
+        (
+            i
+            for i, part in enumerate(content)
+            if isinstance(part, Mapping) and part.get("type") == "thinking"
+        ),
+        None,
+    )
+    if think_idx is None:
+        return message
+
+    parts = [dict(part) if isinstance(part, Mapping) else part for part in content]
+    thinking = parts[think_idx]
+    thinking["thinking"] = "\n" + str(thinking.get("thinking", "")).strip("\n") + "\n"
+    if think_idx + 1 < len(parts):
+        nxt = parts[think_idx + 1]
+        if isinstance(nxt, Mapping) and nxt.get("type") == "text":
+            text = str(nxt.get("text", ""))
+            if not text.strip("\n") and message.get("tool_calls"):
+                # No visible text + tool calls: upstream's separator adds one
+                # more newline. HF decides that separator on the ORIGINAL
+                # content, so a newline-only part (parse_response keeps the
+                # gap that way) ends with three newlines, empty with two.
+                nxt["text"] = "\n\n" if text else "\n"
+            else:
+                # HF strips leading newlines; don't stack on retained ones.
+                nxt["text"] = "\n\n" + str(nxt.get("text", "")).lstrip("\n")
+        else:
+            parts.insert(think_idx + 1, TextPart(type="text", text="\n\n"))
+    else:
+        # Nothing follows the think block. Upstream adds "\n" before tool
+        # calls, which then completes HF's "\n\n"; without tool calls we need
+        # both newlines ourselves.
+        parts.append(
+            TextPart(
+                type="text",
+                text="\n" if message.get("tool_calls") else "\n\n",
+            )
+        )
+    updated = dict(message)
+    updated["content"] = parts
+    return cast(Message, updated)
+
+
+class _Qwen3KeepThinkingAfterLastQueryMixin:
+    """Keep reasoning on assistant turns after the last real user query.
+
+    The stock Qwen3 template strips thinking only from assistants at or before
+    the last user query (``loop.index0 > ns.last_query_index`` keeps it).
+    Upstream tinker strips from every non-final assistant, dropping the
+    reasoning on agentic tool-call turns that HF (and inference) keeps. Passing
+    ``is_last=True`` down for post-query assistants disables upstream's strip.
+    """
+
+    def render_message(
+        self,
+        message: Message,
+        ctx: RenderContext,
+    ) -> RenderedMessage:
+        # Preserved-history mode (strip_thinking_from_history=False) is our own
+        # RL invention with no HF counterpart; leave its bytes untouched so the
+        # extension property (prefix stability) keeps holding there.
+        if not getattr(self, "strip_thinking_from_history", True):
+            return super().render_message(message, ctx)
+        if message.get("role") == "assistant":
+            after_last_user = ctx.last_user_index == -1 or ctx.idx > ctx.last_user_index
+            if after_last_user and not ctx.is_last:
+                ctx = replace(ctx, is_last=True)
+            if after_last_user:
+                message = _hf_style_thinking_parts(message)
+        return super().render_message(message, ctx)
+
+
+class _Qwen3EmptyThinkWrapperMixin:
+    """Insert the empty think wrapper before the final answer, as HF does.
+
+    The stock Qwen3 template (thinking enabled) emits
+    ``<think>\\n\\n</think>\\n\\n`` before the LAST assistant's answer when
+    that turn carries no reasoning; historical assistants stay bare. The
+    generation prompt ends at ``<|im_start|>assistant\\n`` (no prefill), so
+    the model generates the wrapper at inference and it belongs in the
+    trainable output, not the masked header.
+    """
+
+    def render_message(
+        self,
+        message: Message,
+        ctx: RenderContext,
+    ) -> RenderedMessage:
+        # Preserved-history mode has no HF counterpart; adding a
+        # position-dependent wrapper there would break prefix stability.
+        if not getattr(self, "strip_thinking_from_history", True):
+            return super().render_message(message, ctx)
+        if message.get("role") != "assistant" or not ctx.is_last:
+            return super().render_message(message, ctx)
+        if _assistant_has_thinking(message):
+            return super().render_message(message, ctx)
+        # HF strips leading newlines from the answer; normalize at the
+        # message level so tokenization matches.
+        rendered = super().render_message(_lstrip_leading_newlines(message), ctx)
+        wrapper_tokens = self.tokenizer.encode(
+            _EMPTY_THINK_WRAPPER, add_special_tokens=False
+        )
+        if not wrapper_tokens or not rendered.output:
+            return rendered
+        first = rendered.output[0]
+        if not isinstance(first, tinker.EncodedTextChunk):
+            return rendered
+        first_tokens = list(first.tokens)
+        # Upstream always prefixes tool calls with "\n". HF decides that
+        # separator on the ORIGINAL content: an empty string (or non-string,
+        # which the template coerces to "") skips it, but a newline-only
+        # string keeps it. Drop only when there is nothing to show — empty
+        # string or a multipart body without visible text — so a tool-only
+        # final turn renders `<think>\n\n</think>\n\n<tool_call>` like HF.
+        content = message.get("content")
+        has_content = (isinstance(content, str) and bool(content)) or (
+            isinstance(content, list) and _has_visible_assistant_content(message)
+        )
+        newline = self.tokenizer.encode("\n", add_special_tokens=False)
+        if message.get("tool_calls") and not has_content:
+            tool_call = self.tokenizer.encode("<tool_call>", add_special_tokens=False)
+            prefix = newline + tool_call
+            if (
+                len(newline) == 1
+                and len(tool_call) == 1
+                and first_tokens[: len(prefix)] == prefix
+            ):
+                first_tokens = first_tokens[1:]
+        # A leading newline left in place (the kept separator) must tokenize
+        # as one run with the wrapper's trailing newlines, matching HF's
+        # single-pass encode.
+        if len(newline) == 1 and first_tokens[:1] == newline:
+            wrapper_tokens = self.tokenizer.encode(
+                _EMPTY_THINK_WRAPPER + "\n", add_special_tokens=False
+            )
+            first_tokens = first_tokens[1:]
+        return RenderedMessage(
+            header=rendered.header,
+            output=[
+                tinker.EncodedTextChunk(tokens=wrapper_tokens + first_tokens),
+                *rendered.output[1:],
+            ],
+            stop_overlap=rendered.stop_overlap,
+        )
+
+
+class _Qwen3ToolFoldMixin:
+    """Fold consecutive tool results before every render entry point."""
+
+    def build_generation_prompt(self, messages: list[Message], *args, **kwargs):
+        return super().build_generation_prompt(
+            _fold_consecutive_tool_messages(messages), *args, **kwargs
+        )
+
+    def build_supervised_example(self, messages: list[Message], *args, **kwargs):
+        return super().build_supervised_example(
+            _fold_consecutive_tool_messages(messages), *args, **kwargs
+        )
+
+    def build_supervised_examples(self, messages: list[Message], *args, **kwargs):
+        return super().build_supervised_examples(
+            _fold_consecutive_tool_messages(messages), *args, **kwargs
+        )
+
+
+class Qwen3SplitRenderer(
+    _Qwen3ToolFoldMixin,
+    _Qwen3EmptyThinkWrapperMixin,
+    _Qwen3KeepThinkingAfterLastQueryMixin,
+    DisaggregateMultiTurnMixin,
+    Qwen3Renderer,
+):
     pass
 
 
@@ -194,9 +463,7 @@ class _Qwen3_5TemplateParityMixin:
         # HF templates receive complete OpenAI tool envelopes. The Tinker
         # prefix hook receives only each inner function ToolSpec, so restore
         # the outer type/function keys before serializing the <tools> block.
-        wrapped_tools = [
-            {"type": "function", "function": dict(tool)} for tool in tools
-        ]
+        wrapped_tools = [{"type": "function", "function": dict(tool)} for tool in tools]
         return super().create_conversation_prefix_with_tools(
             cast(list[ToolSpec], wrapped_tools),
             system_prompt=system_prompt,
@@ -529,6 +796,7 @@ class _Qwen3_8TemplateParityMixin:
         return super().build_supervised_example(
             self._prepare_qwen3_8_messages(messages), *args, **kwargs
         )
+
 
 class Qwen3_8InterleavedRenderer(
     _Qwen3_8TemplateParityMixin,

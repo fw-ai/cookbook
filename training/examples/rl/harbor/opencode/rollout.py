@@ -54,11 +54,6 @@ class _HarborRolloutRunner:
     """Allocate one independent sidecar trajectory per Harbor attempt."""
 
     def __init__(self, setup: RolloutSetup) -> None:
-        if setup.sample_kwargs.get("echo"):
-            raise ValueError(
-                "Fireworks Harbor supports completion-only Router Replay; "
-                "set router_replay_completion_only=True"
-            )
         self._setup = setup
         self._tito_debug_enabled = bool(setup.extras.get("tito_debug_enabled", False))
         self._rollout_retries = int(

@@ -8,7 +8,7 @@ import pytest
 import transformers
 
 from fireworks.training.sdk import TITOChatRequest, TITOIncrementalRenderer
-from training.tito.renderer import build_sidecar_tito_renderer
+from training.renderer.tito import build_sidecar_tito_renderer
 import training.renderer.glm5  # noqa: F401 - registers glm_moe_dsa
 from training.renderer import get_renderer
 

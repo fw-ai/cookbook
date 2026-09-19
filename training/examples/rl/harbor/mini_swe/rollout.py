@@ -51,8 +51,6 @@ class _MiniSweRolloutRunner:
     """Allocate one independent sidecar trajectory per Mini-SWE attempt."""
 
     def __init__(self, setup: RolloutSetup) -> None:
-        if setup.sample_kwargs.get("echo"):
-            raise ValueError("Mini-SWE TITO supports completion-only Router Replay")
         self._setup = setup
         self._tito_debug_enabled = bool(setup.extras.get("tito_debug_enabled", False))
         self._trial_config = load_harbor_trial_config(

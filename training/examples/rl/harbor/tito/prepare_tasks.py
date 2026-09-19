@@ -50,6 +50,10 @@ _PYTHON_INSTALL = r"""RUN set -eu; \
    exit 1; \
  fi; \
 """
+# The sidecar interpreter is a venv over the task image's python3, so its
+# stdlib is the image's. `lzma` is checked explicitly because the sidecar
+# bundle ships LZMA-compressed: a base image built without liblzma would
+# otherwise fail per trial at bundle extraction instead of here, at build.
 _SIDECAR_PYTHON_INSTALL = r"""python3 -c 'import sys; assert sys.version_info >= (3, 10), sys.version'; \
  python3 -m venv /opt/fireworks-tito; \
  /opt/fireworks-tito/bin/python -m pip install --no-cache-dir \
@@ -61,6 +65,7 @@ _SIDECAR_PYTHON_INSTALL = r"""python3 -c 'import sys; assert sys.version_info >=
    transformers==5.5.4 \
    numpy==2.4.6; \
  /opt/fireworks-tito/bin/python -c 'import aiohttp, httpx, jinja2, numpy, tokenizers, transformers, urllib3'; \
+ /opt/fireworks-tito/bin/python -c 'import lzma'; \
 """
 
 

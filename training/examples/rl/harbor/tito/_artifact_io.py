@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import partial
 from typing import Any, Callable, TypeVar
 
+logger = logging.getLogger(__name__)
+
 _Result = TypeVar("_Result")
 _ARTIFACT_EXECUTOR = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="harbor-artifact"
 )
+_DRAIN_TIMEOUT_SECONDS = 300.0
 
 
 class ArtifactProcessPool:
@@ -50,13 +54,32 @@ class ArtifactProcessPool:
         except asyncio.CancelledError:
             pending.cancel()
             # A running process still owns input files inside trial_workspace.
-            # Drain it before the caller removes that directory. Cancellation
-            # remains cancellation, including if the worker subsequently fails.
+            # Drain it before the caller removes that directory — but bound the
+            # drain: a wedged worker must not hang the producer slot forever.
+            # Cancellation remains cancellation, including if the worker
+            # subsequently fails.
+            deadline = asyncio.get_running_loop().time() + _DRAIN_TIMEOUT_SECONDS
             while not result.done():
                 try:
-                    await asyncio.shield(result)
+                    await asyncio.wait_for(
+                        asyncio.shield(result),
+                        timeout=max(1.0, deadline - asyncio.get_running_loop().time()),
+                    )
                 except asyncio.CancelledError:
                     continue
+                except asyncio.TimeoutError:
+                    # The worker outlived the drain bound. It still holds this
+                    # pool's only process, so every later trial would queue
+                    # behind it: uninstall it and let the next call spawn a
+                    # fresh one. The orphan exits on its own once its task
+                    # finishes or its input files disappear.
+                    logger.warning(
+                        "Artifact worker exceeded the %.0fs drain bound; "
+                        "discarding it so later trials get a fresh process",
+                        _DRAIN_TIMEOUT_SECONDS,
+                    )
+                    self._discard_broken_executor(executor)
+                    break
                 except Exception:
                     break
             if result.done() and not result.cancelled():

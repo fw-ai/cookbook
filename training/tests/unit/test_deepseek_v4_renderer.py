@@ -1606,8 +1606,15 @@ def test_parse_response_recovers_thinking_and_content(
     ids = tokenizer.encode(full, add_special_tokens=False)
     msg, ok = renderer_thinking_keep.parse_response(ids)
     assert ok is True
-    assert msg.get("reasoning_content") == "compute"
-    assert msg["content"] == text
+    assert msg["content"] == [
+        {"type": "thinking", "thinking": "compute"},
+        {"type": "text", "text": text},
+    ]
+    assert renderer_thinking_keep.to_openai_message(msg) == {
+        "role": "assistant",
+        "reasoning_content": "compute",
+        "content": text,
+    }
 
 
 def test_parse_response_returns_false_without_eos(tokenizer, renderer_thinking_keep):
@@ -1615,7 +1622,10 @@ def test_parse_response_returns_false_without_eos(tokenizer, renderer_thinking_k
     ids = tokenizer.encode(text, add_special_tokens=False)
     msg, ok = renderer_thinking_keep.parse_response(ids)
     assert ok is False
-    assert msg["content"] == "partial answer"
+    assert msg["content"] == [
+        {"type": "thinking", "thinking": "compute"},
+        {"type": "text", "text": "partial answer"},
+    ]
 
 
 def test_parse_response_extracts_tool_call(tokenizer, renderer_thinking_keep):
@@ -1632,8 +1642,7 @@ def test_parse_response_extracts_tool_call(tokenizer, renderer_thinking_keep):
     ids = tokenizer.encode(body, add_special_tokens=False)
     msg, ok = renderer_thinking_keep.parse_response(ids)
     assert ok is True
-    assert msg.get("reasoning_content") == "reasoning"
-    assert msg["content"] == ""
+    assert msg["content"] == [{"type": "thinking", "thinking": "reasoning"}]
     assert len(msg["tool_calls"]) == 1
     tc = msg["tool_calls"][0]
     assert tc.function.name == "f"

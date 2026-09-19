@@ -31,10 +31,10 @@ precision; validate serving load and inference before promotion.
 
 Why not ``warmStartFrom``? RLOR ``warmStartFrom`` of a PEFT addon is not
 effective: the control plane downloads the adapter, but the trainer session
-never loads those weights, so the save folds a zero-delta adapter and produces a
-base-identical checkpoint. The supported path is ``base_model`` + explicit
-``load_adapter`` (this script). The gateway rejects service-mode
-``warmStartFrom`` of a LoRA addon for the same reason.
+never loads those weights. A merged-base save then fails with a user error
+because there is no effective adapter delta. The supported path is
+``base_model`` + explicit ``load_adapter`` (this script). The gateway rejects
+service-mode ``warmStartFrom`` of a LoRA addon for the same reason.
 
 Pass the promoted Fireworks PEFT model resource to ``--adapter-model``
 (``accounts/<acct>/models/<lora-id>``). ``load_adapter`` accepts that name

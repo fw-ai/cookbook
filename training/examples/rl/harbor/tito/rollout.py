@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from training.examples.rl.harbor.tito.trial import HarborTrialOutcome
+from training.utils.rl import trial_events
 from training.utils.rl.async_rl.errors import RecoverableRolloutError
 from training.utils.rl.rollout import RolloutRun
 from training.utils.rl.rollout.tito import materialize_tito_trajectory
@@ -60,12 +61,15 @@ async def run_with_fresh_trajectory_retries(
     if retries < 0:
         raise ValueError("rollout retries must be non-negative")
     for attempt in range(retries + 1):
+        trial_events.record_trial_attempt()
         try:
             return await operation(attempt)
         except asyncio.CancelledError:
             raise
         except RecoverableRolloutError as exc:
+            reason = getattr(exc, "reason", None) or "recoverable_rollout_error"
             if attempt == retries:
+                trial_events.record_trial_discarded(reason)
                 logger.warning(
                     "Discarding Harbor task %s after %d attempts: %s",
                     task_name,
@@ -73,6 +77,7 @@ async def run_with_fresh_trajectory_retries(
                     exc,
                 )
                 return None
+            trial_events.record_trial_retry(reason)
             delay = _RETRY_DELAY_SECONDS * (attempt + 1)
             logger.warning(
                 "Harbor task %s failed transiently (attempt %d/%d); "
@@ -85,6 +90,7 @@ async def run_with_fresh_trajectory_retries(
             )
             await asyncio.sleep(delay)
         except Exception as exc:  # noqa: BLE001 - rollout isolation boundary
+            trial_events.record_trial_discarded(type(exc).__name__)
             logger.warning(
                 "Discarding non-recoverable Harbor task %s: %s: %s",
                 task_name,
@@ -94,6 +100,29 @@ async def run_with_fresh_trajectory_retries(
             )
             return None
     return None
+
+
+def _attach_trial_phase_metrics(
+    rollout: RolloutRun,
+    phase_timings: Mapping[str, float],
+) -> None:
+    """Record Harbor trial phase brackets as one-sample distributions.
+
+    The step-level merge aggregates count/sum/min/max across trials, so each
+    trial contributes count=1 with the bracket duration as sum/min/max.
+    """
+    if not phase_timings:
+        return
+    tito_metrics = rollout.metadata.get("tito_metrics")
+    if not isinstance(tito_metrics, dict):
+        raise ValueError("rollout metadata tito_metrics must be a mapping")
+    for phase, seconds in phase_timings.items():
+        base = f"tito/trial/{phase}"
+        value = float(seconds)
+        tito_metrics[f"{base}_count"] = 1.0
+        tito_metrics[f"{base}_sum"] = value
+        tito_metrics[f"{base}_min"] = value
+        tito_metrics[f"{base}_max"] = value
 
 
 def materialize_harbor_trajectory(
@@ -130,6 +159,7 @@ def materialize_harbor_trajectory(
         raise RecoverableRolloutError(
             "Harbor trial produced no policy-visible trainable segment"
         )
+    _attach_trial_phase_metrics(rollout, outcome.phase_timings)
     return rollout
 
 

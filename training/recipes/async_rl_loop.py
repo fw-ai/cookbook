@@ -55,6 +55,7 @@ from training.utils import (
     WandBConfig,
     ReconnectableClient,
     build_service_client,
+    flush_phase_trace,
     log_metrics,
     load_deployment_tokenizer,
     load_jsonl_dataset,
@@ -295,7 +296,11 @@ def _save_checkpoint(
     promotable: bool = False,
 ) -> None:
     logger.info("[%s] dcp_save...", name)
-    with wall_timer() as span:
+    with wall_timer(
+        "checkpoint_save",
+        category="checkpoint",
+        attributes={"name": name},
+    ) as span:
         ckpt.save(
             name,
             resumable=resumable,
@@ -625,7 +630,11 @@ def main(
         async def run_evaluation(step: int) -> None:
             if evaluation_fn is None:
                 return
-            with wall_timer() as span:
+            with wall_timer(
+                "evaluation",
+                category="evaluation",
+                attributes={"step": step},
+            ) as span:
                 try:
                     metrics = await evaluation_fn(step, evaluation_rollout_fn)
                 except Exception:
@@ -830,15 +839,18 @@ def main(
             return span.elapsed
 
         async def run_training() -> tuple[int, dict[str, Any]]:
+            def _step_metrics(metrics: dict[str, Any], step: int) -> None:
+                log_metrics(metrics, step=step)
+                # Flush the client phase trace at each optimizer-step boundary
+                # so the trace file is inspectable while the run is in flight.
+                flush_phase_trace()
+
             telemetry = AsyncRLTelemetry(
                 producer_metrics_fn=lambda metrics: log_metrics(
                     metrics,
                     step=int(metrics["producer/event"]),
                 ),
-                step_metrics_fn=lambda metrics, step: log_metrics(
-                    metrics,
-                    step=step,
-                ),
+                step_metrics_fn=_step_metrics,
             )
             coordinator = AsyncRLCoordinator(
                 rows=make_row_requests(),
@@ -884,7 +896,11 @@ def main(
 
                         evaluation_step = evaluations.active_step
                         if evaluation_step is not None:
-                            with wall_timer() as span:
+                            with wall_timer(
+                                "evaluation_join",
+                                category="evaluation",
+                                attributes={"step": evaluation_step},
+                            ) as span:
                                 await evaluations.join()
                             log_metrics(
                                 {

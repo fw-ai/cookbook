@@ -108,13 +108,19 @@ async def evaluate_rows(
             }
         )
 
+    # Per-task reward detail lives in the run-dir trial artifacts; publishing
+    # one series per task floods WandB at full-split scale (450+ series).
     task_rewards: dict[str, list[float]] = {}
     for run in runs:
         metadata = run.metadata or {}
         task_name = str(metadata.get("task_name") or "unknown-task")
         task_rewards.setdefault(task_name, []).append(float(run.segments[0].reward))
-    for task_name, values in task_rewards.items():
-        metrics[f"{metric_prefix}/task/{task_name}"] = statistics.fmean(values)
+    if task_rewards:
+        task_means = [statistics.fmean(values) for values in task_rewards.values()]
+        metrics[f"{metric_prefix}/task_count"] = len(task_means)
+        metrics[f"{metric_prefix}/task_reward_mean"] = statistics.fmean(task_means)
+        metrics[f"{metric_prefix}/task_reward_min"] = min(task_means)
+        metrics[f"{metric_prefix}/task_reward_max"] = max(task_means)
     return metrics
 
 

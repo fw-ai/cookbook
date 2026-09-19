@@ -5,12 +5,13 @@ Runnable end-to-end notebooks in `training/case-studies/`. Each README has an
 
 | Slug | Technique | Is this you? (summary) | Notebook(s) | Path variants |
 |---|---|---|---|---|
-| `sft_prompt_router` | SFT / classification | End-to-end fine-tuning on a gradeable classification task | `prompt_router_sft_sdk.ipynb` | managed SDK |
+| `sft_prompt_router` | SFT / classification | End-to-end fine-tuning on a gradeable classification task | `prompt_router_dedicated.ipynb`, `prompt_router_serverless.ipynb` | managed SDK, serverless |
 | `sft_cord_receipts` | Vision SFT | One right output shape (JSON, tags, codes) from examples; invoice/OCR/form extraction | `cord_receipt_sft_sdk.ipynb` | managed SDK |
 | `dpo_style` | DPO | Accurate but wrong tone; easier to rank two answers than write the ideal one | `dpo_helpsteer3_sdk.ipynb` | managed SDK |
 | `reasoning_rl` | GRPO / managed RFT | Objectively checkable answers; grader exists but no gold worked solutions | `rft_grpo_math.ipynb` | managed RFT |
 | `embedding_support_search` | Contrastive embedding | RAG returns adjacent but wrong article; policy structure not in base model | `airbnb_policy_embedding.ipynb` | Training API `embedding_loop` |
 | `agentic_rl_text2sql` | GRPO / serverless RL | Tool-calling agent (SQL, APIs); multi-turn rollouts with verifiable rewards | `sql_agent_rl_loop.ipynb` | serverless Training API |
+| `multilora_fleet` | LoRA SFT / multi-LoRA serving | Many tenants or locales sharing one base model; per-tenant adapters served from a single deployment | `multilora_fleet.ipynb` | managed SDK |
 
 Cookbook table: [`training/README.md`](https://github.com/fw-ai/cookbook/blob/main/training/README.md#case-studies).
 
@@ -24,6 +25,7 @@ Cookbook table: [`training/README.md`](https://github.com/fw-ai/cookbook/blob/ma
 | `reasoning_rl` | RFT (GRPO) | managed RFT |
 | `embedding_support_search` | embedding fine-tune | Training API dedicated |
 | `agentic_rl_text2sql` | RL (GRPO) | serverless Training API |
+| `multilora_fleet` | SFT (LoRA) | managed SDK |
 
 ## Match rules
 

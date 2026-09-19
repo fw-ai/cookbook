@@ -20,6 +20,23 @@ class FakeTokenizer:
         return [ord(ch) for ch in text]
 
 
+def _add_turn(assembler, messages, index):
+    prompt = assembler.prepare_next_input(messages)
+    assistant = {"role": "assistant", "content": f"a{index}"}
+    assembler.add_assistant_response(
+        request_messages=messages,
+        assistant_message=assistant,
+        prompt_token_ids=prompt,
+        completion_token_ids=[1000 + index],
+        completion_logprobs=[-0.1],
+    )
+    checkpoint_messages = [*messages, assistant]
+    return checkpoint_messages, [
+        *checkpoint_messages,
+        {"role": "tool", "content": f"t{index}", "tool_call_id": f"call_{index}"},
+    ]
+
+
 def test_message_in_preserves_generated_assistant_tokens_across_tool_turn():
     assembler = MessageTrajectoryAssembler(TITOTokenizer(FakeTokenizer()))
     first_messages = [{"role": "user", "content": "hi"}]
@@ -155,3 +172,60 @@ def test_message_in_multi_step_rollback_raises():
 
     with pytest.raises(MessageValidationError, match="exceeds"):
         assembler.prepare_next_input(m1 + [{"role": "assistant", "content": "a1"}, {"role": "tool", "content": "retry"}])
+
+
+def test_message_in_retains_only_reachable_checkpoints():
+    assembler = MessageTrajectoryAssembler(
+        TITOTokenizer(FakeTokenizer()), max_assistant_rollback_steps=2
+    )
+    messages = [{"role": "user", "content": "hi"}]
+    checkpoint_messages = []
+
+    for index in range(10):
+        checkpoint, messages = _add_turn(assembler, messages, index)
+        checkpoint_messages.append(checkpoint)
+
+    assert len(assembler.checkpoints) == 3
+    assert [checkpoint.messages[-1]["content"] for checkpoint in assembler.checkpoints] == [
+        "a7",
+        "a8",
+        "a9",
+    ]
+
+    retry_prompt = assembler.prepare_next_input(
+        [
+            *checkpoint_messages[7],
+            {"role": "tool", "content": "retry", "tool_call_id": "call_7"},
+        ]
+    )
+
+    assert len(assembler.checkpoints) == 1
+    assert assembler.messages == checkpoint_messages[7]
+    assert retry_prompt[: len(assembler.token_ids)] == assembler.token_ids
+
+
+def test_message_in_rejects_rollback_older_than_retained_window():
+    assembler = MessageTrajectoryAssembler(
+        TITOTokenizer(FakeTokenizer()), max_assistant_rollback_steps=2
+    )
+    messages = [{"role": "user", "content": "hi"}]
+    checkpoint_messages = []
+
+    for index in range(5):
+        checkpoint, messages = _add_turn(assembler, messages, index)
+        checkpoint_messages.append(checkpoint)
+
+    with pytest.raises(MessageValidationError, match="discard_count=3 exceeds"):
+        assembler.prepare_next_input(
+            [
+                *checkpoint_messages[1],
+                {"role": "tool", "content": "retry", "tool_call_id": "call_1"},
+            ]
+        )
+
+
+def test_message_in_rejects_negative_rollback_depth():
+    with pytest.raises(ValueError, match="max_assistant_rollback_steps must be >= 0"):
+        MessageTrajectoryAssembler(
+            TITOTokenizer(FakeTokenizer()), max_assistant_rollback_steps=-1
+        )

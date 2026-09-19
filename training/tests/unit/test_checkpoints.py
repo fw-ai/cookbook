@@ -10,6 +10,7 @@ import pytest
 from training.utils.runner import UserConfigError
 from training.utils.checkpoints import (
     DATALOADER_BASE_NAME,
+    DATALOADER_HISTORY_KEEP,
     ResumeInfo,
     TrainingCheckpoints,
     _logical_name,
@@ -86,6 +87,12 @@ def _row(short_name, *, ctype, promotable, create_time):
         "checkpointType": ctype,
         "promotable": promotable,
     }
+
+
+def _read_checkpoint_states(log_dir):
+    with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
+        data = json.load(f)
+    return data.get("checkpoints", data)
 
 
 def _make(
@@ -187,6 +194,43 @@ class TestResume:
         info = ckpt.resume()
         assert info == ResumeInfo(step=10, data_consumed=80, source_job_id="job-1")
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-10")
+
+    def test_resume_uses_recorded_step_when_service_renames_checkpoint(self, log_dir):
+        ckpt, _, fw = _make(log_dir, save_state_renames_to="step-0")
+        ckpt.save("step-42", resumable=True, promotable=False, data_consumed=777)
+
+        resumed, client, _ = _make(log_dir, fw_rows=fw._rows)
+        info = resumed.resume()
+
+        assert info == ResumeInfo(step=42, data_consumed=777, source_job_id="job-1")
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-0")
+
+    def test_resume_falls_back_from_uncommitted_newer_dcp(self, log_dir):
+        ckpt, client, fw = _make(log_dir)
+        ckpt.save("step-1", resumable=True, promotable=False, data_consumed=10)
+        # Simulate a crash after the next DCP becomes visible but before the
+        # checkpoint-keyed client state is committed.
+        client.save_state("step-2")
+
+        resumed, resume_client, _ = _make(log_dir, fw_rows=fw._rows)
+        info = resumed.resume()
+
+        assert info == ResumeInfo(step=1, data_consumed=10, source_job_id="job-1")
+        resume_client.load_state_with_optimizer.assert_called_once_with(
+            "path://self/step-1"
+        )
+
+    def test_resume_rejects_only_uncommitted_dcp(self, log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"schema_version": 1, "checkpoints": {}}, f)
+        _, client, fw = _make(log_dir)
+        client.save_state("step-1")
+
+        resumed, resume_client, _ = _make(log_dir, fw_rows=fw._rows)
+        with pytest.raises(UserConfigError, match="none has committed"):
+            resumed.resume()
+        resume_client.load_state_with_optimizer.assert_not_called()
 
     def test_resume_picks_training_lora_too(self, log_dir):
         rows = [
@@ -503,8 +547,9 @@ class TestSave:
         client.save_state.assert_called_once_with("step-1")
         client.save_weights_for_sampler.assert_not_called()
 
-        with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
-            assert json.load(f) == {"step-1": 100}
+        assert _read_checkpoint_states(log_dir) == {
+            "step-1": {"step": 1, "data_consumed": 100}
+        }
 
     def test_promotable_only_writes_sampler_no_dataloader(self, log_dir):
         ckpt, client, fw = _make(log_dir)
@@ -673,17 +718,19 @@ class TestSave:
         ckpt.save("step-42", resumable=True, promotable=False, data_consumed=777)
         client.save_state.assert_called_once_with("step-42")
 
-        with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
-            data = json.load(f)
-        assert data == {"step-0": 777}, f"expected server name keyed, got {data}"
+        data = _read_checkpoint_states(log_dir)
+        assert data == {
+            "step-0": {"step": 42, "data_consumed": 777}
+        }, f"expected server name keyed, got {data}"
 
     def test_dataloader_keyed_on_caller_name_when_no_rename(self, log_dir):
         """When the server honors the caller name, ``dataloader.json`` keys
         by the same string (no regression vs prior behavior)."""
         ckpt, client, _ = _make(log_dir)  # default: no rename
         ckpt.save("step-5", resumable=True, promotable=False, data_consumed=50)
-        with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
-            assert json.load(f) == {"step-5": 50}
+        assert _read_checkpoint_states(log_dir) == {
+            "step-5": {"step": 5, "data_consumed": 50}
+        }
 
     def test_promotable_save_waits_for_run_scoped_cp_row(self, log_dir):
         current_run_id = "run-f7bd5935b27b46d2ac21c90ac7a19cd5"
@@ -923,8 +970,36 @@ class TestDataloaderJson:
         ckpt, _, _ = _make(log_dir)
         for i in range(1, 26):
             ckpt.save(f"step-{i}", resumable=True, promotable=False, data_consumed=i)
-        with open(os.path.join(log_dir, DATALOADER_BASE_NAME)) as f:
-            data = json.load(f)
+        data = _read_checkpoint_states(log_dir)
         # Keep only the newest 20.
         assert len(data) == 20
         assert set(data.keys()) == {f"step-{i}" for i in range(6, 26)}
+
+    def test_bounded_history_keeps_new_checkpoint_after_recipe_step_reset(
+        self, log_dir
+    ):
+        ckpt, _, fw = _make(log_dir)
+        for step in range(100, 120):
+            ckpt.save(
+                f"step-{step}",
+                resumable=True,
+                promotable=False,
+                data_consumed=step,
+            )
+
+        # A same-trainer run can intentionally reset its recipe step while the
+        # control plane still contains the preceding run's higher-step DCPs.
+        ckpt.save("step-0", resumable=True, promotable=False, data_consumed=0)
+
+        data = _read_checkpoint_states(log_dir)
+        assert len(data) == DATALOADER_HISTORY_KEEP
+        assert "step-100" not in data
+        assert data["step-0"] == {"step": 0, "data_consumed": 0}
+
+        resumed, client, _ = _make(log_dir, fw_rows=fw._rows)
+        assert resumed.resume() == ResumeInfo(
+            step=0,
+            data_consumed=0,
+            source_job_id="job-1",
+        )
+        client.load_state_with_optimizer.assert_called_once_with("path://self/step-0")

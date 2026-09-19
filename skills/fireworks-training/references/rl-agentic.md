@@ -9,13 +9,14 @@ scheduler, batching, off-policy, optimizer, and publication behavior.
 
 - [Boundary and invariants](#boundary-and-invariants)
 - [Choose an architecture](#choose-an-architecture)
-- [Choose a token-mismatch policy](#choose-a-token-mismatch-policy)
+- [Choose prompt construction and a token-mismatch policy](#choose-prompt-construction-and-a-token-mismatch-policy)
 - [Linear V1 and future trees](#linear-v1-and-future-trees)
 - [Session and prompt-cache identity](#session-and-prompt-cache-identity)
 - [Failure and retry policy](#failure-and-retry-policy)
 - [Responsibility split](#responsibility-split)
 - [Calibration checklist](#calibration-checklist)
 - [Cookbook example](#cookbook-example)
+- [Multi-turn task sandboxes](#multi-turn-task-sandboxes-local-docker-or-a-remote-provider)
 
 ## Boundary and invariants
 
@@ -69,14 +70,14 @@ subagent that can be trained as an independent trajectory.
 
 ### Current support boundary
 
-Production TITO support is deliberately narrower than the cookbook's general
-renderer registry. The lightweight sidecar runtime currently implements only
-`glm_moe_dsa_preserve_thinking` with the pinned GLM-5.2 tokenizer revision.
-Other renderer names in the offline SFT/DPO registry are not thereby available
-through the sidecar. Interleaved GLM history remains uncertified. A renderer
-name existing for SFT or DPO does **not** make it safe for TITO, and an offline
-renderer alone does not imply a lightweight sidecar implementation. Both
-builders fail closed at their respective unsupported boundary.
+Select a renderer/tokenizer pair from `training/renderer/tito/registry.py`.
+Each entry pins the renderer implementation and tokenizer/template fingerprint.
+The lightweight sidecar supports `glm_moe_dsa_preserve_thinking` (GLM-5.2),
+`glm53_preserve_thinking` (GLM-5.3), `qwen3_8` (Qwen3.8-27B), and
+`muse_glimmer` (Muse Glimmer 30B). Use `full_history` for GLM-5.3 and
+Muse Glimmer. Interleaved GLM history remains uncertified.
+The offline SFT/DPO renderer registry does not establish TITO or lightweight
+sidecar support. Both builders reject unsupported or mismatched pairs.
 
 For another model family, implement the shared loss-agnostic conversation and
 assistant-parse primitives, characterize complete multi-turn
@@ -320,6 +321,13 @@ are concrete adapters over the same sidecar contract:
   incompatible boundary closes the segment and uses a full-rendered current
   prompt as the next masked segment within the same logical run.
 
+For R3, the Harbor adapters follow the recipe's `router_replay` and
+`router_replay_completion_only` settings. Set completion-only to `False` to
+also capture the initial prompt and newly added user/tool context. The sidecar
+captures those routes incrementally, and the materializer preserves their token
+alignment. Prompt/tool tokens remain loss-masked; prompt construction stays in
+the selected renderer mode.
+
 The DABstep and Terminal-Bench entrypoints keep their task selection and
 experiment defaults in `harbor/recipes/dabstep/` and
 `harbor/recipes/terminal_bench/`.
@@ -333,3 +341,109 @@ with a separately created TITO trajectory and credential. Fork only the adapter
 pieces that match the target harness. Harbor is environment support, neither
 agent is required by `async_rl_loop`, and all retain the ordinary
 `rollout_fn(sample_prompt) -> RolloutRun | None` boundary.
+
+## Multi-turn task sandboxes: local Docker or a remote provider
+
+Harbor trials select the task sandbox through `rollout_extras` —
+`harbor_environment="docker"` (local containers) or `"e2b"` (remote
+microVMs). The execution model is identical in both; only placement and cost
+differ.
+
+### One sandbox per trial, not per turn
+
+**The harness runs inside the sandbox.** The agent process (Pi, OpenCode,
+Mini-SWE-Agent) and the environment-local TITO sidecar both run *inside* the
+container or microVM, not on the client host. One sandbox is created per trial
+attempt and held for the whole trajectory:
+
+1. the client uploads the sidecar bundle and its launch spec, then starts the
+   sidecar and waits for it to publish a loopback endpoint;
+2. the agent starts inside the sandbox and runs every turn there — each model
+   call goes agent → in-sandbox sidecar → inference deployment, and each tool
+   call executes in-sandbox next to the task data;
+3. the sidecar records exact prompt and completion tokens per turn into one
+   trajectory artifact;
+4. the trial terminalizes, the client collects artifacts, and the sandbox stops.
+
+A turn is not a sandbox boundary, and neither is a segment split: multi-turn
+state lives in one sandbox for the trial's lifetime. Do not restructure this as
+client-driven remote commands — per-trial state, tool I/O, and exact-token
+capture all depend on the sandbox-local placement. A retry is the one case that
+gets a fresh sandbox, because a retried attempt is a fresh trajectory.
+
+### Credentials, in both modes
+
+The rules are the same for local and remote; only the provider key differs.
+
+- **Inference credential** (both modes): reaches the sidecar *inside* the
+  sandbox through the launch spec, written as a private file and read once at
+  start. It is never baked into a task image or a prepared task context, and it
+  is scrubbed from every retained artifact before the trial directory is
+  handed back.
+- **Provider key** (remote only): the provider SDK reads its key from the
+  client environment. It stays on the client and never enters the sandbox —
+  the sandbox has no reason to create sandboxes.
+- **Local Docker needs no additional credential at all** beyond the inference
+  one: a running Docker daemon is the whole requirement.
+
+Whatever you add to a rollout, keep the same two-place split: infrastructure
+credentials on the client, exactly one model credential inside the sandbox, and
+nothing in images or artifacts.
+
+### Where the time goes
+
+Measured with one agent, 4 tasks × 4 repeats per environment, trial
+concurrency above the trial count. Per completed trial, as a share of trial
+wall:
+
+| phase | short tasks, remote | long tasks, remote | long tasks, local |
+|---|---|---|---|
+| environment setup | ~4% | <1% | <1% |
+| agent setup (sidecar install) | ~37% | ~1% | ~1% |
+| agent execution | ~41% | ~43% | ~94% |
+| verifier | ~3% | ~47% | ~4% |
+| inter-phase gaps | ~16% | ~9% | ~1% |
+
+Read this as a shape, not a constant. Sidecar install is a roughly fixed
+~10s remote / ~5s local, so it dominates short tasks and vanishes on long
+ones. Server-side generation is placement-invariant — the model spends the
+same time regardless of sandbox — so what actually differs between local and
+remote is everything *around* the model: tool-call latency, verifier cost, and
+the gaps between phases (provider round trips, which ran ~14× larger remote
+than local in the same comparison).
+
+### The verifier is a second sandbox
+
+With `verifier_environment_mode` at its default, verification runs in its own
+sandbox rather than the agent's. On a remote provider that made the verifier
+the single largest phase of a long-task trial, with a heavy tail: the same
+task's verifier took ~1 minute at low concurrency and 25–50 minutes with three
+or four verifiers running at once, and one hit its verifier timeout outright.
+Locally the same suites ran in 26–107s with no concurrency sensitivity.
+
+If the verifier is your bottleneck, the provider tier is the *last* lever.
+Cheaper ones first:
+
+- **Cap verifier concurrency separately from trial concurrency.** The tail
+  tracks simultaneous verifiers, so a small semaphore around the verifier
+  phase converts tail into floor.
+- **Verify where compute is cheap.** Verification needs no model — running it
+  on the training host from the collected patch takes it off the remote
+  critical path entirely.
+- **Give the sandbox more vCPU.** Test suites are CPU-bound and task
+  definitions often declare only two.
+- **Reuse the agent sandbox** when the task's isolation model permits it, and
+  skip a second build and start per trial.
+
+Watch `tito/trial/verifier_seconds_max` next to its mean: a mean that tracks
+the max means a uniform cost, and a mean far below the max means a tail, which
+is a scheduling problem rather than a provider one.
+
+### Choosing
+
+Iterate locally — no provider latency, no template builds, full host CPU, and
+a debugger on the same machine — then scale out remotely for isolation and
+parallelism beyond one host. Prebuild remote templates in waves before
+rollouts fan out (`prebuild_e2b_templates`) so trials start from ready
+templates instead of building inline, and keep verification local when the
+task allows it.

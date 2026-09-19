@@ -11,7 +11,6 @@ import shlex
 import shutil
 import signal
 import tempfile
-import time
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -63,6 +62,7 @@ _SDK_RUNTIME_FILES = (
     "concurrency.py",
     "errors.py",
     "sampling.py",
+    "routing.py",
     "sampling_observability.py",
     "tito_debug.py",
 )
@@ -105,6 +105,8 @@ class TITOSidecarLaunchSpec:
     debug_max_local_bytes: int | None
     debug_min_free_bytes: int | None
     debug_redact_text: bool
+    routing_matrix_format: str = "base64_inline"
+    r3_store_id: str | None = None
 
 
 def _source_roots() -> tuple[Path, Path]:
@@ -160,11 +162,19 @@ def _copy_source_tree(source: Path, destination: Path) -> None:
     )
 
 
-def _copy_sdk_runtime(sdk_source: Path, destination: Path) -> None:
+def _sdk_runtime_files(sdk_source: Path) -> tuple[str, ...]:
+    # Older supported SDK releases predate compact routing references.
+    routing_files = ("routing.py",) if (sdk_source / "routing.py").is_file() else ()
+    return _SDK_RUNTIME_FILES + routing_files
+
+
+def _copy_sdk_runtime(
+    sdk_source: Path, destination: Path, runtime_files: tuple[str, ...]
+) -> None:
     """Copy only the lightweight training SDK needed by the sidecar."""
     sdk_target = destination / "fireworks" / "training" / "sdk"
     sdk_target.mkdir(parents=True)
-    for name in _SDK_RUNTIME_FILES:
+    for name in runtime_files:
         shutil.copy2(sdk_source / name, sdk_target / name)
     _copy_source_tree(sdk_source / "tito", sdk_target / "tito")
     for package_root in (
@@ -181,6 +191,20 @@ def _copy_sdk_runtime(sdk_source: Path, destination: Path) -> None:
 def _copy_cookbook_runtime(training_source: Path, destination: Path) -> None:
     training_target = destination / "training"
     _copy_source_tree(training_source / "tito", training_target / "tito")
+    # TITO renderers live under training/renderer/tito. The parent
+    # training/renderer package eagerly imports heavyweight training renderers
+    # (tinker/torch), which the sandbox must not load -- ship a minimal stub
+    # for the parent and only the tito subtree.
+    renderer_target = training_target / "renderer"
+    renderer_target.mkdir(parents=True, exist_ok=True)
+    (renderer_target / "__init__.py").write_text(
+        '"""Minimal package root for the immutable TITO sidecar bundle."""\n',
+        encoding="utf-8",
+    )
+    _copy_source_tree(
+        training_source / "renderer" / "tito",
+        renderer_target / "tito",
+    )
     for name in _COOKBOOK_RUNTIME_FILES:
         relative = Path(name)
         source = training_source / relative
@@ -193,23 +217,25 @@ def _write_deterministic_zip(source: Path, destination: Path) -> None:
     with zipfile.ZipFile(
         destination,
         mode="w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=6,
+        compression=zipfile.ZIP_LZMA,
     ) as archive:
         for path in _iter_source_files(source):
             relative = path.relative_to(source).as_posix()
             info = zipfile.ZipInfo(relative, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
+            # ZipInfo defaults to STORED; without this the archive-level LZMA
+            # is ignored per entry and the bundle ships uncompressed.
+            info.compress_type = zipfile.ZIP_LZMA
             info.external_attr = (path.stat().st_mode & 0o777) << 16
-            archive.writestr(info, path.read_bytes(), compresslevel=6)
+            archive.writestr(info, path.read_bytes())
 
 
 def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
     """Create one content-addressed source/tokenizer bundle shared by trials."""
     sdk_source, training_source = _source_roots()
+    runtime_files = _sdk_runtime_files(sdk_source)
     digest = hashlib.sha256()
     digest.update(f"tito-sidecar-bundle-v{_BUNDLE_VERSION}\0".encode())
-    for name in _SDK_RUNTIME_FILES:
+    for name in runtime_files:
         source = sdk_source / name
         digest.update(f"python-sdk/fireworks/training/sdk/{name}\0".encode())
         digest.update(source.read_bytes())
@@ -219,6 +245,11 @@ def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
         "python-sdk/fireworks/training/sdk/tito",
     )
     _update_tree_hash(digest, training_source / "tito", "cookbook/training/tito")
+    _update_tree_hash(
+        digest,
+        training_source / "renderer" / "tito",
+        "cookbook/training/renderer/tito",
+    )
     for name in _COOKBOOK_RUNTIME_FILES:
         source = training_source / name
         digest.update(f"cookbook/training/{name}\0".encode())
@@ -264,7 +295,7 @@ def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
     os.close(descriptor)
     temporary_archive = Path(raw_archive_path)
     try:
-        _copy_sdk_runtime(sdk_source, temporary / "python-sdk")
+        _copy_sdk_runtime(sdk_source, temporary / "python-sdk", runtime_files)
         _copy_cookbook_runtime(training_source, temporary / "cookbook")
         tokenizer_dir = temporary / "tokenizer"
         setup.tokenizer.save_pretrained(tokenizer_dir)
@@ -313,6 +344,8 @@ def build_launch_spec(
         for key, value in setup.sample_kwargs.items()
         if key not in {"max_tokens", "max_seq_len", "echo"}
     }
+    if setup.sample_kwargs.get("include_routing_matrix") and setup.sample_kwargs.get("echo"):
+        sampling_defaults["incremental_prompt_routing"] = True
     debug_enabled = bool(setup.extras.get("tito_debug_enabled", False))
     max_masked_tokens = int(setup.extras.get("tito_max_masked_tokens", 1024))
     if max_masked_tokens < 0:
@@ -330,6 +363,8 @@ def build_launch_spec(
         raise ValueError("rollout_extras['tito_keepalive_seconds'] must be positive")
     return TITOSidecarLaunchSpec(
         schema_version=2,
+        routing_matrix_format=getattr(setup.sampler, "routing_matrix_format", "base64_inline"),
+        r3_store_id=getattr(setup.sampler, "r3_store_id", None),
         bundle_digest=bundle.digest,
         inference_base_url=setup.inference_base_url,
         api_key=setup.api_key,
@@ -401,70 +436,79 @@ async def install_sidecar(
 ) -> dict[str, str]:
     """Upload and start one environment-local sidecar, then return its endpoint."""
 
+    # Lazy: this module is also bundled into the sandbox, which does not
+    # carry training.utils; install_sidecar runs client-side only.
+    from training.utils.phase_tracing import phase_span
+
     spec_path = _temporary_private_file(launch_spec)
     try:
-        await environment.exec(
-            command=(
-                f"mkdir -p {SIDECAR_ROOT} {SIDECAR_LOG_ROOT} && "
-                f"chmod 700 {SIDECAR_ROOT} {SIDECAR_LOG_ROOT}"
-            ),
-            cwd="/",
-        )
-        await environment.upload_file(Path(bundle_path), SIDECAR_BUNDLE_ARCHIVE)
-        await environment.upload_file(spec_path, SIDECAR_SPEC_PATH)
+        # One upload phase instead of three serial round trips: mkdir rides
+        # with the start exec (writes create parent dirs), and the two uploads
+        # stream concurrently. Measured on e2b: ~1.7x faster install.
+        with phase_span("sidecar_upload", category="trial_setup"):
+            await asyncio.gather(
+                environment.upload_file(Path(bundle_path), SIDECAR_BUNDLE_ARCHIVE),
+                environment.upload_file(spec_path, SIDECAR_SPEC_PATH),
+            )
     finally:
         spec_path.unlink(missing_ok=True)
 
-    started = await environment.exec(
-        command=(
-            "set -eu; "
-            f"chmod 600 {SIDECAR_SPEC_PATH}; "
-            f"rm -rf {SIDECAR_BUNDLE_ROOT}; mkdir -p {SIDECAR_BUNDLE_ROOT}; "
-            f"{SIDECAR_PYTHON} -m zipfile -e {SIDECAR_BUNDLE_ARCHIVE} {SIDECAR_BUNDLE_ROOT}; "
-            f"PYTHONPATH={SIDECAR_BUNDLE_ROOT}/python-sdk:"
-            f"{SIDECAR_BUNDLE_ROOT}/cookbook "
-            f"nohup {SIDECAR_PYTHON} -m training.examples.rl.harbor.tito.sidecar serve "
-            f"--spec {SIDECAR_SPEC_PATH} "
-            f">{SIDECAR_LOG_ROOT}/sidecar.stdout 2>"
-            f"{SIDECAR_LOG_ROOT}/sidecar.stderr </dev/null & "
-            f"sidecar_pid=$!; printf '%s\n' \"$sidecar_pid\" > {SIDECAR_PID_PATH}"
-        ),
-        cwd="/",
-    )
+    with phase_span("sidecar_start", category="trial_setup"):
+        started = await environment.exec(
+            command=(
+                "set -eu; "
+                f"mkdir -p {SIDECAR_ROOT} {SIDECAR_LOG_ROOT} && "
+                f"chmod 700 {SIDECAR_ROOT} {SIDECAR_LOG_ROOT}; "
+                f"chmod 600 {SIDECAR_SPEC_PATH}; "
+                f"rm -rf {SIDECAR_BUNDLE_ROOT}; mkdir -p {SIDECAR_BUNDLE_ROOT}; "
+                f"{SIDECAR_PYTHON} -m zipfile -e {SIDECAR_BUNDLE_ARCHIVE} {SIDECAR_BUNDLE_ROOT}; "
+                f"PYTHONPATH={SIDECAR_BUNDLE_ROOT}/python-sdk:"
+                f"{SIDECAR_BUNDLE_ROOT}/cookbook "
+                f"nohup {SIDECAR_PYTHON} -m training.examples.rl.harbor.tito.sidecar serve "
+                f"--spec {SIDECAR_SPEC_PATH} "
+                f">{SIDECAR_LOG_ROOT}/sidecar.stdout 2>"
+                f"{SIDECAR_LOG_ROOT}/sidecar.stderr </dev/null & "
+                f"sidecar_pid=$!; printf '%s\n' \"$sidecar_pid\" > {SIDECAR_PID_PATH}"
+            ),
+            cwd="/",
+        )
     if started.return_code != 0:
         raise RuntimeError("failed to start the TITO sidecar process")
 
     deadline = asyncio.get_running_loop().time() + _SIDECAR_READY_TIMEOUT_SECONDS
-    while True:
-        result = await environment.exec(
-            command=(
-                f"if test -s {SIDECAR_ENDPOINT_PATH}; then "
-                f"cat {SIDECAR_ENDPOINT_PATH}; "
-                f"elif test -s {SIDECAR_PID_PATH} && "
-                f'kill -0 "$(cat {SIDECAR_PID_PATH})" 2>/dev/null; then exit 2; '
-                f"else tail -c 8192 {SIDECAR_LOG_ROOT}/sidecar.stderr 2>/dev/null; exit 3; fi"
-            ),
-            cwd="/",
-        )
-        if result.return_code == 0:
-            endpoint = json.loads(result.stdout or "{}")
-            if not isinstance(endpoint, dict):
-                raise RuntimeError("TITO sidecar returned a non-object endpoint")
-            required = {"trajectory_id", "openai_base_url", "api_key"}
-            if not required.issubset(endpoint):
-                raise RuntimeError("TITO sidecar endpoint is missing required fields")
-            return {name: str(endpoint[name]) for name in required}
-        if result.return_code != 2:
-            detail = (result.stdout or result.stderr or "").strip()
-            raise RuntimeError(
-                f"TITO sidecar exited before readiness: {detail[-4096:]}"
+    with phase_span("sidecar_ready_wait", category="trial_setup"):
+        while True:
+            result = await environment.exec(
+                command=(
+                    f"if test -s {SIDECAR_ENDPOINT_PATH}; then "
+                    f"cat {SIDECAR_ENDPOINT_PATH}; "
+                    f"elif test -s {SIDECAR_PID_PATH} && "
+                    f'kill -0 "$(cat {SIDECAR_PID_PATH})" 2>/dev/null; then exit 2; '
+                    f"else tail -c 8192 {SIDECAR_LOG_ROOT}/sidecar.stderr 2>/dev/null; exit 3; fi"
+                ),
+                cwd="/",
             )
-        if asyncio.get_running_loop().time() >= deadline:
-            await stop_sidecar_process(environment)
-            raise TimeoutError(
-                f"TITO sidecar did not become ready within {_SIDECAR_READY_TIMEOUT_SECONDS}s"
-            )
-        await asyncio.sleep(1)
+            if result.return_code == 0:
+                endpoint = json.loads(result.stdout or "{}")
+                if not isinstance(endpoint, dict):
+                    raise RuntimeError("TITO sidecar returned a non-object endpoint")
+                required = {"trajectory_id", "openai_base_url", "api_key"}
+                if not required.issubset(endpoint):
+                    raise RuntimeError(
+                        "TITO sidecar endpoint is missing required fields"
+                    )
+                return {name: str(endpoint[name]) for name in required}
+            if result.return_code != 2:
+                detail = (result.stdout or result.stderr or "").strip()
+                raise RuntimeError(
+                    f"TITO sidecar exited before readiness: {detail[-4096:]}"
+                )
+            if asyncio.get_running_loop().time() >= deadline:
+                await stop_sidecar_process(environment)
+                raise TimeoutError(
+                    f"TITO sidecar did not become ready within {_SIDECAR_READY_TIMEOUT_SECONDS}s"
+                )
+            await asyncio.sleep(1)
 
 
 async def stop_sidecar_process(environment: Any) -> None:
@@ -674,7 +718,7 @@ async def serve(spec_path: Path) -> None:
         TITOSidecar,
         TrajectoryDriftPolicy,
     )
-    from training.tito.renderer import (
+    from training.renderer.tito import (
         build_sidecar_tito_renderer,
         load_sidecar_tokenizer,
     )
@@ -698,6 +742,8 @@ async def serve(spec_path: Path) -> None:
         api_key=str(spec["api_key"]),
         tokenizer=tokenizer,
     )
+    sampler.routing_matrix_format = spec.get("routing_matrix_format", "base64_inline")
+    sampler.r3_store_id = spec.get("r3_store_id")
     observer = None
     if bool(spec.get("debug_enabled")):
         observer = TITOLocalDebugSink(
@@ -769,13 +815,8 @@ async def serve(spec_path: Path) -> None:
             Path(SIDECAR_ENDPOINT_PATH),
             json.dumps(asdict(endpoint), sort_keys=True).encode() + b"\n",
         )
-        agent_started = time.monotonic()
         status, reason = await _wait_for_terminal(
             Path(SIDECAR_TERMINAL_PATH), interrupted
-        )
-        await sidecar.observe_agent_wall(
-            endpoint.trajectory_id,
-            time.monotonic() - agent_started,
         )
         if status == "completed":
             artifact = await sidecar.finish_trajectory(endpoint.trajectory_id)

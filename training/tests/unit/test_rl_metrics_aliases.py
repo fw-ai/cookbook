@@ -181,7 +181,7 @@ class TestComputeStepMetrics:
         assert metrics["tito/lineage/splits"] == 1
         assert metrics["tito/lineage/split_ratio"] == 1
         assert "tito/calls/total" not in metrics
-        assert not any(name.startswith("tito/debug/") for name in metrics)
+        assert not any(name.startswith("debug/tito/") for name in metrics)
 
     def test_tito_sidecar_metric_root_is_fail_closed(self):
         group = _make_prompt_group()
@@ -265,8 +265,10 @@ class TestComputeStepMetrics:
         )
 
         assert metrics["tito/turn/output_tokens_mean"] == 4
-        assert metrics["tito/debug/calls/total"] == 2
-        assert metrics["tito/debug/turn/completion_tokens_count"] == 1
+        assert metrics["debug/tito/calls/total"] == 2
+        assert metrics["debug/tito/turn/completion_tokens_count"] == 1
+        # The debug section mirrors the full merged record as-is.
+        assert metrics["debug/tito/turn/completion_tokens_mean"] == 4
 
     def test_optimizer_metrics_drop_remote_aliases(self):
         metrics = compute_step_metrics(
@@ -468,3 +470,288 @@ class TestFwdBwdResultAveraging:
             timing_metrics={},
         )
         assert not any(k.startswith("train/ppo_") for k in metrics)
+
+
+class TestTitoHarnessTimingMetrics:
+    """Harness/model timing decomposition published from TITO summaries."""
+
+    @staticmethod
+    def _summaries() -> list[dict[str, float]]:
+        # Two trajectories: per-turn distributions use count/sum/min/max.
+        return [
+            {
+                "tito/turn/inter_call_gap_seconds_count": 3.0,
+                "tito/turn/inter_call_gap_seconds_sum": 30.0,
+                "tito/turn/inter_call_gap_seconds_min": 5.0,
+                "tito/turn/inter_call_gap_seconds_max": 15.0,
+                "tito/turn/request_wall_seconds_count": 3.0,
+                "tito/turn/request_wall_seconds_sum": 60.0,
+                "tito/turn/request_wall_seconds_min": 10.0,
+                "tito/turn/request_wall_seconds_max": 30.0,
+                "tito/calls/sampler_wall_seconds_count": 3.0,
+                "tito/calls/sampler_wall_seconds_sum": 45.0,
+                "tito/calls/sampler_wall_seconds_min": 5.0,
+                "tito/calls/sampler_wall_seconds_max": 25.0,
+                "tito/trial/environment_setup_seconds_count": 1.0,
+                "tito/trial/environment_setup_seconds_sum": 12.0,
+                "tito/trial/environment_setup_seconds_min": 12.0,
+                "tito/trial/environment_setup_seconds_max": 12.0,
+            },
+            {
+                "tito/turn/inter_call_gap_seconds_count": 1.0,
+                "tito/turn/inter_call_gap_seconds_sum": 10.0,
+                "tito/turn/inter_call_gap_seconds_min": 10.0,
+                "tito/turn/inter_call_gap_seconds_max": 10.0,
+                "tito/turn/request_wall_seconds_count": 1.0,
+                "tito/turn/request_wall_seconds_sum": 20.0,
+                "tito/turn/request_wall_seconds_min": 20.0,
+                "tito/turn/request_wall_seconds_max": 20.0,
+                "tito/calls/sampler_wall_seconds_count": 1.0,
+                "tito/calls/sampler_wall_seconds_sum": 15.0,
+                "tito/calls/sampler_wall_seconds_min": 15.0,
+                "tito/calls/sampler_wall_seconds_max": 15.0,
+                "tito/trial/environment_setup_seconds_count": 1.0,
+                "tito/trial/environment_setup_seconds_sum": 8.0,
+                "tito/trial/environment_setup_seconds_min": 8.0,
+                "tito/trial/environment_setup_seconds_max": 8.0,
+            },
+        ]
+
+    def test_publishes_harness_and_model_sums(self):
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        metrics: dict = {}
+        publish_tito_sidecar_metrics(metrics, self._summaries())
+
+        assert metrics["tito/harness/wall_seconds_sum"] == pytest.approx(40.0)
+        assert metrics["tito/model/request_wall_seconds_sum"] == pytest.approx(80.0)
+        assert metrics["tito/model/sampler_wall_seconds_sum"] == pytest.approx(60.0)
+        assert metrics["tito/harness/environment_setup_seconds_sum"] == pytest.approx(
+            20.0
+        )
+        # 40 harness seconds in a 120-second harness+model window.
+        assert metrics["tito/harness/wait_fraction"] == pytest.approx(40.0 / 120.0)
+
+    def test_promotes_harness_distributions(self):
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        metrics: dict = {}
+        publish_tito_sidecar_metrics(metrics, self._summaries())
+
+        assert metrics["tito/turn/wait_for_harness_seconds_mean"] == pytest.approx(10.0)
+        assert metrics["tito/turn/wait_for_harness_seconds_min"] == pytest.approx(5.0)
+        assert metrics["tito/turn/wait_for_harness_seconds_max"] == pytest.approx(15.0)
+        assert metrics["tito/calls/sampling_seconds_mean"] == pytest.approx(15.0)
+        assert metrics["tito/trial/environment_setup_seconds_mean"] == pytest.approx(
+            10.0
+        )
+
+    def test_wait_fraction_omitted_without_model_window(self):
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        metrics: dict = {}
+        publish_tito_sidecar_metrics(metrics, [{}])
+
+        assert "tito/harness/wait_fraction" not in metrics
+        assert "tito/harness/wall_seconds_sum" not in metrics
+
+
+class TestTrialPhaseTimings:
+    def test_extracts_harbor_timing_brackets(self):
+        from datetime import datetime, timedelta, timezone
+
+        from training.examples.rl.harbor.tito.trial import _trial_phase_timings
+
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        bracket = lambda seconds: SimpleNamespace(  # noqa: E731
+            started_at=start,
+            finished_at=start + timedelta(seconds=seconds),
+        )
+        result = SimpleNamespace(
+            environment_setup=bracket(12.0),
+            agent_setup=bracket(3.0),
+            agent_execution=bracket(90.0),
+            verifier=bracket(1.5),
+            started_at=start,
+            finished_at=start + timedelta(seconds=110.0),
+        )
+
+        assert _trial_phase_timings(result) == {
+            "environment_setup_seconds": 12.0,
+            "agent_setup_seconds": 3.0,
+            "agent_execution_seconds": 90.0,
+            "verifier_seconds": 1.5,
+            "trial_wall_seconds": 110.0,
+        }
+
+    def test_omits_unrecorded_brackets(self):
+        from training.examples.rl.harbor.tito.trial import _trial_phase_timings
+
+        result = SimpleNamespace(
+            environment_setup=None,
+            agent_setup=None,
+            agent_execution=None,
+            verifier=None,
+            started_at=None,
+            finished_at=None,
+        )
+        assert _trial_phase_timings(result) == {}
+
+    def test_attach_trial_phase_metrics_builds_one_sample_distributions(self):
+        from training.examples.rl.harbor.tito.rollout import (
+            _attach_trial_phase_metrics,
+        )
+
+        rollout = SimpleNamespace(metadata={"tito_metrics": {}})
+        _attach_trial_phase_metrics(rollout, {"environment_setup_seconds": 7.5})
+
+        summary = rollout.metadata["tito_metrics"]
+        assert summary == {
+            "tito/trial/environment_setup_seconds_count": 1.0,
+            "tito/trial/environment_setup_seconds_sum": 7.5,
+            "tito/trial/environment_setup_seconds_min": 7.5,
+            "tito/trial/environment_setup_seconds_max": 7.5,
+        }
+
+
+class TestTitoTimingDecomposition:
+    """Queue/sampling split, unaccounted trial time, and failure accounting."""
+
+    @staticmethod
+    def _summary(**overrides) -> dict[str, float]:
+        summary = {
+            "tito/turn/inter_call_gap_seconds_count": 2.0,
+            "tito/turn/inter_call_gap_seconds_sum": 40.0,
+            "tito/turn/inter_call_gap_seconds_min": 15.0,
+            "tito/turn/inter_call_gap_seconds_max": 25.0,
+            "tito/turn/request_wall_seconds_count": 2.0,
+            "tito/turn/request_wall_seconds_sum": 60.0,
+            "tito/turn/request_wall_seconds_min": 20.0,
+            "tito/turn/request_wall_seconds_max": 40.0,
+            "tito/calls/sampler_wall_seconds_count": 2.0,
+            "tito/calls/sampler_wall_seconds_sum": 45.0,
+            "tito/calls/sampler_wall_seconds_min": 15.0,
+            "tito/calls/sampler_wall_seconds_max": 30.0,
+        }
+        summary.update(overrides)
+        return summary
+
+    @staticmethod
+    def _trial_phases(**seconds) -> dict[str, float]:
+        summary: dict[str, float] = {}
+        for phase, value in seconds.items():
+            base = f"tito/trial/{phase}"
+            summary[f"{base}_count"] = 1.0
+            summary[f"{base}_sum"] = value
+            summary[f"{base}_min"] = value
+            summary[f"{base}_max"] = value
+        return summary
+
+    def test_queue_overhead_separates_contention_from_sampling(self):
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        metrics: dict = {}
+        publish_tito_sidecar_metrics(metrics, [self._summary()])
+
+        # 60s client-visible model wall, 45s of it real generation.
+        assert metrics["tito/model/queue_overhead_seconds_sum"] == pytest.approx(15.0)
+        assert metrics["tito/harness/wait_fraction"] == pytest.approx(40.0 / 100.0)
+        assert metrics["tito/model/sampling_fraction"] == pytest.approx(45.0 / 100.0)
+        assert metrics["tito/model/queue_fraction"] == pytest.approx(15.0 / 100.0)
+        assert metrics["tito/calls/sampling_seconds_mean"] == pytest.approx(22.5)
+        assert "tito/turn/sampling_seconds_mean" not in metrics
+
+    def test_sampler_wall_above_request_wall_never_goes_negative(self):
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        metrics: dict = {}
+        publish_tito_sidecar_metrics(
+            metrics,
+            [
+                self._summary(
+                    **{
+                        "tito/calls/sampler_wall_seconds_sum": 90.0,
+                        "tito/calls/sampler_wall_seconds_max": 60.0,
+                    }
+                )
+            ],
+        )
+
+        assert metrics["tito/model/queue_overhead_seconds_sum"] == 0.0
+        assert metrics["tito/model/queue_fraction"] == 0.0
+        assert metrics["tito/model/sampling_fraction"] == pytest.approx(60.0 / 100.0)
+
+    def test_unaccounted_trial_time_exposes_inter_phase_gaps(self):
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        metrics: dict = {}
+        summary = self._summary()
+        summary.update(
+            self._trial_phases(
+                environment_setup_seconds=5.0,
+                agent_setup_seconds=10.0,
+                agent_execution_seconds=100.0,
+                verifier_seconds=5.0,
+                trial_wall_seconds=140.0,
+                bound_utilization=0.25,
+            )
+        )
+        publish_tito_sidecar_metrics(metrics, [summary])
+
+        assert metrics["tito/trial/unaccounted_seconds_sum"] == pytest.approx(20.0)
+        assert metrics["tito/harness/trial_wall_seconds_sum"] == pytest.approx(140.0)
+        assert metrics["tito/trial/bound_utilization_max"] == pytest.approx(0.25)
+
+    def test_failure_accounting_publishes_without_any_trajectory(self):
+        from training.utils.rl import trial_events
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        trial_events.reset()
+        trial_events.record_trial_attempt()
+        trial_events.record_trial_attempt()
+        trial_events.record_trial_timeout()
+        trial_events.record_trial_retry("whole_trial_bound")
+        trial_events.record_trial_discarded("RemoteProtocolError")
+        trial_events.record_failed_trial_wall(120.0)
+        trial_events.record_failed_trial_phases({"agent_setup_seconds": 30.0})
+
+        metrics: dict = {}
+        publish_tito_sidecar_metrics(metrics, [], drain_trial_events=True)
+
+        # A step where every trial failed still reports what it burned.
+        assert metrics["tito/trial/attempts"] == 2.0
+        assert metrics["tito/trial/retries"] == 1.0
+        assert metrics["tito/trial/retry_reason/whole_trial_bound"] == 1.0
+        assert metrics["tito/trial/discard_reason/remoteprotocolerror"] == 1.0
+        assert metrics["tito/trial/whole_trial_bound_firings"] == 1.0
+        assert metrics["tito/trial_failed/trial_wall_seconds_sum"] == 120.0
+        assert metrics["tito/trial_failed/agent_setup_seconds_max"] == 30.0
+        assert not trial_events.drain()
+
+    def test_drained_failure_accounting_does_not_leak_into_the_next_step(self):
+        from training.utils.rl import trial_events
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        trial_events.reset()
+        trial_events.record_trial_attempt()
+        first: dict = {}
+        publish_tito_sidecar_metrics(first, [self._summary()], drain_trial_events=True)
+        second: dict = {}
+        publish_tito_sidecar_metrics(second, [self._summary()], drain_trial_events=True)
+
+        assert first["tito/trial/attempts"] == 1.0
+        assert "tito/trial/attempts" not in second
+
+    def test_evaluation_publisher_does_not_steal_step_failure_accounting(self):
+        from training.utils.rl import trial_events
+        from training.utils.rl.metrics import publish_tito_sidecar_metrics
+
+        trial_events.reset()
+        trial_events.record_trial_discarded("injected_fault")
+        evaluation: dict = {}
+        publish_tito_sidecar_metrics(evaluation, [self._summary()])
+        step: dict = {}
+        publish_tito_sidecar_metrics(step, [self._summary()], drain_trial_events=True)
+
+        assert "tito/trial/discarded" not in evaluation
+        assert step["tito/trial/discarded"] == 1.0

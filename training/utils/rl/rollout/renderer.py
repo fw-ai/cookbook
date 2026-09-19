@@ -53,6 +53,9 @@ from typing import Any, Awaitable, Callable, List, Optional, Protocol, Union
 
 import httpx
 import tinker
+from fireworks.training.sdk.routing import (
+    copy_routing,
+)
 
 from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 from training.utils.supervised import (
@@ -575,7 +578,7 @@ def _build_text_only_rollout_sample(
         finish_reason=finish_reason,
         text=text,
         routing_matrices=(
-            list(routing_matrices) if routing_matrices is not None else None
+            copy_routing(routing_matrices) if routing_matrices is not None else None
         ),
         raw_logprobs=(
             [0.0] * len(prompt_token_ids) + raw_completion_logprobs
@@ -662,7 +665,7 @@ def _build_multimodal_rollout_sample(
         text=text,
         prompt_model_input=prompt_model_input,
         routing_matrices=(
-            list(routing_matrices) if routing_matrices is not None else None
+            copy_routing(routing_matrices) if routing_matrices is not None else None
         ),
         raw_logprobs=(
             [0.0] * len(prompt_text_ids) + list(raw_completion_logprobs)

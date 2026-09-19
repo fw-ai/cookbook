@@ -9,6 +9,7 @@ from typing import Any, Sequence
 import tinker
 
 from training.utils.rl.losses import PromptGroup
+from training.utils.rl.trial_events import drain as _drain_trial_events
 
 _SKIP_REMOTE_KEYS = {"step_id", "step", "response_tokens", "total_tokens"}
 _SUM_REMOTE_KEYS = {"active_tokens", "total_resp_tokens"}
@@ -31,13 +32,49 @@ _LOOP_STAT_PASSTHROUGH_KEYS = (
 
 _CANONICAL_OPTIMIZER_METRICS = ("grad_norm", "grad_norm_rms", "lr")
 _TITO_METRIC_ROOT = "tito/"
-_TITO_DEBUG_METRIC_ROOT = "tito/debug/"
+_TITO_DEBUG_METRIC_ROOT = "debug/tito/"
 _DISTRIBUTION_SUFFIXES = ("_count", "_sum", "_mean", "_min", "_max")
 
 _TITO_PUBLIC_DISTRIBUTIONS = {
     "tito/turn/request_wall_seconds": "tito/turn/runtime_seconds",
     "tito/turn/prompt_tokens": "tito/turn/input_tokens",
     "tito/turn/completion_tokens": "tito/turn/output_tokens",
+    # Harness decomposition: inter-call gap is the per-turn window where the
+    # harness (tool calls, sandbox I/O, agent loop) holds wall time; the trial
+    # phase brackets come from Harbor's TrialResult TimingInfo.
+    "tito/turn/inter_call_gap_seconds": "tito/turn/wait_for_harness_seconds",
+    # Per model call, not per turn: a turn retried upstream issues several.
+    "tito/calls/sampler_wall_seconds": "tito/calls/sampling_seconds",
+    "tito/trial/environment_setup_seconds": "tito/trial/environment_setup_seconds",
+    "tito/trial/agent_setup_seconds": "tito/trial/agent_setup_seconds",
+    "tito/trial/agent_execution_seconds": "tito/trial/agent_execution_seconds",
+    "tito/trial/verifier_seconds": "tito/trial/verifier_seconds",
+    "tito/trial/trial_wall_seconds": "tito/trial/trial_wall_seconds",
+    "tito/trial/bound_utilization": "tito/trial/bound_utilization",
+}
+
+# Harbor phase brackets that partition a trial's wall clock. Whatever the
+# brackets do not cover is the inter-phase gap where silent provider hangs
+# live, so it is published rather than left implicit.
+_TITO_TRIAL_PHASE_SOURCES = (
+    "tito/trial/environment_setup_seconds",
+    "tito/trial/agent_setup_seconds",
+    "tito/trial/agent_execution_seconds",
+    "tito/trial/verifier_seconds",
+)
+
+# Per-step wall-time sums (across completed trajectories) published as flat
+# gauges. inter_call_gap + request_wall partition the agent-execution window;
+# trial phases bracket sandbox build, agent install, execution, and scoring.
+_TITO_PUBLIC_SUMS = {
+    "tito/turn/inter_call_gap_seconds": "tito/harness/wall_seconds_sum",
+    "tito/turn/request_wall_seconds": "tito/model/request_wall_seconds_sum",
+    "tito/calls/sampler_wall_seconds": "tito/model/sampler_wall_seconds_sum",
+    "tito/trial/environment_setup_seconds": "tito/harness/environment_setup_seconds_sum",
+    "tito/trial/agent_setup_seconds": "tito/harness/agent_setup_seconds_sum",
+    "tito/trial/agent_execution_seconds": "tito/harness/agent_execution_seconds_sum",
+    "tito/trial/verifier_seconds": "tito/harness/verifier_seconds_sum",
+    "tito/trial/trial_wall_seconds": "tito/harness/trial_wall_seconds_sum",
 }
 
 
@@ -136,8 +173,25 @@ def publish_tito_sidecar_metrics(
     summaries: Sequence[Mapping[str, Any]],
     *,
     debug_enabled: bool = False,
+    drain_trial_events: bool = False,
 ) -> None:
-    """Publish a compact TITO dashboard, with full internals only in debug mode."""
+    """Publish a compact TITO dashboard, with full internals only in debug mode.
+
+    Debug-mode internals mirror under ``debug/tito/*`` so they form a
+    standalone WandB section instead of diluting the curated ``tito/*``
+    dashboard.
+
+    ``drain_trial_events`` moves the process-local accounting for attempts
+    that never produced a trajectory into ``metrics``. Exactly one publisher
+    per payload should drain: the step path does, and evaluation does not,
+    because evaluation keeps its own ``{prefix}/failure/*`` counters and
+    draining there would bill step failures to an eval payload.
+    """
+    if drain_trial_events:
+        # Failed attempts leave no trajectory summary, so this accounting is
+        # published before the empty-merge return below — a step where every
+        # trial failed is exactly the step whose failures matter most.
+        metrics.update(_drain_trial_events())
     merged: dict[str, Any] = {}
     merge_tito_sidecar_metrics(merged, summaries)
     if not merged:
@@ -153,6 +207,39 @@ def publish_tito_sidecar_metrics(
             value = merged.get(f"{source}{suffix}")
             if value is not None:
                 metrics[f"{destination}{suffix}"] = value
+
+    for source, destination in _TITO_PUBLIC_SUMS.items():
+        value = merged.get(f"{source}_sum")
+        if value is not None:
+            metrics[destination] = value
+    harness_sum = merged.get("tito/turn/inter_call_gap_seconds_sum")
+    model_sum = merged.get("tito/turn/request_wall_seconds_sum")
+    sampler_sum = merged.get("tito/calls/sampler_wall_seconds_sum")
+    if model_sum is not None and sampler_sum is not None:
+        # Client-visible model wall minus server-side generation: queueing on
+        # a saturated deployment plus transport. Without this term a contended
+        # deployment reads as "sampling is slow".
+        metrics["tito/model/queue_overhead_seconds_sum"] = max(
+            0.0, model_sum - sampler_sum
+        )
+    if harness_sum is not None and model_sum is not None:
+        window = harness_sum + model_sum
+        if window > 0:
+            metrics["tito/harness/wait_fraction"] = harness_sum / window
+            if sampler_sum is not None:
+                sampling = min(sampler_sum, model_sum)
+                metrics["tito/model/sampling_fraction"] = sampling / window
+                metrics["tito/model/queue_fraction"] = (model_sum - sampling) / window
+
+    trial_wall_sum = merged.get("tito/trial/trial_wall_seconds_sum")
+    if trial_wall_sum is not None:
+        bracketed = sum(
+            float(merged.get(f"{source}_sum", 0.0))
+            for source in _TITO_TRIAL_PHASE_SOURCES
+        )
+        metrics["tito/trial/unaccounted_seconds_sum"] = max(
+            0.0, float(trial_wall_sum) - bracketed
+        )
 
     trajectory_count = float(merged.get("tito/trajectory/policy_turns_count", 0.0))
     metrics["tito/trajectory/count"] = trajectory_count
@@ -177,8 +264,6 @@ def publish_tito_sidecar_metrics(
     if debug_enabled:
         for name, value in merged.items():
             detail_name = name.removeprefix(_TITO_METRIC_ROOT)
-            if detail_name.startswith("debug/"):
-                detail_name = f"artifact/{detail_name.removeprefix('debug/')}"
             metrics[f"{_TITO_DEBUG_METRIC_ROOT}{detail_name}"] = value
 
 
@@ -203,6 +288,7 @@ def add_tito_sidecar_metrics(
         metrics,
         summaries,
         debug_enabled=debug_values == {True},
+        drain_trial_events=True,
     )
 
 

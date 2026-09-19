@@ -35,8 +35,9 @@ only when using the remote backend:
 cd training
 uv sync
 uv pip install --python .venv/bin/python 'harbor==0.21.0' 'dirhash>=0.5,<1'
-# E2B only:
-uv pip install --python .venv/bin/python 'harbor[e2b]==0.21.0'
+# E2B only. Pin e2b below 2.35: newer e2b requires pyqwest>=0.7, which
+# conflicts with the training SDK's pyqwest==0.6.2 pin:
+uv pip install --python .venv/bin/python 'harbor[e2b]==0.21.0' 'e2b<2.35'
 ```
 
 `dirhash` is used only to verify the pinned DABstep task manifest. It is not
@@ -109,9 +110,10 @@ template while active trials may reuse it.
 
 ## Train
 
-The environment-sidecar runtime in this change currently includes one live
-model implementation: GLM-5.2 with
-`glm_moe_dsa_preserve_thinking`. The renderer registry also retains offline
+The environment-sidecar runtime in this change currently includes live model
+implementations: GLM-5.2 (`glm_moe_dsa_preserve_thinking`), Qwen3.8-27B
+(`qwen3_8`), and Muse Glimmer 30B (`muse_glimmer`, full-history only). The
+renderer registry also retains offline
 characterization for additional model families, but that does not make those
 families supported by the sidecar. A different model/template pair needs its own
 lightweight conversation renderer, tokenizer-bound certificate, parser and

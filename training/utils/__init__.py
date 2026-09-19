@@ -113,6 +113,9 @@ __all__ = [
     "build_service_client",
     "resolve_router_replay_enabled",
     "setup_wandb",
+    "configure_phase_tracing",
+    "flush_phase_trace",
+    "phase_span",
     "flush_timing",
     "timed",
     "timer",
@@ -172,6 +175,11 @@ from training.utils.losses import (
     make_sft_loss_fn,
 )
 from training.utils.memlog import MemTracer
+from training.utils.phase_tracing import (
+    configure_phase_tracing,
+    flush_phase_trace,
+    phase_span,
+)
 from training.utils.runner import (
     DatasetError,
     NO_VALID_PREFERENCE_PAIRS_MESSAGE,

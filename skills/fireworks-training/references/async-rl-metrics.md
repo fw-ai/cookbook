@@ -4,6 +4,10 @@ Use this procedure to verify producer liveness, rollout/train overlap, admission
 gates, and pipeline sizing for `training/recipes/async_rl_loop.py` and its
 serverless experiment counterpart.
 
+For a Perfetto timeline of the same client-loop phases, including custom
+customer-harness spans, see
+[`client-phase-tracing.md`](client-phase-tracing.md).
+
 ## Keep the two metric streams separate
 
 The recipe deliberately has two observation clocks:

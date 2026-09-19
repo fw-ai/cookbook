@@ -7,10 +7,13 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from types import SimpleNamespace
 
 import pytest
 
+from training.utils import phase_tracing
+from training.utils.phase_tracing import configure_phase_tracing, phase_span
 from training.utils.rl.async_rl.errors import (
     CircuitBreakerConfig,
     CircuitBreakerTripped,
@@ -127,6 +130,64 @@ def _telemetry() -> AsyncRLTelemetry:
         producer_metrics_fn=lambda _metrics: None,
         step_metrics_fn=lambda _metrics, _step: None,
     )
+
+
+def test_run_blocking_preserves_trace_parent_in_worker(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("COOKBOOK_TRACE_FILE", raising=False)
+    phase_tracing._reset_phase_tracing_for_tests()
+    recorder = configure_phase_tracing(tmp_path / "trace.json")
+    assert recorder is not None
+
+    def worker() -> None:
+        with phase_span("worker-phase"):
+            pass
+
+    async def scenario() -> None:
+        coordinator = _coordinator([])
+        async with coordinator:
+            await coordinator.run_blocking("worker-operation", worker)
+
+    try:
+        _run(scenario())
+        events = {
+            event["name"]: event
+            for event in recorder.payload()["traceEvents"]
+            if event["ph"] == "X"
+        }
+        assert (
+            events["worker-phase"]["args"]["parent_span_id"]
+            == (events["worker-operation"]["args"]["span_id"])
+        )
+        assert events["worker-phase"]["tid"] != events["worker-operation"]["tid"]
+    finally:
+        phase_tracing._reset_phase_tracing_for_tests()
+
+
+def test_run_blocking_does_not_copy_application_context_when_tracing_is_disabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("COOKBOOK_TRACE_FILE", raising=False)
+    monkeypatch.delenv("COOKBOOK_OTEL_ENABLED", raising=False)
+    phase_tracing._reset_phase_tracing_for_tests()
+    application_context = ContextVar("application_context", default="worker-default")
+    token = application_context.set("caller-value")
+
+    async def scenario() -> str:
+        coordinator = _coordinator([])
+        async with coordinator:
+            return await coordinator.run_blocking(
+                "worker-operation",
+                application_context.get,
+            )
+
+    try:
+        assert _run(scenario()) == "worker-default"
+    finally:
+        application_context.reset(token)
+        phase_tracing._reset_phase_tracing_for_tests()
 
 
 @asynccontextmanager

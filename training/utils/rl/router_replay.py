@@ -10,6 +10,8 @@ import logging
 import os
 from typing import List, Optional
 
+from fireworks.training.sdk.routing import concat_routing, copy_routing
+
 logger = logging.getLogger(__name__)
 
 # ANSI (POSIX) colors so the KV-cache warning stands out in logs. Honor the
@@ -56,7 +58,7 @@ def build_r3_routing_matrices(
         # Preserve the caller's R3 intent for the SDK request-boundary check.
         return []
 
-    rm = list(routing_matrices)
+    rm = copy_routing(routing_matrices)
 
     if len(rm) != model_input_len:
         expected = max(0, model_input_len - (prompt_len - 1))
@@ -71,11 +73,11 @@ def build_r3_routing_matrices(
             )
             # Preserve the mismatch for the SDK request-boundary check.
             return rm
-        rm = [""] * (prompt_len - 1) + rm
+        rm = concat_routing([""] * (prompt_len - 1), rm)
 
     if completion_only:
         prefix_len = max(0, prompt_len - 1)
-        rm[:prefix_len] = [""] * prefix_len
+        rm = concat_routing([""] * prefix_len, rm[prefix_len:])
 
     return rm
 

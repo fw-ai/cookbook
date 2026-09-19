@@ -10,6 +10,9 @@ Optional inputs (via ``RunnerConfig`` fields or environment variables):
 * ``metrics_file``  / ``COOKBOOK_METRICS_FILE``  -- append-only JSONL per-step metrics
 * ``output_model_path`` / ``COOKBOOK_OUTPUT_MODEL_PATH`` -- where to write final model info
 
+Client phase traces use the separate ``COOKBOOK_TRACE_FILE`` output documented
+in ``skills/fireworks-training/references/client-phase-tracing.md``.
+
 File formats:
 
 ``status_file`` (protojson-compatible ``google.rpc.Status``, overwritten each update)::

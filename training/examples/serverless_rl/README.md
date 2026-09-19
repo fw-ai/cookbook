@@ -130,6 +130,19 @@ held-out trajectories go to `eval_completions/step-NNNN.jsonl`. All artifacts
 live under the run directory (`--run-dir`, default `/tmp/countdown-k3-*` via
 the launcher).
 
+To inspect the client-side timeline, set `COOKBOOK_TRACE_FILE` before the run.
+The resulting Perfetto trace includes each training step, sampler weight
+snapshot, rollout batch, forward/backward, optimizer step, evaluation, and
+checkpoint save:
+
+```bash
+export COOKBOOK_TRACE_FILE="$PWD/countdown-client-trace.json"
+python -m training.examples.serverless_rl.countdown_rl ...
+```
+
+For a bounded one-step run using the bundled sample dataset, use
+`python -m training.examples.tools.client_phase_trace_demo`.
+
 ## Checkpoint, resume, and promote
 
 Serverless has two checkpoint types. They are deliberately separate:
