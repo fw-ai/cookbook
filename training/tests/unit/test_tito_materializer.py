@@ -16,6 +16,7 @@ from fireworks.training.sdk import (
     TITOTrajectoryArtifact,
     TITOTurn,
 )
+from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.rollout.tito import materialize_tito_trajectory
 from training.utils.rl.rollout.types import Rollout, rollout_to_prompt_group
@@ -45,6 +46,7 @@ def _turn(
     realign_from_token: int | None = None,
     realigned_masked_tokens: int = 0,
     incremental_checkpoint_trim_tokens: int = 0,
+    top_k: int | None = None,
 ) -> TITOTurn:
     return TITOTurn(
         turn_id=turn_id,
@@ -58,6 +60,22 @@ def _turn(
         exact_completion_ids=completion,
         inference_logprobs=tuple(-0.1 for _ in completion),
         sampling_logprobs=tuple(-0.2 for _ in completion),
+        inference_topk_token_ids=(
+            tuple(
+                tuple(token_id + offset for offset in range(top_k))
+                for token_id in completion
+            )
+            if top_k is not None
+            else None
+        ),
+        inference_topk_logprobs=(
+            tuple(
+                tuple(-0.1 - offset for offset in range(top_k))
+                for _ in completion
+            )
+            if top_k is not None
+            else None
+        ),
         routing_matrices=routes,
         prompt_routing_matrices=prompt_routes,
         prompt_routing_start=prompt_route_start,
@@ -182,6 +200,58 @@ def test_materializes_exact_append_and_pads_completion_only_r3() -> None:
     assert sample.logprobs == [0.0, 0.0, -0.2, -0.2, 0.0, -0.2, -0.2]
     assert sample.routing_matrices == ["", "r3", "r4", "", "r6", "r7"]
     assert sample.reward == 1.5
+
+
+def test_materializes_and_packs_sampler_topk_in_target_coordinates() -> None:
+    first = _turn("one", (1, 2), (3, 4), top_k=2)
+    second = _turn(
+        "two",
+        (1, 2, 3, 4, 5),
+        (6,),
+        disposition="append",
+        prefix_match_tokens=4,
+        top_k=2,
+    )
+    run = materialize_tito_trajectory(
+        _result((first, second), (_attempt("one"), _attempt("two"))),
+        reward=1.0,
+    )
+
+    sample = run.segments[0]
+    assert sample.inference_topk_token_ids == [
+        [],
+        [],
+        [3, 4],
+        [4, 5],
+        [],
+        [6, 7],
+    ]
+    assert sample.inference_topk_logprobs == [
+        [],
+        [],
+        [-0.1, -1.1],
+        [-0.1, -1.1],
+        [],
+        [-0.1, -1.1],
+    ]
+
+    group = rollout_to_prompt_group(
+        Rollout(runs=[run]),
+        advantage_fn=lambda rewards: rewards,
+    )
+    assert group is not None
+    assert group.inference_topk_token_ids == [
+        [[], [3, 4], [4, 5], [], [6, 7]]
+    ]
+    assert group.inference_topk_logprobs == [
+        [[], [-0.1, -1.1], [-0.1, -1.1], [], [-0.1, -1.1]]
+    ]
+    *_, topk_ids, topk_logprobs = combine_prompt_groups(
+        [group],
+        include_topk=True,
+    )
+    assert topk_ids == group.inference_topk_token_ids
+    assert topk_logprobs == group.inference_topk_logprobs
 
 
 @pytest.mark.parametrize(

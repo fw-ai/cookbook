@@ -159,6 +159,29 @@ def test_optim_step_accepts_enum_normalization():
     ]
 
 
+def test_optim_step_forwards_grad_norm_metrics_mode():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    client.optim_step(
+        "adam",
+        grad_accumulation_normalization=GradAccNormalization.NUM_SEQUENCES,
+        emit_grad_norm_metrics="detailed",
+    )
+
+    assert inner.calls == [
+        (
+            "adam",
+            {
+                "grad_accumulation_normalization": (
+                    GradAccNormalization.NUM_SEQUENCES
+                ),
+                "emit_grad_norm_metrics": "detailed",
+            },
+        )
+    ]
+
+
 def test_submit_optim_step_converts_normalization_without_waiting():
     inner = _FakeInnerClient()
     client = _make_client(inner)

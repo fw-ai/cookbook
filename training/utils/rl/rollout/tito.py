@@ -89,6 +89,8 @@ class _SampleBuilder:
     logprobs: list[float]
     raw_logprobs: list[float] | None
     loss_mask: list[int]
+    inference_topk_token_ids: list[list[int]] | None
+    inference_topk_logprobs: list[list[float]] | None
     response_routes: list[str] | RoutingReferences | None
     initial_routes: list[str] | RoutingReferences | None = None
     turns: list[TITOTurn] = field(default_factory=list)
@@ -107,6 +109,16 @@ class _SampleBuilder:
                 [0.0] * len(prompt) if turn.inference_logprobs is not None else None
             ),
             loss_mask=[0] * len(prompt),
+            inference_topk_token_ids=(
+                [[] for _ in prompt]
+                if turn.inference_topk_token_ids is not None
+                else None
+            ),
+            inference_topk_logprobs=(
+                [[] for _ in prompt]
+                if turn.inference_topk_logprobs is not None
+                else None
+            ),
             response_routes=[] if turn.routing_matrices is not None else None,
         )
 
@@ -143,6 +155,10 @@ class _SampleBuilder:
         self.tokens[start:] = replacement
         self.logprobs[start:] = [0.0] * len(replacement)
         self.loss_mask[start:] = [0] * len(replacement)
+        if self.inference_topk_token_ids is not None:
+            self.inference_topk_token_ids[start:] = [[] for _ in replacement]
+        if self.inference_topk_logprobs is not None:
+            self.inference_topk_logprobs[start:] = [[] for _ in replacement]
         if self.raw_logprobs is not None:
             self.raw_logprobs[start:] = [0.0] * len(replacement)
         if self.response_routes is not None:
@@ -167,6 +183,10 @@ class _SampleBuilder:
             del self.tokens[retained:]
             del self.logprobs[retained:]
             del self.loss_mask[retained:]
+            if self.inference_topk_token_ids is not None:
+                del self.inference_topk_token_ids[retained:]
+            if self.inference_topk_logprobs is not None:
+                del self.inference_topk_logprobs[retained:]
             if self.raw_logprobs is not None:
                 del self.raw_logprobs[retained:]
             if self.response_routes is not None:
@@ -180,6 +200,10 @@ class _SampleBuilder:
         self.tokens.extend(suffix)
         self.logprobs.extend([0.0] * len(suffix))
         self.loss_mask.extend([0] * len(suffix))
+        if self.inference_topk_token_ids is not None:
+            self.inference_topk_token_ids.extend([] for _ in suffix)
+        if self.inference_topk_logprobs is not None:
+            self.inference_topk_logprobs.extend([] for _ in suffix)
         if self.raw_logprobs is not None:
             if turn.inference_logprobs is None:
                 self.raw_logprobs = None
@@ -215,6 +239,19 @@ class _SampleBuilder:
         self.tokens.extend(completion)
         self.logprobs.extend(_required_sampling_logprobs(turn))
         self.loss_mask.extend([int(trainable)] * len(completion))
+        if self.inference_topk_token_ids is not None:
+            if turn.inference_topk_token_ids is None:
+                self.inference_topk_token_ids = None
+                self.inference_topk_logprobs = None
+            else:
+                self.inference_topk_token_ids.extend(
+                    list(row) for row in turn.inference_topk_token_ids
+                )
+                assert self.inference_topk_logprobs is not None
+                assert turn.inference_topk_logprobs is not None
+                self.inference_topk_logprobs.extend(
+                    list(row) for row in turn.inference_topk_logprobs
+                )
         if not trainable:
             self.masked_fail_closed_turns += 1
         if self.raw_logprobs is not None:
@@ -257,6 +294,16 @@ class _SampleBuilder:
                 list(self.raw_logprobs) if self.raw_logprobs is not None else None
             ),
             loss_mask=list(self.loss_mask),
+            inference_topk_token_ids=(
+                [list(row) for row in self.inference_topk_token_ids]
+                if self.inference_topk_token_ids is not None
+                else None
+            ),
+            inference_topk_logprobs=(
+                [list(row) for row in self.inference_topk_logprobs]
+                if self.inference_topk_logprobs is not None
+                else None
+            ),
             routing_matrices=routing,
             reward=reward,
             finish_reason=self.turns[-1].finish_reason,

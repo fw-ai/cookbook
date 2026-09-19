@@ -12,7 +12,7 @@ Example::
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Literal, Tuple, Union
 from dataclasses import dataclass
 
 import torch
@@ -33,6 +33,7 @@ class GSPOConfig:
     clip_ratio_low: float = 3e-4
     clip_ratio_high: float = 4e-4
     seq_ratio_log_cap: float = 10.0
+    token_reduction: Literal["mean", "sum"] = "mean"
 
 
 def validate_gspo_config(config: GSPOConfig) -> None:
@@ -43,6 +44,8 @@ def validate_gspo_config(config: GSPOConfig) -> None:
         )
     if config.seq_ratio_log_cap < 0:
         raise ValueError("GSPO seq_ratio_log_cap must be non-negative.")
+    if config.token_reduction not in {"mean", "sum"}:
+        raise ValueError("GSPO token_reduction must be 'mean' or 'sum'.")
 
 
 def make_gspo_loss_fn(
@@ -81,15 +84,17 @@ def make_gspo_loss_fn(
 
         surr1 = -seq_ratio * ctx.adv
         surr2 = -clipped_seq_ratio * ctx.adv
-        # Token-mean within each response. Sequence means remain additive so
-        # optim_step(num_sequences) can normalize across accumulated batches.
-        response_length = (ctx.resp_mask > 0.5).sum()
         per_token_loss = (
             torch.maximum(surr1, surr2)
             * ctx.tis_weight
             * ctx.resp_mask
-            / response_length
         )
+        # The paper-aligned default gives every response equal weight. The
+        # token-sum ablation intentionally scales each response by its active
+        # length before optim_step(num_sequences) normalizes the batch.
+        if gspo_config.token_reduction == "mean":
+            response_length = (ctx.resp_mask > 0.5).sum()
+            per_token_loss = per_token_loss / response_length
         return per_token_loss, {"clip_frac": clip_frac, "ratio_mean": ratio_mean}
 
     def loss_fn(

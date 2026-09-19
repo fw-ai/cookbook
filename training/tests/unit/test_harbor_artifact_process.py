@@ -48,6 +48,19 @@ def _wait_for_release(started: Path, release: Path, finished: Path) -> int:
     return os.getpid()
 
 
+def _crash_after_signal(started: Path) -> None:
+    started.touch()
+    time.sleep(0.1)
+    os._exit(23)
+
+
+def _crash_once(marker: Path) -> int:
+    if not marker.exists():
+        marker.touch()
+        os._exit(23)
+    return os.getpid()
+
+
 def test_cancellation_drains_inputs_and_close_reaps_worker(pool, tmp_path):
     async def check():
         started, release, finished = (
@@ -87,6 +100,71 @@ def test_worker_crash_does_not_poison_next_trial(pool):
     with pytest.raises(BrokenProcessPool):
         asyncio.run(pool.run(os._exit, 23))
     assert asyncio.run(pool.run(os.getpid)) != original_pid
+
+
+def test_transient_worker_crash_retries_current_trial(pool, tmp_path):
+    worker_pid = asyncio.run(pool.run(_crash_once, tmp_path / "crashed"))
+    assert worker_pid != os.getpid()
+
+
+def test_worker_crash_does_not_fail_queued_trials(pool, tmp_path):
+    async def check():
+        started = tmp_path / "started"
+        crash = asyncio.create_task(pool.run(_crash_after_signal, started))
+        async with asyncio.timeout(10):
+            while not started.exists():
+                await asyncio.sleep(0.01)
+        queued = [asyncio.create_task(pool.run(os.getpid)) for _ in range(3)]
+
+        with pytest.raises(BrokenProcessPool):
+            await crash
+        pids = await asyncio.gather(*queued)
+        assert len(set(pids)) == 1
+
+    asyncio.run(check())
+
+
+def test_worker_is_recycled_before_unbounded_artifact_growth():
+    async def check():
+        worker = ArtifactProcessPool(max_tasks_per_worker=2)
+        try:
+            first = await worker.run(os.getpid)
+            second = await worker.run(os.getpid)
+            third = await worker.run(os.getpid)
+            assert first == second
+            assert third != second
+        finally:
+            await worker.aclose()
+
+    asyncio.run(check())
+
+
+def test_reward_only_evaluation_does_not_require_tito_artifact(tmp_path):
+    outcome = HarborTrialOutcome(
+        task_name="eval-task",
+        trial_name="eval-trial",
+        trial_path=tmp_path / "missing-artifacts",
+        reward=None,
+        rewards={},
+        exception_type=None,
+        exception_message=None,
+        environment_type="e2b",
+    )
+
+    result = _finish_harbor_trial(
+        outcome,
+        raw_rewards={"reward": 0.75},
+        reward_key="reward",
+        terminal_failure_reward=0.0,
+        has_exception=False,
+        retry_names=frozenset(),
+        retryable_e2b_timeout=False,
+        retryable_sidecar_readiness=False,
+        require_trajectory_artifact=False,
+    )
+
+    assert result.reward == 0.75
+    assert result.trajectory_artifact is None
 
 
 def _write_artifact(root: Path, *, routing: bool) -> HarborTrialOutcome:

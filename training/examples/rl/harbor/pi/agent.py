@@ -48,6 +48,7 @@ class ConfigurablePi(Pi):
         context_limit: int,
         output_limit: int,
         tool_timeout_seconds: int,
+        tool_profile: str = "coding",
         **kwargs: Any,
     ) -> None:
         kwargs.pop("model_name", None)
@@ -63,6 +64,9 @@ class ConfigurablePi(Pi):
         self._context_limit = int(context_limit)
         self._output_limit = int(output_limit)
         self._tool_timeout_seconds = int(tool_timeout_seconds)
+        self._tool_profile = str(tool_profile)
+        if self._tool_profile not in {"coding", "textworld"}:
+            raise ValueError(f"unsupported Pi tool profile: {self._tool_profile}")
 
     async def install(self, environment: BaseEnvironment) -> None:
         present = await environment.exec(
@@ -119,7 +123,7 @@ class ConfigurablePi(Pi):
         }
 
     def _settings(self) -> dict[str, Any]:
-        return {
+        settings: dict[str, Any] = {
             "defaultProvider": _PROVIDER_ID,
             "defaultModel": _MODEL_ID,
             "quietStartup": True,
@@ -133,6 +137,9 @@ class ConfigurablePi(Pi):
                 "reserveTokens": self._output_limit,
             },
         }
+        if self._tool_profile == "textworld":
+            settings["defaultTools"] = []
+        return settings
 
     async def _write_config(self, environment: BaseEnvironment) -> None:
         """Upload private config without placing its bearer in Harbor logs."""
@@ -199,6 +206,7 @@ class ConfigurablePi(Pi):
                     "FIREWORKS_TITO_TOOL_TIMEOUT_SECONDS": str(
                         self._tool_timeout_seconds
                     ),
+                    "FIREWORKS_TITO_TOOL_PROFILE": self._tool_profile,
                     "PI_CODING_AGENT_DIR": _CONFIG_HOME,
                 },
             )

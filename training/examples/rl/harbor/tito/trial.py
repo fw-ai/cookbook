@@ -498,6 +498,7 @@ def _build_trial_config(
     agent_version: str,
     agent_provider: str = "fireworks-rl",
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
+    tool_profile: str = "coding",
 ) -> Any:
     """Merge a native TrialConfig template with Fireworks-owned runtime fields."""
 
@@ -549,6 +550,10 @@ def _build_trial_config(
     agent["name"] = None
     if tool_timeout_seconds < 1:
         raise ValueError("TITO Harbor tool timeout must be positive")
+    if tool_profile not in {"coding", "textworld"}:
+        raise ValueError(
+            f"unsupported Harbor agent tool profile: {tool_profile!r}"
+        )
     agent["import_path"] = agent_import_path
     agent["model_name"] = f"{agent_provider}/policy"
     agent["extra_allowed_hosts"] = list(
@@ -559,7 +564,7 @@ def _build_trial_config(
             ]
         )
     )
-    agent["kwargs"] = {
+    agent_kwargs = {
         "sidecar_bundle_path": str(sidecar_bundle_path),
         "sidecar_launch_spec": sidecar_launch_spec,
         "context_limit": int(context_limit),
@@ -567,6 +572,9 @@ def _build_trial_config(
         "tool_timeout_seconds": int(tool_timeout_seconds),
         "version": agent_version,
     }
+    if tool_profile != "coding":
+        agent_kwargs["tool_profile"] = tool_profile
+    agent["kwargs"] = agent_kwargs
 
     artifacts = list(document.get("artifacts") or ())
     for source in (
@@ -770,9 +778,11 @@ async def run_harbor_trial(
     reward_key: str = "reward",
     terminal_failure_reward: float | None = None,
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
+    tool_profile: str = "coding",
     retry_include_exceptions: Any = DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
     artifact_processor: ArtifactProcessPool | None = None,
     materializer: Callable[[HarborTrialOutcome], RolloutRun | None] | None = None,
+    require_trajectory_artifact: bool = True,
 ) -> HarborTrialOutcome:
     """Run one TITO-backed agent through Harbor's native Trial lifecycle."""
 
@@ -812,6 +822,7 @@ async def run_harbor_trial(
             agent_provider=agent_provider,
             agent_version=agent_version,
             tool_timeout_seconds=tool_timeout_seconds,
+            tool_profile=tool_profile,
         )
         result = None
         trial_path = trial_root / config.trial_name
@@ -947,6 +958,7 @@ async def run_harbor_trial(
                 retryable_e2b_timeout=retryable_e2b_timeout,
                 retryable_sidecar_readiness=retryable_sidecar_readiness,
                 materializer=materializer,
+                require_trajectory_artifact=require_trajectory_artifact,
             )
         except asyncio.CancelledError:
             raise
@@ -969,37 +981,42 @@ def _finish_harbor_trial(
     retryable_e2b_timeout: bool,
     retryable_sidecar_readiness: bool,
     materializer: Callable[[HarborTrialOutcome], RolloutRun | None] | None = None,
+    require_trajectory_artifact: bool = True,
 ) -> HarborTrialOutcome:
     """Validate, select rewards and materialize while the artifact stays local."""
     exception_type = outcome.exception_type
-    try:
-        trajectory_artifact, artifact_manifest = _load_sidecar_artifact(
-            outcome.trial_path
-        )
-    except RecoverableRolloutError as exc:
-        if retryable_e2b_timeout:
-            raise RecoverableRolloutError(
-                "Harbor E2B command stream did not open before its provider "
-                "request timeout"
-            ) from exc
-        if retryable_sidecar_readiness:
-            raise RecoverableRolloutError(
-                "Harbor E2B sidecar did not become ready within its bounded "
-                "startup window"
-            ) from exc
-        if exception_type and exception_type not in retry_names:
-            raise RuntimeError(
-                "Harbor produced no valid TITO artifact after a non-retryable "
-                f"{exception_type}: {exc}"
-            ) from exc
-        raise
+    trajectory_artifact = None
+    artifact_manifest = None
+    if require_trajectory_artifact:
+        try:
+            trajectory_artifact, artifact_manifest = _load_sidecar_artifact(
+                outcome.trial_path
+            )
+        except RecoverableRolloutError as exc:
+            if retryable_e2b_timeout:
+                raise RecoverableRolloutError(
+                    "Harbor E2B command stream did not open before its provider "
+                    "request timeout"
+                ) from exc
+            if retryable_sidecar_readiness:
+                raise RecoverableRolloutError(
+                    "Harbor E2B sidecar did not become ready within its bounded "
+                    "startup window"
+                ) from exc
+            if exception_type and exception_type not in retry_names:
+                raise RuntimeError(
+                    "Harbor produced no valid TITO artifact after a non-retryable "
+                    f"{exception_type}: {exc}"
+                ) from exc
+            raise
     if retryable_e2b_timeout:
         raise RecoverableRolloutError(
             "Harbor E2B command stream did not open before its provider request timeout"
         )
 
     context_budget_exhausted = (
-        trajectory_artifact.status == "failed"
+        trajectory_artifact is not None
+        and trajectory_artifact.status == "failed"
         and trajectory_artifact.terminal_reason == "context_budget_exhausted"
     )
     if context_budget_exhausted:

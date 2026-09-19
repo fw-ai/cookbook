@@ -7,7 +7,6 @@ SDK, or a deployment.
 from __future__ import annotations
 
 import asyncio
-import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -79,7 +78,6 @@ class TestConfigDefaults:
 
         assert not hasattr(cfg, "runner")
         assert not hasattr(async_rl_loop, "RunnerIO")
-        assert "write_running_progress" not in inspect.getsource(async_rl_loop.main)
 
     def test_config_has_no_conditional_initial_sync(self) -> None:
         cfg = async_rl_loop.Config(log_path="gs://logs")
@@ -103,7 +101,7 @@ class TestConfigDefaults:
 
         assert cfg.pipeline_chunks_per_step == 1
 
-    def test_config_exposes_only_grpo_knobs(self) -> None:
+    def test_config_exposes_policy_loss_knobs(self) -> None:
         cfg = async_rl_loop.Config(log_path="gs://logs")
 
         assert cfg.kl_beta == 0.001
@@ -111,26 +109,42 @@ class TestConfigDefaults:
         assert cfg.eps_clip_high is None
         assert cfg.anchor_logp == "old_policy"
         assert cfg.server_side_grpo is False
+        assert cfg.policy_loss == "grpo"
+        assert cfg.gspo.clip_ratio_low == 3e-4
+        assert cfg.gspo.clip_ratio_high == 4e-4
+        assert cfg.gspo_execution == "builtin"
+        assert cfg.dapo.eps_clip_high == 0.28
+        assert cfg.dro.beta == 0.05
+        assert cfg.cispo.eps_high == 0.28
+        assert cfg.dppo.divergence == "binary_tv"
+        assert cfg.dppo.threshold == 0.15
+        assert cfg.score_centering.top_k == 5
+        assert cfg.grad_norm_metrics == "off"
         assert cfg.router_replay is True
         assert cfg.router_replay_completion_only is True
-        assert not hasattr(cfg, "policy_loss")
         assert not hasattr(cfg, "loss_path")
         assert not hasattr(cfg, "eval_max_completion_tokens")
         assert not hasattr(cfg, "eval_max_seq_len")
 
 
-def test_main_has_explicit_client_and_server_grpo_paths() -> None:
-    source = inspect.getsource(async_rl_loop.main)
+def test_policy_loss_metadata_has_one_algorithm_config() -> None:
+    config = async_rl_loop.Config(
+        log_path="gs://logs",
+        policy_loss="dppo",
+        kl_beta=0,
+    )
 
-    assert "make_grpo_loss_fn(" in source
-    assert "policy.forward_backward_custom(" in source
-    assert "_run_server_side_grpo(" in source
-    assert 'cfg.anchor_logp == "old_policy"' in source
-    assert "precomputed_forward = old_policy_fwd" in source
-    assert "precomputed_forward=precomputed_forward" in source
-    assert 'metrics["custom_forward_reused"]' in source
-    assert "build_loss_fn" not in source
-    assert "loss_path" not in source
+    metadata = async_rl_loop.policy_loss_metadata(config)
+
+    assert metadata["trainer_loss"] == "client_dppo"
+    assert metadata["policy_loss"] == "dppo"
+    assert metadata["dppo"] == {
+        "divergence": "binary_tv",
+        "threshold": 0.15,
+        "ratio_log_cap": 20.0,
+    }
+    assert metadata["gspo"] is None
+    assert metadata["score_centering"] is None
 
 
 def test_server_side_grpo_calls_only_builtin_ppo_and_emits_kld() -> None:
@@ -170,7 +184,7 @@ def test_server_side_grpo_calls_only_builtin_ppo_and_emits_kld() -> None:
         def forward_backward_custom(self, *_args, **_kwargs):
             raise AssertionError("server-side GRPO must not call a custom loss")
 
-    result = async_rl_loop._run_server_side_grpo(
+    result = async_rl_loop._run_server_side_policy_loss(
         FakePolicy(),
         data=[datum],
         advantages=[1.0],
@@ -199,6 +213,219 @@ def test_server_side_grpo_calls_only_builtin_ppo_and_emits_kld() -> None:
     }
     assert result.metrics["inference_k3"] >= 0
     assert result.metrics["raw_inference_logprob_coverage"] == 1.0
+
+
+def test_server_side_gspo_preserves_zero_advantage_response_membership() -> None:
+    datum = tinker.Datum(
+        model_input=tinker.ModelInput.from_ints([10, 11, 12]),
+        loss_fn_inputs={
+            "target_tokens": tinker.TensorData(
+                data=[11, 12, 13],
+                dtype="int64",
+                shape=[3],
+            ),
+            "weights": tinker.TensorData(
+                data=[0.0, 1.0, 1.0],
+                dtype="float32",
+                shape=[3],
+            ),
+        },
+    )
+    calls = []
+
+    class FakePolicy:
+        def forward_backward(self, data, loss_fn, loss_fn_config=None):
+            calls.append((data, loss_fn, loss_fn_config))
+            return SimpleNamespace(
+                loss_fn_outputs=[
+                    {
+                        "logprobs": tinker.TensorData(
+                            data=[-0.4, -0.2, -0.1],
+                            dtype="float32",
+                            shape=[3],
+                        )
+                    }
+                ],
+                metrics={"loss:sum": 1.0},
+            )
+
+    config = async_rl_loop.Config(
+        log_path="gs://logs",
+        kl_beta=0,
+        server_side_grpo=True,
+        policy_loss="gspo",
+    )
+    result = async_rl_loop._run_server_side_policy_loss(
+        FakePolicy(),
+        data=[datum],
+        advantages=[0.0],
+        prompt_lens=[2],
+        rollout_logprobs=[[-0.4, -0.3, -0.1]],
+        raw_inference_logprobs=[[-0.4, -0.4, -0.2]],
+        old_policy_logprobs=[[-0.4, -0.3, -0.1]],
+        config=config,
+    )
+
+    server_data, loss_fn, loss_config = calls[0]
+    assert loss_fn == "gspo"
+    assert loss_config == {
+        "clip_low_threshold": 1.0 - 3e-4,
+        "clip_high_threshold": 1.0 + 4e-4,
+        "seq_ratio_log_cap": 10.0,
+    }
+    assert server_data[0].loss_fn_inputs["advantages"].data == [0.0, 0.0, 0.0]
+    assert server_data[0].loss_fn_inputs["response_mask"].data == [0, 1, 1]
+    assert result.metrics["gspo_clip_frac"] == 1.0
+    assert result.metrics["gspo_seq_ratio_mean"] > 1.0
+    assert (
+        async_rl_loop._effective_grad_accumulation_normalization(config)
+        == "num_sequences"
+    )
+
+
+def test_two_pass_gspo_uses_local_loss_without_builtin_dispatch(monkeypatch) -> None:
+    loss_fn = object()
+    result = object()
+    captured = {}
+
+    def make_loss(**kwargs):
+        captured["loss_kwargs"] = kwargs
+        return loss_fn
+
+    class FakePolicy:
+        def forward_backward_custom(
+            self,
+            data,
+            actual_loss_fn,
+            *,
+            precomputed_forward,
+        ):
+            captured["forward"] = (data, actual_loss_fn, precomputed_forward)
+            return result
+
+        def forward_backward(self, *_args, **_kwargs):
+            raise AssertionError("two-pass GSPO must not call the built-in kernel")
+
+    monkeypatch.setattr(async_rl_loop, "make_gspo_loss_fn", make_loss)
+    config = async_rl_loop.Config(
+        log_path="gs://logs",
+        kl_beta=0,
+        policy_loss="gspo",
+        gspo_execution="two_pass",
+    )
+
+    actual = async_rl_loop._run_two_pass_gspo(
+        FakePolicy(),
+        data=["datum"],
+        advantages=[1.0],
+        ref_logprobs=[[]],
+        prompt_lens=[2],
+        rollout_logprobs=[[-0.4, -0.3]],
+        old_policy_logprobs=[[-0.4, -0.3]],
+        precomputed_forward="forward",
+        config=config,
+    )
+
+    assert actual is result
+    assert captured["forward"] == (["datum"], loss_fn, "forward")
+    assert captured["loss_kwargs"] == {
+        "advantages": [1.0],
+        "ref_logprobs": [[]],
+        "inf_logprobs": [[-0.4, -0.3]],
+        "prompt_len": [2],
+        "old_policy_logprobs": [[-0.4, -0.3]],
+        "gspo_config": config.gspo,
+        "tis_config": config.tis,
+    }
+    assert (
+        async_rl_loop._effective_grad_accumulation_normalization(config)
+        == "num_sequences"
+    )
+
+
+def test_optimizer_step_requests_grad_norm_metrics_before_clipping() -> None:
+    captured = {}
+
+    class FakePolicy:
+        def optim_step(
+            self,
+            adam_params,
+            *,
+            grad_accumulation_normalization,
+            emit_grad_norm_metrics,
+        ):
+            captured.update(
+                adam_params=adam_params,
+                normalization=grad_accumulation_normalization,
+                grad_metrics=emit_grad_norm_metrics,
+            )
+            return "result"
+
+    config = async_rl_loop.Config(
+        log_path="gs://logs",
+        policy_loss="gspo",
+        gspo_execution="two_pass",
+        grad_clip_norm=1.5,
+        grad_norm_metrics="detailed",
+    )
+
+    result = async_rl_loop._run_optimizer_step(
+        FakePolicy(),
+        config,
+        learning_rate=2e-6,
+    )
+
+    assert result == "result"
+    assert captured["adam_params"].learning_rate == 2e-6
+    assert captured["adam_params"].beta1 == 0.9
+    assert captured["adam_params"].beta2 == 0.95
+    assert captured["adam_params"].eps == 1e-12
+    assert captured["adam_params"].weight_decay == 0.01
+    assert captured["adam_params"].grad_clip_norm == 1.5
+    assert captured["normalization"] == "num_sequences"
+    assert captured["grad_metrics"] == "detailed"
+
+
+def test_gspo_requires_builtin_server_path_and_sequence_normalization() -> None:
+    with pytest.raises(ValueError, match="requires server_side_grpo=True"):
+        async_rl_loop.main(
+            async_rl_loop.Config(
+                log_path="gs://logs",
+                kl_beta=0,
+                policy_loss="gspo",
+            ),
+            rows=[],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="requires grad_accumulation_normalization='num_sequences'",
+    ):
+        async_rl_loop.main(
+            async_rl_loop.Config(
+                log_path="gs://logs",
+                kl_beta=0,
+                server_side_grpo=True,
+                policy_loss="gspo",
+                grad_accumulation_normalization="num_loss_tokens",
+            ),
+            rows=[],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
+
+    with pytest.raises(ValueError, match="supports only token_reduction='mean'"):
+        async_rl_loop.main(
+            async_rl_loop.Config(
+                log_path="gs://logs",
+                kl_beta=0,
+                server_side_grpo=True,
+                policy_loss="gspo",
+                gspo=async_rl_loop.GSPOConfig(token_reduction="sum"),
+            ),
+            rows=[],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
 
 
 def test_main_rejects_server_side_grpo_with_reference_kl() -> None:
@@ -258,6 +485,53 @@ def test_main_rejects_unknown_anchor_logp() -> None:
             rows=[],
             rollout_fn_factory=lambda _setup: lambda _sample: None,
         )
+
+
+@pytest.mark.parametrize(
+    "policy_loss", ["dapo", "dro", "cispo", "dppo", "score_centering"]
+)
+def test_client_policy_losses_reject_unused_reference_kl(policy_loss) -> None:
+    cfg = async_rl_loop.Config(
+        log_path="gs://logs",
+        policy_loss=policy_loss,
+        kl_beta=0.1,
+    )
+
+    with pytest.raises(ValueError, match="requires kl_beta=0"):
+        async_rl_loop.main(
+            cfg,
+            rows=[],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
+
+
+def test_server_side_grpo_rejects_client_only_policy_losses() -> None:
+    cfg = async_rl_loop.Config(
+        log_path="gs://logs",
+        policy_loss="dppo",
+        server_side_grpo=True,
+        kl_beta=0,
+    )
+
+    with pytest.raises(ValueError, match="supports only"):
+        async_rl_loop.main(
+            cfg,
+            rows=[],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
+
+
+def test_score_centering_uses_loss_token_normalization() -> None:
+    config = async_rl_loop.Config(
+        log_path="gs://logs",
+        policy_loss="score_centering",
+        kl_beta=0,
+    )
+
+    assert (
+        async_rl_loop._effective_grad_accumulation_normalization(config)
+        == "num_loss_tokens"
+    )
 
 
 @pytest.mark.parametrize(

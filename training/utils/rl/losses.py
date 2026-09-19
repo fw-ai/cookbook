@@ -44,6 +44,10 @@ class PromptGroup:
     The direct client GRPO builder uses them only for drift metrics. They must
     never replace behavior logprobs in TIS.
     """
+    inference_topk_token_ids: List[List[List[int]]] = field(default_factory=list)
+    """Per-datum sampler top-k token ids in shifted target coordinates."""
+    inference_topk_logprobs: List[List[List[float]]] = field(default_factory=list)
+    """Per-datum sampler top-k logprobs aligned with ``inference_topk_token_ids``."""
     completion_lens: List[int] = field(default_factory=list)
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
@@ -74,12 +78,13 @@ def combine_prompt_groups(
     groups: List[PromptGroup],
     *,
     include_raw: bool = False,
+    include_topk: bool = False,
 ):
     """Flatten a list of PromptGroups into combined arrays for a fwd_bwd call.
 
     Returns ``(data, advantages, ref_logprobs, prompt_lens, inf_logprobs)``.
-    With ``include_raw=True``, appends observability-only ``raw_inf_logprobs``
-    for the ``train/inference_k1`` and ``train/inference_k3`` drift metrics.
+    ``include_raw`` appends observability-only ``raw_inf_logprobs``.
+    ``include_topk`` appends sampler top-k token IDs and logprobs.
     """
     data: List[tinker.Datum] = []
     advantages: List[float] = []
@@ -87,6 +92,8 @@ def combine_prompt_groups(
     prompt_lens: List[int] = []
     inf_logprobs: List[List[float]] = []
     raw_inf_logprobs: List[List[float]] = []
+    inference_topk_token_ids: List[List[List[int]]] = []
+    inference_topk_logprobs: List[List[List[float]]] = []
 
     for pg in groups:
         data.extend(pg.data)
@@ -103,17 +110,20 @@ def combine_prompt_groups(
                 raw_inf_logprobs.extend(pg.raw_inf_logprobs)
             else:
                 raw_inf_logprobs.extend([[] for _ in pg.data])
+        if include_topk:
+            inference_topk_token_ids.extend(
+                pg.inference_topk_token_ids or [[] for _ in pg.data]
+            )
+            inference_topk_logprobs.extend(
+                pg.inference_topk_logprobs or [[] for _ in pg.data]
+            )
 
+    result = (data, advantages, ref_logprobs, prompt_lens, inf_logprobs)
     if include_raw:
-        return (
-            data,
-            advantages,
-            ref_logprobs,
-            prompt_lens,
-            inf_logprobs,
-            raw_inf_logprobs,
-        )
-    return data, advantages, ref_logprobs, prompt_lens, inf_logprobs
+        result += (raw_inf_logprobs,)
+    if include_topk:
+        result += (inference_topk_token_ids, inference_topk_logprobs)
+    return result
 
 
 def build_grpo_datums(
@@ -123,6 +133,8 @@ def build_grpo_datums(
     inf_logprobs: List[List[float]],
     prompt_lens: List[int],
     tis_config: TISConfig | None = None,
+    *,
+    include_response_mask: bool = False,
 ) -> List[tinker.Datum]:
     """Build strictly aligned datums for an explicit server-side GRPO fork.
 
@@ -233,25 +245,38 @@ def build_grpo_datums(
             for weight, mask in zip(tis_weight.tolist(), loss_mask.tolist(), strict=True)
         )
 
+        loss_fn_inputs = {
+            "target_tokens": tinker.TensorData(
+                data=target_tokens,
+                dtype="int64",
+                shape=[n_tokens],
+            ),
+            "logprobs": tinker.TensorData(
+                data=old_policy_lp,
+                dtype="float32",
+                shape=[n_tokens],
+            ),
+            "advantages": tinker.TensorData(
+                data=per_token_adv,
+                dtype="float32",
+                shape=[n_tokens],
+            ),
+        }
+        if include_response_mask:
+            # GSPO's sequence ratio and num_sequences denominator must include
+            # sampled responses whose group-relative advantage is exactly zero.
+            # Inferring membership from per_token_adv would silently drop them.
+            response_mask = [0] * response_start
+            response_mask.extend(int(value > 0.5) for value in loss_mask.tolist())
+            loss_fn_inputs["response_mask"] = tinker.TensorData(
+                data=response_mask,
+                dtype="int64",
+                shape=[n_tokens],
+            )
+
         new_datum = tinker.Datum(
             model_input=datum.model_input,
-            loss_fn_inputs={
-                "target_tokens": tinker.TensorData(
-                    data=target_tokens,
-                    dtype="int64",
-                    shape=[n_tokens],
-                ),
-                "logprobs": tinker.TensorData(
-                    data=old_policy_lp,
-                    dtype="float32",
-                    shape=[n_tokens],
-                ),
-                "advantages": tinker.TensorData(
-                    data=per_token_adv,
-                    dtype="float32",
-                    shape=[n_tokens],
-                ),
-            },
+            loss_fn_inputs=loss_fn_inputs,
         )
         result.append(new_datum)
 
