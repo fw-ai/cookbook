@@ -139,6 +139,34 @@ def overdue_mips_native_crash_probe(expected, proc_root=Path('/proc')):
     return elapsed > 60
 
 
+def overdue_mips_qemu_head_probe(expected, proc_root=Path('/proc')):
+    """Confirm a persistent QEMU Doom probe piped to a finite ``head``."""
+    records = _chain(expected, proc_root)
+    names = [item['name'] for item in expected['chain']]
+    if not records or names != ['qemu-mipsel', 'bash', 'opencode']:
+        return False
+    child_args = records[0][0].joinpath('cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+    tool_args = records[1][0].joinpath('cmdline').read_bytes().rstrip(b'\0').split(b'\0')
+    known_children = (
+        [b'qemu-mipsel', b'-strace', b'/app/doomgeneric_mips'],
+        [b'qemu-mipsel', b'-D', b'd.log', b'-d', b'page,ftrace', b'doom_qemu'],
+    )
+    if child_args not in known_children or len(tool_args) < 3:
+        return False
+    if os.readlink(records[0][0] / 'cwd') != '/tmp/opencode/qpatch':
+        return False
+    command = tool_args[-1]
+    required = (
+        b'qemu-mipsel -strace /app/doomgeneric_mips 2>&1 | head -6',
+        b'qemu-mipsel -D d.log -d page,ftrace doom_qemu 2>&1 | head',
+    )
+    if not all(marker in command for marker in required):
+        return False
+    elapsed = (float((proc_root / 'uptime').read_text().split()[0])
+               - int(records[0][1][19]) / os.sysconf('SC_CLK_TCK'))
+    return elapsed > 60
+
+
 def signal_overdue_mips_node(expected, proc_root=Path('/proc')):
     descriptor = None
     try:
@@ -190,6 +218,23 @@ def signal_overdue_mips_native_crash_probe(expected, proc_root=Path('/proc')):
             os.close(descriptor)
 
 
+def signal_overdue_mips_qemu_head_probe(expected, proc_root=Path('/proc')):
+    descriptor = None
+    try:
+        descriptor = os.pidfd_open(expected['chain'][0]['pid'])
+        if not overdue_mips_qemu_head_probe(expected, proc_root):
+            return {'action': 'none', 'reason': 'evidence_changed'}
+        signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        return {'action': 'SIGTERM', 'pid': expected['chain'][0]['pid'],
+                'start_ticks': expected['chain'][0]['start_ticks'],
+                'reason': 'unbounded_qemu_doom_head_probe'}
+    except (OSError, ValueError, KeyError, IndexError, AttributeError) as error:
+        return {'action': 'none', 'reason': type(error).__name__}
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def recovery_candidates(previous, current):
     """Require the same task, tool and process ancestry on two observations."""
     if (not previous or not current.get('trial', '').startswith(TASK_PREFIX)
@@ -209,7 +254,7 @@ def recovery_candidates(previous, current):
     candidates = []
     for process in new.values():
         leaf_name = process.get('Name')
-        if leaf_name not in ('node', 'bash', 'doom_x86') or (process.get('elapsed_s') or 0) <= 30:
+        if leaf_name not in ('node', 'bash', 'doom_x86', 'qemu-mipsel') or (process.get('elapsed_s') or 0) <= 30:
             continue
         chain = [process]
         for _ in range(3):
@@ -226,6 +271,8 @@ def recovery_candidates(previous, current):
             continue
         if leaf_name == 'doom_x86' and names != ['doom_x86', 'bash', 'bash', 'opencode']:
             continue
+        if leaf_name == 'qemu-mipsel' and names != ['qemu-mipsel', 'bash', 'opencode']:
+            continue
         # A frame-wait shell is recoverable only after the bounded VM process
         # has disappeared. While any Node process remains, leave the tool alone.
         if leaf_name == 'bash' and (node_present or names != ['bash', 'opencode']):
@@ -237,6 +284,7 @@ def recovery_candidates(previous, current):
             continue
         kind = ('node' if leaf_name == 'node' else
                 'native_crash_probe' if leaf_name == 'doom_x86' else
+                'qemu_head_probe' if leaf_name == 'qemu-mipsel' else
                 'frame_wait_shell')
         candidates.append({'kind': kind,
                            'chain': [
@@ -251,15 +299,24 @@ def recovery_command(expected):
                'chain': [{'pid': int(item['pid']),
                           'start_ticks': str(int(item['start_ticks'])),
                           'name': item['name']} for item in expected['chain']]}
+    functions = {
+        'node': (overdue_mips_node, signal_overdue_mips_node),
+        'frame_wait_shell': (
+            overdue_mips_frame_wait, signal_overdue_mips_frame_wait,
+        ),
+        'native_crash_probe': (
+            overdue_mips_native_crash_probe,
+            signal_overdue_mips_native_crash_probe,
+        ),
+        'qemu_head_probe': (
+            overdue_mips_qemu_head_probe,
+            signal_overdue_mips_qemu_head_probe,
+        ),
+    }
+    validate, recover = functions.get(payload['kind'], functions['node'])
     return ("python3 - <<'RECOVER'\nimport os, re, signal, json\nfrom pathlib import Path\n"
-            + inspect.getsource(_chain) + '\n' + inspect.getsource(overdue_mips_node) + '\n'
-            + inspect.getsource(overdue_mips_frame_wait) + '\n'
-            + inspect.getsource(overdue_mips_native_crash_probe) + '\n'
-            + inspect.getsource(signal_overdue_mips_node) + '\n'
-            + inspect.getsource(signal_overdue_mips_frame_wait) + '\n'
-            + inspect.getsource(signal_overdue_mips_native_crash_probe) + '\n'
+            + inspect.getsource(_chain) + '\n'
+            + inspect.getsource(validate) + '\n'
+            + inspect.getsource(recover) + '\n'
             + f"expected = json.loads({json.dumps(payload)!r})\n"
-            + "signal_fn = ({'frame_wait_shell': signal_overdue_mips_frame_wait, "
-              "'native_crash_probe': signal_overdue_mips_native_crash_probe}.get("
-              "expected['kind'], signal_overdue_mips_node))\n"
-            + "print(json.dumps(signal_fn(expected)))\nRECOVER")
+            + f"print(json.dumps({recover.__name__}(expected)))\nRECOVER")
