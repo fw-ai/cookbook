@@ -172,3 +172,57 @@ def test_regex_stress_variant_is_revalidated_independently(
         if candidate["policy_index"] != stress_index
     )
     assert not guard.is_known_overvalidation(wrong_variant, proc)
+
+
+def test_feal_linear_compiled_search_is_revalidated(tmp_path, monkeypatch):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    process.mkdir(parents=True)
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (find_approx) " + " ".join(stat))
+    (process / "comm").write_text("find_approx")
+    (process / "cmdline").write_bytes(b"./find_approx\0")
+    (process / "cwd").symlink_to("/app")
+    source = tmp_path / "find_approx.c"
+    source.write_text(
+        "int N = 1 << 24;\n"
+        "for (int ia = 0; ia < na; ia++) {}\n"
+        "for (int i = 0; i < N; i++) {}\n"
+    )
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"] == "feal_linear_exhaustive_approximation_search"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(source),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    record = {
+        "trial": "harbor-opencode-feal-linear-cryptanalysis-0-test",
+        "sandbox_id": "exact",
+        "phase": "agent_or_setup",
+        "remote": {
+            "running_tools": [
+                {"tool": "bash", "start_ms": 10, "elapsed_s": 1300},
+            ],
+            "processes": [{
+                "Pid": "10", "PPid": "20", "Name": "find_approx",
+                "start_ticks": stat[19], "elapsed_s": 1300,
+            }],
+        },
+    }
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.recovery_candidates(record, record) == [expected]
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (process / "comm").write_text("other")
+    assert not guard.is_known_overvalidation(expected, proc)

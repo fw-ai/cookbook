@@ -3,7 +3,7 @@
 Terminal-Bench agents sometimes finish the requested implementation and then
 run a much larger local fuzz/stress test than the task verifier requires.  A
 single such leaf process holds the entire synchronous RL batch.  This guard is
-deliberately narrow: it recognizes only three observed task/command pairs,
+deliberately narrow: it recognizes only observed task/command pairs,
 requires the same process identity in two consecutive observations, revalidates
 the command, cwd, and task-specific files inside the sandbox, and sends SIGINT
 only to that leaf process.  It never signals OpenCode, Harbor, trainer, or
@@ -26,6 +26,20 @@ POLICIES = (
         "required_file": "/tmp/opencode/test_attack.py",
         "required_markers": ["attack(feal.encrypt)"],
         "reason": "feal_repeated_full_keyspace_stress_test",
+    },
+    {
+        "task_prefix": "harbor-opencode-feal-linear-cryptanalysis-",
+        "min_elapsed_s": 600,
+        "process_name": "find_approx",
+        "cmdline": ["./find_approx"],
+        "cwd": "/app",
+        "required_file": "/app/find_approx.c",
+        "required_markers": [
+            "int N = 1 << 24;",
+            "for (int ia = 0; ia < na; ia++)",
+            "for (int i = 0; i < N; i++)",
+        ],
+        "reason": "feal_linear_exhaustive_approximation_search",
     },
     {
         "task_prefix": "harbor-opencode-regex-chess-",
@@ -83,7 +97,8 @@ def is_known_overvalidation(expected, proc_root=Path("/proc")):
     stat = (process / "stat").read_text().rsplit(")", 1)[1].split()
     if stat[19] != expected["start_ticks"] or stat[0] == "Z":
         return False
-    if (process / "comm").read_text().strip() != "python3":
+    process_name = policy.get("process_name", "python3")
+    if (process / "comm").read_text().strip() != process_name:
         return False
     elapsed = (float((proc_root / "uptime").read_text().split()[0])
                - int(stat[19]) / os.sysconf("SC_CLK_TCK"))
@@ -144,7 +159,8 @@ def recovery_candidates(previous, current):
     for process in after.get("processes", []):
         prior = old.get(process["Pid"], {})
         for policy_index, policy in policies:
-            if (process.get("Name") == "python3"
+            process_name = policy.get("process_name", "python3")
+            if (process.get("Name") == process_name
                     and (process.get("elapsed_s") or 0) >= policy["min_elapsed_s"]
                     and process.get("start_ticks") is not None
                     and process["start_ticks"] == prior.get("start_ticks")
