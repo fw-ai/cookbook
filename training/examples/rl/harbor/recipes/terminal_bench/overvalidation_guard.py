@@ -46,6 +46,17 @@ POLICIES = (
         "reason": "regex_chess_150_game_post_check_stress",
     },
     {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "for i in range(4000):", "random positions tested:",
+        ],
+        "reason": "regex_chess_4000_position_post_check_fuzz",
+    },
+    {
         "task_prefix": "harbor-opencode-circuit-fibsqrt-",
         "min_elapsed_s": 1200,
         "cmdline": ["python3", "-"],

@@ -101,8 +101,22 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         closed.assert_called_once_with(99)
 
 
+@pytest.mark.parametrize(("reason", "argv", "cwd", "body"), [
+    (
+        "regex_chess_150_game_post_check_stress",
+        ["python3", "stress.py", "150"],
+        "/tmp/opencode",
+        'print("TOTAL tested:", tested, "fails:", fails)\n',
+    ),
+    (
+        "regex_chess_4000_position_post_check_fuzz",
+        ["python3", "fuzz.py"],
+        "/app",
+        'for i in range(4000):\n    print("random positions tested:")\n',
+    ),
+])
 def test_regex_stress_variant_is_revalidated_independently(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, reason, argv, cwd, body,
 ):
     hz = os.sysconf("SC_CLK_TCK")
     proc = tmp_path / "proc"
@@ -113,15 +127,17 @@ def test_regex_stress_variant_is_revalidated_independently(
     stat[1], stat[19] = "20", str(100 * hz)
     (process / "stat").write_text("10 (python3) " + " ".join(stat))
     (process / "comm").write_text("python3")
-    (process / "cmdline").write_bytes(b"python3\0stress.py\0" b"150\0")
-    (process / "cwd").symlink_to("/tmp/opencode")
-    script = tmp_path / "stress.py"
-    script.write_text('print("TOTAL tested:", tested, "fails:", fails)\n')
+    (process / "cmdline").write_bytes(
+        b"\0".join(item.encode() for item in argv) + b"\0"
+    )
+    (process / "cwd").symlink_to(cwd)
+    script = tmp_path / argv[1]
+    script.write_text(body)
     policies = list(guard.POLICIES)
     stress_index = next(
         index
         for index, policy in enumerate(policies)
-        if policy["reason"] == "regex_chess_150_game_post_check_stress"
+        if policy["reason"] == reason
     )
     policies[stress_index] = {
         **policies[stress_index], "required_file": str(script),
