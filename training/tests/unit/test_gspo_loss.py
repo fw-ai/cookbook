@@ -42,7 +42,7 @@ def _datum(mask: list[float]) -> tinker.Datum:
     )
 
 
-def _run(old_policy: list[float]):
+def _run(old_policy: list[float], config: GSPOConfig = CONFIG):
     pi = torch.tensor(PI, requires_grad=True)
     fn = make_gspo_loss_fn(
         advantages=[1.0],
@@ -50,7 +50,7 @@ def _run(old_policy: list[float]):
         inf_logprobs=[OLD_POLICY],
         prompt_len=1,
         old_policy_logprobs=[old_policy],
-        gspo_config=CONFIG,
+        gspo_config=config,
     )
     loss, metrics = fn([_datum(MASK)], [pi])
     loss.backward()
@@ -67,6 +67,23 @@ def test_sequence_ratio_averages_only_active_positions():
     assert loss.item() == pytest.approx(-ratio)
     assert grad.tolist() == pytest.approx(
         [-ratio / 2.0, -ratio / 2.0, 0.0, 0.0]
+    )
+
+
+def test_token_sum_scales_loss_and_gradient_by_active_response_length():
+    mean_loss, mean_grad, _ = _run(OLD_POLICY)
+    sum_loss, sum_grad, _ = _run(
+        OLD_POLICY,
+        GSPOConfig(
+            clip_ratio_low=0.5,
+            clip_ratio_high=0.5,
+            token_reduction="sum",
+        ),
+    )
+
+    assert sum_loss.item() == pytest.approx(mean_loss.item() * 2)
+    assert sum_grad.tolist() == pytest.approx(
+        [value * 2 for value in mean_grad.tolist()]
     )
 
 

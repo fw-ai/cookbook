@@ -39,7 +39,7 @@ from training.examples.rl.harbor.tito.trial import (
 )
 from training.utils.phase_tracing import phase_span
 from training.utils.rl.async_rl.errors import RecoverableRolloutError
-from training.utils.rl.rollout import RolloutRun
+from training.utils.rl.rollout import RolloutRun, RolloutSample
 from training.utils.rl.rollout.lifecycle import ActiveRolloutTasks
 
 from .artifacts import tool_timeout_count
@@ -128,6 +128,26 @@ def _materialize_pi_trajectory(
     return rollout
 
 
+def _materialize_pi_evaluation(
+    outcome: HarborTrialOutcome,
+) -> RolloutRun | None:
+    """Keep verifier reward evaluation independent of trainable artifacts."""
+    if outcome.reward is None:
+        return None
+    return RolloutRun(
+        segments=[
+            RolloutSample(
+                tokens=[],
+                logprobs=[],
+                loss_mask=[],
+                reward=outcome.reward,
+            )
+        ],
+        run_id=outcome.trial_name,
+        metadata={"evaluation_reward_only": True},
+    )
+
+
 class _PiRolloutRunner:
     """Allocate one independent sidecar trajectory per Harbor/Pi attempt."""
 
@@ -150,6 +170,13 @@ class _PiRolloutRunner:
         if self._tool_timeout_seconds < 1:
             raise ValueError(
                 "rollout_extras['harness_tool_timeout_seconds'] must be positive"
+            )
+        self._tool_profile = str(
+            setup.extras.get("tool_profile", "coding")
+        )
+        if self._tool_profile not in {"coding", "textworld"}:
+            raise ValueError(
+                "rollout_extras['tool_profile'] must be coding or textworld"
             )
         terminal_failure_reward = setup.extras.get("terminal_failure_reward")
         self._terminal_failure_reward = (
@@ -283,6 +310,15 @@ class _PiRolloutRunner:
             )
         )
         with trial_workspace(self._trials_dir, prefix="harbor-pi-tito-") as trial_root:
+            materializer = (
+                _materialize_pi_evaluation
+                if evaluation
+                else partial(
+                    _materialize_pi_trajectory,
+                    max_context_tokens=self._max_context_tokens,
+                    debug_enabled=self._tito_debug_enabled,
+                )
+            )
             async with self._trial_semaphore:
                 with phase_span(
                     "harbor_trial",
@@ -306,14 +342,14 @@ class _PiRolloutRunner:
                         agent_provider="fireworks-tito",
                         agent_version=PINNED_PI_VERSION,
                         tool_timeout_seconds=self._tool_timeout_seconds,
+                        tool_profile=self._tool_profile,
                         terminal_failure_reward=self._terminal_failure_reward,
                         retry_include_exceptions=self._retry_include_exceptions,
-                        artifact_processor=self._artifact_processor,
-                        materializer=partial(
-                            _materialize_pi_trajectory,
-                            max_context_tokens=self._max_context_tokens,
-                            debug_enabled=self._tito_debug_enabled,
+                        artifact_processor=(
+                            None if evaluation else self._artifact_processor
                         ),
+                        materializer=materializer,
+                        require_trajectory_artifact=not evaluation,
                     )
             rollout = outcome.rollout
             if rollout is None:
@@ -331,6 +367,7 @@ class _PiRolloutRunner:
                     "pi_version": PINNED_PI_VERSION,
                     "harness_tool_timeout_seconds": self._tool_timeout_seconds,
                     "trial_name": outcome.trial_name,
+                    "task_name": outcome.task_name,
                     "harbor_rewards": outcome.rewards,
                     "tito_retry_index": retry_index,
                 }

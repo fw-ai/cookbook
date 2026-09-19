@@ -30,7 +30,18 @@ _LOOP_STAT_PASSTHROUGH_KEYS = (
     "perf/train_chunk_wait_time",
 )
 
-_CANONICAL_OPTIMIZER_METRICS = ("grad_norm", "grad_norm_rms", "lr")
+_CANONICAL_OPTIMIZER_METRICS = (
+    "grad_norm_pre_norm",
+    "grad_norm",
+    "grad_norm_rms",
+    "grad_norm_attn",
+    "grad_norm_mlp",
+    "grad_norm_embed",
+    "grad_norm_norm",
+    "grad_norm_lora",
+    "grad_norm_other",
+    "lr",
+)
 _TITO_METRIC_ROOT = "tito/"
 _TITO_DEBUG_METRIC_ROOT = "debug/tito/"
 _DISTRIBUTION_SUFFIXES = ("_count", "_sum", "_mean", "_min", "_max")

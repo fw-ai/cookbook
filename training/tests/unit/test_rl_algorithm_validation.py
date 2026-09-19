@@ -6,12 +6,17 @@ import pytest
 
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
 from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
+from training.utils.rl.dppo import DPPOConfig, make_dppo_loss_fn
 from training.utils.rl.dro import DROConfig, make_dro_loss_fn
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
 from training.utils.rl.igpo import make_igpo_loss_fn
 from training.utils.rl.is_loss import make_is_loss_fn
 from training.utils.rl.reinforce import make_reinforce_loss_fn
+from training.utils.rl.score_centering import (
+    ScoreCenteringConfig,
+    validate_score_centering_config,
+)
 
 
 def _group_loss_inputs() -> dict:
@@ -87,9 +92,36 @@ def test_dro_builder_validates_config() -> None:
 @pytest.mark.parametrize(
     "config",
     [
+        DPPOConfig(divergence="invalid"),  # type: ignore[arg-type]
+        DPPOConfig(threshold=-0.1),
+        DPPOConfig(ratio_log_cap=-0.1),
+    ],
+)
+def test_dppo_builder_validates_config(config) -> None:
+    with pytest.raises(ValueError, match="DPPO"):
+        make_dppo_loss_fn(**_group_loss_inputs(), dppo_config=config)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        ScoreCenteringConfig(top_k=0),
+        ScoreCenteringConfig(top_k=6),
+        ScoreCenteringConfig(tail_mass_epsilon=0),
+    ],
+)
+def test_score_centering_validates_config(config) -> None:
+    with pytest.raises(ValueError, match="score centering"):
+        validate_score_centering_config(config)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
         GSPOConfig(clip_ratio_low=-0.1),
         GSPOConfig(clip_ratio_high=-0.1),
         GSPOConfig(seq_ratio_log_cap=-0.1),
+        GSPOConfig(token_reduction="invalid"),  # type: ignore[arg-type]
     ],
 )
 def test_gspo_builder_validates_config(config) -> None:

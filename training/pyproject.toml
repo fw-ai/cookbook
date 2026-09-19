@@ -80,6 +80,7 @@ packages = [
     "training.examples.rl.harbor.recipes.dabstep",
     "training.examples.rl.harbor.recipes.deep_swe",
     "training.examples.rl.harbor.recipes.terminal_bench",
+    "training.examples.rl.harbor.recipes.textworld",
     "training.examples.rl.harbor.tito",
     "training.examples.rl.single_turn_token_in",
     "training.examples.rl.visual_toolbench",
