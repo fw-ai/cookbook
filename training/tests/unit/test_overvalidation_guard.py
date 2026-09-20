@@ -475,6 +475,43 @@ def test_scheduler_post_solution_sweeps_are_exactly_guarded(
         "    for ply in range(250):\n        pass\n"
         'print(f"ALL PASS: {ntests} positions in {time.time()-t0:.1f}s")\n',
     ),
+    (
+        "regex_chess_ep_castling_800_case_post_check",
+        ["python3", "/tmp/fuzz2.py"],
+        "/app",
+        "rnd = random.Random(999)\nwhile n < 400:\n    pass\n"
+        "while n2 < 400:\n    pass\n"
+        'print("OK" if fuzz.FAILS == 0 else "FAIL")\n',
+    ),
+    (
+        "regex_chess_40_game_generated_post_check",
+        ["python3", "fuzz.py"],
+        "/app",
+        "random.seed(12345)\nN_GAMES = 40\n"
+        "while board.fullmove_number < 80:\n    pass\n"
+        'print("TOTAL tested", tested, "fails", fails)\n',
+    ),
+    (
+        "regex_chess_seed1_40_game_timed_post_check",
+        ["python3", "fuzz.py", "1", "40"],
+        "/tmp/opencode",
+        "NGAMES = int(sys.argv[2]) if len(sys.argv) > 2 else 50\n"
+        "while b.fullmove_number < 100:\n    pass\n"
+        'print("tested", tested, "positions, fails", fails)\n',
+    ),
+    (
+        "regex_chess_extended_edge_case_post_check",
+        ["python3", "/tmp/opencode/edge.py"],
+        "/app",
+        "from fuzz import check\nfor fen in cases:\n    check(fen)\n"
+        'print("edge cases:", "ALL OK" if ok else "FAILURES")\n',
+    ),
+    (
+        "regex_chess_600_composed_position_post_check",
+        ["python3", "-"],
+        "/app",
+        "checkpoint bytes are validated separately\n",
+    ),
 ])
 def test_regex_stress_variant_is_revalidated_independently(
     tmp_path, monkeypatch, reason, argv, cwd, body,
