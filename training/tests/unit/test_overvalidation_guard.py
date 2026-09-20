@@ -300,6 +300,24 @@ def test_leaf_ignoring_sigint_receives_sigterm(evidence):
         "    for ply in range(250):\n        pass\n"
         'print(f"ALL PASS: {ntests} positions in {time.time()-t0:.1f}s")\n',
     ),
+    (
+        "regex_chess_seed101_random_post_check",
+        ["python3", "randtest.py", "101"],
+        "/tmp/opencode",
+        "random.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 7)\n"
+        "for g in range(NGAMES):\n"
+        "    for ply in range(250):\n        pass\n"
+        'print(f"ALL PASS: {ntests} positions in {time.time()-t0:.1f}s")\n',
+    ),
+    (
+        "regex_chess_seed202_random_post_check",
+        ["python3", "randtest.py", "202"],
+        "/tmp/opencode",
+        "random.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 7)\n"
+        "for g in range(NGAMES):\n"
+        "    for ply in range(250):\n        pass\n"
+        'print(f"ALL PASS: {ntests} positions in {time.time()-t0:.1f}s")\n',
+    ),
 ])
 def test_regex_stress_variant_is_revalidated_independently(
     tmp_path, monkeypatch, reason, argv, cwd, body,

@@ -579,6 +579,38 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "randtest.py", "101"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/randtest.py",
+        "required_markers": [
+            "random.seed(int(sys.argv[1])", "for g in range(NGAMES)",
+            "for ply in range(250)",
+            'print(f"ALL PASS: {ntests} positions in {time.time()-t0:.1f}s")',
+        ],
+        "parent_cmdline_markers": [
+            "for seed in 101 202", "python3 randtest.py $seed", "tail -1",
+        ],
+        "reason": "regex_chess_seed101_random_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "randtest.py", "202"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/randtest.py",
+        "required_markers": [
+            "random.seed(int(sys.argv[1])", "for g in range(NGAMES)",
+            "for ply in range(250)",
+            'print(f"ALL PASS: {ntests} positions in {time.time()-t0:.1f}s")',
+        ],
+        "parent_cmdline_markers": [
+            "for seed in 101 202", "python3 randtest.py $seed", "tail -1",
+        ],
+        "reason": "regex_chess_seed202_random_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "-"],
         "cwd": "/tmp/opencode",
         "required_file": "/app/re.json",
