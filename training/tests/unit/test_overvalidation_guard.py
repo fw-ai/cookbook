@@ -512,6 +512,46 @@ def test_scheduler_post_solution_sweeps_are_exactly_guarded(
         "/app",
         "checkpoint bytes are validated separately\n",
     ),
+    (
+        "regex_chess_120_game_bigtest_post_check",
+        ["python", "bigtest.py"],
+        "/tmp/opencode",
+        "rng = random.Random(99)\nfor game in range(120):\n"
+        "    while b.fullmove_number < 100:\n        pass\n"
+        "print('ALL OK')\n",
+    ),
+    (
+        "regex_chess_ep_60_case_post_check",
+        ["python3", "/tmp/fuzz2.py"],
+        "/app",
+        "rnd = random.Random(999)\nwhile n < 60:\n    pass\n"
+        'print("ep suite done, FAILS:", fuzz.FAILS)\n',
+    ),
+    (
+        "regex_chess_40_game_timed_generated_post_check",
+        ["python3", "fuzz.py"],
+        "/app",
+        "random.seed(12345)\nN_GAMES = 40\n"
+        "while board.fullmove_number < 80:\n    pass\n"
+        'print("TOTAL tested", tested, "fails", fails)\n',
+    ),
+    (
+        "regex_chess_seed42_120_game_timed_post_check",
+        ["python3", "fuzz.py", "42", "120"],
+        "/tmp/opencode",
+        "NGAMES = int(sys.argv[2]) if len(sys.argv) > 2 else 50\n"
+        "while b.fullmove_number < 100:\n    pass\n"
+        'print("tested", tested, "positions, fails", fails)\n',
+    ),
+    (
+        "regex_chess_1500_game_post_check",
+        ["python3", "fuzz.py", "1500"],
+        "/tmp/opencode",
+        "random.seed(12345)\n"
+        "ngames = int(sys.argv[1]) if len(sys.argv) > 1 else 200\n"
+        "for ply in range(200):\n    pass\n"
+        'print("positions tested:", npos, "bad:", nbad)\n',
+    ),
 ])
 def test_regex_stress_variant_is_revalidated_independently(
     tmp_path, monkeypatch, reason, argv, cwd, body,
@@ -537,6 +577,8 @@ def test_regex_stress_variant_is_revalidated_independently(
         for index, policy in enumerate(policies)
         if policy["reason"] == reason
     )
+    process_name = policies[stress_index].get("process_name", "python3")
+    (process / "comm").write_text(process_name)
     policies[stress_index] = {
         **policies[stress_index], "required_file": str(script),
     }
@@ -559,7 +601,7 @@ def test_regex_stress_variant_is_revalidated_independently(
                 {"tool": "bash", "start_ms": 10, "elapsed_s": 1300},
             ],
             "processes": [{
-                "Pid": "10", "PPid": "20", "Name": "python3",
+                "Pid": "10", "PPid": "20", "Name": process_name,
                 "start_ticks": stat[19], "elapsed_s": 1300,
             }],
         },
