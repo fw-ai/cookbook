@@ -525,6 +525,22 @@ POLICIES = (
         "reason": "regex_chess_120_game_timed_heredoc_post_check_fuzz",
     },
     {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": ["def check"],
+        "ancestor_hops": 2,
+        "ancestor_cmdline_markers": [
+            "timeout 3000 python3 -", "random.seed(987653)",
+            "target = 6000", "while tested < target",
+            "b.halfmove_clock > 70",
+            'print("games:", games, "tested:", tested, "real failures:"',
+        ],
+        "reason": "regex_chess_6000_position_timed_heredoc_post_check",
+    },
+    {
         "task_prefix": "harbor-opencode-circuit-fibsqrt-",
         "min_elapsed_s": 1200,
         "cmdline": ["python3", "-"],

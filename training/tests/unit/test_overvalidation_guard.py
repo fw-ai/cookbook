@@ -755,6 +755,59 @@ def test_timed_120_game_heredoc_requires_exact_grandparent(
     assert not guard.is_known_overvalidation(expected, proc)
 
 
+def test_timed_6000_position_heredoc_requires_exact_grandparent(
+    tmp_path, monkeypatch,
+):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    timeout = proc / "20"
+    shell = proc / "30"
+    process.mkdir(parents=True)
+    timeout.mkdir()
+    shell.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(b"python3\0-\0")
+    (process / "cwd").symlink_to("/app")
+    timeout_stat = ["S"] + ["0"] * 19
+    timeout_stat[1], timeout_stat[19] = "30", str(99 * hz)
+    (timeout / "stat").write_text(
+        "20 (timeout) " + " ".join(timeout_stat)
+    )
+    (shell / "cmdline").write_bytes(
+        b"bash\0-c\0timeout 3000 python3 -\n"
+        b"random.seed(987653)\ntarget = 6000\nwhile tested < target:\n"
+        b"if b.halfmove_clock > 70: break\n"
+        b"print(\"games:\", games, \"tested:\", tested, "
+        b"\"real failures:\", realfails)\0"
+    )
+    fuzz = tmp_path / "fuzz.py"
+    fuzz.write_text("def check(fen):\n    return True\n")
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"]
+        == "regex_chess_6000_position_timed_heredoc_post_check"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(fuzz),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+    (shell / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
 def test_timed_fuzz4_requires_exact_timeout_parent(tmp_path, monkeypatch):
     hz = os.sysconf("SC_CLK_TCK")
     proc = tmp_path / "proc"
