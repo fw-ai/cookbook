@@ -180,6 +180,22 @@ POLICIES = (
         ],
         "reason": "regex_chess_30_game_seed7_post_check_fuzz",
     },
+    *(
+        {
+            "task_prefix": "harbor-opencode-regex-chess-",
+            "min_elapsed_s": 600,
+            "cmdline": ["python3", "fuzz_par.py", str(seed), "300"],
+            "cwd": "/app",
+            "required_file": "/app/fuzz_par.py",
+            "required_markers": [
+                "seed = int(sys.argv[1])", "ngames = int(sys.argv[2])",
+                "for ply in range(120):",
+                'log.write("DONE seed=%d games=%d positions=%d fails=%d',
+            ],
+            "reason": f"regex_chess_parallel_300_game_seed{seed}_post_check",
+        }
+        for seed in (111, 222, 333, 444)
+    ),
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,

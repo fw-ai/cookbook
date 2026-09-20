@@ -196,6 +196,14 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         'print("tested positions:", tested + len(specials), "OK")\n',
     ),
     (
+        "regex_chess_parallel_300_game_seed111_post_check",
+        ["python3", "fuzz_par.py", "111", "300"],
+        "/app",
+        "seed = int(sys.argv[1])\nngames = int(sys.argv[2])\n"
+        "for ply in range(120):\n    pass\n"
+        'log.write("DONE seed=%d games=%d positions=%d fails=%d" % values)\n',
+    ),
+    (
         "regex_chess_150_game_fuzz4_post_check",
         ["python3", "/tmp/opencode/fuzz4.py", "424242"],
         "/app",
@@ -270,6 +278,18 @@ def test_regex_stress_variant_is_revalidated_independently(
         if candidate["policy_index"] != stress_index
     )
     assert not guard.is_known_overvalidation(wrong_variant, proc)
+
+
+def test_parallel_regex_policies_cover_only_observed_seed_commands():
+    commands = {
+        tuple(policy["cmdline"])
+        for policy in guard.POLICIES
+        if policy["reason"].startswith("regex_chess_parallel_300_game_seed")
+    }
+    assert commands == {
+        ("python3", "fuzz_par.py", seed, "300")
+        for seed in ("111", "222", "333", "444")
+    }
 
 
 def test_feal_linear_compiled_search_is_revalidated(tmp_path, monkeypatch):
