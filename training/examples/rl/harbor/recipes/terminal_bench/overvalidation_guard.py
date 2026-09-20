@@ -146,10 +146,9 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         # Observed only after the same seed/script had already crossed the
-        # normal 600s guard and been interrupted once.  The exact 1750s
-        # timeout wrapper distinguishes this immediate repeat from the first
-        # validation attempt, so it can be stopped sooner without making the
-        # generic fuzz4 policy more aggressive.
+        # normal 600s guard and then been relaunched under successively shorter
+        # timeout wrappers.  Requiring that exact timed script/seed signature
+        # distinguishes the repeated post-check from other validation work.
         "min_elapsed_s": 120,
         "cmdline": ["python3", "/tmp/opencode/fuzz4.py", "424242"],
         "cwd": "/app",
@@ -159,9 +158,9 @@ POLICIES = (
             'print("fuzz4 done: %d positions, fails %d"',
         ],
         "parent_cmdline_markers": [
-            "timeout", "1750", "/tmp/opencode/fuzz4.py", "424242",
+            "timeout", "/tmp/opencode/fuzz4.py", "424242",
         ],
-        "reason": "regex_chess_repeated_150_game_fuzz4_post_check",
+        "reason": "regex_chess_timed_150_game_fuzz4_post_check",
     },
     {
         "task_prefix": "harbor-opencode-regex-chess-",

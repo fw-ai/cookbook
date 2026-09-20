@@ -440,7 +440,7 @@ def test_timed_300_game_heredoc_requires_exact_grandparent(
     assert not guard.is_known_overvalidation(expected, proc)
 
 
-def test_repeated_fuzz4_requires_exact_timeout_parent(tmp_path, monkeypatch):
+def test_timed_fuzz4_requires_exact_timeout_parent(tmp_path, monkeypatch):
     hz = os.sysconf("SC_CLK_TCK")
     proc = tmp_path / "proc"
     process = proc / "10"
@@ -471,7 +471,7 @@ def test_repeated_fuzz4_requires_exact_timeout_parent(tmp_path, monkeypatch):
         index
         for index, policy in enumerate(policies)
         if policy["reason"]
-        == "regex_chess_repeated_150_game_fuzz4_post_check"
+        == "regex_chess_timed_150_game_fuzz4_post_check"
     )
     policies[policy_index] = {
         **policies[policy_index], "required_file": str(script),
@@ -485,7 +485,6 @@ def test_repeated_fuzz4_requires_exact_timeout_parent(tmp_path, monkeypatch):
     assert guard.is_known_overvalidation(expected, proc)
 
     (parent / "cmdline").write_bytes(
-        b"timeout\0" b"900\0python3\0/tmp/opencode/fuzz4.py\0"
-        b"424242\0"
+        b"python3\0/tmp/opencode/fuzz4.py\0" b"424242\0"
     )
     assert not guard.is_known_overvalidation(expected, proc)
