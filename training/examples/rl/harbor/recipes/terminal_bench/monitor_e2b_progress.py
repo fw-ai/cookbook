@@ -346,6 +346,19 @@ def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore
         command = verifier_deadlock_guard.recovery_command
         recovery_kind = 'known_verifier_deadlock'
 
+    def candidate_key(expected):
+        identity = expected
+        if recovery_kind == 'known_overvalidation':
+            # Several policies can describe the same numeric process identity.
+            # A lost response from any one policy leaves the signal outcome
+            # uncertain for the process, so policy_index must not permit a
+            # second attempt against that same PID/start-time pair.
+            identity = {
+                key: expected[key]
+                for key in ('pid', 'start_ticks')
+            }
+        return json.dumps(identity, sort_keys=True, separators=(',', ':'))
+
     held_keys = {
         action.get('candidate_key')
         for action in (previous or {}).get('recovery_actions', [])
@@ -355,9 +368,9 @@ def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore
                  or action.get('reason') == 'prior_recovery_outcome_held'))
     }
     for expected in candidates(previous, current):
-        candidate_key = json.dumps(expected, sort_keys=True, separators=(',', ':'))
-        metadata = {'recovery_kind': recovery_kind, 'candidate_key': candidate_key}
-        if candidate_key in held_keys:
+        key = candidate_key(expected)
+        metadata = {'recovery_kind': recovery_kind, 'candidate_key': key}
+        if key in held_keys:
             actions.append({
                 'action': 'none',
                 'reason': 'prior_recovery_outcome_held',
@@ -376,11 +389,15 @@ def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore
                 break
             sandbox = Sandbox.connect(current['sandbox_id'])
             result = sandbox.commands.run(command(expected), timeout=15)
-            actions.append({**json.loads(result.stdout), **metadata})
+            action = {**json.loads(result.stdout), **metadata}
+            actions.append(action)
+            if action.get('action') in {'SIGINT', 'SIGTERM', 'SIGKILL'}:
+                held_keys.add(key)
         except Exception as error:
             actions.append({'action': 'unknown', 'reason': type(error).__name__,
                             'next': 'Reinspect the same process; do not assume success or resend blindly',
                             **metadata})
+            held_keys.add(key)
     return actions
 
 

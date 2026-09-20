@@ -115,6 +115,34 @@ def test_uncertain_recovery_is_held_until_candidate_identity_changes(tmp_path, m
     assert api.connect.return_value.commands.run.call_count == 2
 
 
+def test_uncertain_overvalidation_holds_all_policies_for_same_process(tmp_path, monkeypatch):
+    current = {'trial': 'our-trial', 'sandbox_id': 'original'}
+    candidates = [
+        {'pid': 1727, 'start_ticks': '100', 'policy_index': 1},
+        {'pid': 1727, 'start_ticks': '100', 'policy_index': 2},
+    ]
+    monkeypatch.setattr(recorder.overvalidation_guard, 'recovery_candidates',
+                        lambda *_: candidates)
+    api = Mock()
+    api.list.return_value.next_items.return_value = [SimpleNamespace(
+        sandbox_id='original', metadata={'session_id': 'our-trial__env'})]
+    api.connect.return_value.commands.run.side_effect = RuntimeError('ambiguous transport failure')
+    monkeypatch.setattr(recorder, 'Sandbox', api)
+
+    first = recorder.recover_trial_search(tmp_path, {}, current, overvalidation=True)
+    assert [action['action'] for action in first] == ['unknown', 'none']
+    assert first[0]['candidate_key'] == first[1]['candidate_key']
+    assert first[1]['reason'] == 'prior_recovery_outcome_held'
+    assert api.connect.return_value.commands.run.call_count == 1
+
+    previous = {**current, 'recovery_actions': first}
+    second = recorder.recover_trial_search(tmp_path, previous, current, overvalidation=True)
+    assert [action['reason'] for action in second] == [
+        'prior_recovery_outcome_held', 'prior_recovery_outcome_held',
+    ]
+    assert api.connect.return_value.commands.run.call_count == 1
+
+
 @pytest.mark.parametrize('tool,elapsed,expected', [
     ('grep', 300, True), ('grep', 900, True), ('grep', 299, False),
     ('grep', None, False), ('bash', 900, False),
