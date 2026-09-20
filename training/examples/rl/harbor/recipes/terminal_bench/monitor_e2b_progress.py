@@ -319,19 +319,52 @@ def guest_oom_warnings(current):
 def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore=False,
                          mips_probes=False, overvalidation=False,
                          verifier_deadlock=False):
+    """Attempt an exact recovery at most once per observed process identity.
+
+    A command timeout or transport exception leaves the remote outcome unknown:
+    the signal may already have been delivered.  Carry that uncertainty through
+    subsequent snapshots and fail closed until the candidate identity changes.
+    This prevents a monitor poll from repeatedly signaling the same process.
+    """
     actions = []
+    recovery_kind = 'kernel_stream_grep'
     candidates = node_timeout_guard.recovery_candidates if node_deadlines else recovery_candidates
     command = node_timeout_guard.recovery_command if node_deadlines else recovery_command
+    if node_deadlines:
+        recovery_kind = 'overdue_node'
     if kcore:
         candidates, command = kernel_core_guard.recovery_candidates, kernel_core_guard.recovery_command
+        recovery_kind = 'kernel_core_grep'
     if mips_probes:
         candidates, command = mips_probe_guard.recovery_candidates, mips_probe_guard.recovery_command
+        recovery_kind = 'mips_vm_probe'
     if overvalidation:
         candidates, command = overvalidation_guard.recovery_candidates, overvalidation_guard.recovery_command
+        recovery_kind = 'known_overvalidation'
     if verifier_deadlock:
         candidates = verifier_deadlock_guard.recovery_candidates
         command = verifier_deadlock_guard.recovery_command
+        recovery_kind = 'known_verifier_deadlock'
+
+    held_keys = {
+        action.get('candidate_key')
+        for action in (previous or {}).get('recovery_actions', [])
+        if (action.get('recovery_kind') == recovery_kind
+            and action.get('candidate_key')
+            and (action.get('action') in {'SIGINT', 'SIGTERM', 'SIGKILL', 'unknown'}
+                 or action.get('reason') == 'prior_recovery_outcome_held'))
+    }
     for expected in candidates(previous, current):
+        candidate_key = json.dumps(expected, sort_keys=True, separators=(',', ':'))
+        metadata = {'recovery_kind': recovery_kind, 'candidate_key': candidate_key}
+        if candidate_key in held_keys:
+            actions.append({
+                'action': 'none',
+                'reason': 'prior_recovery_outcome_held',
+                'next': 'Reinspect this identity; retry only after the candidate identity changes',
+                **metadata,
+            })
+            continue
         if (root / 'trials' / current['trial'] / 'result.json').exists():
             break
         session = current['trial'] + '__env'
@@ -343,10 +376,11 @@ def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore
                 break
             sandbox = Sandbox.connect(current['sandbox_id'])
             result = sandbox.commands.run(command(expected), timeout=15)
-            actions.append(json.loads(result.stdout))
+            actions.append({**json.loads(result.stdout), **metadata})
         except Exception as error:
             actions.append({'action': 'unknown', 'reason': type(error).__name__,
-                            'next': 'Reinspect the same process; do not assume success or resend blindly'})
+                            'next': 'Reinspect the same process; do not assume success or resend blindly',
+                            **metadata})
     return actions
 
 

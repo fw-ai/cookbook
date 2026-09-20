@@ -64,10 +64,55 @@ def test_recovery_rechecks_finished_trial_and_exact_sandbox(tmp_path, monkeypatc
         assert actions == [{'action': 'none', 'reason': 'sandbox_identity_changed'}]
         api.connect.assert_not_called()
     else:
-        assert actions == [{'action': 'SIGTERM'}]
+        assert actions == [{
+            'action': 'SIGTERM',
+            'recovery_kind': 'kernel_stream_grep',
+            'candidate_key': json.dumps(expected, sort_keys=True, separators=(',', ':')),
+        }]
         api.connect.assert_called_once_with('original')
         api.connect.return_value.commands.run.assert_called_once_with(
             recorder.recovery_command(expected), timeout=15)
+
+
+def test_uncertain_recovery_is_held_until_candidate_identity_changes(tmp_path, monkeypatch):
+    current = {'trial': 'our-trial', 'sandbox_id': 'original'}
+    expected = {'pid': 1727, 'parent_pid': 1694, 'start_ticks': '100',
+                'parent_start_ticks': '50', 'cpu_seconds': 0.1}
+    candidates = [expected]
+    monkeypatch.setattr(recorder, 'recovery_candidates', lambda *_: candidates)
+    api = Mock()
+    api.list.return_value.next_items.return_value = [SimpleNamespace(
+        sandbox_id='original', metadata={'session_id': 'our-trial__env'})]
+    api.connect.return_value.commands.run.side_effect = RuntimeError('ambiguous transport failure')
+    monkeypatch.setattr(recorder, 'Sandbox', api)
+
+    first = recorder.recover_trial_search(tmp_path, {}, current)
+    assert first[0]['action'] == 'unknown'
+    assert first[0]['reason'] == 'RuntimeError'
+    assert 'ambiguous transport failure' not in json.dumps(first)
+    assert api.connect.return_value.commands.run.call_count == 1
+
+    previous = {**current, 'recovery_actions': first}
+    second = recorder.recover_trial_search(tmp_path, previous, current)
+    assert second[0]['action'] == 'none'
+    assert second[0]['reason'] == 'prior_recovery_outcome_held'
+    assert api.connect.return_value.commands.run.call_count == 1
+
+    # The hold record itself is sticky across later monitor polls.
+    previous = {**current, 'recovery_actions': second}
+    third = recorder.recover_trial_search(tmp_path, previous, current)
+    assert third[0]['reason'] == 'prior_recovery_outcome_held'
+    assert api.connect.return_value.commands.run.call_count == 1
+
+    # PID reuse/process replacement changes the key and permits a fresh,
+    # independently revalidated action.
+    candidates[0] = {**expected, 'start_ticks': '101'}
+    api.connect.return_value.commands.run.side_effect = None
+    api.connect.return_value.commands.run.return_value.stdout = json.dumps({'action': 'SIGTERM'})
+    previous = {**current, 'recovery_actions': third}
+    fourth = recorder.recover_trial_search(tmp_path, previous, current)
+    assert fourth[0]['action'] == 'SIGTERM'
+    assert api.connect.return_value.commands.run.call_count == 2
 
 
 @pytest.mark.parametrize('tool,elapsed,expected', [
