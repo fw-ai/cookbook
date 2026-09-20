@@ -137,6 +137,14 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         "GAMES = 40\nfor g in range(GAMES):\n    pass\n"
         'print("fuzz2 done: %d white positions, fails %d" % (tests, fails))\n',
     ),
+    (
+        "regex_chess_150_game_fuzz4_post_check",
+        ["python3", "/tmp/opencode/fuzz4.py", "424242"],
+        "/app",
+        "for game in range(150):\n"
+        "    while not b.is_game_over():\n        pass\n"
+        'print("fuzz4 done: %d positions, fails %d" % (tests, fails))\n',
+    ),
 ])
 def test_regex_stress_variant_is_revalidated_independently(
     tmp_path, monkeypatch, reason, argv, cwd, body,
