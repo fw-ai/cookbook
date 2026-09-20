@@ -211,6 +211,22 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "random.seed(12345)", "NGAMES = 60",
+            "while not b.is_game_over() and b.fullmove_number < 100",
+            'print("total: %d, fails: %d" % (total, fails))',
+        ],
+        "parent_cmdline_markers": [
+            "cd /app", "python3 -", "import fuzz", "tail -10",
+        ],
+        "reason": "regex_chess_60_game_import_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "fuzz.py"],
         "cwd": "/app",
         "required_file": "/app/fuzz.py",
