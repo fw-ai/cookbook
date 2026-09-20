@@ -130,6 +130,13 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         "/app",
         'for i in range(4000):\n    print("random positions tested:")\n',
     ),
+    (
+        "regex_chess_40_game_fuzz2_post_check",
+        ["python3", "/tmp/opencode/fuzz2.py", "999"],
+        "/app",
+        "GAMES = 40\nfor g in range(GAMES):\n    pass\n"
+        'print("fuzz2 done: %d white positions, fails %d" % (tests, fails))\n',
+    ),
 ])
 def test_regex_stress_variant_is_revalidated_independently(
     tmp_path, monkeypatch, reason, argv, cwd, body,

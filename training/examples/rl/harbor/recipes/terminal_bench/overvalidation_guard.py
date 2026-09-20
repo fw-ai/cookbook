@@ -134,6 +134,18 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "/tmp/opencode/fuzz2.py", "999"],
+        "cwd": "/app",
+        "required_file": "/tmp/opencode/fuzz2.py",
+        "required_markers": [
+            "GAMES = 40", "for g in range(GAMES):",
+            'print("fuzz2 done: %d white positions, fails %d"',
+        ],
+        "reason": "regex_chess_40_game_fuzz2_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "-"],
         "cwd": "/app",
         "required_file": "/tmp/opencode/fuzz.py",
