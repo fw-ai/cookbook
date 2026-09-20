@@ -283,6 +283,29 @@ POLICIES = (
         ],
         "reason": "regex_chess_parallel_fuzz_repeated_completion_wait",
     },
+    *(
+        {
+            "task_prefix": "harbor-opencode-regex-chess-",
+            "min_elapsed_s": 600,
+            "cmdline": [
+                "python3", "-u", "checkfens.py", f"part_{part:02d}",
+            ],
+            "cwd": "/tmp/opencode",
+            "required_file": "/tmp/opencode/checkfens.py",
+            "required_markers": [
+                "for line in open(sys.argv[1])", "board = chess.Board(fen)",
+                'print(sys.argv[1], "fails:", fails)',
+            ],
+            "parent_cmdline_markers": [
+                "timeout", "1400", "python3", "-u", "checkfens.py",
+                f"part_{part:02d}",
+            ],
+            "reason": (
+                f"regex_chess_part_{part:02d}_fen_post_check"
+            ),
+        }
+        for part in range(8)
+    ),
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,

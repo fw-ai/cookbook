@@ -233,6 +233,14 @@ def test_leaf_ignoring_sigint_receives_sigterm(evidence):
         'print("ALL OK. positions:", pos, flush=True)\n',
     ),
     (
+        "regex_chess_part_00_fen_post_check",
+        ["python3", "-u", "checkfens.py", "part_00"],
+        "/tmp/opencode",
+        "for line in open(sys.argv[1]):\n"
+        "    board = chess.Board(fen)\n"
+        'print(sys.argv[1], "fails:", fails)\n',
+    ),
+    (
         "regex_chess_parallel_300_game_seed111_post_check",
         ["python3", "fuzz_par.py", "111", "300"],
         "/app",
@@ -326,6 +334,18 @@ def test_parallel_regex_policies_cover_only_observed_seed_commands():
     assert commands == {
         ("python3", "fuzz_par.py", seed, "300")
         for seed in ("111", "222", "333", "444")
+    }
+
+
+def test_parallel_fen_policies_cover_only_observed_part_commands():
+    commands = {
+        tuple(policy["cmdline"])
+        for policy in guard.POLICIES
+        if policy["reason"].startswith("regex_chess_part_")
+    }
+    assert commands == {
+        ("python3", "-u", "checkfens.py", f"part_{part:02d}")
+        for part in range(8)
     }
 
 
