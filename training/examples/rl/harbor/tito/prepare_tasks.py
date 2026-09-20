@@ -69,10 +69,21 @@ _SIDECAR_PYTHON_INSTALL = r"""python3 -c 'import sys; assert sys.version_info >=
 """
 
 
+def _marker_instruction(marker: str) -> str:
+    """Encode comment-style idempotence markers as portable Docker syntax."""
+    if marker.lstrip().startswith("#"):
+        return (
+            "LABEL ai.fireworks.tito.harness-marker="
+            f"{json.dumps(marker)}"
+        )
+    return marker
+
+
 def build_python_sidecar_suffix(*, marker: str, restore_user: str | None) -> str:
     """Build a Python-only image layer for a harness installed by Harbor."""
     suffix = (
-        f"\n\n{marker}\nUSER root\n{_PYTHON_INSTALL}{_SIDECAR_PYTHON_INSTALL}true\n"
+        f"\n\n{_marker_instruction(marker)}\n"
+        f"USER root\n{_PYTHON_INSTALL}{_SIDECAR_PYTHON_INSTALL}true\n"
     )
     if restore_user is not None:
         suffix += f"USER {restore_user}\n"
@@ -88,7 +99,7 @@ def build_node_22_harness_suffix(
 ) -> str:
     """Build the pinned-Node installer used by agent harness images."""
     suffix = (
-        f"\n\n{marker}\n"
+        f"\n\n{_marker_instruction(marker)}\n"
         "USER root\n"
         f"{_NODE_22_INSTALL}{_SIDECAR_PYTHON_INSTALL}{package_install}; \\\n"
         f" {version_check}\n"

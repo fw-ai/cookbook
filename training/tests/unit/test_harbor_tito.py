@@ -1829,6 +1829,13 @@ def test_prepared_harness_image_is_pinned_and_preserves_final_user(
     prepared = prepare(source, tmp_path / "prepared")
     dockerfile = (prepared[0] / "environment" / "Dockerfile").read_text()
     assert expected_marker in dockerfile
+    assert (
+        f"LABEL ai.fireworks.tito.harness-marker={json.dumps(expected_marker)}"
+        in dockerfile
+    )
+    assert expected_marker not in {
+        line.strip() for line in dockerfile.splitlines()
+    }
     assert expected_package in dockerfile
     assert "jinja2==3.1.6" in dockerfile
     assert "numpy==2.4.6" in dockerfile
