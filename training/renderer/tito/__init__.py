@@ -8,12 +8,19 @@ model/template-specific suffix-and-junction implementation.
 
 Layout: ``shared`` holds the certification dataclass, tokenizer fingerprint,
 and template normalization; ``<model>.py`` holds each certified renderer;
-``registry`` owns the production certification table.
+``registry`` owns the production certification table; ``plugins`` accepts
+certifications from installed distributions whose protocol cannot ship here.
 """
 
 from training.renderer.tito.glm52 import GLM52TITORenderer
 from training.renderer.tito.glm53 import GLM53TITORenderer
 from training.renderer.tito.muse_glimmer import MuseGlimmerTITORenderer
+from training.renderer.tito.plugins import (
+    TITORendererExtension,
+    load_tito_renderer_plugins,
+    register_tito_extension,
+    registered_tito_extensions,
+)
 from training.renderer.tito.qwen38 import Qwen38TITORenderer
 from training.renderer.tito.registry import (
     build_sidecar_tito_renderer,
@@ -30,7 +37,11 @@ __all__ = [
     "MuseGlimmerTITORenderer",
     "Qwen38TITORenderer",
     "TITORendererCertification",
+    "TITORendererExtension",
     "build_sidecar_tito_renderer",
     "get_tito_renderer_certification",
     "load_sidecar_tokenizer",
+    "load_tito_renderer_plugins",
+    "register_tito_extension",
+    "registered_tito_extensions",
 ]

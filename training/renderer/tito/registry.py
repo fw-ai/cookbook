@@ -3,6 +3,11 @@
 Each entry pins one renderer implementation to one tokenizer contract
 (backend + chat template + special tokens fingerprint). Adding a model means
 adding a per-model module next to this file plus one entry here.
+
+Models whose protocol cannot ship in this repository are registered instead by
+an installed distribution through ``training.renderer.tito.plugins``. Built-in
+certifications always win, and an extension that claims a built-in renderer name
+is rejected rather than silently ignored.
 """
 
 from __future__ import annotations
@@ -12,6 +17,10 @@ from typing import Any
 from fireworks.training.sdk import TITORenderer
 
 from training.renderer.tito import shared
+from training.renderer.tito.plugins import (
+    extension_certifications,
+    load_tito_renderer_plugins,
+)
 from training.renderer.tito.glm52 import GLM52_RENDERER_NAME, GLM52TITORenderer
 from training.renderer.tito.glm53 import GLM53_RENDERER_NAME, GLM53TITORenderer
 from training.renderer.tito.muse_glimmer import (
@@ -95,12 +104,28 @@ _TITO_CERTIFICATION_BY_RENDERER = {
 }
 
 
+def _resolve_certification(renderer_name: str) -> TITORendererCertification | None:
+    """Resolve a built-in certification, then installed extensions."""
+    certification = _TITO_CERTIFICATION_BY_RENDERER.get(renderer_name)
+    if certification is not None:
+        return certification
+    load_tito_renderer_plugins()
+    from_extensions = extension_certifications()
+    shadowed = sorted(from_extensions.keys() & _TITO_CERTIFICATION_BY_RENDERER.keys())
+    if shadowed:
+        raise ValueError(
+            "TITO extensions may not redefine built-in certifications: "
+            + ", ".join(shadowed)
+        )
+    return from_extensions.get(renderer_name)
+
+
 def get_tito_renderer_certification(
     renderer_name: str,
     tokenizer: Any,
 ) -> TITORendererCertification:
     """Resolve and verify the source-controlled production artifact."""
-    certification = _TITO_CERTIFICATION_BY_RENDERER.get(renderer_name)
+    certification = _resolve_certification(renderer_name)
     if certification is None:
         raise ValueError(
             f"renderer {renderer_name!r} has no production TITO certification"

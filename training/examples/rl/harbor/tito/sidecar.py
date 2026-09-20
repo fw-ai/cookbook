@@ -14,7 +14,7 @@ import tempfile
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 if TYPE_CHECKING:
     from training.recipes.async_rl_loop import RolloutSetup
@@ -23,6 +23,7 @@ SIDECAR_ROOT = "/tmp/fireworks-tito-sidecar"
 SIDECAR_PYTHON = "/opt/fireworks-tito/bin/python"
 SIDECAR_BUNDLE_ARCHIVE = f"{SIDECAR_ROOT}/bundle.zip"
 SIDECAR_BUNDLE_ROOT = f"{SIDECAR_ROOT}/bundle"
+SIDECAR_PLUGINS_ROOT = f"{SIDECAR_BUNDLE_ROOT}/plugins"
 SIDECAR_SPEC_PATH = f"{SIDECAR_ROOT}/spec.json"
 SIDECAR_ENDPOINT_PATH = f"{SIDECAR_ROOT}/endpoint.json"
 SIDECAR_TERMINAL_PATH = f"{SIDECAR_ROOT}/terminal.json"
@@ -37,7 +38,7 @@ SIDECAR_COMPLETE_PATH = f"{SIDECAR_LOG_ROOT}/COMPLETE"
 SIDECAR_STDOUT_PATH = f"{SIDECAR_LOG_ROOT}/sidecar.stdout"
 SIDECAR_STDERR_PATH = f"{SIDECAR_LOG_ROOT}/sidecar.stderr"
 
-_BUNDLE_VERSION = 6
+_BUNDLE_VERSION = 7
 # E2B can exhibit multi-minute startup outliers while the sidecar process is
 # still alive. Keep readiness bounded by the wider agent-setup timeout, but do
 # not kill a healthy process at the old two-minute bound observed under
@@ -188,6 +189,39 @@ def _copy_sdk_runtime(
         )
 
 
+def _tito_renderer_extensions() -> tuple[Any, ...]:
+    """Return installed TITO renderer extensions in a deterministic order."""
+    from training.renderer.tito.plugins import (
+        load_tito_renderer_plugins,
+        registered_tito_extensions,
+    )
+
+    load_tito_renderer_plugins()
+    return registered_tito_extensions()
+
+
+def _copy_plugin_runtime(extensions: Sequence[Any], destination: Path) -> list[str]:
+    """Copy extension-owned TITO packages onto the sandbox import path.
+
+    The sandbox interpreter has no access to the private wheels installed beside
+    the trainer, so each extension's self-contained package is shipped in the
+    content-addressed bundle and re-registered by entry point at startup.
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    entry_points: list[str] = []
+    for extension in extensions:
+        source_root = Path(extension.sidecar_source_root)
+        target = destination / source_root.name
+        if target.exists():
+            raise ValueError(
+                "TITO extensions supply conflicting sandbox packages: "
+                f"{source_root.name}"
+            )
+        _copy_source_tree(source_root, target)
+        entry_points.append(str(extension.sidecar_entry_point))
+    return sorted(entry_points)
+
+
 def _copy_cookbook_runtime(training_source: Path, destination: Path) -> None:
     training_target = destination / "training"
     _copy_source_tree(training_source / "tito", training_target / "tito")
@@ -254,6 +288,14 @@ def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
         source = training_source / name
         digest.update(f"cookbook/training/{name}\0".encode())
         digest.update(source.read_bytes())
+    extensions = _tito_renderer_extensions()
+    for extension in extensions:
+        digest.update(f"plugins/{extension.sidecar_entry_point}\0".encode())
+        _update_tree_hash(
+            digest,
+            Path(extension.sidecar_source_root),
+            f"plugins/{Path(extension.sidecar_source_root).name}",
+        )
     tokenizer_backend = getattr(setup.tokenizer, "backend_tokenizer", None)
     if tokenizer_backend is None or not hasattr(tokenizer_backend, "to_str"):
         raise ValueError("TITO sidecar requires a serializable fast tokenizer")
@@ -297,6 +339,7 @@ def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
     try:
         _copy_sdk_runtime(sdk_source, temporary / "python-sdk", runtime_files)
         _copy_cookbook_runtime(training_source, temporary / "cookbook")
+        plugin_entry_points = _copy_plugin_runtime(extensions, temporary / "plugins")
         tokenizer_dir = temporary / "tokenizer"
         setup.tokenizer.save_pretrained(tokenizer_dir)
         manifest = {
@@ -304,6 +347,7 @@ def build_sidecar_bundle(setup: RolloutSetup) -> TITOSidecarBundle:
             "sha256": bundle_digest,
             "tokenizer_id": setup.tokenizer_id,
             "model": setup.model,
+            "tito_plugin_entry_points": plugin_entry_points,
         }
         (temporary / "manifest.json").write_text(
             json.dumps(manifest, sort_keys=True, indent=2) + "\n", encoding="utf-8"
@@ -463,7 +507,8 @@ async def install_sidecar(
                 f"rm -rf {SIDECAR_BUNDLE_ROOT}; mkdir -p {SIDECAR_BUNDLE_ROOT}; "
                 f"{SIDECAR_PYTHON} -m zipfile -e {SIDECAR_BUNDLE_ARCHIVE} {SIDECAR_BUNDLE_ROOT}; "
                 f"PYTHONPATH={SIDECAR_BUNDLE_ROOT}/python-sdk:"
-                f"{SIDECAR_BUNDLE_ROOT}/cookbook "
+                f"{SIDECAR_BUNDLE_ROOT}/cookbook:"
+                f"{SIDECAR_PLUGINS_ROOT} "
                 f"nohup {SIDECAR_PYTHON} -m training.examples.rl.harbor.tito.sidecar serve "
                 f"--spec {SIDECAR_SPEC_PATH} "
                 f">{SIDECAR_LOG_ROOT}/sidecar.stdout 2>"
@@ -710,6 +755,47 @@ async def _wait_for_terminal(
     return "abandoned", "sidecar_process_interrupted"
 
 
+def _register_bundled_tito_plugins(
+    entry_points: Sequence[str],
+    plugins_root: str | Path = SIDECAR_PLUGINS_ROOT,
+) -> None:
+    """Re-register the bundle's TITO extensions inside the sandbox.
+
+    Entry-point discovery finds nothing here: the bundle ships extension
+    sources rather than installed distributions.
+
+    These names come from the extracted manifest, and ``serve`` only compares
+    the manifest's recorded digest against the launch spec; it does not
+    recompute that digest from the extracted bytes. So treat the names as
+    untrusted: import only a top-level package this bundle actually shipped
+    under ``plugins/``, which keeps a rewritten manifest from reaching an
+    arbitrary module already on the sidecar's import path.
+    """
+    import importlib
+
+    root = Path(plugins_root)
+    for entry_point in entry_points:
+        module_name, separator, attribute = str(entry_point).partition(":")
+        if not separator or not module_name or not attribute:
+            raise ValueError(
+                f"invalid bundled TITO plugin entry point: {entry_point!r}"
+            )
+        package = module_name.partition(".")[0]
+        # isidentifier() also rejects the traversal and absolute-path forms a
+        # rewritten manifest could otherwise smuggle through the join below.
+        if not package.isidentifier() or not (root / package / "__init__.py").is_file():
+            raise ValueError(
+                f"bundled TITO plugin {entry_point!r} is not a package shipped "
+                f"under {root}"
+            )
+        register = getattr(importlib.import_module(module_name), attribute)
+        if not callable(register):
+            raise TypeError(
+                f"bundled TITO plugin {entry_point!r} must resolve to a callable"
+            )
+        register()
+
+
 async def serve(spec_path: Path) -> None:
     from fireworks.training.sdk import (
         DeploymentSampler,
@@ -731,6 +817,9 @@ async def serve(spec_path: Path) -> None:
     )
     if bundle_manifest.get("sha256") != spec.get("bundle_digest"):
         raise ValueError("sidecar bundle digest does not match launch spec")
+    _register_bundled_tito_plugins(
+        bundle_manifest.get("tito_plugin_entry_points") or ()
+    )
     tokenizer = load_sidecar_tokenizer(Path(SIDECAR_BUNDLE_ROOT) / "tokenizer")
     renderer = build_sidecar_tito_renderer(
         tokenizer,
