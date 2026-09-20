@@ -574,6 +574,20 @@ def test_scheduler_post_solution_sweeps_are_exactly_guarded(
         "while board.fullmove_number < 80:\n    pass\n"
         'print("TOTAL tested", tested, "fails", fails)\n',
     ),
+    (
+        "regex_chess_130_game_finaltest_post_check",
+        ["python", "finaltest.py"],
+        "/tmp/opencode",
+        "rng = random.Random(31337)\nfor game in range(130):\n"
+        "    while not b.is_game_over() and b.fullmove_number < 110:\n"
+        "        pass\nprint('ALL OK')\n",
+    ),
+    (
+        "regex_chess_60_game_stdin_post_check",
+        ["python3", "-"],
+        "/app",
+        "checkpoint bytes are validated separately\n",
+    ),
 ])
 def test_regex_stress_variant_is_revalidated_independently(
     tmp_path, monkeypatch, reason, argv, cwd, body,
@@ -604,13 +618,34 @@ def test_regex_stress_variant_is_revalidated_independently(
     policies[stress_index] = {
         **policies[stress_index], "required_file": str(script),
     }
-    if policies[stress_index].get("parent_cmdline_markers"):
+    if (policies[stress_index].get("parent_cmdline_markers")
+            or policies[stress_index].get("ancestor_cmdline_markers")):
         parent = proc / "20"
         parent.mkdir()
+    if policies[stress_index].get("parent_cmdline_markers"):
+        parent = proc / "20"
         (parent / "cmdline").write_bytes(
             b"\0".join(
                 marker.encode()
                 for marker in policies[stress_index]["parent_cmdline_markers"]
+            ) + b"\0"
+        )
+    if policies[stress_index].get("ancestor_cmdline_markers"):
+        ancestor_pid = 20
+        for hop in range(policies[stress_index]["ancestor_hops"] - 1):
+            next_pid = 30 + hop
+            ancestor = proc / str(ancestor_pid)
+            ancestor_stat = ["S"] + ["0"] * 19
+            ancestor_stat[1] = str(next_pid)
+            (ancestor / "stat").write_text(
+                f"{ancestor_pid} (bash) " + " ".join(ancestor_stat)
+            )
+            ancestor_pid = next_pid
+            (proc / str(ancestor_pid)).mkdir(exist_ok=True)
+        (proc / str(ancestor_pid) / "cmdline").write_bytes(
+            b"\0".join(
+                marker.encode()
+                for marker in policies[stress_index]["ancestor_cmdline_markers"]
             ) + b"\0"
         )
     monkeypatch.setattr(guard, "POLICIES", tuple(policies))
