@@ -65,6 +65,32 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "/tmp/opencode/edge.py"],
+        "cwd": "/app",
+        "required_file": "/tmp/opencode/edge.py",
+        "required_markers": [
+            "from fuzz import check", "for f in fens:",
+            'print("DONE", "ALL OK" if ok else "FAILURES", len(fens))',
+        ],
+        "reason": "regex_chess_edge_case_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "process_name": "python",
+        "cmdline": ["python", "-"],
+        "cwd": "/app",
+        "required_file": "/app/re.json",
+        "required_markers": [],
+        "parent_cmdline_markers": [
+            "for g in range(400):", "def verify(fen):",
+            "random positions tested:",
+        ],
+        "reason": "regex_chess_400_game_heredoc_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "stress.py", "150"],
         "cwd": "/tmp/opencode",
         "required_file": "/tmp/opencode/stress.py",

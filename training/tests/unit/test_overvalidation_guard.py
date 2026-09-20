@@ -111,6 +111,14 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         "print('tested positions:', total_pos, 'failures:', bad)\n",
     ),
     (
+        "regex_chess_edge_case_post_check",
+        ["python3", "/tmp/opencode/edge.py"],
+        "/app",
+        "from fuzz import check\n"
+        "for f in fens:\n    check(f)\n"
+        'print("DONE", "ALL OK" if ok else "FAILURES", len(fens))\n',
+    ),
+    (
         "regex_chess_150_game_post_check_stress",
         ["python3", "stress.py", "150"],
         "/tmp/opencode",
@@ -139,7 +147,7 @@ def test_regex_stress_variant_is_revalidated_independently(
         b"\0".join(item.encode() for item in argv) + b"\0"
     )
     (process / "cwd").symlink_to(cwd)
-    script = tmp_path / argv[1]
+    script = tmp_path / argv[1].rsplit("/", 1)[-1]
     script.write_text(body)
     policies = list(guard.POLICIES)
     stress_index = next(
@@ -265,6 +273,50 @@ def test_heredoc_stress_requires_exact_parent_command(tmp_path, monkeypatch):
     )
     policies[policy_index] = {
         **policies[policy_index], "required_file": str(helper),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (parent / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
+def test_python_heredoc_400_game_fuzz_requires_exact_parent(
+    tmp_path, monkeypatch,
+):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python) " + " ".join(stat))
+    (process / "comm").write_text("python")
+    (process / "cmdline").write_bytes(b"python\0-\0")
+    (process / "cwd").symlink_to("/app")
+    (parent / "cmdline").write_bytes(
+        b"bash\0-c\0def verify(fen):\nfor g in range(400):\n"
+        b"print('random positions tested:', npos)\0"
+    )
+    packed = tmp_path / "re.json"
+    packed.write_text("[]")
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"]
+        == "regex_chess_400_game_heredoc_post_check_fuzz"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(packed),
     }
     monkeypatch.setattr(guard, "POLICIES", tuple(policies))
     expected = {
