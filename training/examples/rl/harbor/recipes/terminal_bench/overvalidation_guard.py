@@ -713,6 +713,20 @@ POLICIES = (
         "reason": "regex_chess_300_game_endgame_heredoc_post_check",
     },
     {
+        "task_prefix": "harbor-opencode-filter-js-from-html-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/tmp/opencode/xss",
+        "required_file": "/tmp/opencode/xss/big.html",
+        "required_markers": [],
+        "parent_cmdline_markers": [
+            "https://html.spec.whatwg.org/",
+            "difflib.SequenceMatcher(None, orig, after, autojunk=False)",
+            'print("opcodes:", len(sm.get_opcodes()), "non-script removals:", nonscript)',
+        ],
+        "reason": "filter_js_whatwg_quadratic_sequence_matcher_post_check",
+    },
+    {
         "task_prefix": "harbor-opencode-circuit-fibsqrt-",
         "min_elapsed_s": 1200,
         "cmdline": ["python3", "-"],
