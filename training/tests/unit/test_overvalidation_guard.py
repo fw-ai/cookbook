@@ -111,12 +111,27 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         "print('tested positions:', total_pos, 'failures:', bad)\n",
     ),
     (
+        "regex_chess_25_game_timed_post_check_fuzz",
+        ["python3", "fuzz.py", "25"],
+        "/tmp/opencode",
+        "rnd = random.Random(12345)\n"
+        "ngames = int(sys.argv[1]) if len(sys.argv) > 1 else 30\n"
+        "while not b.is_game_over(claim_draw=False):\n    pass\n"
+        'print("DONE. failures:", fail)\n',
+    ),
+    (
         "regex_chess_edge_case_post_check",
         ["python3", "/tmp/opencode/edge.py"],
         "/app",
         "from fuzz import check\n"
         "for f in fens:\n    check(f)\n"
         'print("DONE", "ALL OK" if ok else "FAILURES", len(fens))\n',
+    ),
+    (
+        "regex_chess_400_game_tmp_heredoc_post_check_fuzz",
+        ["python3", "-"],
+        "/tmp/opencode",
+        "checkpoint bytes are validated separately\n",
     ),
     (
         "regex_chess_150_game_post_check_stress",
@@ -146,6 +161,14 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         "/app",
         "GAMES = 40\nfor g in range(GAMES):\n    pass\n"
         'print("fuzz2 done: %d white positions, fails %d" % (tests, fails))\n',
+    ),
+    (
+        "regex_chess_60_game_timed_post_check_fuzz",
+        ["python3", "fuzz.py"],
+        "/app",
+        "random.seed(12345)\nNGAMES = 60\n"
+        "while not b.is_game_over() and b.fullmove_number < 100:\n    pass\n"
+        'print("total: %d, fails: %d" % (total, fails))\n',
     ),
     (
         "regex_chess_150_game_fuzz4_post_check",
@@ -183,6 +206,15 @@ def test_regex_stress_variant_is_revalidated_independently(
     policies[stress_index] = {
         **policies[stress_index], "required_file": str(script),
     }
+    if policies[stress_index].get("parent_cmdline_markers"):
+        parent = proc / "20"
+        parent.mkdir()
+        (parent / "cmdline").write_bytes(
+            b"\0".join(
+                marker.encode()
+                for marker in policies[stress_index]["parent_cmdline_markers"]
+            ) + b"\0"
+        )
     monkeypatch.setattr(guard, "POLICIES", tuple(policies))
     record = {
         "trial": "harbor-opencode-regex-chess-0-test",
