@@ -735,6 +735,23 @@ POLICIES = (
         "required_markers": [],
         "reason": "circuit_fibsqrt_post_generation_stress_test",
     },
+    {
+        "task_prefix": "harbor-opencode-large-scale-text-editing-",
+        "min_elapsed_s": 600,
+        "process_name": "vim",
+        "cmdline": [
+            "vim", "-Nu", "NONE", "-n", "-Es", "/tmp/opencode/t.csv",
+            "-S", "/tmp/opencode/dbg",
+        ],
+        "cwd": "/app",
+        "required_file": "/tmp/opencode/dbg",
+        "required_markers": [r":s/\v^\s*", ":wq"],
+        "parent_cmdline_markers": [
+            "vim -Nu NONE -n -Es /tmp/opencode/t.csv -S /tmp/opencode/dbg",
+            "cat /tmp/opencode/t.csv",
+        ],
+        "reason": "large_scale_text_editing_noninteractive_vim_stall",
+    },
 )
 
 

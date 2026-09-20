@@ -112,6 +112,70 @@ def test_leaf_ignoring_sigint_receives_sigterm(evidence):
         sent.assert_called_once_with(99, signal.SIGTERM)
 
 
+def test_large_scale_text_editing_vim_stall_is_exactly_guarded(
+        tmp_path, monkeypatch):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["S"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (vim) " + " ".join(stat))
+    (process / "comm").write_text("vim")
+    (process / "cmdline").write_bytes(
+        b"vim\0-Nu\0NONE\0-n\0-Es\0/tmp/opencode/t.csv\0"
+        b"-S\0/tmp/opencode/dbg\0"
+    )
+    (process / "cwd").symlink_to("/app")
+    (parent / "cmdline").write_bytes(
+        b"/bin/bash\0-c\0"
+        b"vim -Nu NONE -n -Es /tmp/opencode/t.csv -S /tmp/opencode/dbg; "
+        b"echo \\\"exit=$?\\\"; cat /tmp/opencode/t.csv\0"
+    )
+    script = tmp_path / "dbg"
+    script.write_text(
+        r":s/\v^\s*([^,]*?)\s*,\s*([^,]*?)\s*,\s*([^,]*?)\s*$/\3;\2;\1/"
+        "\n:wq\n"
+    )
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index for index, policy in enumerate(policies)
+        if policy["reason"]
+        == "large_scale_text_editing_noninteractive_vim_stall"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(script),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    record = {
+        "trial": "harbor-opencode-large-scale-text-editing-0-test",
+        "sandbox_id": "exact",
+        "phase": "agent_or_setup",
+        "remote": {
+            "running_tools": [
+                {"tool": "bash", "start_ms": 10, "elapsed_s": 700},
+            ],
+            "processes": [{
+                "Pid": "10", "PPid": "20", "Name": "vim",
+                "start_ticks": stat[19], "elapsed_s": 700,
+            }],
+        },
+    }
+    assert guard.recovery_candidates(record, record) == [expected]
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (parent / "cmdline").write_bytes(b"bash\0-c\0vim unrelated.csv\0")
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
 @pytest.mark.parametrize(("reason", "argv", "cwd", "body"), [
     (
         "regex_chess_100_game_post_check_fuzz",
