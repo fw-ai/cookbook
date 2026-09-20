@@ -548,6 +548,24 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "20", "777"],
+        "cwd_suffix": "/scratchpad",
+        "required_file_relative": "fuzz.py",
+        "required_markers": [
+            "def fuzz_games(n, seed=0, maxplies=1000)",
+            "while not b.is_game_over() and plies < maxplies",
+            'print("DONE total=%d bad=%d tmax=%.2f"',
+            "n = int(sys.argv[1]) if len(sys.argv) > 1 else 3",
+            "seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0",
+        ],
+        "parent_cmdline_markers": [
+            "python3 fuzz.py 20 777", 'grep -aE "FAIL|DONE"',
+        ],
+        "reason": "regex_chess_20_game_seed777_binary_grep_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "fuzzpar.py", "160"],
         "cwd": "/app",
         "required_file": "/app/fuzzpar.py",

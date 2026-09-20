@@ -646,8 +646,12 @@ def test_regex_heredoc_soaks_require_exact_parent_markers(
     assert not guard.is_known_overvalidation(expected, proc)
 
 
+@pytest.mark.parametrize(("reason", "grep_argv"), [
+    ("regex_chess_20_game_seed777_scratchpad_post_check", 'grep -E "FAIL|DONE"'),
+    ("regex_chess_20_game_seed777_binary_grep_post_check", 'grep -aE "FAIL|DONE"'),
+])
 def test_scratchpad_fuzz_requires_suffix_relative_file_and_parent(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, reason, grep_argv,
 ):
     hz = os.sysconf("SC_CLK_TCK")
     proc = tmp_path / "proc"
@@ -668,7 +672,8 @@ def test_scratchpad_fuzz_requires_suffix_relative_file_and_parent(
     (process / "cwd").symlink_to(scratchpad)
     (parent / "cmdline").write_bytes(
         b"/bin/bash\0-c\0python3 fuzz.py 20 777 2>&1 | "
-        b'grep -E "FAIL|DONE"\0'
+        + grep_argv.encode()
+        + b"\0"
     )
     (scratchpad / "fuzz.py").write_text(
         "def fuzz_games(n, seed=0, maxplies=1000):\n"
@@ -681,8 +686,7 @@ def test_scratchpad_fuzz_requires_suffix_relative_file_and_parent(
     policy_index = next(
         index
         for index, policy in enumerate(guard.POLICIES)
-        if policy["reason"]
-        == "regex_chess_20_game_seed777_scratchpad_post_check"
+        if policy["reason"] == reason
     )
     expected = {
         "pid": 10,
