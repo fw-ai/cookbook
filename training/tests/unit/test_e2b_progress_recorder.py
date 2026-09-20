@@ -185,7 +185,7 @@ def test_scored_exception_audit_tolerates_partial_json(tmp_path):
 def test_remote_probe_reports_message_timing_not_model_text(tmp_path, completed, duration_args, expected_duration):
     database = tmp_path / 'opencode.db'
     with sqlite3.connect(database) as c:
-        c.execute('create table part (time_updated integer, data text)')
+        c.execute('create table part (id text, time_updated integer, data text)')
         c.execute('create table message (time_updated integer, data text)')
         c.execute('insert into message values (?, ?)', (5000, json.dumps({
             'role': 'assistant', 'time': {'created': 1000, 'completed': completed},
@@ -352,7 +352,7 @@ def test_verifier_quiet_log_is_only_an_inspection_warning(change):
     elif change == 'phase':
         current['phase'] = 'agent_or_setup'
     elif change == 'young':
-        current['remote']['verifier_log']['age_s'] = 899
+        current['remote']['verifier_log']['age_s'] = 299
     elif change == 'missing':
         current['remote'] = {}
     warnings = recorder.stall_warnings(previous, current)
