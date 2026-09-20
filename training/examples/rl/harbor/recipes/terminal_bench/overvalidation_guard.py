@@ -875,6 +875,46 @@ POLICIES = (
         "reason": "regex_chess_1500_game_post_check",
     },
     {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "999", "100"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/fuzz.py",
+        "required_markers": [
+            "random.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 0)",
+            "NGAMES = int(sys.argv[2]) if len(sys.argv) > 2 else 50",
+            "b.fullmove_number < 100",
+            'print("tested", tested, "positions, fails", fails',
+        ],
+        "parent_cmdline_markers": [
+            "timeout", "3600", "python3", "fuzz.py", "999", "100",
+        ],
+        "reason": "regex_chess_seed999_100_game_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline_prefix": ["python3", "-c"],
+        "cmdline_markers": [
+            "import random, chess, sys",
+            "sys.setcheckinterval= None",
+            "import fuzz",
+        ],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "random.seed(12345)",
+            "N_GAMES = 40",
+            "board.fullmove_number < 80",
+            'print("TOTAL tested", tested, "fails", fails)',
+        ],
+        "parent_cmdline_markers": [
+            "sed -i 's/N_GAMES = 40/N_GAMES = 6/' fuzz.py",
+            "timeout 3000 python3 fuzz.py",
+        ],
+        "reason": "regex_chess_import_executes_40_game_post_check",
+    },
+    {
         "task_prefix": "harbor-opencode-filter-js-from-html-",
         "min_elapsed_s": 600,
         "cmdline": ["python3", "-"],

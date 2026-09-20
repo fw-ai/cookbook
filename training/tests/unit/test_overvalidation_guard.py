@@ -552,6 +552,28 @@ def test_scheduler_post_solution_sweeps_are_exactly_guarded(
         "for ply in range(200):\n    pass\n"
         'print("positions tested:", npos, "bad:", nbad)\n',
     ),
+    (
+        "regex_chess_seed999_100_game_post_check",
+        ["python3", "fuzz.py", "999", "100"],
+        "/tmp/opencode",
+        "random.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 0)\n"
+        "NGAMES = int(sys.argv[2]) if len(sys.argv) > 2 else 50\n"
+        "while not b.is_game_over() and b.fullmove_number < 100:\n    pass\n"
+        'print("tested", tested, "positions, fails", fails)\n',
+    ),
+    (
+        "regex_chess_import_executes_40_game_post_check",
+        [
+            "python3", "-c",
+            "import random, chess, sys\n"
+            "sys.setcheckinterval= None\n"
+            "import fuzz\n",
+        ],
+        "/app",
+        "random.seed(12345)\nN_GAMES = 40\n"
+        "while board.fullmove_number < 80:\n    pass\n"
+        'print("TOTAL tested", tested, "fails", fails)\n',
+    ),
 ])
 def test_regex_stress_variant_is_revalidated_independently(
     tmp_path, monkeypatch, reason, argv, cwd, body,
