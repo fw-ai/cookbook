@@ -237,6 +237,20 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "300", "12345"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20",
+            "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0",
+            "while not b.is_game_over() and b.fullmove_number < 70",
+            'print("tested positions:", tested + len(specials)',
+        ],
+        "reason": "regex_chess_orphan_300_game_seed12345_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "-u", "fuzz2.py", "10"],
         "cwd": "/tmp/opencode",
         "required_file": "/tmp/opencode/fuzz2.py",
@@ -539,6 +553,20 @@ POLICIES = (
             'print("games:", games, "tested:", tested, "real failures:"',
         ],
         "reason": "regex_chess_6000_position_timed_heredoc_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/app",
+        "required_file": "/app/re.json",
+        "required_markers": [],
+        "parent_cmdline_markers": [
+            "random.seed(2024)", "for game in range(300)",
+            "endgame sprint games", "b.fullmove_number < 60",
+            'print("positions: %d, fails: %d, ep: %d, promo: %d, castle:',
+        ],
+        "reason": "regex_chess_300_game_endgame_heredoc_post_check",
     },
     {
         "task_prefix": "harbor-opencode-circuit-fibsqrt-",

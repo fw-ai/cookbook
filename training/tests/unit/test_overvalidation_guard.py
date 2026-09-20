@@ -234,6 +234,15 @@ def test_leaf_ignoring_sigint_receives_sigterm(evidence):
         'print("tested positions:", tested + len(specials), "OK")\n',
     ),
     (
+        "regex_chess_orphan_300_game_seed12345_post_check_fuzz",
+        ["python3", "fuzz.py", "300", "12345"],
+        "/app",
+        "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20\n"
+        "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0\n"
+        "while not b.is_game_over() and b.fullmove_number < 70:\n    pass\n"
+        'print("tested positions:", tested + len(specials), "OK")\n',
+    ),
+    (
         "regex_chess_10_game_timed_post_check_fuzz",
         ["python3", "-u", "fuzz2.py", "10"],
         "/tmp/opencode",
@@ -603,6 +612,53 @@ def test_12000_position_heredoc_requires_exact_parent(tmp_path, monkeypatch):
     }
     assert guard.is_known_overvalidation(expected, proc)
 
+    (parent / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
+def test_300_game_endgame_heredoc_requires_exact_parent(
+    tmp_path, monkeypatch,
+):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(b"python3\0-\0")
+    (process / "cwd").symlink_to("/app")
+    (parent / "cmdline").write_bytes(
+        b"bash\0-c\0random.seed(2024)\n# endgame sprint games\n"
+        b"for game in range(300):\n"
+        b"    while not b.is_game_over() and b.fullmove_number < 60:\n"
+        b"        pass\n"
+        b"print(\"positions: %d, fails: %d, ep: %d, promo: %d, castle: %d\" "
+        b"% values)\0"
+    )
+    packed = tmp_path / "re.json"
+    packed.write_text("[]")
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"]
+        == "regex_chess_300_game_endgame_heredoc_post_check"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(packed),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
     (parent / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
     assert not guard.is_known_overvalidation(expected, proc)
 
