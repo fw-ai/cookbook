@@ -438,3 +438,54 @@ def test_timed_300_game_heredoc_requires_exact_grandparent(
 
     (shell / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
     assert not guard.is_known_overvalidation(expected, proc)
+
+
+def test_repeated_fuzz4_requires_exact_timeout_parent(tmp_path, monkeypatch):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(
+        b"python3\0/tmp/opencode/fuzz4.py\0" b"424242\0"
+    )
+    (process / "cwd").symlink_to("/app")
+    (parent / "cmdline").write_bytes(
+        b"timeout\0" b"1750\0python3\0/tmp/opencode/fuzz4.py\0"
+        b"424242\0"
+    )
+    script = tmp_path / "fuzz4.py"
+    script.write_text(
+        "for game in range(150):\n"
+        "    while not b.is_game_over():\n        pass\n"
+        'print("fuzz4 done: %d positions, fails %d" % (tests, fails))\n'
+    )
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"]
+        == "regex_chess_repeated_150_game_fuzz4_post_check"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(script),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (parent / "cmdline").write_bytes(
+        b"timeout\0" b"900\0python3\0/tmp/opencode/fuzz4.py\0"
+        b"424242\0"
+    )
+    assert not guard.is_known_overvalidation(expected, proc)
