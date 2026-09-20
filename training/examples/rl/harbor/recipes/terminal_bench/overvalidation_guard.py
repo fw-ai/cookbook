@@ -752,6 +752,42 @@ POLICIES = (
         ],
         "reason": "large_scale_text_editing_noninteractive_vim_stall",
     },
+    {
+        "task_prefix": "harbor-opencode-llm-inference-batching-scheduler-",
+        "min_elapsed_s": 300,
+        "cmdline": ["python3", "/tmp/opencode/tune4.py"],
+        "cwd": "/app",
+        "required_file": "/tmp/opencode/tune4.py",
+        "required_markers": [
+            "for (lam1, mu1, nu1, lam2, mu2, nu2) in [",
+            "X.build_plans(",
+            "X.report(",
+        ],
+        "parent_cmdline_markers": [
+            "cat > /tmp/opencode/tune4.py",
+            "time python3 /tmp/opencode/tune4.py",
+        ],
+        "reason": "scheduler_repeated_post_solution_tune4_sweep",
+    },
+    {
+        "task_prefix": "harbor-opencode-llm-inference-batching-scheduler-",
+        "min_elapsed_s": 300,
+        "cmdline_prefix": ["python3", "-c"],
+        "cmdline_markers": [
+            "for lam_seq in [20, 25, 30, 35, 40, 50, 60, 70]",
+            "for lam_pad in [0.0, 1e4, 3e4]",
+            "for lam95 in [1e10, 1e8, 1e7]",
+            "print('BEST b1:', best)",
+        ],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/optimize2.py",
+        "required_markers": ["def solve_bucket", "def evaluate"],
+        "parent_cmdline_markers": [
+            "timeout 1800 python3 -c",
+            "tail -40",
+        ],
+        "reason": "scheduler_72_configuration_post_solution_grid",
+    },
 )
 
 
@@ -777,8 +813,19 @@ def is_known_overvalidation(expected, proc_root=Path("/proc")):
                - int(stat[19]) / os.sysconf("SC_CLK_TCK"))
     if elapsed < policy["min_elapsed_s"]:
         return False
-    cmdline = [os.fsdecode(arg) for arg in (process / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")]
-    if cmdline != policy["cmdline"]:
+    cmdline = [
+        os.fsdecode(arg)
+        for arg in (process / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+    ]
+    expected_cmdline = policy.get("cmdline")
+    if expected_cmdline is not None and cmdline != expected_cmdline:
+        return False
+    prefix = policy.get("cmdline_prefix")
+    if prefix is not None and cmdline[:len(prefix)] != prefix:
+        return False
+    cmdline_text = " ".join(cmdline)
+    if not all(marker in cmdline_text
+               for marker in policy.get("cmdline_markers", [])):
         return False
     cwd = os.readlink(process / "cwd")
     if policy.get("cwd") is not None:

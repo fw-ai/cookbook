@@ -169,10 +169,103 @@ def test_large_scale_text_editing_vim_stall_is_exactly_guarded(
             }],
         },
     }
-    assert guard.recovery_candidates(record, record) == [expected]
+    candidates = guard.recovery_candidates(record, record)
+    assert expected in candidates
     assert guard.is_known_overvalidation(expected, proc)
+    assert not any(
+        guard.is_known_overvalidation(candidate, proc)
+        for candidate in candidates
+        if candidate != expected
+    )
 
     (parent / "cmdline").write_bytes(b"bash\0-c\0vim unrelated.csv\0")
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
+@pytest.mark.parametrize(("reason", "argv", "cwd", "body", "parent_body"), [
+    (
+        "scheduler_repeated_post_solution_tune4_sweep",
+        ["python3", "/tmp/opencode/tune4.py"],
+        "/app",
+        "for (lam1, mu1, nu1, lam2, mu2, nu2) in [\n"
+        "    X.build_plans()\n    X.report()\n",
+        "cat > /tmp/opencode/tune4.py; "
+        "time python3 /tmp/opencode/tune4.py",
+    ),
+    (
+        "scheduler_72_configuration_post_solution_grid",
+        [
+            "python3", "-c",
+            "for lam_seq in [20, 25, 30, 35, 40, 50, 60, 70]:\n"
+            "  for lam_pad in [0.0, 1e4, 3e4]:\n"
+            "    for lam95 in [1e10, 1e8, 1e7]:\n"
+            "      pass\nprint('BEST b1:', best)\n",
+        ],
+        "/tmp/opencode",
+        "def solve_bucket():\n    pass\ndef evaluate():\n    pass\n",
+        "timeout 1800 python3 -c sweep | tail -40",
+    ),
+])
+def test_scheduler_post_solution_sweeps_are_exactly_guarded(
+        tmp_path, monkeypatch, reason, argv, cwd, body, parent_body):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(
+        b"\0".join(arg.encode() for arg in argv) + b"\0"
+    )
+    (process / "cwd").symlink_to(cwd)
+    (parent / "cmdline").write_bytes(
+        b"/bin/bash\0-c\0" + parent_body.encode() + b"\0"
+    )
+    helper = tmp_path / "helper.py"
+    helper.write_text(body)
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index for index, policy in enumerate(policies)
+        if policy["reason"] == reason
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(helper),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    record = {
+        "trial": "harbor-opencode-llm-inference-batching-scheduler-0-test",
+        "sandbox_id": "exact",
+        "phase": "agent_or_setup",
+        "remote": {
+            "running_tools": [
+                {"tool": "bash", "start_ms": 10, "elapsed_s": 700},
+            ],
+            "processes": [{
+                "Pid": "10", "PPid": "20", "Name": "python3",
+                "start_ticks": stat[19], "elapsed_s": 700,
+            }],
+        },
+    }
+    candidates = guard.recovery_candidates(record, record)
+    assert expected in candidates
+    assert guard.is_known_overvalidation(expected, proc)
+    assert not any(
+        guard.is_known_overvalidation(candidate, proc)
+        for candidate in candidates
+        if candidate != expected
+    )
+
+    (parent / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
     assert not guard.is_known_overvalidation(expected, proc)
 
 
