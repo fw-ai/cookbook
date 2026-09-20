@@ -179,6 +179,15 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         'print("random games done:", ntested, "positions, failures:", nfail)\n',
     ),
     (
+        "regex_chess_30_game_seed7_post_check_fuzz",
+        ["python3", "fuzz.py", "30", "7"],
+        "/app",
+        "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20\n"
+        "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0\n"
+        "while not b.is_game_over() and b.fullmove_number < 70:\n    pass\n"
+        'print("tested positions:", tested + len(specials), "OK")\n',
+    ),
+    (
         "regex_chess_150_game_fuzz4_post_check",
         ["python3", "/tmp/opencode/fuzz4.py", "424242"],
         "/app",

@@ -166,6 +166,23 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "30", "7"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20",
+            "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0",
+            "while not b.is_game_over() and b.fullmove_number < 70",
+            'print("tested positions:", tested + len(specials)',
+        ],
+        "parent_cmdline_markers": [
+            "python3 build_re.py", "python3 fuzz.py 30 7", "tail -8",
+        ],
+        "reason": "regex_chess_30_game_seed7_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "fuzz.py"],
         "cwd": "/app",
         "required_file": "/app/fuzz.py",
