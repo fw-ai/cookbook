@@ -371,3 +371,55 @@ def test_12000_position_heredoc_requires_exact_parent(tmp_path, monkeypatch):
 
     (parent / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
     assert not guard.is_known_overvalidation(expected, proc)
+
+
+def test_timed_300_game_heredoc_requires_exact_grandparent(
+    tmp_path, monkeypatch,
+):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    timeout = proc / "20"
+    shell = proc / "30"
+    process.mkdir(parents=True)
+    timeout.mkdir()
+    shell.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(b"python3\0-\0")
+    (process / "cwd").symlink_to("/app")
+    timeout_stat = ["S"] + ["0"] * 19
+    timeout_stat[1], timeout_stat[19] = "30", str(99 * hz)
+    (timeout / "stat").write_text(
+        "20 (timeout) " + " ".join(timeout_stat)
+    )
+    (shell / "cmdline").write_bytes(
+        b"bash\0-c\0timeout 3600 python3 -\n"
+        b"for game in range(300):\n    stats['double_check'] += 1\n"
+        b"print(\"FAIL\", fen)\0"
+    )
+    packed = tmp_path / "re.json"
+    packed.write_text("[]")
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"]
+        == "regex_chess_300_game_timed_heredoc_post_check_fuzz"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(packed),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (shell / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
+    assert not guard.is_known_overvalidation(expected, proc)

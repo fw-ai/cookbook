@@ -170,6 +170,20 @@ POLICIES = (
         "reason": "regex_chess_12000_position_heredoc_post_check_fuzz",
     },
     {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/app",
+        "required_file": "/app/re.json",
+        "required_markers": [],
+        "ancestor_hops": 2,
+        "ancestor_cmdline_markers": [
+            "timeout 3600 python3 -", "for game in range(300):",
+            "stats['double_check']", 'print("FAIL", fen)',
+        ],
+        "reason": "regex_chess_300_game_timed_heredoc_post_check_fuzz",
+    },
+    {
         "task_prefix": "harbor-opencode-circuit-fibsqrt-",
         "min_elapsed_s": 1200,
         "cmdline": ["python3", "-"],
@@ -223,6 +237,23 @@ def is_known_overvalidation(expected, proc_root=Path("/proc")):
         if not all(
             marker in parent_cmdline
             for marker in policy["parent_cmdline_markers"]
+        ):
+            return False
+    if policy.get("ancestor_cmdline_markers"):
+        ancestor_pid = stat[1]
+        for _ in range(policy["ancestor_hops"] - 1):
+            ancestor_stat = (
+                (proc_root / ancestor_pid / "stat")
+                .read_text().rsplit(")", 1)[1].split()
+            )
+            ancestor_pid = ancestor_stat[1]
+        ancestor_cmdline = os.fsdecode(
+            (proc_root / ancestor_pid / "cmdline")
+            .read_bytes().replace(b"\0", b" ")
+        )
+        if not all(
+            marker in ancestor_cmdline
+            for marker in policy["ancestor_cmdline_markers"]
         ):
             return False
     return True
