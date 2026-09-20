@@ -268,6 +268,24 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "process_name": "sleep",
+        "cmdline": ["sleep", "1500"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz_par.py",
+        "required_markers": [
+            "seed = int(sys.argv[1])", "ngames = int(sys.argv[2])",
+            "for ply in range(120):",
+        ],
+        "parent_cmdline_markers": [
+            "sleep 1500", "fuzz_111.log", "fuzz_222.log",
+            "fuzz_333.log", "fuzz_444.log", "grep -h FAIL",
+            "fuzz_*.log", "ep_*.log",
+        ],
+        "reason": "regex_chess_parallel_fuzz_repeated_completion_wait",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "fuzz.py"],
         "cwd": "/app",
         "required_file": "/app/fuzz.py",

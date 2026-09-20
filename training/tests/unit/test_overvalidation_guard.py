@@ -329,8 +329,16 @@ def test_parallel_regex_policies_cover_only_observed_seed_commands():
     }
 
 
+@pytest.mark.parametrize(("reason", "duration", "extra_parent"), [
+    ("regex_chess_parallel_fuzz_completion_wait", "900", ""),
+    (
+        "regex_chess_parallel_fuzz_repeated_completion_wait",
+        "1500",
+        " fuzz_*.log ep_*.log",
+    ),
+])
 def test_parallel_regex_completion_wait_requires_exact_parent(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, reason, duration, extra_parent,
 ):
     hz = os.sysconf("SC_CLK_TCK")
     proc = tmp_path / "proc"
@@ -343,11 +351,14 @@ def test_parallel_regex_completion_wait_requires_exact_parent(
     stat[1], stat[19] = "20", str(100 * hz)
     (process / "stat").write_text("10 (sleep) " + " ".join(stat))
     (process / "comm").write_text("sleep")
-    (process / "cmdline").write_bytes(b"sleep\0900\0")
+    (process / "cmdline").write_bytes(
+        b"sleep\0" + duration.encode() + b"\0"
+    )
     (process / "cwd").symlink_to("/app")
     (parent / "cmdline").write_bytes(
-        b"bash\0-c\0sleep 900; tail fuzz_111.log fuzz_222.log "
-        b"fuzz_333.log fuzz_444.log; grep -h FAIL\0"
+        b"bash\0-c\0sleep " + duration.encode()
+        + b"; tail fuzz_111.log fuzz_222.log fuzz_333.log fuzz_444.log; "
+        + b"grep -h FAIL" + extra_parent.encode() + b"\0"
     )
     script = tmp_path / "fuzz_par.py"
     script.write_text(
@@ -358,7 +369,7 @@ def test_parallel_regex_completion_wait_requires_exact_parent(
     policy_index = next(
         index
         for index, policy in enumerate(policies)
-        if policy["reason"] == "regex_chess_parallel_fuzz_completion_wait"
+        if policy["reason"] == reason
     )
     policies[policy_index] = {
         **policies[policy_index], "required_file": str(script),
@@ -370,7 +381,9 @@ def test_parallel_regex_completion_wait_requires_exact_parent(
         "policy_index": policy_index,
     }
     assert guard.is_known_overvalidation(expected, proc)
-    (parent / "cmdline").write_bytes(b"bash\0-c\0sleep 900\0")
+    (parent / "cmdline").write_bytes(
+        b"bash\0-c\0sleep " + duration.encode() + b"\0"
+    )
     assert not guard.is_known_overvalidation(expected, proc)
 
 
