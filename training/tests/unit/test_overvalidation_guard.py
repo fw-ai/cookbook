@@ -171,6 +171,14 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         'print("total: %d, fails: %d" % (total, fails))\n',
     ),
     (
+        "regex_chess_60_game_300_ply_post_check_fuzz",
+        ["python3", "fuzz.py"],
+        "/app",
+        "random.seed(12345)\nfor g in range(60):\n"
+        "    for ply in range(300):\n        pass\n"
+        'print("random games done:", ntested, "positions, failures:", nfail)\n',
+    ),
+    (
         "regex_chess_150_game_fuzz4_post_check",
         ["python3", "/tmp/opencode/fuzz4.py", "424242"],
         "/app",
