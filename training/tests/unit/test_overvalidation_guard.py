@@ -226,3 +226,45 @@ def test_feal_linear_compiled_search_is_revalidated(tmp_path, monkeypatch):
 
     (process / "comm").write_text("other")
     assert not guard.is_known_overvalidation(expected, proc)
+
+
+def test_heredoc_stress_requires_exact_parent_command(tmp_path, monkeypatch):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(b"python3\0-\0")
+    (process / "cwd").symlink_to("/tmp/opencode")
+    (parent / "cmdline").write_bytes(
+        b"bash\0-c\0for game in range(150):\n"
+        b"for trial in range(200):\nprint('castle games done')\0"
+    )
+    helper = tmp_path / "fuzz.py"
+    helper.write_text("def verify(fen):\n    return True\n")
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"]
+        == "regex_chess_150_game_heredoc_post_check_fuzz"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(helper),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (parent / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
+    assert not guard.is_known_overvalidation(expected, proc)

@@ -71,6 +71,54 @@ POLICIES = (
         "reason": "regex_chess_4000_position_post_check_fuzz",
     },
     {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "60", "42"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "def random_fen_positions", 'print("testing", len(positions), "positions")',
+        ],
+        "reason": "regex_chess_60_position_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "ngames = 40", 'print("random positions tested:"',
+            '"crafted ok. fails:"',
+        ],
+        "reason": "regex_chess_40_game_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/app",
+        "required_file": "/tmp/opencode/fuzz.py",
+        "required_markers": ["def verify"],
+        "parent_cmdline_markers": [
+            "for g in range(15):", "for ply in range(200):", "promo-fuzz:",
+        ],
+        "reason": "regex_chess_promotion_playout_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/fuzz.py",
+        "required_markers": ["def verify"],
+        "parent_cmdline_markers": [
+            "for game in range(150):", "for trial in range(200):",
+            "castle games done",
+        ],
+        "reason": "regex_chess_150_game_heredoc_post_check_fuzz",
+    },
+    {
         "task_prefix": "harbor-opencode-circuit-fibsqrt-",
         "min_elapsed_s": 1200,
         "cmdline": ["python3", "-"],
@@ -115,6 +163,16 @@ def is_known_overvalidation(expected, proc_root=Path("/proc")):
     if policy["required_markers"]:
         body = required.read_text(errors="replace")
         if not all(marker in body for marker in policy["required_markers"]):
+            return False
+    if policy.get("parent_cmdline_markers"):
+        parent = proc_root / stat[1]
+        parent_cmdline = os.fsdecode(
+            (parent / "cmdline").read_bytes().replace(b"\0", b" ")
+        )
+        if not all(
+            marker in parent_cmdline
+            for marker in policy["parent_cmdline_markers"]
+        ):
             return False
     return True
 
