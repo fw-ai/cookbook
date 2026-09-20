@@ -103,6 +103,14 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
 
 @pytest.mark.parametrize(("reason", "argv", "cwd", "body"), [
     (
+        "regex_chess_100_game_post_check_fuzz",
+        ["python3", "fuzz.py", "100"],
+        "/tmp/opencode",
+        "ngames = int(sys.argv[1])\n"
+        "for g in range(ngames):\n    pass\n"
+        "print('tested positions:', total_pos, 'failures:', bad)\n",
+    ),
+    (
         "regex_chess_150_game_post_check_stress",
         ["python3", "stress.py", "150"],
         "/tmp/opencode",

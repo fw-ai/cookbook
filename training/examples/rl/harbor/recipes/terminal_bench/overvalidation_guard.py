@@ -53,6 +53,18 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "100"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/fuzz.py",
+        "required_markers": [
+            "ngames = int(sys.argv[1])", "for g in range(ngames)",
+            "print('tested positions:', total_pos, 'failures:', bad)",
+        ],
+        "reason": "regex_chess_100_game_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "stress.py", "150"],
         "cwd": "/tmp/opencode",
         "required_file": "/tmp/opencode/stress.py",
