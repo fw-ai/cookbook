@@ -453,6 +453,21 @@ POLICIES = (
         "reason": "regex_chess_300_game_timed_heredoc_post_check_fuzz",
     },
     {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": ["def check"],
+        "ancestor_hops": 2,
+        "ancestor_cmdline_markers": [
+            "timeout 5000 python3 -", "random.seed(987654)",
+            "for g in range(120):", "b.halfmove_clock > 80",
+            'print("soak done, tested:", tested, "failures:", fails)',
+        ],
+        "reason": "regex_chess_120_game_timed_heredoc_post_check_fuzz",
+    },
+    {
         "task_prefix": "harbor-opencode-circuit-fibsqrt-",
         "min_elapsed_s": 1200,
         "cmdline": ["python3", "-"],
