@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import tempfile
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Set
 from contextlib import contextmanager
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_CONCURRENT_TRIALS = 24
 DEFAULT_ROLLOUT_RETRIES = 3
 _RETRY_DELAY_SECONDS = 15
+_RETRY_JITTER_SECONDS = 15
 
 _T = TypeVar("_T")
 
@@ -73,10 +75,16 @@ async def run_with_fresh_trajectory_retries(
                     exc,
                 )
                 return None
-            delay = _RETRY_DELAY_SECONDS * (attempt + 1)
+            # Correlated E2B transport failures can take down a large wave of
+            # trials at once. Add bounded jitter so their fresh sandboxes do
+            # not all hit the control plane again on the same timestamp.
+            delay = (
+                _RETRY_DELAY_SECONDS * (attempt + 1)
+                + random.uniform(0, _RETRY_JITTER_SECONDS)
+            )
             logger.warning(
                 "Harbor task %s failed transiently (attempt %d/%d); "
-                "retrying with a fresh trajectory in %ds: %s",
+                "retrying with a fresh trajectory in %.1fs: %s",
                 task_name,
                 attempt + 1,
                 retries + 1,

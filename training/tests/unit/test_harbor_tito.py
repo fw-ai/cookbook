@@ -2552,6 +2552,7 @@ def test_e2b_readiness_retry_does_not_wait_for_healthy_sibling(
         delays.append(delay)
 
     monkeypatch.setattr(tito_rollout.asyncio, "sleep", record_backoff)
+    monkeypatch.setattr(tito_rollout.random, "uniform", lambda _low, _high: 7.5)
 
     async def exercise():
         sibling_started, release_sibling = asyncio.Event(), asyncio.Event()
@@ -2589,7 +2590,7 @@ def test_e2b_readiness_retry_does_not_wait_for_healthy_sibling(
             )
             assert result == "recovered-result"
             assert attempts == [0, 1]
-            assert delays == [15]
+            assert delays == [22.5]
             assert sibling_attempts == [0]
             assert not sibling.done()
         finally:
