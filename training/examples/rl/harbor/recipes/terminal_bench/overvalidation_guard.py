@@ -180,6 +180,24 @@ POLICIES = (
         ],
         "reason": "regex_chess_30_game_seed7_post_check_fuzz",
     },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "30", "7"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20",
+            "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0",
+            "while not b.is_game_over() and b.fullmove_number < 70",
+            'print("tested positions:", tested + len(specials)',
+        ],
+        "parent_cmdline_markers": [
+            "python3 build_re.py", "python3 fuzz.py 30 7",
+            "/tmp/fuzzlog.txt", "COUNT MISMATCH", "tail -2",
+        ],
+        "reason": "regex_chess_30_game_seed7_logged_post_check_fuzz",
+    },
     *(
         {
             "task_prefix": "harbor-opencode-regex-chess-",
@@ -447,10 +465,22 @@ def signal_known_overvalidation(expected, proc_root=Path("/proc")):
         descriptor = os.pidfd_open(expected["pid"])
         if not is_known_overvalidation(expected, proc_root):
             return {"action": "none", "reason": "evidence_changed"}
-        signal.pidfd_send_signal(descriptor, signal.SIGINT)
+        ignored = 0
+        try:
+            for line in (
+                proc_root / str(expected["pid"]) / "status"
+            ).read_text().splitlines():
+                if line.startswith("SigIgn:"):
+                    ignored = int(line.split(":", 1)[1].strip(), 16)
+                    break
+        except OSError:
+            pass
+        interrupt_ignored = bool(ignored & (1 << (signal.SIGINT - 1)))
+        selected_signal = signal.SIGTERM if interrupt_ignored else signal.SIGINT
+        signal.pidfd_send_signal(descriptor, selected_signal)
         policy = POLICIES[expected["policy_index"]]
         return {
-            "action": "SIGINT",
+            "action": signal.Signals(selected_signal).name,
             "pid": expected["pid"],
             "start_ticks": expected["start_ticks"],
             "reason": policy["reason"],

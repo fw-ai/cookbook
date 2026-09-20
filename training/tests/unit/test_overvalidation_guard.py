@@ -101,6 +101,17 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         closed.assert_called_once_with(99)
 
 
+def test_leaf_ignoring_sigint_receives_sigterm(evidence):
+    root, expected, _ = evidence
+    (root / "10" / "status").write_text("SigIgn:\t0000000000000002\n")
+    with patch.object(guard.os, "pidfd_open", return_value=99), \
+            patch.object(guard.signal, "pidfd_send_signal") as sent, \
+            patch.object(guard.os, "close"):
+        result = guard.signal_known_overvalidation(expected, root)
+        assert result["action"] == "SIGTERM"
+        sent.assert_called_once_with(99, signal.SIGTERM)
+
+
 @pytest.mark.parametrize(("reason", "argv", "cwd", "body"), [
     (
         "regex_chess_100_game_post_check_fuzz",
@@ -188,6 +199,15 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
     ),
     (
         "regex_chess_30_game_seed7_post_check_fuzz",
+        ["python3", "fuzz.py", "30", "7"],
+        "/app",
+        "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20\n"
+        "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0\n"
+        "while not b.is_game_over() and b.fullmove_number < 70:\n    pass\n"
+        'print("tested positions:", tested + len(specials), "OK")\n',
+    ),
+    (
+        "regex_chess_30_game_seed7_logged_post_check_fuzz",
         ["python3", "fuzz.py", "30", "7"],
         "/app",
         "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20\n"
