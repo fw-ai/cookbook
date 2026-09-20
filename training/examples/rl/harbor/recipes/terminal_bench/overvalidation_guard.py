@@ -157,6 +157,19 @@ POLICIES = (
         "reason": "regex_chess_150_game_heredoc_post_check_fuzz",
     },
     {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/app/re.json",
+        "required_markers": [],
+        "parent_cmdline_markers": [
+            "for it in range(6000):", "skip zero-move inputs",
+            "print('total:', tests, 'failures:', fails)",
+        ],
+        "reason": "regex_chess_12000_position_heredoc_post_check_fuzz",
+    },
+    {
         "task_prefix": "harbor-opencode-circuit-fibsqrt-",
         "min_elapsed_s": 1200,
         "cmdline": ["python3", "-"],

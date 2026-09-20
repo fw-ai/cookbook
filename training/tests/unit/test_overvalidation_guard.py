@@ -328,3 +328,46 @@ def test_python_heredoc_400_game_fuzz_requires_exact_parent(
 
     (parent / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
     assert not guard.is_known_overvalidation(expected, proc)
+
+
+def test_12000_position_heredoc_requires_exact_parent(tmp_path, monkeypatch):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(b"python3\0-\0")
+    (process / "cwd").symlink_to("/tmp/opencode")
+    (parent / "cmdline").write_bytes(
+        b"bash\0-c\0# skip zero-move inputs\n"
+        b"for it in range(6000):\n    pass\n"
+        b"print('total:', tests, 'failures:', fails)\0"
+    )
+    packed = tmp_path / "re.json"
+    packed.write_text("[]")
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"]
+        == "regex_chess_12000_position_heredoc_post_check_fuzz"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(packed),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (parent / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
+    assert not guard.is_known_overvalidation(expected, proc)
