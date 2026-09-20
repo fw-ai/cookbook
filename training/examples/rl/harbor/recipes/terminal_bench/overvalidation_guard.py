@@ -489,7 +489,8 @@ POLICIES = (
         "cwd": "/tmp/opencode",
         "required_file": "/app/re.json",
         "required_markers": [],
-        "parent_cmdline_markers": [
+        "ancestor_hops": 2,
+        "ancestor_cmdline_markers": [
             "timeout 1200 python3 -", "for seed in range(1000, 1006)",
             "for g in range(15)", "b.fullmove_number < 150",
             'print("SOAK OK, ntest =", ntest)',
@@ -503,7 +504,8 @@ POLICIES = (
         "cwd": "/tmp/opencode",
         "required_file": "/app/re.json",
         "required_markers": [],
-        "parent_cmdline_markers": [
+        "ancestor_hops": 2,
+        "ancestor_cmdline_markers": [
             "timeout 3500 python3 -", "rng = random.Random(1337)",
             "for g in range(400)", "b.ply() < 160",
             "interesting-games=",

@@ -556,9 +556,11 @@ def test_regex_heredoc_soaks_require_exact_parent_markers(
     hz = os.sysconf("SC_CLK_TCK")
     proc = tmp_path / "proc"
     process = proc / "10"
-    parent = proc / "20"
+    timeout = proc / "20"
+    shell = proc / "30"
     process.mkdir(parents=True)
-    parent.mkdir()
+    timeout.mkdir()
+    shell.mkdir()
     (proc / "uptime").write_text("2000 0")
     stat = ["R"] + ["0"] * 19
     stat[1], stat[19] = "20", str(100 * hz)
@@ -566,7 +568,13 @@ def test_regex_heredoc_soaks_require_exact_parent_markers(
     (process / "comm").write_text("python3")
     (process / "cmdline").write_bytes(b"python3\0-\0")
     (process / "cwd").symlink_to("/tmp/opencode")
-    (parent / "cmdline").write_bytes(
+    timeout_stat = ["S"] + ["0"] * 19
+    timeout_stat[1], timeout_stat[19] = "30", str(99 * hz)
+    (timeout / "stat").write_text(
+        "20 (timeout) " + " ".join(timeout_stat)
+    )
+    (timeout / "cmdline").write_bytes(b"timeout\0python3\0-\0")
+    (shell / "cmdline").write_bytes(
         b"/bin/bash\0-c\0" + parent_body.encode() + b"\0"
     )
     packed = tmp_path / "re.json"
@@ -588,7 +596,7 @@ def test_regex_heredoc_soaks_require_exact_parent_markers(
     }
     assert guard.is_known_overvalidation(expected, proc)
 
-    (parent / "cmdline").write_bytes(b"/bin/bash\0-c\0unrelated command\0")
+    (shell / "cmdline").write_bytes(b"/bin/bash\0-c\0unrelated command\0")
     assert not guard.is_known_overvalidation(expected, proc)
 
 
