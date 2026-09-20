@@ -219,6 +219,24 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "400", "12345"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20",
+            "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0",
+            "while not b.is_game_over() and b.fullmove_number < 70",
+            'print("tested positions:", tested + len(specials)',
+        ],
+        "parent_cmdline_markers": [
+            "python3 fuzz.py 400 12345", "/tmp/fuzzgames.txt",
+            "COUNT MISMATCH", "tail -2",
+        ],
+        "reason": "regex_chess_400_game_seed12345_logged_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "-u", "fuzz2.py", "10"],
         "cwd": "/tmp/opencode",
         "required_file": "/tmp/opencode/fuzz2.py",
@@ -248,6 +266,22 @@ POLICIES = (
         }
         for seed in (111, 222, 333, 444)
     ),
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz_par.py", "777", "150"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz_par.py",
+        "required_markers": [
+            "seed = int(sys.argv[1])", "ngames = int(sys.argv[2])",
+            "for ply in range(120):",
+            'log.write("DONE seed=%d games=%d positions=%d fails=%d',
+        ],
+        "parent_cmdline_markers": [
+            "python3 fuzz_par.py 777 150", "2>&1", "tail -1",
+        ],
+        "reason": "regex_chess_parallel_150_game_seed777_post_check",
+    },
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,

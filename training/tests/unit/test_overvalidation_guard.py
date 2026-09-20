@@ -225,6 +225,15 @@ def test_leaf_ignoring_sigint_receives_sigterm(evidence):
         'print("tested positions:", tested + len(specials), "OK")\n',
     ),
     (
+        "regex_chess_400_game_seed12345_logged_post_check_fuzz",
+        ["python3", "fuzz.py", "400", "12345"],
+        "/app",
+        "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20\n"
+        "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0\n"
+        "while not b.is_game_over() and b.fullmove_number < 70:\n    pass\n"
+        'print("tested positions:", tested + len(specials), "OK")\n',
+    ),
+    (
         "regex_chess_10_game_timed_post_check_fuzz",
         ["python3", "-u", "fuzz2.py", "10"],
         "/tmp/opencode",
@@ -243,6 +252,14 @@ def test_leaf_ignoring_sigint_receives_sigterm(evidence):
     (
         "regex_chess_parallel_300_game_seed111_post_check",
         ["python3", "fuzz_par.py", "111", "300"],
+        "/app",
+        "seed = int(sys.argv[1])\nngames = int(sys.argv[2])\n"
+        "for ply in range(120):\n    pass\n"
+        'log.write("DONE seed=%d games=%d positions=%d fails=%d" % values)\n',
+    ),
+    (
+        "regex_chess_parallel_150_game_seed777_post_check",
+        ["python3", "fuzz_par.py", "777", "150"],
         "/app",
         "seed = int(sys.argv[1])\nngames = int(sys.argv[2])\n"
         "for ply in range(120):\n    pass\n"
