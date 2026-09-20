@@ -33,6 +33,7 @@ from training.examples.rl.harbor.recipes.terminal_bench import node_timeout_guar
 from training.examples.rl.harbor.recipes.terminal_bench import kernel_core_guard
 from training.examples.rl.harbor.recipes.terminal_bench import mips_probe_guard
 from training.examples.rl.harbor.recipes.terminal_bench import overvalidation_guard
+from training.examples.rl.harbor.recipes.terminal_bench import verifier_deadlock_guard
 
 from training.examples.rl.harbor.recipes.terminal_bench.kernel_stream_guard import (
     recovery_candidates,
@@ -316,7 +317,8 @@ def guest_oom_warnings(current):
 
 
 def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore=False,
-                         mips_probes=False, overvalidation=False):
+                         mips_probes=False, overvalidation=False,
+                         verifier_deadlock=False):
     actions = []
     candidates = node_timeout_guard.recovery_candidates if node_deadlines else recovery_candidates
     command = node_timeout_guard.recovery_command if node_deadlines else recovery_command
@@ -326,6 +328,9 @@ def recover_trial_search(root, previous, current, *, node_deadlines=False, kcore
         candidates, command = mips_probe_guard.recovery_candidates, mips_probe_guard.recovery_command
     if overvalidation:
         candidates, command = overvalidation_guard.recovery_candidates, overvalidation_guard.recovery_command
+    if verifier_deadlock:
+        candidates = verifier_deadlock_guard.recovery_candidates
+        command = verifier_deadlock_guard.recovery_command
     for expected in candidates(previous, current):
         if (root / 'trials' / current['trial'] / 'result.json').exists():
             break
@@ -421,6 +426,8 @@ def main():
                         help='Opt in to SIGKILL only for revalidated unbounded Node probes in make-mips-interpreter')
     parser.add_argument('--recover-known-overvalidation', action='store_true',
                         help='Opt in to SIGINT only for revalidated task-specific agent stress-test leaves')
+    parser.add_argument('--recover-known-verifier-deadlock', action='store_true',
+                        help='Opt in to SIGTERM only for the revalidated torch-tensor-parallelism spawned verifier leaf')
     args = parser.parse_args()
     if not 30 <= args.interval_seconds <= 3600:
         parser.error('--interval-seconds must be between 30 and 3600')
@@ -467,6 +474,10 @@ def main():
                     if args.recover_known_overvalidation:
                         trial.setdefault('recovery_actions', []).extend(
                             recover_trial_search(root, previous.get(trial['trial']), trial, overvalidation=True))
+                    if args.recover_known_verifier_deadlock:
+                        trial.setdefault('recovery_actions', []).extend(
+                            recover_trial_search(root, previous.get(trial['trial']), trial,
+                                                 verifier_deadlock=True))
         except Exception as error:
             record['observation_error'] = type(error).__name__
         print(json.dumps(record), flush=True)

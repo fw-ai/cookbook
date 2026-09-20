@@ -931,6 +931,21 @@ same unchanged file, at least 15 minutes old and still in verification, emit
 check worker activity and the configured verifier deadline. Never automatically
 kill a sample or assign zero reward just because its output is quiet.
 
+`torch-tensor-parallelism` has one narrower observed failure mode: pytest can
+remain blocked after printing the first `test_outputs.py` results, with its
+spawned multiprocessing test child sleeping and making at most negligible CPU
+progress until the outer verifier deadline. After confirming this exact state,
+`--recover-known-verifier-deadlock` opts into an earlier fail-closed recovery.
+It requires two observations with the same sandbox, unchanged verifier-log
+identity for at least ten minutes, stable sleeping pytest/spawn identities, and
+at most 2% CPU use. Inside the sandbox it revalidates the exact task argv, cwd,
+test file, log identity/age/content marker, PID start times and parent link. It
+then sends SIGTERM only to the spawned test leaf so pytest can report failure
+and normal missing-member recovery can proceed. Changed evidence or any other
+task/process shape causes no action. The guard never signals OpenCode, Harbor,
+the RL client, trainer, rollout, sandbox, or process group, and never fabricates
+a reward.
+
 When the run has the minute-level `health.jsonl` recorder, run
 `python training/examples/rl/harbor/recipes/terminal_bench/monitor_e2b_progress.py --run-dir RUN_DIR --pid HARNESS_PID` in a persistent server session, with
 `E2B_API_KEY` supplied through the environment. Add `--once` for a preflight.
