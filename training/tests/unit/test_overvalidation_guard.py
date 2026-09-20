@@ -131,6 +131,16 @@ def test_only_leaf_receives_sigint_after_revalidation(evidence):
         'for i in range(4000):\n    print("random positions tested:")\n',
     ),
     (
+        "regex_chess_4000_game_post_check_fuzz",
+        ["python3", "fuzz.py"],
+        "/app",
+        "random.seed(12345)\n"
+        "for g in range(4000):\n"
+        "    for ply in range(120):\n        pass\n"
+        'print("fuzz done: %d games, %d white positions, %d failures" '
+        "% (games, pos, n_fail))\n",
+    ),
+    (
         "regex_chess_40_game_fuzz2_post_check",
         ["python3", "/tmp/opencode/fuzz2.py", "999"],
         "/app",
@@ -372,6 +382,50 @@ def test_12000_position_heredoc_requires_exact_parent(tmp_path, monkeypatch):
         for index, policy in enumerate(policies)
         if policy["reason"]
         == "regex_chess_12000_position_heredoc_post_check_fuzz"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(packed),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (parent / "cmdline").write_bytes(b"bash\0-c\0unrelated command\0")
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
+def test_fixed_fen_heredoc_requires_exact_parent(tmp_path, monkeypatch):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(b"python3\0-\0")
+    (process / "cwd").symlink_to("/app")
+    (parent / "cmdline").write_bytes(
+        b"bash\0-c\0"
+        b'rules = json.load(open("/app/re.json"))\n'
+        b'fen = "rnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P1Q2/'
+        b'P1P5/q4Kb1 w kq - 0 1"\n'
+        b'sorted(s.split("\\n")) == sorted(exp.split("\\n"))\0'
+    )
+    packed = tmp_path / "re.json"
+    packed.write_text("[]")
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"] == "regex_chess_fixed_fen_heredoc_post_check"
     )
     policies[policy_index] = {
         **policies[policy_index], "required_file": str(packed),

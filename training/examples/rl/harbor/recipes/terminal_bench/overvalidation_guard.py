@@ -111,6 +111,19 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "random.seed(12345)", "for g in range(4000):",
+            "for ply in range(120):",
+            'print("fuzz done: %d games, %d white positions, %d failures"',
+        ],
+        "reason": "regex_chess_4000_game_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "fuzz.py", "60", "42"],
         "cwd": "/app",
         "required_file": "/app/fuzz.py",
@@ -211,6 +224,20 @@ POLICIES = (
             "print('total:', tests, 'failures:', fails)",
         ],
         "reason": "regex_chess_12000_position_heredoc_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/app",
+        "required_file": "/app/re.json",
+        "required_markers": [],
+        "parent_cmdline_markers": [
+            'rules = json.load(open("/app/re.json"))',
+            'fen = "rnb1k1nr/p2p1ppp/3B4/1p1NPN1P/6P1/3P1Q2/P1P5/q4Kb1 w kq - 0 1"',
+            'sorted(s.split("\\n")) == sorted(exp.split("\\n"))',
+        ],
+        "reason": "regex_chess_fixed_fen_heredoc_post_check",
     },
     {
         "task_prefix": "harbor-opencode-regex-chess-",
