@@ -198,6 +198,40 @@ POLICIES = (
         ],
         "reason": "regex_chess_30_game_seed7_logged_post_check_fuzz",
     },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "200", "99"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20",
+            "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0",
+            "while not b.is_game_over() and b.fullmove_number < 70",
+            'print("tested positions:", tested + len(specials)',
+        ],
+        "parent_cmdline_markers": [
+            "python3 fuzz.py 200 99", "/tmp/fuzzbig.txt",
+            "COUNT MISMATCH", "tail -2",
+        ],
+        "reason": "regex_chess_200_game_seed99_logged_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-u", "fuzz2.py", "10"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/fuzz2.py",
+        "required_markers": [
+            "rnd = random.Random(999)", "g = int(sys.argv[1])",
+            "while not b.is_game_over(claim_draw=False)",
+            'print("ALL OK. positions:", pos, flush=True)',
+        ],
+        "parent_cmdline_markers": [
+            "timeout", "800", "python3", "-u", "fuzz2.py", "10",
+        ],
+        "reason": "regex_chess_10_game_timed_post_check_fuzz",
+    },
     *(
         {
             "task_prefix": "harbor-opencode-regex-chess-",

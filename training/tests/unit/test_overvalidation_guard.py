@@ -216,6 +216,23 @@ def test_leaf_ignoring_sigint_receives_sigterm(evidence):
         'print("tested positions:", tested + len(specials), "OK")\n',
     ),
     (
+        "regex_chess_200_game_seed99_logged_post_check_fuzz",
+        ["python3", "fuzz.py", "200", "99"],
+        "/app",
+        "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 20\n"
+        "seed0 = int(sys.argv[2]) if len(sys.argv) > 2 else 0\n"
+        "while not b.is_game_over() and b.fullmove_number < 70:\n    pass\n"
+        'print("tested positions:", tested + len(specials), "OK")\n',
+    ),
+    (
+        "regex_chess_10_game_timed_post_check_fuzz",
+        ["python3", "-u", "fuzz2.py", "10"],
+        "/tmp/opencode",
+        "rnd = random.Random(999)\ng = int(sys.argv[1])\n"
+        "while not b.is_game_over(claim_draw=False):\n    pass\n"
+        'print("ALL OK. positions:", pos, flush=True)\n',
+    ),
+    (
         "regex_chess_parallel_300_game_seed111_post_check",
         ["python3", "fuzz_par.py", "111", "300"],
         "/app",
