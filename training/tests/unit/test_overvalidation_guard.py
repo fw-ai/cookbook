@@ -529,6 +529,69 @@ def test_heredoc_stress_requires_exact_parent_command(tmp_path, monkeypatch):
     assert not guard.is_known_overvalidation(expected, proc)
 
 
+@pytest.mark.parametrize(("reason", "parent_body"), [
+    (
+        "regex_chess_90_game_seed_range_heredoc_post_check",
+        "timeout 1200 python3 -\n"
+        "for seed in range(1000, 1006):\n"
+        "    for g in range(15):\n"
+        "        while not b.is_game_over() and b.fullmove_number < 150:\n"
+        "            pass\n"
+        'print("SOAK OK, ntest =", ntest)\n',
+    ),
+    (
+        "regex_chess_400_game_seed1337_heredoc_post_check",
+        "timeout 3500 python3 -\n"
+        "rng = random.Random(1337)\n"
+        "for g in range(400):\n"
+        "    while not b.is_game_over() and b.ply() < 160:\n"
+        "        pass\n"
+        'print(f"done: tested={tested} fails={fails} '
+        'interesting-games={interesting}")\n',
+    ),
+])
+def test_regex_heredoc_soaks_require_exact_parent_markers(
+    tmp_path, monkeypatch, reason, parent_body,
+):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(b"python3\0-\0")
+    (process / "cwd").symlink_to("/tmp/opencode")
+    (parent / "cmdline").write_bytes(
+        b"/bin/bash\0-c\0" + parent_body.encode() + b"\0"
+    )
+    packed = tmp_path / "re.json"
+    packed.write_text("[]")
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"] == reason
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(packed),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (parent / "cmdline").write_bytes(b"/bin/bash\0-c\0unrelated command\0")
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
 def test_python_heredoc_400_game_fuzz_requires_exact_parent(
     tmp_path, monkeypatch,
 ):
