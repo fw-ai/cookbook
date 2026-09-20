@@ -312,6 +312,51 @@ def test_parallel_regex_policies_cover_only_observed_seed_commands():
     }
 
 
+def test_parallel_regex_completion_wait_requires_exact_parent(
+    tmp_path, monkeypatch,
+):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["S"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (sleep) " + " ".join(stat))
+    (process / "comm").write_text("sleep")
+    (process / "cmdline").write_bytes(b"sleep\0900\0")
+    (process / "cwd").symlink_to("/app")
+    (parent / "cmdline").write_bytes(
+        b"bash\0-c\0sleep 900; tail fuzz_111.log fuzz_222.log "
+        b"fuzz_333.log fuzz_444.log; grep -h FAIL\0"
+    )
+    script = tmp_path / "fuzz_par.py"
+    script.write_text(
+        "seed = int(sys.argv[1])\nngames = int(sys.argv[2])\n"
+        "for ply in range(120):\n    pass\n"
+    )
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index
+        for index, policy in enumerate(policies)
+        if policy["reason"] == "regex_chess_parallel_fuzz_completion_wait"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(script),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+    (parent / "cmdline").write_bytes(b"bash\0-c\0sleep 900\0")
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
 def test_feal_linear_compiled_search_is_revalidated(tmp_path, monkeypatch):
     hz = os.sysconf("SC_CLK_TCK")
     proc = tmp_path / "proc"
