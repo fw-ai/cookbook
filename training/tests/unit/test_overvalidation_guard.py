@@ -282,6 +282,24 @@ def test_leaf_ignoring_sigint_receives_sigterm(evidence):
         "    while not b.is_game_over():\n        pass\n"
         'print("fuzz4 done: %d positions, fails %d" % (tests, fails))\n',
     ),
+    (
+        "regex_chess_parallel_160_game_worker_post_check",
+        ["python3", "fuzzpar.py", "160"],
+        "/app",
+        "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 160\n"
+        "seeds = list(range(1000, 1000 + n_games))\n"
+        "all_games = pool.map(gen_game_fens, seeds)\n"
+        'print(f"DONE tested={total_tested} fails={len(total_fails)}")\n',
+    ),
+    (
+        "regex_chess_seed3_random_post_check",
+        ["python3", "randtest.py", "3"],
+        "/tmp/opencode",
+        "random.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 7)\n"
+        "for g in range(NGAMES):\n"
+        "    for ply in range(250):\n        pass\n"
+        'print(f"ALL PASS: {ntests} positions in {time.time()-t0:.1f}s")\n',
+    ),
 ])
 def test_regex_stress_variant_is_revalidated_independently(
     tmp_path, monkeypatch, reason, argv, cwd, body,
@@ -549,6 +567,16 @@ def test_heredoc_stress_requires_exact_parent_command(tmp_path, monkeypatch):
         'print(f"done: tested={tested} fails={fails} '
         'interesting-games={interesting}")\n',
     ),
+    (
+        "regex_chess_250_game_seed1337_heredoc_post_check",
+        "timeout 3500 python3 -\n"
+        "rng = random.Random(1337)\n"
+        "for g in range(250):\n"
+        "    while not b.is_game_over() and b.ply() < 160:\n"
+        "        pass\n"
+        'print(f"done: tested={tested} fails={fails} '
+        'interesting={interesting}")\n',
+    ),
 ])
 def test_regex_heredoc_soaks_require_exact_parent_markers(
     tmp_path, monkeypatch, reason, parent_body,
@@ -597,6 +625,56 @@ def test_regex_heredoc_soaks_require_exact_parent_markers(
     assert guard.is_known_overvalidation(expected, proc)
 
     (shell / "cmdline").write_bytes(b"/bin/bash\0-c\0unrelated command\0")
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
+def test_scratchpad_fuzz_requires_suffix_relative_file_and_parent(
+    tmp_path, monkeypatch,
+):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    scratchpad = tmp_path / "dynamic-id" / "scratchpad"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    scratchpad.mkdir(parents=True)
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(
+        b"\0".join((b"python3", b"fuzz.py", b"20", b"777")) + b"\0"
+    )
+    (process / "cwd").symlink_to(scratchpad)
+    (parent / "cmdline").write_bytes(
+        b"/bin/bash\0-c\0python3 fuzz.py 20 777 2>&1 | "
+        b'grep -E "FAIL|DONE"\0'
+    )
+    (scratchpad / "fuzz.py").write_text(
+        "def fuzz_games(n, seed=0, maxplies=1000):\n"
+        "    while not b.is_game_over() and plies < maxplies:\n"
+        "        pass\n"
+        '    print("DONE total=%d bad=%d tmax=%.2f" % values)\n'
+        "n = int(sys.argv[1]) if len(sys.argv) > 1 else 3\n"
+        "seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0\n"
+    )
+    policy_index = next(
+        index
+        for index, policy in enumerate(guard.POLICIES)
+        if policy["reason"]
+        == "regex_chess_20_game_seed777_scratchpad_post_check"
+    )
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (process / "cwd").unlink()
+    (process / "cwd").symlink_to(tmp_path / "not-scratchpad")
     assert not guard.is_known_overvalidation(expected, proc)
 
 

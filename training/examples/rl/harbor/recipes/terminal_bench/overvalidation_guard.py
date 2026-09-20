@@ -519,6 +519,70 @@ POLICIES = (
         "cwd": "/tmp/opencode",
         "required_file": "/app/re.json",
         "required_markers": [],
+        "ancestor_hops": 2,
+        "ancestor_cmdline_markers": [
+            "timeout 3500 python3 -", "rng = random.Random(1337)",
+            "for g in range(250)", "b.ply() < 160",
+            "interesting={interesting}",
+        ],
+        "reason": "regex_chess_250_game_seed1337_heredoc_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "20", "777"],
+        "cwd_suffix": "/scratchpad",
+        "required_file_relative": "fuzz.py",
+        "required_markers": [
+            "def fuzz_games(n, seed=0, maxplies=1000)",
+            "while not b.is_game_over() and plies < maxplies",
+            'print("DONE total=%d bad=%d tmax=%.2f"',
+            "n = int(sys.argv[1]) if len(sys.argv) > 1 else 3",
+            "seed = int(sys.argv[2]) if len(sys.argv) > 2 else 0",
+        ],
+        "parent_cmdline_markers": [
+            "python3 fuzz.py 20 777", 'grep -E "FAIL|DONE"',
+        ],
+        "reason": "regex_chess_20_game_seed777_scratchpad_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzzpar.py", "160"],
+        "cwd": "/app",
+        "required_file": "/app/fuzzpar.py",
+        "required_markers": [
+            "n_games = int(sys.argv[1]) if len(sys.argv) > 1 else 160",
+            "seeds = list(range(1000, 1000 + n_games))",
+            "all_games = pool.map(gen_game_fens, seeds)",
+            'print(f"DONE tested={total_tested} fails={len(total_fails)}',
+        ],
+        "parent_cmdline_markers": ["python3 fuzzpar.py 160"],
+        "reason": "regex_chess_parallel_160_game_worker_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "randtest.py", "3"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/randtest.py",
+        "required_markers": [
+            "random.seed(int(sys.argv[1])", "for g in range(NGAMES)",
+            "for ply in range(250)",
+            'print(f"ALL PASS: {ntests} positions in {time.time()-t0:.1f}s")',
+        ],
+        "parent_cmdline_markers": [
+            "for seed in 1 2 3", "python3 randtest.py $seed", "tail -1",
+        ],
+        "reason": "regex_chess_seed3_random_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "-"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/app/re.json",
+        "required_markers": [],
         "parent_cmdline_markers": [
             "for it in range(6000):", "skip zero-move inputs",
             "print('total:', tests, 'failures:', fails)",
@@ -635,9 +699,16 @@ def is_known_overvalidation(expected, proc_root=Path("/proc")):
     cmdline = [os.fsdecode(arg) for arg in (process / "cmdline").read_bytes().rstrip(b"\0").split(b"\0")]
     if cmdline != policy["cmdline"]:
         return False
-    if os.readlink(process / "cwd") != policy["cwd"]:
+    cwd = os.readlink(process / "cwd")
+    if policy.get("cwd") is not None:
+        if cwd != policy["cwd"]:
+            return False
+    elif not cwd.endswith(policy["cwd_suffix"]):
         return False
-    required = Path(policy["required_file"])
+    if policy.get("required_file") is not None:
+        required = Path(policy["required_file"])
+    else:
+        required = Path(cwd) / policy["required_file_relative"]
     if not required.is_file():
         return False
     if policy["required_markers"]:
