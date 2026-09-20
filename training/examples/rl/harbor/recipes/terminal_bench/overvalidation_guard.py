@@ -950,6 +950,25 @@ POLICIES = (
         "reason": "regex_chess_60_game_stdin_post_check",
     },
     {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py"],
+        "cwd": "/app",
+        "required_file": "/app/fuzz.py",
+        "required_markers": [
+            "random.seed(12345)",
+            "N_GAMES = 15",
+            "board.fullmove_number < 80",
+            'print("TOTAL tested", tested, "fails", fails)',
+        ],
+        "parent_cmdline_markers": [
+            "sed -i 's/N_GAMES = 120/N_GAMES = 15/' fuzz.py",
+            "python3 fuzz.py",
+            "tail -4",
+        ],
+        "reason": "regex_chess_reduced_15_game_post_check",
+    },
+    {
         "task_prefix": "harbor-opencode-filter-js-from-html-",
         "min_elapsed_s": 600,
         "cmdline": ["python3", "-"],

@@ -588,6 +588,14 @@ def test_scheduler_post_solution_sweeps_are_exactly_guarded(
         "/app",
         "checkpoint bytes are validated separately\n",
     ),
+    (
+        "regex_chess_reduced_15_game_post_check",
+        ["python3", "fuzz.py"],
+        "/app",
+        "random.seed(12345)\nN_GAMES = 15\n"
+        "while board.fullmove_number < 80:\n    pass\n"
+        'print("TOTAL tested", tested, "fails", fails)\n',
+    ),
 ])
 def test_regex_stress_variant_is_revalidated_independently(
     tmp_path, monkeypatch, reason, argv, cwd, body,
