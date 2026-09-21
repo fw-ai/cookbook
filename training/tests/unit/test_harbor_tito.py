@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
@@ -897,6 +898,25 @@ def test_pi_preserves_empty_reasoning_on_assistant_replay(tmp_path) -> None:
     assert model["compat"]["requiresReasoningContentOnAssistantMessages"] is True
 
 
+def test_pi_textworld_profile_disables_builtin_tools(tmp_path) -> None:
+    pytest.importorskip("harbor")
+    from training.examples.rl.harbor.pi.agent import ConfigurablePi
+
+    agent = ConfigurablePi(
+        logs_dir=tmp_path,
+        sidecar_bundle_path=str(tmp_path / "bundle"),
+        sidecar_launch_spec="{}",
+        context_limit=4096,
+        output_limit=1024,
+        tool_timeout_seconds=120,
+        tool_profile="textworld",
+        version="0.84.2",
+    )
+
+    assert agent._settings()["defaultTools"] == []
+    assert agent._tool_profile == "textworld"
+
+
 @pytest.mark.parametrize(
     ("module_name", "class_name", "version"),
     [
@@ -1259,6 +1279,55 @@ def test_pi_rollout_forwards_retry_contract_and_isolates_attempt_errors(
     )
 
 
+def test_pi_evaluation_uses_verifier_reward_without_trainable_artifact(
+    monkeypatch, tmp_path
+) -> None:
+    setup = _setup(tmp_path)
+    setup.extras["rollout_retries"] = 0
+    monkeypatch.setattr(
+        pi_rollout,
+        "build_sidecar_bundle",
+        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+    )
+    monkeypatch.setattr(
+        pi_rollout,
+        "task_config_from_row",
+        lambda _row: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        pi_rollout,
+        "task_name_from_row",
+        lambda _row: "example",
+    )
+    monkeypatch.setattr(
+        pi_rollout,
+        "task_initial_instruction",
+        lambda _task_config: "solve the task",
+    )
+    seen: dict[str, Any] = {}
+
+    async def run_trial(**kwargs):
+        seen.update(kwargs)
+        outcome = _outcome(reward=0.75)
+        return replace(
+            outcome,
+            trajectory_artifact=None,
+            rollout=kwargs["materializer"](outcome),
+        )
+
+    monkeypatch.setattr(pi_rollout, "run_harbor_trial", run_trial)
+    runner = pi_rollout.make_rollout_fn(setup)
+    result = asyncio.run(runner({"task_name": "example"}, evaluation=True))
+
+    assert result is not None
+    assert result.segments[0].reward == 0.75
+    assert result.segments[0].loss_mask == []
+    assert result.metadata["evaluation_reward_only"] is True
+    assert result.metadata["task_name"] == "example"
+    assert seen["require_trajectory_artifact"] is False
+    assert seen["artifact_processor"] is None
+
+
 class _EnvironmentType(str, Enum):
     E2B = "e2b"
     DOCKER = "docker"
@@ -1311,6 +1380,7 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
     assert config.environment.type is expected
     assert config.agent.kwargs["sidecar_bundle_path"] == str(tmp_path / "bundle")
     assert config.agent.kwargs["sidecar_launch_spec"] == sidecar_launch_spec
+    assert "tool_profile" not in config.agent.kwargs
     assert config.agent.extra_allowed_hosts == ["api.fireworks.ai"]
     assert not getattr(config.environment, "extra_docker_compose", [])
     assert config.artifacts[-5:] == [
@@ -1677,6 +1747,12 @@ def test_pi_extension_clamps_timeouts_and_rejects_session_branches() -> None:
     assert 'hasOwnProperty.call(input, "timeout")' in source
     assert "requested > toolTimeoutSeconds" in source
     assert "input.timeout = toolTimeoutSeconds" in source
+    assert 'name: "textworld_action"' in source
+    assert 'name: "textworld_reset"' in source
+    assert 'pi.exec("textworld", [action]' in source
+    assert 'pi.exec("textworld-reset", []' in source
+    assert 'pi.setActiveTools(["textworld_action", "textworld_reset"])' in source
+    assert "toolTimeoutSeconds * 1000" in source
     assert 'pi.on("session_before_tree"' in source
     assert 'pi.on("session_before_fork"' in source
     assert source.count("return { cancel: true }") >= 2
@@ -1734,7 +1810,7 @@ def test_pi_overflow_retry_marks_only_the_discarded_length_turn() -> None:
                 destination,
             ),
             "# Added by fireworks TITO harbor.mini_swe.prepare_tasks",
-            "transformers==5.5.4",
+            "transformers==5.10.4",
         ),
     ],
 )
@@ -1753,6 +1829,13 @@ def test_prepared_harness_image_is_pinned_and_preserves_final_user(
     prepared = prepare(source, tmp_path / "prepared")
     dockerfile = (prepared[0] / "environment" / "Dockerfile").read_text()
     assert expected_marker in dockerfile
+    assert (
+        f"LABEL ai.fireworks.tito.harness-marker={json.dumps(expected_marker)}"
+        in dockerfile
+    )
+    assert expected_marker not in {
+        line.strip() for line in dockerfile.splitlines()
+    }
     assert expected_package in dockerfile
     assert "jinja2==3.1.6" in dockerfile
     assert "numpy==2.4.6" in dockerfile

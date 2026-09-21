@@ -4,12 +4,19 @@ __all__ = [
     # Losses & algorithms
     "CISPOConfig",
     "DAPOConfig",
+    "DPPOConfig",
+    "DROConfig",
+    "ScoreCenteringConfig",
     "TISConfig",
     "GSPOConfig",
     "PromptGroup",
     "build_r3_routing_matrices",
     "make_cispo_loss_fn",
     "make_dapo_loss_fn",
+    "make_dppo_loss_fn",
+    "make_dro_loss_fn",
+    "make_score_centering_loss_fn",
+    "build_score_centering_datums",
     "make_grpo_loss_fn",
     "make_gspo_loss_fn",
     # Training loop
@@ -52,6 +59,13 @@ __all__ = [
 ]
 
 from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
+from training.utils.rl.dppo import DPPOConfig, make_dppo_loss_fn
+from training.utils.rl.dro import DROConfig, make_dro_loss_fn
+from training.utils.rl.score_centering import (
+    ScoreCenteringConfig,
+    build_score_centering_datums,
+    make_score_centering_loss_fn,
+)
 from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
 from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn

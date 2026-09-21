@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 import tinker
 import torch
@@ -96,23 +96,19 @@ def compute_inference_observability_metrics(
     }
 
 
-def compute_server_grpo_observability_metrics(
+def _compute_server_policy_observability_metrics(
     data: List[tinker.Datum],
     policy_logprobs: List[torch.Tensor],
     old_policy_logprobs: List[List[float]],
     raw_inf_logprobs: List[List[float]] | None,
     prompt_lens: List[int],
     *,
-    eps_clip: float,
-    eps_clip_high: float | None,
-    ratio_log_cap: float = 20.0,
+    policy_loss: str,
+    clip_metric: str,
+    ratio_metric: str,
+    ratio_metrics: Callable[[torch.Tensor, torch.Tensor], tuple[float, float]],
 ) -> Dict[str, float]:
-    """Reconstruct client-visible diagnostics for the built-in PPO kernel.
-
-    The trainer owns the differentiable loss. Its response still contains the
-    exact policy logprobs used by that loss, so diagnostics can be computed
-    without another forward pass.
-    """
+    """Reconstruct common diagnostics from a built-in policy-loss response."""
     n = len(data)
     aligned = {
         "policy_logprobs": len(policy_logprobs),
@@ -123,10 +119,10 @@ def compute_server_grpo_observability_metrics(
     if mismatched:
         details = ", ".join(f"{name}={size}" for name, size in mismatched.items())
         raise ValueError(
-            f"Server-side GRPO metrics require {n} aligned rows; {details}."
+            f"Server-side {policy_loss.upper()} metrics require "
+            f"{n} aligned rows; {details}."
         )
 
-    eps_high = eps_clip if eps_clip_high is None else eps_clip_high
     clip_total = 0.0
     ratio_total = 0.0
     reported_samples = 0
@@ -163,7 +159,7 @@ def compute_server_grpo_observability_metrics(
             continue
 
         validate_inference_logprobs_for_sample(
-            "grpo",
+            policy_loss,
             i,
             old_policy_row,
             response_start + resp_len,
@@ -172,7 +168,7 @@ def compute_server_grpo_observability_metrics(
         resp_old_values = _coerce_response_logprobs(
             old_policy_row[response_start : response_start + resp_len],
             active,
-            policy_loss="grpo",
+            policy_loss=policy_loss,
             sample_idx=i,
             source="old_policy_logprobs",
         )
@@ -181,19 +177,12 @@ def compute_server_grpo_observability_metrics(
             dtype=resp_pi.dtype,
             device=resp_pi.device,
         )
-        log_ratio = torch.clamp(
-            resp_pi.detach()[active] - resp_old_policy[active],
-            min=-ratio_log_cap,
-            max=ratio_log_cap,
+        clip_value, ratio_value = ratio_metrics(
+            resp_pi.detach()[active],
+            resp_old_policy[active],
         )
-        ratio = torch.exp(log_ratio)
-        clipped_ratio = torch.clamp(
-            ratio,
-            min=1.0 - eps_clip,
-            max=1.0 + eps_high,
-        )
-        clip_total += (clipped_ratio != ratio).float().mean().item()
-        ratio_total += ratio.mean().item()
+        clip_total += clip_value
+        ratio_total += ratio_value
         reported_samples += 1
 
     metrics: Dict[str, float] = {
@@ -203,8 +192,8 @@ def compute_server_grpo_observability_metrics(
     if reported_samples:
         metrics.update(
             {
-                "ppo_clip_frac": clip_total / reported_samples,
-                "ppo_ratio_mean": ratio_total / reported_samples,
+                clip_metric: clip_total / reported_samples,
+                ratio_metric: ratio_total / reported_samples,
             }
         )
     metrics.update(
@@ -213,7 +202,94 @@ def compute_server_grpo_observability_metrics(
             policy_logprobs,
             raw_inf_logprobs,
             prompt_lens,
-            "grpo",
+            policy_loss,
         )
     )
     return metrics
+
+
+def compute_server_grpo_observability_metrics(
+    data: List[tinker.Datum],
+    policy_logprobs: List[torch.Tensor],
+    old_policy_logprobs: List[List[float]],
+    raw_inf_logprobs: List[List[float]] | None,
+    prompt_lens: List[int],
+    *,
+    eps_clip: float,
+    eps_clip_high: float | None,
+    ratio_log_cap: float = 20.0,
+) -> Dict[str, float]:
+    """Reconstruct client-visible diagnostics for the built-in PPO kernel."""
+    eps_high = eps_clip if eps_clip_high is None else eps_clip_high
+
+    def ratio_metrics(
+        policy: torch.Tensor,
+        old_policy: torch.Tensor,
+    ) -> tuple[float, float]:
+        ratio = torch.exp(
+            torch.clamp(
+                policy - old_policy,
+                min=-ratio_log_cap,
+                max=ratio_log_cap,
+            )
+        )
+        clipped = torch.clamp(
+            ratio,
+            min=1.0 - eps_clip,
+            max=1.0 + eps_high,
+        )
+        return (
+            (clipped != ratio).float().mean().item(),
+            ratio.mean().item(),
+        )
+
+    return _compute_server_policy_observability_metrics(
+        data,
+        policy_logprobs,
+        old_policy_logprobs,
+        raw_inf_logprobs,
+        prompt_lens,
+        policy_loss="grpo",
+        clip_metric="ppo_clip_frac",
+        ratio_metric="ppo_ratio_mean",
+        ratio_metrics=ratio_metrics,
+    )
+
+
+def compute_server_gspo_observability_metrics(
+    data: List[tinker.Datum],
+    policy_logprobs: List[torch.Tensor],
+    old_policy_logprobs: List[List[float]],
+    raw_inf_logprobs: List[List[float]] | None,
+    prompt_lens: List[int],
+    *,
+    clip_ratio_low: float,
+    clip_ratio_high: float,
+    seq_ratio_log_cap: float,
+) -> Dict[str, float]:
+    """Reconstruct sequence-ratio diagnostics for the built-in GSPO kernel."""
+
+    def ratio_metrics(
+        policy: torch.Tensor,
+        old_policy: torch.Tensor,
+    ) -> tuple[float, float]:
+        seq_log_ratio = (policy - old_policy).mean()
+        seq_ratio = torch.exp(torch.clamp(seq_log_ratio, max=seq_ratio_log_cap))
+        clipped = torch.clamp(
+            seq_ratio,
+            min=1.0 - clip_ratio_low,
+            max=1.0 + clip_ratio_high,
+        )
+        return float((clipped != seq_ratio).item()), seq_ratio.item()
+
+    return _compute_server_policy_observability_metrics(
+        data,
+        policy_logprobs,
+        old_policy_logprobs,
+        raw_inf_logprobs,
+        prompt_lens,
+        policy_loss="gspo",
+        clip_metric="gspo_clip_frac",
+        ratio_metric="gspo_seq_ratio_mean",
+        ratio_metrics=ratio_metrics,
+    )

@@ -82,7 +82,7 @@ class MuseGlimmerOptions:
 class MuseGlimmerImageTokenCounter:
     """Processor-config-backed visual token counter for Tinker image chunks.
 
-    Transformers 5.5.4 can read Muse's processor config but does not yet
+    Transformers 5.10.4 can read Muse's processor config but does not yet
     register ``MuseGlimmerImageProcessor`` with ``AutoImageProcessor``. The
     training backend owns pixel preprocessing; the cookbook renderer only
     needs the exact merged-token count included on each wire ``ImageChunk``.

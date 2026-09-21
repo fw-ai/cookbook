@@ -292,10 +292,14 @@ class TestComputeStepMetrics:
         )
 
         assert metrics["train/grad_norm"] == 3.0
+        assert metrics["train/grad_norm_pre_norm"] == 3.0
         assert metrics["train/grad_norm_rms"] == 0.2
+        assert metrics["train/grad_norm_lora"] == 3.0
         assert set(key for key in metrics if key.startswith("train/grad_norm")) == {
             "train/grad_norm",
+            "train/grad_norm_pre_norm",
             "train/grad_norm_rms",
+            "train/grad_norm_lora",
         }
         assert "train/lr:last" not in metrics
         assert "train/trainer_busy_walltime_pct:last" not in metrics
