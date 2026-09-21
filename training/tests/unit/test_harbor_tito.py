@@ -1407,6 +1407,34 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
     ]
 
 
+def test_reward_only_trial_config_omits_tito_artifact_downloads(tmp_path) -> None:
+    config = harbor_adapter._build_trial_config(
+        _fake_harbor(),
+        template={
+            "environment": {"type": "e2b"},
+            "artifacts": [{"source": "/logs/verifier/reward.txt"}],
+        },
+        task_config={"path": "/tasks/example"},
+        run_id="eval",
+        trials_dir=tmp_path,
+        harbor_environment="e2b",
+        sidecar_bundle_path=tmp_path / "bundle",
+        sidecar_launch_spec=json.dumps(
+            {
+                "api_key": "secret",
+                "inference_base_url": "https://api.fireworks.ai",
+            }
+        ),
+        context_limit=4096,
+        output_limit=1024,
+        agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
+        agent_version=DEFAULT_OPENCODE_VERSION,
+        collect_tito_artifacts=False,
+    )
+
+    assert config.artifacts == [{"source": "/logs/verifier/reward.txt"}]
+
+
 def test_e2b_rejects_compose_task(tmp_path) -> None:
     task_path = tmp_path / "task"
     environment_path = task_path / "environment"

@@ -499,6 +499,7 @@ def _build_trial_config(
     agent_provider: str = "fireworks-rl",
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     tool_profile: str = "coding",
+    collect_tito_artifacts: bool = True,
 ) -> Any:
     """Merge a native TrialConfig template with Fireworks-owned runtime fields."""
 
@@ -577,31 +578,36 @@ def _build_trial_config(
     agent["kwargs"] = agent_kwargs
 
     artifacts = list(document.get("artifacts") or ())
-    for source in (
-        SIDECAR_ARTIFACT_PATH,
-        SIDECAR_ARTIFACT_MANIFEST_PATH,
-        SIDECAR_COMPLETE_PATH,
-    ):
-        artifacts.append(
-            {
-                "source": source,
-                "destination": str(_COMPACT_ARTIFACT_DESTINATION / Path(source).name),
-            }
-        )
-    for source in (SIDECAR_STDOUT_PATH, SIDECAR_STDERR_PATH):
-        artifacts.append(
-            {
-                "source": source,
-                "destination": str(_LOG_ARTIFACT_DESTINATION / Path(source).name),
-            }
-        )
-    if bool(sidecar_spec.get("debug_enabled")):
-        artifacts.append(
-            {
-                "source": SIDECAR_DEBUG_ROOT,
-                "destination": str(_DEBUG_ARTIFACT_DESTINATION),
-            }
-        )
+    if collect_tito_artifacts:
+        for source in (
+            SIDECAR_ARTIFACT_PATH,
+            SIDECAR_ARTIFACT_MANIFEST_PATH,
+            SIDECAR_COMPLETE_PATH,
+        ):
+            artifacts.append(
+                {
+                    "source": source,
+                    "destination": str(
+                        _COMPACT_ARTIFACT_DESTINATION / Path(source).name
+                    ),
+                }
+            )
+        for source in (SIDECAR_STDOUT_PATH, SIDECAR_STDERR_PATH):
+            artifacts.append(
+                {
+                    "source": source,
+                    "destination": str(
+                        _LOG_ARTIFACT_DESTINATION / Path(source).name
+                    ),
+                }
+            )
+        if bool(sidecar_spec.get("debug_enabled")):
+            artifacts.append(
+                {
+                    "source": SIDECAR_DEBUG_ROOT,
+                    "destination": str(_DEBUG_ARTIFACT_DESTINATION),
+                }
+            )
     document["artifacts"] = artifacts
 
     document.update(
@@ -823,6 +829,7 @@ async def run_harbor_trial(
             agent_version=agent_version,
             tool_timeout_seconds=tool_timeout_seconds,
             tool_profile=tool_profile,
+            collect_tito_artifacts=require_trajectory_artifact,
         )
         result = None
         trial_path = trial_root / config.trial_name

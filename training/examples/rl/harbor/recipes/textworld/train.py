@@ -203,6 +203,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(max_head_offpolicy_versions=0)"
         ),
     )
+    parser.add_argument(
+        "--max-head-offpolicy-versions",
+        type=int,
+        default=MAX_HEAD_OFFPOLICY_VERSIONS,
+        help=(
+            "Maximum number of optimizer versions that rollout production may "
+            "run ahead; ignored when --full-sync is set"
+        ),
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=1,
+        help="Number of passes over the frozen training task order",
+    )
     parser.add_argument("--max-concurrent-trials", type=int, default=128)
     parser.add_argument("--template-concurrency", type=int, default=8)
     parser.add_argument("--e2b-request-timeout", type=float, default=900.0)
@@ -247,11 +262,14 @@ def _validate_args(args: argparse.Namespace) -> None:
         "completions_per_prompt",
         "prompt_groups_per_step",
         "pipeline_chunks_per_step",
+        "epochs",
     ):
         if getattr(args, name) < 1:
             raise ValueError(f"--{name.replace('_', '-')} must be positive")
     if args.e2b_request_timeout <= 0:
         raise ValueError("--e2b-request-timeout must be positive")
+    if args.max_head_offpolicy_versions < 0:
+        raise ValueError("--max-head-offpolicy-versions must be non-negative")
     if args.max_rows is not None and args.max_rows < 1:
         raise ValueError("--max-rows must be positive")
     if args.learning_rate < 0:
@@ -303,13 +321,13 @@ def _build_config(
         max_completion_tokens=args.max_completion_tokens,
         max_seq_len=args.max_seq_len,
         temperature=args.temperature,
-        epochs=1,
+        epochs=args.epochs,
         max_rows=row_count,
         shuffle=False,
         seed=0,
         lora_rank=0,
         max_head_offpolicy_versions=(
-            0 if args.full_sync else MAX_HEAD_OFFPOLICY_VERSIONS
+            0 if args.full_sync else args.max_head_offpolicy_versions
         ),
         max_concurrency_rollout_sample=None,
         router_replay=True,
@@ -564,9 +582,8 @@ def run() -> None:
         "evaluation_completions_per_prompt": args.eval_completions_per_prompt,
         "prompt_groups_per_step": args.prompt_groups_per_step,
         "pipeline_chunks_per_step": args.pipeline_chunks_per_step,
-        "max_head_offpolicy_versions": (
-            0 if args.full_sync else MAX_HEAD_OFFPOLICY_VERSIONS
-        ),
+        "epochs": config.epochs,
+        "max_head_offpolicy_versions": config.max_head_offpolicy_versions,
         "hot_load_transition_type": "SYNC" if args.full_sync else None,
         "training_shape_id": args.training_shape_id,
         "trainer_job_id": args.trainer_job_id,
