@@ -802,6 +802,23 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "fuzz.py", "7", "400"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/fuzz.py",
+        "required_markers": [
+            "random.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 1)",
+            "N = int(sys.argv[2]) if len(sys.argv) > 2 else 300",
+            "b.fullmove_number < 80",
+            'print("done, fails:", fails, "elapsed", round(time.time()-t0,1))',
+        ],
+        "parent_cmdline_markers": [
+            "timeout", "5400", "python3", "fuzz.py", "7", "400",
+        ],
+        "reason": "regex_chess_seed7_400_game_timed_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "/tmp/opencode/edge.py"],
         "cwd": "/app",
         "required_file": "/tmp/opencode/edge.py",
