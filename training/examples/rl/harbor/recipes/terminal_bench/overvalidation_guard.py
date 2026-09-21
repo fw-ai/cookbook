@@ -832,6 +832,23 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "edge.py"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/edge.py",
+        "required_markers": [
+            "from fuzz import verify",
+            "for f in EDGE:",
+            "verify(f)",
+            'print("edge battery done")',
+        ],
+        "parent_cmdline_markers": [
+            "cd /tmp/opencode", "python3 edge.py", "tail -20",
+        ],
+        "reason": "regex_chess_relative_edge_battery_post_check",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "-"],
         "cwd": "/app",
         "required_file": "/app/re.json",

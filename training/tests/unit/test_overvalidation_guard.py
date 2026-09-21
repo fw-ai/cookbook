@@ -594,6 +594,16 @@ def test_scheduler_post_solution_sweeps_are_exactly_guarded(
         'print("edge cases:", "ALL OK" if ok else "FAILURES")\n',
     ),
     (
+        "regex_chess_relative_edge_battery_post_check",
+        ["python3", "edge.py"],
+        "/tmp/opencode",
+        "from fuzz import verify\n"
+        "EDGE = []\n"
+        "for f in EDGE:\n"
+        "    verify(f)\n"
+        'print("edge battery done")\n',
+    ),
+    (
         "regex_chess_600_composed_position_post_check",
         ["python3", "-"],
         "/app",
