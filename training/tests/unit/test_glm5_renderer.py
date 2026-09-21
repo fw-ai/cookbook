@@ -117,6 +117,13 @@ def test_registered_glm5_preserve_thinking_does_not_claim_extension_property(
     assert preserve.has_extension_property is False
 
 
+def test_reasoning_effort_rejected_for_glm51(tokenizer):
+    # GLM-5.1's template never renders a reasoning-effort system line, so any
+    # tier the renderer wrote would be a prefix serving cannot reproduce.
+    with pytest.raises(ValueError, match="renders no reasoning-effort"):
+        GLM5Renderer(tokenizer, reasoning_effort="low")
+
+
 def _hf_tokens(tokenizer, messages, add_generation_prompt: bool, **kwargs) -> list[int]:
     """Tokenize via the HF jinja template, returning a plain list of ints.
 

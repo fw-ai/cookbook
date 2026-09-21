@@ -554,16 +554,39 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
     _historical_stripped_think_block = "</think>"
     _preserve_has_extension_property = False
 
+    # Map the API-style effort vocabulary onto the tiers this model family's
+    # template can actually render, the same way the serving conversation style
+    # does. GLM-5.1's template has no reasoning-effort line at all, so the base
+    # renderer accepts no effort; subclasses whose templates render one declare
+    # their own vocabulary.
+    _EFFORT_TIERS: Mapping[str, str] = {}
+
     def __init__(
         self,
         tokenizer: Tokenizer,
         *,
         clear_thinking: bool = True,
         honor_source_reasoning_fields: bool = False,
+        reasoning_effort: str | None = None,
     ) -> None:
         super().__init__(tokenizer)
         self._clear_thinking = clear_thinking
         self._honor_source_reasoning_fields = honor_source_reasoning_fields
+        if reasoning_effort is not None:
+            if not self._EFFORT_TIERS:
+                raise ValueError(
+                    f"{type(self).__name__} renders no reasoning-effort system "
+                    f"line; reasoning_effort={reasoning_effort!r} is unsupported"
+                )
+            tier = self._EFFORT_TIERS.get(str(reasoning_effort).strip().lower())
+            if tier is None:
+                raise ValueError(
+                    f"unknown reasoning_effort {reasoning_effort!r}; "
+                    f"expected one of {sorted(self._EFFORT_TIERS)}"
+                )
+            # Instance attribute shadows the class-level default template line
+            # (``_initial_prompt_tokens`` reads it at render time).
+            self._initial_prompt_text = f"<|system|>Reasoning Effort: {tier}"
 
     @property
     def has_extension_property(self) -> bool:
@@ -1104,6 +1127,17 @@ class GLMMoeDsaRenderer(GLM5Renderer):
     _historical_stripped_think_block = "<think></think>"
     _preserve_has_extension_property = True
 
+    # GLM-5.2's template renders only High (for template value ``high``) and
+    # Max (for everything else), so ``low`` folds into High exactly as serving
+    # does. Writing ``Low`` here would train on a prefix the served prompt for
+    # a low-effort request never contains.
+    _EFFORT_TIERS: Mapping[str, str] = {
+        "low": "High",
+        "medium": "High",
+        "high": "High",
+        "max": "Max",
+    }
+
 
 class GLM53Renderer(GLMMoeDsaRenderer):
     """Renderer for the pinned ``zai-org/GLM-5.3`` chat-template contract.
@@ -1118,17 +1152,26 @@ class GLM53Renderer(GLMMoeDsaRenderer):
     # independently for each message.
     supports_per_message_rendering = False
 
+    # GLM-5.3's template adds the Low tier GLM-5.2 lacks; the rest of the
+    # vocabulary is unchanged.
+    _EFFORT_TIERS: Mapping[str, str] = {
+        **GLMMoeDsaRenderer._EFFORT_TIERS,
+        "low": "Low",
+    }
+
     def __init__(
         self,
         tokenizer: Tokenizer,
         *,
         clear_thinking: bool = False,
         honor_source_reasoning_fields: bool = True,
+        reasoning_effort: str | None = None,
     ) -> None:
         super().__init__(
             tokenizer,
             clear_thinking=clear_thinking,
             honor_source_reasoning_fields=honor_source_reasoning_fields,
+            reasoning_effort=reasoning_effort,
         )
 
     def build_supervised_example(
@@ -1182,11 +1225,13 @@ class GLM53FlashRenderer(GLM53Renderer):
         image_processor: Any | None = None,
         clear_thinking: bool = False,
         honor_source_reasoning_fields: bool = True,
+        reasoning_effort: str | None = None,
     ) -> None:
         super().__init__(
             tokenizer,
             clear_thinking=clear_thinking,
             honor_source_reasoning_fields=honor_source_reasoning_fields,
+            reasoning_effort=reasoning_effort,
         )
         self.image_processor = image_processor
         image_special_tokens = {
