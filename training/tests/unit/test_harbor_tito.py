@@ -1810,7 +1810,7 @@ def test_pi_overflow_retry_marks_only_the_discarded_length_turn() -> None:
                 destination,
             ),
             "# Added by fireworks TITO harbor.mini_swe.prepare_tasks",
-            "transformers==5.5.4",
+            "transformers==5.10.4",
         ),
     ],
 )

@@ -13,13 +13,15 @@ dependencies = [
     "pydantic>=2.0.0",
     "tinker>=0.22.3",
     "tqdm>=4.60.0",
-    "torch>=2.0",
+    # transformers 5.10.4 reads torch.float8_e8m0fnu at import time; that
+    # dtype lands in torch 2.7.
+    "torch>=2.7",
     "datasets>=2.14.0",
     "tiktoken>=0.12.0",
     "numpy>=1.24.0",
-    "transformers==5.5.4",
+    "transformers==5.10.4",
     # Imported directly by utils.tokenizers to read tokenizer declarations
-    # before choosing a backend; range matches transformers==5.5.4's own.
+    # before choosing a backend; range matches transformers==5.10.4's own.
     "huggingface-hub>=1.5.0,<2.0",
     "python-dotenv",
     "wandb>=0.28.2",

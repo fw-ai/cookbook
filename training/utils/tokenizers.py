@@ -338,7 +338,7 @@ def load_tokenizer(
         kwargs["local_files_only"] = True
     if needs_mistral_regex_fix(tokenizer_model):
         # Use Transformers' upstream Mistral pre-tokenizer repair. The corrected
-        # implementation is available in the pinned Transformers 5.5.4 release.
+        # implementation is available in the pinned Transformers 5.10.4 release.
         kwargs["fix_mistral_regex"] = True
 
     patch_kimi_tokenizer_bytes_to_unicode()

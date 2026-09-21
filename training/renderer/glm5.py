@@ -153,7 +153,7 @@ For each function call, output the function name and arguments within the follow
 class Glm53FlashImageTokenCounter:
     """Count GLM-5.3-Flash image tokens from the released processor config.
 
-    Transformers 5.5.4 can read the nested config but does not yet register
+    Transformers 5.10.4 can read the nested config but does not yet register
     ``Glm5NextImageProcessor``. FireTitan owns pixel preprocessing; rendering
     only needs the exact patch count declared on each wire ``ImageChunk``.
     """
