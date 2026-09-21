@@ -108,6 +108,24 @@ POLICIES = (
     {
         "task_prefix": "harbor-opencode-regex-chess-",
         "min_elapsed_s": 600,
+        "cmdline": ["python3", "/tmp/opencode/fuzz.py"],
+        "cwd": "/tmp/opencode",
+        "required_file": "/tmp/opencode/fuzz.py",
+        "required_markers": [
+            "random.seed(12345)",
+            "ngames = 60",
+            "for gi in range(ngames):",
+            "plies = random.randint(30, 120)",
+            'print("random-game fails:", fails)',
+        ],
+        "parent_cmdline_markers": [
+            "timeout", "3000", "python3", "/tmp/opencode/fuzz.py",
+        ],
+        "reason": "regex_chess_absolute_60_game_post_check_fuzz",
+    },
+    {
+        "task_prefix": "harbor-opencode-regex-chess-",
+        "min_elapsed_s": 600,
         "cmdline": ["python3", "-"],
         "cwd": "/tmp/opencode",
         "required_file": "/app/re.json",

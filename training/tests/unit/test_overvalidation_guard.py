@@ -112,6 +112,73 @@ def test_leaf_ignoring_sigint_receives_sigterm(evidence):
         sent.assert_called_once_with(99, signal.SIGTERM)
 
 
+def test_regex_chess_absolute_60_game_fuzz_is_exactly_guarded(
+        tmp_path, monkeypatch):
+    hz = os.sysconf("SC_CLK_TCK")
+    proc = tmp_path / "proc"
+    process = proc / "10"
+    parent = proc / "20"
+    process.mkdir(parents=True)
+    parent.mkdir()
+    (proc / "uptime").write_text("2000 0")
+    stat = ["R"] + ["0"] * 19
+    stat[1], stat[19] = "20", str(100 * hz)
+    (process / "stat").write_text("10 (python3) " + " ".join(stat))
+    (process / "comm").write_text("python3")
+    (process / "cmdline").write_bytes(
+        b"python3\0/tmp/opencode/fuzz.py\0"
+    )
+    (process / "cwd").symlink_to("/tmp/opencode")
+    (parent / "cmdline").write_bytes(
+        b"timeout\0" b"3000\0python3\0/tmp/opencode/fuzz.py\0"
+    )
+    script = tmp_path / "fuzz.py"
+    script.write_text(
+        "random.seed(12345)\n"
+        "ngames = 60\n"
+        "for gi in range(ngames):\n"
+        "    plies = random.randint(30, 120)\n"
+        'print("random-game fails:", fails)\n'
+    )
+    policies = list(guard.POLICIES)
+    policy_index = next(
+        index for index, policy in enumerate(policies)
+        if policy["reason"]
+        == "regex_chess_absolute_60_game_post_check_fuzz"
+    )
+    policies[policy_index] = {
+        **policies[policy_index], "required_file": str(script),
+    }
+    monkeypatch.setattr(guard, "POLICIES", tuple(policies))
+    expected = {
+        "pid": 10,
+        "start_ticks": stat[19],
+        "policy_index": policy_index,
+    }
+    record = {
+        "trial": "harbor-opencode-regex-chess-0-test",
+        "sandbox_id": "exact",
+        "phase": "agent_or_setup",
+        "remote": {
+            "running_tools": [
+                {"tool": "bash", "start_ms": 10, "elapsed_s": 700},
+            ],
+            "processes": [{
+                "Pid": "10", "PPid": "20", "Name": "python3",
+                "start_ticks": stat[19], "elapsed_s": 700,
+            }],
+        },
+    }
+    candidates = guard.recovery_candidates(record, record)
+    assert expected in candidates
+    assert guard.is_known_overvalidation(expected, proc)
+
+    (parent / "cmdline").write_bytes(
+        b"python3\0/tmp/opencode/fuzz.py\0"
+    )
+    assert not guard.is_known_overvalidation(expected, proc)
+
+
 def test_large_scale_text_editing_vim_stall_is_exactly_guarded(
         tmp_path, monkeypatch):
     hz = os.sysconf("SC_CLK_TCK")
