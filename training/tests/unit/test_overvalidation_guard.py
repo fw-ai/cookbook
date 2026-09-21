@@ -567,6 +567,16 @@ def test_scheduler_post_solution_sweeps_are_exactly_guarded(
         'print("tested", tested, "positions, fails", fails)\n',
     ),
     (
+        "regex_chess_seed1_150_game_timed_post_check",
+        ["python3", "fuzz.py", "1", "150"],
+        "/tmp/opencode",
+        "random.seed(int(sys.argv[1]) if len(sys.argv) > 1 else 1)\n"
+        "N = int(sys.argv[2]) if len(sys.argv) > 2 else 300\n"
+        "while not b.is_game_over() and b.fullmove_number < 80:\n"
+        "    pass\n"
+        'print("done, fails:", fails, "elapsed", round(time.time()-t0,1))\n',
+    ),
+    (
         "regex_chess_extended_edge_case_post_check",
         ["python3", "/tmp/opencode/edge.py"],
         "/app",
