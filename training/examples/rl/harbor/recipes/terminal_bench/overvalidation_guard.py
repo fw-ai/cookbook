@@ -119,7 +119,7 @@ POLICIES = (
             'print("random-game fails:", fails)',
         ],
         "parent_cmdline_markers": [
-            "timeout", "3000", "python3", "/tmp/opencode/fuzz.py",
+            "timeout", "python3", "/tmp/opencode/fuzz.py",
         ],
         "reason": "regex_chess_absolute_60_game_post_check_fuzz",
     },

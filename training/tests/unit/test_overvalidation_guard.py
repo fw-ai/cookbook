@@ -130,7 +130,7 @@ def test_regex_chess_absolute_60_game_fuzz_is_exactly_guarded(
     )
     (process / "cwd").symlink_to("/tmp/opencode")
     (parent / "cmdline").write_bytes(
-        b"timeout\0" b"3000\0python3\0/tmp/opencode/fuzz.py\0"
+        b"timeout\0" b"4000\0python3\0/tmp/opencode/fuzz.py\0"
     )
     script = tmp_path / "fuzz.py"
     script.write_text(
