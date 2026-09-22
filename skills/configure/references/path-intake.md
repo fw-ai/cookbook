@@ -145,3 +145,16 @@ Every confirmed plan includes a **Path** section:
 | GA vs preview | Managed GA; Training API preview if applicable |
 
 Never show only `firectl` commands when the user chose SDK or Training API.
+
+### DPO recipe on serverless trainers
+
+`training.recipes.dpo_loop.Config(serverless=True)` uses one positive-rank LoRA
+policy run and requires an explicit `max_seq_len`. It saves `dpo-reference`
+before the first policy update and scores that fixed snapshot through a sampling
+client. The reference is inference-only; no second training run is created.
+Reference token logprobs are aligned to the trainer targets before applying the
+existing DPO loss. Warm starts and resume are rejected on this initial path so
+the reference cannot accidentally be reanchored to an already-trained policy.
+The snapshot is internal reference state, not the final trained output. Policy
+training and sampler scoring have separate usage paths; do not quote the
+reference as free or included in training-token usage. ORPO remains unchanged.

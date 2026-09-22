@@ -43,6 +43,7 @@ import tempfile
 import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import tinker
@@ -85,6 +86,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.resource_autosizing import select_render_worker_count
+from training.utils.serverless import setup_serverless_training
 from training.utils.runner_state import write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
@@ -135,6 +137,8 @@ class Config:
     max_seq_len: int | None = None
     max_pairs: int | None = None
     """Cap on *valid rendered pairs* after schema/length filtering."""
+    serverless: bool = False
+    """Use one pooled policy run and a frozen snapshot sampler for reference scoring."""
     lora_rank: int = 0
     lora_alpha: int | None = 32
     """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
@@ -272,9 +276,40 @@ def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
+class SamplerReference:
+    """Score a frozen sampler snapshot in the trainer-forward token layout.
+
+    Calls run inside the existing reference semaphore. Submit/wait per sequence
+    so ref_cache_concurrency bounds sampler requests, independent of batch size.
+    """
+
+    def __init__(self, sampler: Any, *, timeout: int) -> None:
+        self._sampler = sampler
+        self._timeout = timeout
+
+    def forward(self, datums: list[tinker.Datum], loss_fn: str) -> SimpleNamespace:
+        if loss_fn != "cross_entropy":
+            raise ValueError("sampler reference supports only cross_entropy scoring")
+        outputs = []
+        for datum in datums:
+            targets = datum.loss_fn_inputs["target_tokens"].data
+            if not targets:
+                raise ValueError("reference datum must contain target tokens")
+            sequence = datum.model_input.append_int(int(targets[-1]))
+            values = self._sampler.compute_logprobs(sequence).result(timeout=self._timeout)
+            if len(values) != len(targets) + 1:
+                raise ValueError("reference logprob length does not match target tokens")
+            # Position 0 has no preceding token. Every target position must be scored.
+            aligned = values[1:]
+            if any(value is None for value in aligned):
+                raise ValueError("reference sampler returned an unscored target token")
+            outputs.append({"logprobs": SimpleNamespace(data=aligned)})
+        return SimpleNamespace(loss_fn_outputs=outputs)
+
+
 async def _ref_forward_batch(
     pairs: list[dict[str, Any]],
-    reference: ReconnectableClient,
+    reference: ReconnectableClient | SamplerReference,
     semaphore: asyncio.Semaphore,
     ref_batch_size: int,
 ) -> list[dict[str, Any]]:
@@ -354,7 +389,7 @@ _DONE = object()
 async def _train_loop(
     pair_dataset: JsonlRenderDataset,
     ref_cache_log: AppendOnlyPickleLog | None,
-    reference: ReconnectableClient,
+    reference: ReconnectableClient | SamplerReference,
     policy: ReconnectableClient,
     adam_params: tinker.AdamParams,
     cfg: Config,
@@ -672,6 +707,8 @@ def main(
 ):
     cfg = config
     _validate_dpo_beta(cfg.beta)
+    if cfg.serverless and (cfg.init_from_checkpoint or cfg.warm_start_from_adapter):
+        raise ValueError("serverless DPO does not support warm starts or resume")
     # Internal shape validation can request a resumable-only live handoff
     # without expanding the public cookbook/control-plane Config contract.
     final_checkpoint_promotable = getattr(cfg, "_save_final_checkpoint_promotable", True)
@@ -737,70 +774,96 @@ def main(
     runner.write_status(RunStatus.PENDING, message="provisioning")
 
     with runner, ExitStack() as stack:
-        service = build_service_client(
-            api_key=api_key,
-            base_url=base_url,
-            additional_headers=additional_headers,
-            base_model=cfg.base_model,
-            tokenizer_model=cfg.tokenizer_model,
-            max_lora_rank=cfg.lora_rank,
-            max_context_length=cfg.max_seq_len,
-            learning_rate=cfg.learning_rate,
-            trainer=cfg.trainer,
-            reference_required=True,
-            cleanup_trainer_on_close=cfg.cleanup_on_exit,
-        )
-        stack.callback(service.close)
-        training_client = service.create_training_client(
-            cfg.base_model,
-            lora_rank=cfg.lora_rank,
-            lora_alpha=cfg.lora_alpha,
-        )
-        runner.set_accelerator_info(
-            service.accelerator_type,
-            service.accelerator_count,
-            profile=service.training_profile,
-        )
-        policy_job_id = service.trainer_job_id
-        max_seq_len = service.max_context_length
+        if cfg.serverless:
+            service, policy, ckpt, policy_job_id, max_seq_len = setup_serverless_training(
+                cfg,
+                api_key=api_key,
+                base_url=base_url,
+                additional_headers=additional_headers,
+                stack=stack,
+            )
+            stack.callback(service.close)
+            runner.set_accelerator_info(None, None, profile=None)
+            runner.mark_serverless()
+            # Snapshot before the first update: fresh LoRA has zero adapter effect.
+            # Keep this exact identity for the entire job; never resnapshot the policy.
+            reference_path = policy.save_weights_for_sampler("dpo-reference").path
+            if not reference_path:
+                raise RuntimeError("reference snapshot returned no path")
+            sampler = service.create_sampling_client(model_path=reference_path)
+            stack.callback(sampler.close)
+            reference = SamplerReference(sampler, timeout=cfg.step_timeout or 3600)
+            reference_job_id = None
+            runner.set_reference_checkpoint(reference_path)
+            runner.write_metadata()
+            logger.info("Frozen DPO reference snapshot: %s", reference_path)
+        else:
+            service = build_service_client(
+                api_key=api_key,
+                base_url=base_url,
+                additional_headers=additional_headers,
+                base_model=cfg.base_model,
+                tokenizer_model=cfg.tokenizer_model,
+                max_lora_rank=cfg.lora_rank,
+                max_context_length=cfg.max_seq_len,
+                learning_rate=cfg.learning_rate,
+                trainer=cfg.trainer,
+                reference_required=True,
+                cleanup_trainer_on_close=cfg.cleanup_on_exit,
+            )
+            stack.callback(service.close)
+            training_client = service.create_training_client(
+                cfg.base_model,
+                lora_rank=cfg.lora_rank,
+                lora_alpha=cfg.lora_alpha,
+            )
+            runner.set_accelerator_info(
+                service.accelerator_type,
+                service.accelerator_count,
+                profile=service.training_profile,
+            )
+            policy_job_id = service.trainer_job_id
+            max_seq_len = service.max_context_length
 
-        policy = ReconnectableClient.from_training_client(
-            training_client,
-            base_model=cfg.base_model,
-            lora_rank=cfg.lora_rank,
-            job_id=policy_job_id,
-            default_timeout=cfg.step_timeout or 3600,
-            service=service,
-        )
-        # DPO always needs a reference. The SDK owns the shared-vs-separate
-        # decision: LoRA without an explicit reference shape reuses the policy
-        # session; full-param (or an explicit reference_training_shape_id)
-        # provisions a separate frozen reference trainer that `service` owns.
-        # Backend trainer creation selects a LoRA-capable shape unless
-        # cfg.trainer.reference_training_shape_id pins a LoRA-capable shape.
-        reference = ReconnectableClient.from_training_client(
-            service.create_reference_client(policy_client=training_client),
-            base_model=cfg.base_model,
-            lora_rank=0,
-            job_id=service.reference_client_job_id,
-            default_timeout=cfg.step_timeout or 3600,
-            service=service,
-            base_only=True,
-        )
-        reference_job_id = service.reference_trainer_job_id
+            policy = ReconnectableClient.from_training_client(
+                training_client,
+                base_model=cfg.base_model,
+                lora_rank=cfg.lora_rank,
+                job_id=policy_job_id,
+                default_timeout=cfg.step_timeout or 3600,
+                service=service,
+            )
+            # DPO always needs a reference. The SDK owns the shared-vs-separate
+            # decision: LoRA without an explicit reference shape reuses the policy
+            # session; full-param (or an explicit reference_training_shape_id)
+            # provisions a separate frozen reference trainer that `service` owns.
+            # Backend trainer creation selects a LoRA-capable shape unless
+            # cfg.trainer.reference_training_shape_id pins a LoRA-capable shape.
+            reference = ReconnectableClient.from_training_client(
+                service.create_reference_client(policy_client=training_client),
+                base_model=cfg.base_model,
+                lora_rank=0,
+                job_id=service.reference_client_job_id,
+                default_timeout=cfg.step_timeout or 3600,
+                service=service,
+                base_only=True,
+            )
+            reference_job_id = service.reference_trainer_job_id
 
-        ckpt = TrainingCheckpoints(
-            policy,
-            service,
-            trainer_id=policy_job_id,
-            log_path=cfg.log_path,
-            lora_rank=cfg.lora_rank,
-        )
+            ckpt = TrainingCheckpoints(
+                policy,
+                service,
+                trainer_id=policy_job_id,
+                log_path=cfg.log_path,
+                lora_rank=cfg.lora_rank,
+            )
 
-        resume_info = ckpt.resume(
-            init_from_checkpoint=cfg.init_from_checkpoint,
-            warm_start_from_adapter=cfg.warm_start_from_adapter,
-        )
+        resume_info = None
+        if not cfg.serverless:
+            resume_info = ckpt.resume(
+                init_from_checkpoint=cfg.init_from_checkpoint,
+                warm_start_from_adapter=cfg.warm_start_from_adapter,
+            )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
         adam_kwargs = dict(DEFAULT_ADAM)
@@ -867,7 +930,10 @@ def main(
             nonlocal reference_job_id
             if not cfg.release_reference_after_cache:
                 return
-            service.release_references()
+            if cfg.serverless:
+                sampler.close()
+            else:
+                service.release_references()
             reference_job_id = None
 
         cursor = RawRowCursor(max_rows=len(pair_dataset) * cfg.epochs)
@@ -898,7 +964,10 @@ def main(
             )
 
             if getattr(cfg, "output_model_id", None):
-                ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
+                if cfg.serverless:
+                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model, checkpoint_name=cp_name)
+                else:
+                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
                     model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
                 )

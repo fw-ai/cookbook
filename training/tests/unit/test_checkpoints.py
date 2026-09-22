@@ -1003,3 +1003,28 @@ class TestDataloaderJson:
             source_job_id="job-1",
         )
         client.load_state_with_optimizer.assert_called_once_with("path://self/step-0")
+
+
+def test_exact_serverless_promotion_never_uses_reference(log_dir):
+    rows = [
+        _row(
+            "run-current-dpo-reference",
+            ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+            promotable=True,
+            create_time="2099-01-01T00:00:00Z",
+        )
+    ]
+    ckpt, _, fw = _make(log_dir, fw_rows=rows, lora_rank=8, serverless=True, current_run_id="run-current")
+    with pytest.raises(RuntimeError, match="No promotable checkpoints"):
+        ckpt.promote_latest("output", "base", checkpoint_name="step-10")
+    fw.promote_checkpoint.assert_not_called()
+    fw._rows.append(
+        _row(
+            "run-current-step-10",
+            ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+            promotable=True,
+            create_time="2026-01-01T00:00:00Z",
+        )
+    )
+    ckpt.promote_latest("output", "base", checkpoint_name="step-10")
+    assert fw.promote_checkpoint.call_args.kwargs["name"].endswith("/run-current-step-10")

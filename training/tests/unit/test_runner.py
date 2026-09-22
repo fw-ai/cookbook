@@ -619,3 +619,13 @@ class TestRunnerIONoop:
         runner.write_output_model(model_id="m")
         runner.start_training()
         runner.set_accelerator_info("H100", 8)
+
+
+def test_fixed_reference_checkpoint_metadata(tmp_path):
+    path = str(tmp_path / "metadata.json")
+    runner = RunnerIO(RunnerConfig(metadata_file=path))
+    runner.set_reference_checkpoint("snapshot://fixed")
+    runner.write_metadata()
+    assert json.loads(open(path).read())["metadata"]["reference_checkpoint"] == "snapshot://fixed"
+    with pytest.raises(ValueError, match="remain fixed"):
+        runner.set_reference_checkpoint("snapshot://updated-policy")

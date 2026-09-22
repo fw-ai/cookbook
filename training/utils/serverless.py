@@ -1,4 +1,4 @@
-"""Serverless SFT setup helpers.
+"""Serverless managed training setup helpers.
 
 The serverless counterpart to ``build_service_client`` in
 ``training/utils/service.py``: connects to a shared, already-running pooled
@@ -64,12 +64,12 @@ class ServerlessCheckpointClient:
 
 
 def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, stack):
-    """Build the training + checkpoint handles for a serverless SFT run.
+    """Build the training + checkpoint handles for a serverless LoRA run.
 
     Returns ``(service, client, ckpt, session_id, max_seq_len)``. The caller
-    registers ``service.close`` for teardown; the internal control-plane client
-    used for checkpoint list/promote is registered on the provided ``stack``
-    (an ``ExitStack``) here, so it is closed on teardown too. Requires
+    may close the returned service; both the service and internal control-plane
+    client are registered on the provided ``stack`` (an ``ExitStack``), including
+    when setup fails after the training session is reserved. Requires
     ``cfg.lora_rank > 0`` and a concrete ``cfg.max_seq_len`` (there is no training
     shape to resolve sequence length from on this path).
     """
@@ -87,6 +87,7 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
         api_key=api_key,
         default_headers=additional_headers or None,
     )
+    stack.callback(service.close)
     training_client = service.create_lora_training_client(
         cfg.base_model,
         rank=cfg.lora_rank,

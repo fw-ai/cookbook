@@ -14,6 +14,9 @@ class _FakeService:
         self.default_headers = default_headers
         self.training_session_id = "ts-1234"
 
+    def close(self):
+        pass
+
     def create_lora_training_client(self, base_model, rank, alpha):
         assert base_model == "accounts/fireworks/models/qwen3-4b"
         assert rank == 8

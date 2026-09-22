@@ -25,6 +25,10 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
+from concurrent.futures import Future
+from unittest.mock import Mock
+
+import tinker
 
 import pytest
 
@@ -1327,3 +1331,136 @@ class TestLoadPreferenceDatasetValidation:
 
         with pytest.raises(module.DatasetError, match="row must be an object"):
             load_preference_dataset(str(path))
+
+
+def test_sampler_reference_aligns_targets_and_preserves_pair_order():
+
+    calls = []
+
+    class Sampler:
+        def compute_logprobs(self, sequence):
+            tokens = sequence.to_ints()
+            calls.append(tokens)
+            future = Future()
+            future.set_result([None] + [-float(token) for token in tokens[1:]])
+            return future
+
+    def datum(tokens):
+        return tinker.Datum(
+            model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+            loss_fn_inputs={
+                "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[len(tokens) - 1])
+            },
+        )
+
+    chosen, rejected = datum([1, 2, 3]), datum([1, 4, 5])
+    reference = module.SamplerReference(Sampler(), timeout=10)
+    pairs = [
+        {
+            "chosen_datum": chosen,
+            "rejected_datum": rejected,
+            "chosen_tokens_len": 3,
+            "rejected_tokens_len": 3,
+            "response_start": 1,
+        }
+    ]
+    scored = asyncio.run(module._ref_forward_batch(pairs, reference, asyncio.Semaphore(1), 1))
+    assert calls == [[1, 2, 3], [1, 4, 5]]
+    assert list(scored[0]["ref_chosen"]) == [-2, -3]
+    assert list(scored[0]["ref_rejected"]) == [-4, -5]
+    assert scored[0]["chosen_datum"] is chosen
+    assert scored[0]["response_start"] == 1
+
+
+@pytest.mark.parametrize("values", [[None, -1.0], [None, -1.0, None]])
+def test_sampler_reference_rejects_missing_scores(values):
+
+    future = Future()
+    future.set_result(values)
+    sampler = Mock()
+    sampler.compute_logprobs.return_value = future
+    datum = tinker.Datum(
+        model_input=tinker.ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={"target_tokens": tinker.TensorData(data=[2, 3], dtype="int64", shape=[2])},
+    )
+    with pytest.raises(ValueError, match="logprob length|unscored target"):
+        module.SamplerReference(sampler, timeout=10).forward([datum], "cross_entropy")
+
+
+@pytest.mark.parametrize("field", ["init_from_checkpoint", "warm_start_from_adapter"])
+def test_serverless_dpo_rejects_resume_before_setup(field):
+    cfg = module.Config(log_path="unused", serverless=True)
+    setattr(cfg, field, "prior-policy")
+    with pytest.raises(ValueError, match="does not support warm starts or resume"):
+        module.main(cfg)
+
+
+@pytest.mark.parametrize("failure", [None, "snapshot", "sampler", "training"])
+def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp_path, failure):
+
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    for name in [
+        "setup_wandb",
+        "wandb_log",
+        "wandb_finish",
+        "validate_config",
+        "validate_warm_start_config",
+        "_init_pair_worker",
+    ]:
+        monkeypatch.setattr(module, name, Mock())
+    monkeypatch.setattr(module, "resolve_renderer_snapshot", lambda **kwargs: "qwen3")
+    service, policy, ckpt, sampler = Mock(), Mock(), Mock(), Mock()
+    policy.save_weights_for_sampler.return_value = SimpleNamespace(path="snapshot://initial-reference")
+    service.create_sampling_client.return_value = sampler
+    if failure == "snapshot":
+        policy.save_weights_for_sampler.side_effect = RuntimeError("snapshot failed")
+    if failure == "sampler":
+        service.create_sampling_client.side_effect = RuntimeError("sampler failed")
+    monkeypatch.setattr(
+        module, "setup_serverless_training", lambda *args, **kwargs: (service, policy, ckpt, "ts-policy", 512)
+    )
+    monkeypatch.setattr(module, "build_service_client", Mock(side_effect=AssertionError("dedicated provisioning")))
+    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args: ["pair"])
+    runner = Mock()
+    runner.__enter__ = Mock(return_value=runner)
+    runner.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(module, "RunnerIO", lambda *args: runner)
+
+    async def train(*args, **kwargs):
+        policy.save_weights_for_sampler.assert_called_once_with("dpo-reference")
+        service.create_sampling_client.assert_called_once_with(model_path="snapshot://initial-reference")
+        assert isinstance(args[2], module.SamplerReference)
+        assert args[3] is policy
+        ckpt.resume.assert_not_called()
+        if failure == "training":
+            raise RuntimeError("training failed")
+        kwargs["on_ref_done"]()
+        return 1
+
+    monkeypatch.setattr(module, "_train_loop", train)
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset="preferences.jsonl",
+        tokenizer_model="Qwen/Qwen3-8B",
+        serverless=True,
+        lora_rank=8,
+        max_seq_len=512,
+        render_workers=0,
+        output_model_id="trained",
+    )
+    if failure:
+        with pytest.raises(RuntimeError, match=f"{failure} failed"):
+            module.main(cfg)
+        service.close.assert_called_once()
+        ckpt.promote_latest.assert_not_called()
+        if failure == "training":
+            sampler.close.assert_called_once()
+        return
+    result = module.main(cfg)
+    assert result["steps"] == 1
+    runner.mark_serverless.assert_called_once()
+    ckpt.save.assert_called_once()
+    ckpt.promote_latest.assert_called_once_with("trained", cfg.base_model, checkpoint_name="step-1")
+    service.create_reference_client.assert_not_called()
+    service.release_references.assert_not_called()
+    assert sampler.close.called and service.close.called
