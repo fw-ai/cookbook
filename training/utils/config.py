@@ -261,7 +261,8 @@ class DeployConfig:
     """Deployment shape resource name.  Should always be a **versioned** path
     (e.g. ``accounts/fw/deploymentShapes/ds-x/versions/abc123``) to pin the
     exact shape config.  Recipes populate this from
-    ``profile.deployment_shape`` which returns the versioned path."""
+    ``profile.deployment_shape`` which returns the versioned path.
+    Required: the cookbook never creates deployments without a shape."""
     hot_load_bucket_type: str = "FW_HOSTED"
     hot_load_trainer_job: str | None = None
     """Trainer job name whose hot-load bucket this deployment should use.
@@ -317,8 +318,8 @@ class DeployConfig:
             raise ValueError(
                 "DeployConfig.deployment_shape is required. Shapeless "
                 "deployments are the most common cause of failed deployment "
-                "creations, and the shapeless path may be deprecated in the "
-                "future. Resolve a shape from the training shape profile "
+                "creations, and the shapeless path will be deprecated. "
+                "Resolve a shape from the training shape profile "
                 "(``profile.deployment_shape``) or find deployable shapes "
                 "with ``firectl deployment-shape-version match --model "
                 "<model>``."

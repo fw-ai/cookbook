@@ -150,7 +150,7 @@ When `training_shape_id` is not set, the SDK selects validated runtime
 defaults. Explicit `training_shape_id`, `reference_training_shape_id`, and
 deployment-shape overrides still take precedence.
 
-**Do not create deployments without a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape).** Shapeless deployments are the most common cause of failed deployment creations, and the shapeless path may be deprecated in the future. The cookbook resolves the deployment shape from the training shape profile automatically; find deployable shapes for a model with `firectl deployment-shape-version match --model <MODEL>`. Fields such as replica count override a shape when set; the shape owns accelerator selection.
+**Do not create deployments without a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape).** Shapeless deployments are the most common cause of failed deployment creations, and the shapeless path will be deprecated. Find deployable shapes for a model with `firectl deployment-shape-version match --model <MODEL>` (or pass `default` to let the server pick one). The cookbook resolves the deployment shape from the training shape profile automatically. Fields such as replica count override a shape when set; the shape owns accelerator selection.
 
 To launch trainers with replicated HSDP, set the run-level replica count on
 `TrainerConfig`; it is not part of the validated training shape:
