@@ -199,6 +199,7 @@ def test_textworld_pi_recipe_uses_e2b_and_managed_server_grpo(tmp_path):
 
     assert config.completions_per_prompt == 8
     assert config.prompt_groups_per_step == 8
+    assert config.epochs == 1
     assert config.max_head_offpolicy_versions == 2
     assert config.anchor_logp == "rollout"
     assert config.server_side_grpo is True
@@ -283,6 +284,41 @@ def test_textworld_full_sync_shape_and_batch_contract(tmp_path):
     assert config.grad_clip_norm == 1.5
     assert config.trainer.training_shape_id == shape
     assert config.deployment.hot_load_transition_type == "SYNC"
+
+
+def test_textworld_async_offpolicy_and_epoch_controls(tmp_path) -> None:
+    from training.examples.rl.harbor.recipes.textworld import train as train_textworld
+
+    args = train_textworld.parse_args(
+        [
+            "--base-model",
+            "accounts/example/models/policy",
+            "--tokenizer-model",
+            "Qwen/Qwen3.8-27B",
+            "--renderer-name",
+            "qwen3_8",
+            "--textworld-dataset",
+            str(tmp_path / "dataset"),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--shuffle-seed",
+            "19",
+            "--max-head-offpolicy-versions",
+            "8",
+            "--epochs",
+            "2",
+        ]
+    )
+
+    config = train_textworld._build_config(
+        args,
+        run_dir=tmp_path / "run",
+        row_count=256,
+    )
+
+    assert config.max_head_offpolicy_versions == 8
+    assert config.epochs == 2
+    assert config.deployment.hot_load_transition_type is None
 
 
 @pytest.mark.parametrize(

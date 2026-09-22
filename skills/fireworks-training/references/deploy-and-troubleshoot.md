@@ -15,7 +15,7 @@ A fine-tuned LoRA **cannot run on serverless** — it needs an **on-demand (dedi
 | Perf | Matches base | Slightly higher TTFT; lower max throughput |
 | Best for | Single model in prod | Experiments / many variants |
 
-**One adapter → live merge** (simplest). Always pass a deployment shape: a bare `firectl deployment create <model>` drops into an **interactive shape picker**, and choosing "Create without using shape" fails with `accelerator_type must be specified for non-embeddings engines`. The interactive prompt also breaks non-interactive / agent / CI use, so pass the shape explicitly and add `--wait`. Find a deployable shape first:
+**One adapter → live merge** (simplest). Always pass a deployment shape: a bare `firectl deployment create <model>` drops into an **interactive shape picker**, and choosing "Create without using shape" fails with `accelerator_type must be specified for non-embeddings engines`. The interactive prompt also breaks non-interactive / agent / CI use, so pass the shape explicitly and add `--wait`. Either find a deployable shape, or pass `--deployment-shape default` to let the server pick one:
 ```bash
 firectl deployment-shape-version match --model "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>"
 ```

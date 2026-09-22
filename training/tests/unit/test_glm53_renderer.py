@@ -13,7 +13,7 @@ from PIL import Image
 
 import training.renderer.glm5  # noqa: F401 - registers glm53
 from training.renderer import RendererError, get_renderer
-from training.renderer.glm5 import Glm53FlashImageTokenCounter
+from training.renderer.glm5 import GLM53Renderer, Glm53FlashImageTokenCounter
 from training.utils.rl.rollout.renderer import (
     build_multimodal_completions_prompt_token_ids,
 )
@@ -676,3 +676,35 @@ def test_flash_invalid_tool_result_block_matches_current_hf(
     )
     rendered = flash_tokenizer.decode(ours)
     assert rendered.index("first") < rendered.index("second")
+
+
+def test_reasoning_effort_overrides_initial_prompt_line(tokenizer):
+    messages = [{"role": "user", "content": "hi"}]
+
+    default = GLM53Renderer(tokenizer)
+    assert default._initial_prompt_text == "<|system|>Reasoning Effort: Max"
+    assert "Reasoning Effort: Max" in tokenizer.decode(
+        default.build_generation_prompt(list(messages)).to_ints()
+    )
+
+    low = GLM53Renderer(tokenizer, reasoning_effort="low")
+    rendered = tokenizer.decode(low.build_generation_prompt(list(messages)).to_ints())
+    assert "Reasoning Effort: Low" in rendered
+    assert "Max" not in rendered.split("Reasoning Effort:")[1].split("\n")[0]
+
+    # medium/high fold into the template's High tier, mirroring the serving
+    # conversation-style mapping.
+    high = GLM53Renderer(tokenizer, reasoning_effort="medium")
+    assert "Reasoning Effort: High" in tokenizer.decode(
+        high.build_generation_prompt(list(messages)).to_ints()
+    )
+
+    max_effort = GLM53Renderer(tokenizer, reasoning_effort="max")
+    assert max_effort.build_generation_prompt(
+        list(messages)
+    ).to_ints() == default.build_generation_prompt(list(messages)).to_ints()
+
+
+def test_reasoning_effort_rejects_unknown_tier(tokenizer):
+    with pytest.raises(ValueError, match="unknown reasoning_effort"):
+        GLM53Renderer(tokenizer, reasoning_effort="ultra")

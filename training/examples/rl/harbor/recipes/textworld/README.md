@@ -147,6 +147,24 @@ recipe uses the shared AdamW optimizer rather than the paper's SGD setup; it
 isolates the score-centering correction while preserving the TextWorld
 comparison contract.
 
+## Async off-policy sweeps
+
+Omit `--full-sync` and set the maximum rollout lead explicitly to study
+staleness:
+
+```bash
+uv run python -m training.examples.rl.harbor.recipes.textworld.train \
+  ...same arguments as above... \
+  --policy-loss dppo \
+  --max-head-offpolicy-versions 8 \
+  --epochs 2
+```
+
+`--max-head-offpolicy-versions` controls how many optimizer versions rollout
+production may run ahead of training. `--epochs 2` reuses the same frozen,
+shuffled task order for a second pass. Use a fresh run directory for every
+setting, and keep the seed and task manifest fixed when comparing values.
+
 All policy losses use AdamW with `beta1=0.9`, `beta2=0.95`, `eps=1e-12`, and weight
 decay `0.01`. Gradient clipping is disabled by default (`--grad-clip-norm 0`).
 The recipe requests basic trainer-side gradient telemetry by default and logs

@@ -14,7 +14,7 @@ Before selecting a Training API path, confirm that the target account was enable
 
 ## Managed training vs Training API
 
-Use **managed training** for standard SFT/DPO/ORPO/RFT jobs. Reach for the **Training API** when you need a custom **loss/reward**, **RL with rollouts** (inference-in-the-loop), forward-pass internals (for example MoE routing for R3), distillation, or multi-turn/agentic trajectories.
+Use **managed training** for standard SFT/DPO/ORPO jobs. Reach for the **Training API** when you need a custom **loss/reward**, **RL with rollouts** (inference-in-the-loop), forward-pass internals (for example MoE routing for R3), distillation, or multi-turn/agentic trajectories.
 
 ## Training API infrastructure
 
@@ -25,18 +25,18 @@ Use **managed training** for standard SFT/DPO/ORPO/RFT jobs. Reach for the **Tra
 
 Read the live [serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and [dedicated](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md) pages before choosing.
 
-## Two agent-drivable ways to run RFT/RL
+## How to run RL
 
-There are two RFT paths, and they differ in **where the reward lives**. This matters a lot when a coding agent is driving:
+RL runs on the Training API. Fork `training.recipes.rl_loop` / `async_rl_loop` and supply an
+inline `reward_fn(completion, row) -> float`. It may read `ground_truth`, another declared
+reference field, tool outcomes, environment state, or a judge result. There is no evaluator
+resource — same shape as Tinker's reward-in-the-loop — and the SDK provisions the trainer plus
+rollout deployment. This is fully agent-drivable.
 
-| Path | Reward | Agent-drivable? |
-|---|---|---|
-| **Managed RFT** — `firectl reinforcement-fine-tuning-job create --evaluator <id>` | A **registered evaluator resource** (server-side, built in an e2b sandbox, eval v3) | **Yes once the evaluator exists.** Register via **eval-protocol** (`pytest` auto-registers) or the **UI**. Evaluator authoring may require an admin role; a scoped key can still launch with an evaluator it can access. `firectl evaluator create` (V1) is **deprecated**. |
-| **Training-API RL** — fork `training.recipes.rl_loop` / `async_rl_loop` | An **inline `reward_fn(completion, row) -> float`** in the forked recipe. It may read `ground_truth`, another declared reference field, tool outcomes, environment state, or a judge result. | **Yes.** No evaluator resource. Same shape as Tinker's reward-in-the-loop. The SDK provisions the trainer + rollout deployment. |
+**Managed RFT (`firectl reinforcement-fine-tuning-job create --evaluator <id>`) is deprecated**
+and accepts no new jobs. The evaluator material below applies only to jobs that already exist.
 
-**Prefer the managed path for standard RFT** (same as the managed UI): `firectl reinforcement-fine-tuning-job create --dataset <ds> --evaluator <id>` — it resolves the training shape for you and is proven live (qwen3-4b, 2026-07-15). Reuse an existing evaluator or author one via eval-protocol. **Use the inline-reward recipe (below) for users with Training API access** who need a custom loop/reward, rollouts, or agentic trajectories. Both paths are agent-drivable; they differ in reward location, access, billing, and capability.
-
-### Managed RFT: authoring the eval3 evaluator
+### Managed RFT: authoring the eval3 evaluator (deprecated)
 
 `firectl reinforcement-fine-tuning-job create` needs an **eval3 evaluator with an `entry_point`** — legacy evaluators are rejected (`InvalidArgument: managed RFT requires an eval3 evaluator`), and `firectl evaluator create` is deprecated. The code-first way to make one is **eval-protocol** (no UI). Check current evaluator authorization in the live docs and handle the observed role gate below:
 

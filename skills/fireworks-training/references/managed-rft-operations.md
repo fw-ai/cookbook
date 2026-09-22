@@ -1,8 +1,14 @@
-# Managed RFT: launch, monitor, and validate
+# Managed RFT: launch, monitor, and validate (deprecated)
 
-*Source of truth: live [RFT overview](https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md), [Models matrix](https://docs.fireworks.ai/fine-tuning/models.md), [RFT parameters](https://docs.fireworks.ai/fine-tuning/rft-parameters-reference.md), and [Eval Protocol](https://evalprotocol.io/introduction). Defer flags and defaults to installed CLI `--help`.*
+> **Managed RFT is deprecated. Do not route a new run here.** Reinforcement learning
+> has moved to the Training API: read `references/rl-async.md` and
+> [Cookbook: Reinforcement Learning](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/rl.md).
+> This reference is retained only for jobs that already exist — monitoring, resuming,
+> and recovering them.
 
-Use this reference for managed RFT preflight, launch, job states, monitoring, and recovery. Training API or cookbook RL belongs in `references/training-api.md` and `references/rl-async.md`.
+*Source of truth: live [RFT overview](https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md), [Models matrix](https://docs.fireworks.ai/fine-tuning/models.md), [RL parameters](https://docs.fireworks.ai/fine-tuning/rft-parameters-reference.md), and [Eval Protocol](https://evalprotocol.io/introduction). Defer flags and defaults to installed CLI `--help`.*
+
+Use this reference for managed RFT job states, monitoring, and recovery on existing jobs. Training API or cookbook RL belongs in `references/training-api.md` and `references/rl-async.md`.
 
 ## Preflight
 

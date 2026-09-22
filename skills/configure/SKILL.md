@@ -177,8 +177,8 @@ user runs the dry-run and returns its output before final approval.
 | Installation and authentication | `../fireworks-training/references/getting-started.md` |
 | Method and data selection | `../fireworks-training/references/choose-method.md` |
 | Preference data and evaluators | `../fireworks-training/references/preference-data-and-evaluators.md` |
-| Managed RFT | `../fireworks-training/references/managed-rft-operations.md` |
-| RFT tracing | `../fireworks-training/references/rft-agent-tracing.md` |
+| Managed RFT (deprecated; existing jobs only) | `../fireworks-training/references/managed-rft-operations.md` |
+| RFT tracing (deprecated; existing jobs only) | `../fireworks-training/references/rft-agent-tracing.md` |
 | Training API | `../fireworks-training/references/training-api.md` |
 | Training API losses | `../fireworks-training/references/training-api-losses.md` |
 | Secure training | `../fireworks-training/references/secure-training-operations.md` |

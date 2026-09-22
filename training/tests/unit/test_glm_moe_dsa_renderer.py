@@ -11,6 +11,7 @@ from fireworks.training.sdk import TITOChatRequest, TITOIncrementalRenderer
 from training.renderer.tito import build_sidecar_tito_renderer
 import training.renderer.glm5  # noqa: F401 - registers glm_moe_dsa
 from training.renderer import get_renderer
+from training.renderer.glm5 import GLMMoeDsaRenderer
 
 
 _TOKENIZER = "zai-org/GLM-5.2"
@@ -116,6 +117,27 @@ def test_generation_prompt_user_only_matches_hf(tokenizer, renderer):
 
     assert ours == hf
     assert "Reasoning Effort: Max" in tokenizer.decode(ours)
+
+
+def test_low_reasoning_effort_renders_the_served_high_tier(tokenizer):
+    # GLM-5.2's template has no Low tier, and serving folds a low-effort
+    # request onto ``high``, so the renderer must train on the High prefix.
+    messages = [{"role": "user", "content": "Hello"}]
+    low = GLMMoeDsaRenderer(tokenizer, reasoning_effort="low")
+
+    ours = _renderer_generation_tokens(low, messages)
+    served = tokenizer.encode(
+        tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            reasoning_effort="high",
+        ),
+        add_special_tokens=False,
+    )
+
+    assert ours == served
+    assert "Reasoning Effort: High" in tokenizer.decode(ours)
 
 
 def test_incremental_tito_prompt_matches_full_glm52_render(tokenizer) -> None:

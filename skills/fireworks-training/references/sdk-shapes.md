@@ -37,7 +37,7 @@ trainer/deployment provisioning path.
 
 ## Deployment shape
 
-**Do not create deployments without a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape).** Shapeless deployments are the most common cause of failed deployment creations, and the shapeless path may be deprecated in the future.
+**Do not create deployments without a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape).** Shapeless deployments are the most common cause of failed deployment creations, and the [shapeless path](https://docs.fireworks.ai/guides/ondemand-deployments#explicitly-creating-a-deployment-without-a-shape-advanced-users-only) will be deprecated. Find a deployable shape, or pass `default` to let the server pick one.
 
 Do not set `cfg.deployment.deployment_shape` manually. The SDK resolves it from
 the requested [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape) or the selected training profile, and recipes read

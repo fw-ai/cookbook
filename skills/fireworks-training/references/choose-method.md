@@ -44,7 +44,7 @@ JSONL, one object per line; OpenAI-style `messages`. **Min 3, max 3M** (aim for 
 {"messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"Capital of France?"},{"role":"assistant","content":"Paris."}]}
 ```
 
-Docs: https://docs.fireworks.ai/fine-tuning/fine-tuning-models.md. For managed RFT weighting and launch controls, read `managed-rft-operations.md` and the installed CLI help.
+Docs: https://docs.fireworks.ai/fine-tuning/fine-tuning-models.md.
 
 ## DPO format
 
@@ -57,9 +57,11 @@ Preference pairs, **one-turn only** (preferred/non-preferred must be the last as
 
 If the user has prompts but no preference pairs, do not reject the task or silently invent labels. Use `references/preference-data-and-evaluators.md` to plan, cost, generate, review, and preserve pair provenance before upload.
 
-## RFT — reinforcement fine-tuning
+## RL — reinforcement learning
 
-Provide three things (not necessarily labeled outputs): a **dataset** of prompts; an **evaluator or inline reward** that scores an output 0.0→1.0; and the **agent** being trained. Managed RFT uses a registered evaluator. Training API RFT uses reward code and may read `ground_truth` or any other field declared by that reward. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md. Evaluator authoring: `preference-data-and-evaluators.md`.
+Provide three things (not necessarily labeled outputs): a **dataset** of prompts; a **reward** that scores an output 0.0→1.0; and the **agent** being trained. Reward code may read `ground_truth` or any other field it declares. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/training-api/cookbook/rl.md. Rollout and scheduling detail: `rl-async.md`; multi-turn agents: `rl-agentic.md`.
+
+Managed RFT (`firectl rftj`, registered evaluators) is deprecated and accepts no new jobs. Route new work to the Training API; use `managed-rft-operations.md` only to monitor or recover a job that already exists.
 
 ## Classification (a common SFT task)
 
@@ -119,8 +121,7 @@ Catch format errors locally before `firectl dataset create`. A malformed row oth
 ```python
 import json, sys
 
-method = "sft"   # "sft" | "dpo" | "managed-rft" | "sdk-rft"
-managed_evaluator_required_fields = []  # from the reviewed evaluator contract
+method = "sft"   # "sft" | "dpo" | "sdk-rft"
 sdk_reward_required_fields = []         # e.g. ["ground_truth"]
 allowed_roles = {"system", "user", "assistant", "tool"}
 
@@ -175,10 +176,6 @@ for i, line in enumerate(open(sys.argv[1]), 1):
         assert len(dpo_turns) == 1 and dpo_turns[0]["role"] == "user", f"line {i}: DPO input must contain exactly one user turn"
         validate_preference_output(o.get("preferred_output"), i, "preferred_output")
         validate_preference_output(o.get("non_preferred_output"), i, "non_preferred_output")
-    elif method == "managed-rft":
-        validate_messages(o.get("messages"), i, final_assistant=False)
-        for field in managed_evaluator_required_fields:
-            assert field in o, f"line {i}: missing {field!r} required by evaluator"
     elif method == "sdk-rft":
         validate_messages(o.get("messages"), i, final_assistant=False)
         for field in sdk_reward_required_fields:
@@ -195,7 +192,7 @@ first = json.loads(next(l for l in open(sys.argv[1]) if l.strip()))
 detected = "dpo" if ("preferred_output" in first or "chosen" in first) else "sft/rft"
 if method == "dpo" and detected != "dpo":
     warnings.append("requested method=dpo but rows look SFT/RFT-shaped (no preferred_output/chosen) -> wrong method or wrong file")
-if method in ("sft", "managed-rft", "sdk-rft") and detected == "dpo":
+if method in ("sft", "sdk-rft") and detected == "dpo":
     warnings.append(f"requested method={method} but rows look DPO-shaped (preferred_output/chosen present) -> wrong method")
 
 print(f"OK: {n} valid {method} rows")
