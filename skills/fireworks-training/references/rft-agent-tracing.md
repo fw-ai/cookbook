@@ -1,8 +1,12 @@
-# Managed RFT remote tracing
+# Managed RFT remote tracing (deprecated)
+
+> **Managed RFT is deprecated.** For new multi-turn agent work use `references/rl-agentic.md`
+> and [Cookbook: Agentic Reinforcement Learning](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/agentic-rl.md).
+> This reference covers remote environments attached to jobs that already exist.
 
 *Source of truth: live [Remote Environment Setup](https://docs.fireworks.ai/fine-tuning/connect-environments.md) and [Eval Protocol](https://evalprotocol.io/introduction).*
 
-Use this reference when implementing a managed RFT remote environment, wiring Fireworks tracing, or debugging a reward-to-rollout join. For custom Training API agent trajectories, use `references/rl-agentic.md`.
+Use this reference when debugging a reward-to-rollout join on an existing managed RFT remote environment. For custom Training API agent trajectories, use `references/rl-agentic.md`.
 
 ## Why tracing matters
 

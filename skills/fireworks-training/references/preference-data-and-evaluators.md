@@ -11,7 +11,7 @@ Generate preference pairs and evaluators transparently in the user's workspace: 
 | Ideal labeled answers | SFT. Do not manufacture preference pairs. |
 | Human or model-ranked pairs | DPO or ORPO. Normalize to the managed preference schema. |
 | Prompts only, plus a clear preference criterion | Generate pairs, review a sample, then run DPO or ORPO. |
-| Prompts plus objective correctness | Managed RFT with a registered evaluator, or Training API RFT with an inline reward. |
+| Prompts plus objective correctness | Training API RL with an inline reward. |
 | Open-ended quality criteria | Write and calibrate an LLM-judge rubric before training. |
 
 Never silently turn prompts into preference data. Pair generation adds inference cost and embeds the generator or judge's bias into the training set.
@@ -87,9 +87,9 @@ Dependencies and network/credential requirements:
 
 Show the spec to the user and resolve ambiguity before implementing the evaluator.
 
-### Managed RFT evaluator
+### Managed RFT evaluator (deprecated)
 
-Managed RFT uses a registered evaluator with a reviewed entry point. Use Eval Protocol's current code-first flow, read `managed-rft-operations.md`, and defer exact APIs to the live [RFT overview](https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md).
+Managed RFT is deprecated and accepts no new jobs; for new work write a reward inside a Training API rollout function instead (see `rl-async.md`). The rest of this section applies only to evaluators already registered against an existing job. Managed RFT uses a registered evaluator with a reviewed entry point. Use Eval Protocol's current code-first flow, read `managed-rft-operations.md`, and defer exact APIs to the live [RFT overview](https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md).
 
 1. Write the Eval Protocol reward in the workspace.
 2. Add deterministic unit examples for full credit, partial credit, zero, malformed output, and edge cases.
