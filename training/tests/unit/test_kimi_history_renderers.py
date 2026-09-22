@@ -487,3 +487,73 @@ def test_preserve_generation_prompt_extends_prior_observation(
     second_turn_prompt = renderer.build_generation_prompt(later_prompt).to_ints()
 
     assert second_turn_prompt[: len(completed_first_turn)] == completed_first_turn
+
+
+_MEDIA_PAD_TOKEN = "<|media_pad|>"
+_MEDIA_PAD_ID = 9
+_UNK_ID = 4
+
+
+class _MediaPadTokenizer(_ReversibleTokenizer):
+    """Stub tokenizer that registers ``<|media_pad|>`` like Kimi vision models."""
+
+    unk_token_id = _UNK_ID
+    _special_to_id = {
+        **_ReversibleTokenizer._special_to_id,
+        _MEDIA_PAD_TOKEN: _MEDIA_PAD_ID,
+    }
+    _id_to_special = {value: key for key, value in _special_to_id.items()}
+
+    def convert_tokens_to_ids(self, token: str) -> int:
+        return self._special_to_id.get(token, self.unk_token_id)
+
+
+class _NoMediaPadTokenizer(_ReversibleTokenizer):
+    """Stub tokenizer that maps unknown tokens to ``unk`` instead of failing."""
+
+    unk_token_id = _UNK_ID
+
+    def convert_tokens_to_ids(self, token: str) -> int:
+        return self.unk_token_id
+
+
+@pytest.mark.parametrize(
+    "renderer_name",
+    [
+        "kimi_k25",
+        "kimi_k25_interleaved",
+        "kimi_k26_interleaved",
+        "kimi_k26_preserve_thinking",
+    ],
+)
+def test_image_placeholder_token_id_resolves_media_pad(renderer_name: str) -> None:
+    """Rollout multimodal rendering needs this to encode image chunks.
+
+    The K2.5/K2.6 renderer lineage is text-only, so without this resolution a
+    vision-capable checkpoint samples zero multimodal prompt groups and RL
+    fails the "no trained multimodal prompt group" gate.
+    """
+    renderer = get_renderer(renderer_name, _MediaPadTokenizer())
+    assert renderer.image_placeholder_token_id == _MEDIA_PAD_ID
+
+
+@pytest.mark.parametrize(
+    "renderer_name",
+    [
+        "kimi_k25",
+        "kimi_k25_interleaved",
+        "kimi_k26_interleaved",
+        "kimi_k26_preserve_thinking",
+    ],
+)
+def test_image_placeholder_token_id_is_none_without_media_pad(
+    renderer_name: str,
+) -> None:
+    """A tokenizer lacking the token must yield None, never its ``unk`` id.
+
+    ``convert_tokens_to_ids`` maps an unknown token to ``unk`` instead of
+    failing, and encoding that id would silently render an image chunk as
+    ordinary text.
+    """
+    renderer = get_renderer(renderer_name, _NoMediaPadTokenizer())
+    assert renderer.image_placeholder_token_id is None

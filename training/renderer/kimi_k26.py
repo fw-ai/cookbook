@@ -86,7 +86,55 @@ class _KimiReasoningFieldPrecedenceMixin:
         return super().render_message(message, ctx)  # type: ignore[misc]
 
 
+# Distinguishes "not resolved yet" from a resolved ``None``.
+_UNRESOLVED = object()
+
+
+class _KimiMediaPadImagePlaceholderMixin:
+    """Resolve the image-placeholder token id for token-in vision completions.
+
+    The K2.5/K2.6 renderer lineage is text-only, so nothing up the MRO
+    supplies this. Rollout multimodal rendering needs it to encode image
+    chunks for token-in completions, and without it a vision-capable
+    checkpoint samples zero multimodal prompt groups and RL fails the "no
+    trained multimodal prompt group" gate. Resolve it the way
+    ``KimiK3VisionRenderer`` does -- from the tokenizer's ``<|media_pad|>``
+    special token -- and stay ``None`` for tokenizers that lack it rather
+    than returning an ``unk`` id that would silently render as text.
+    """
+
+    @property
+    def image_placeholder_token_id(self) -> int | None:
+        """Token id standing in for one image chunk, or ``None`` when text-only."""
+        cached = getattr(self, "_image_placeholder_token_id_cache", _UNRESOLVED)
+        if cached is not _UNRESOLVED:
+            return cached
+
+        # Imported lazily: ``renderer/__init__`` loads this module before
+        # ``kimi_k3``, so a module-level import would close a cycle.
+        from training.renderer.kimi_k3 import MEDIA_PAD_TOKEN
+
+        resolved: int | None = None
+        convert = getattr(self.tokenizer, "convert_tokens_to_ids", None)
+        if callable(convert):
+            try:
+                candidate = convert(MEDIA_PAD_TOKEN)
+            except (KeyError, ValueError):
+                candidate = None
+            if isinstance(candidate, int) and not isinstance(candidate, bool):
+                # A tokenizer without the token maps it to ``unk`` rather than
+                # failing, and encoding that id would render the image chunk as
+                # ordinary text instead of a placeholder.
+                unk_id = getattr(self.tokenizer, "unk_token_id", None)
+                if not (isinstance(unk_id, int) and candidate == unk_id):
+                    resolved = candidate
+
+        self._image_placeholder_token_id_cache = resolved
+        return resolved
+
+
 class KimiK25InterleavedRenderer(
+    _KimiMediaPadImagePlaceholderMixin,
     _KimiReasoningFieldPrecedenceMixin,
     DisaggregateMultiTurnMixin,
     _NoImplicitSystemMessageMixin,
@@ -108,6 +156,7 @@ class KimiK26InterleavedRenderer(KimiK25InterleavedRenderer):
 
 
 class KimiK26PreserveThinkingRenderer(
+    _KimiMediaPadImagePlaceholderMixin,
     _KimiReasoningFieldPrecedenceMixin,
     DisaggregateMultiTurnMixin,
     _NoImplicitSystemMessageMixin,

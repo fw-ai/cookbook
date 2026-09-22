@@ -28,10 +28,15 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k25 import KimiK25Ren
 from training.renderer.tokenizer import Tokenizer
 
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.kimi_k26 import _KimiMediaPadImagePlaceholderMixin
 from training.renderer.message_weights import untrained_synthesized_context
 
 
-class KimiK25SplitRenderer(DisaggregateMultiTurnMixin, _TinkerKimiK25Renderer):
+class KimiK25SplitRenderer(
+    _KimiMediaPadImagePlaceholderMixin,
+    DisaggregateMultiTurnMixin,
+    _TinkerKimiK25Renderer,
+):
     """Upstream K2.5 rendering with per-turn, weight-aware loss placement."""
 
     def _ensure_system_message(self, messages: list[Message]) -> list[Message]:
