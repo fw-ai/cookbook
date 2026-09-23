@@ -634,8 +634,13 @@ class TrainingCheckpoints:
         base_model: str,
         *,
         hot_load_deployment_id: str | None = None,
+        checkpoint_name: str | None = None,
     ) -> dict:
         """Promote the newest promotable row on the control plane.
+
+        When checkpoint_name is supplied, only that logical checkpoint in the
+        current run is eligible; missing final exports must not fall back to an
+        earlier snapshot (for example a frozen DPO reference).
 
         No local lookup. Works identically for full and LoRA runs; in LoRA
         runs this transparently picks up the most recent
@@ -649,9 +654,13 @@ class TrainingCheckpoints:
                 if r.get("promotable") and self._row_matches_current_run(r)
             ]
         )
+        if checkpoint_name is not None:
+            rows = [r for r in rows if self._trainer_logical_name(_short_name(r["name"])) == checkpoint_name]
         if not rows:
             raise RuntimeError(
-                f"No promotable checkpoints found for trainer job '{self._trainer_id}'. "
+                f"No promotable checkpoints found for trainer job '{self._trainer_id}'"
+                + (f" matching {checkpoint_name!r}" if checkpoint_name is not None else "")
+                + ". "
                 "Call save(promotable=True) or run a promotable weight sync first."
             )
         # Use the 4-segment resource name end-to-end: the SDK accepts

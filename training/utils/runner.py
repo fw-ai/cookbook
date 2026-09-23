@@ -219,6 +219,7 @@ class RunnerIO:
         self._last_step: int = 0
         self._last_total_steps: int = 0
         self._serverless: bool = False
+        self._reference_checkpoint: str | None = None
 
     # -- context manager -------------------------------------------------------
 
@@ -344,6 +345,12 @@ class RunnerIO:
         """Mark training start for accelerator-seconds calculation."""
         self._training_start = time.monotonic()
 
+    def set_reference_checkpoint(self, path: str) -> None:
+        """Record the fixed DPO reference identity in managed metadata."""
+        if self._reference_checkpoint is not None and self._reference_checkpoint != path:
+            raise ValueError("reference checkpoint must remain fixed during a run")
+        self._reference_checkpoint = path
+
     def write_metadata(self) -> None:
         if not self._metadata_file:
             return
@@ -364,6 +371,8 @@ class RunnerIO:
                 "serverless": self._serverless,
             }
         }
+        if self._reference_checkpoint is not None:
+            payload["metadata"]["reference_checkpoint"] = self._reference_checkpoint
         self._write_json(self._metadata_file, payload)
 
     def set_tokens_processed(self, tokens: int) -> None:

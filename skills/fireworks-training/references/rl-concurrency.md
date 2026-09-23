@@ -90,16 +90,12 @@ Request uploads and future-result downloads have separate contracts:
   client fetches the full body. The client can then reserve download capacity
   and avoid concurrent multi-megabyte response fan-out.
 
-For a large batch that produces large future results, prefer metadata-only
-retrieval after confirming that the selected trainer and client both support
-the protocol. Do not describe it as a generic large-batch or upload-timeout
-mode.
+Metadata-only retrieval is the default for supported Tinker clients and
+trainers. The client reserves the advertised response size before fetching the
+full body, bounding concurrent result downloads without changing forward
+execution or replaying the request. The cookbook does not expose a separate
+toggle and must not monkeypatch private `tinker` internals.
 
-The current staged cookbook intentionally disables metadata-only retrieval
-while the trainer fleet is being upgraded. It is not a cookbook default, and
-the cookbook does not currently expose a supported public toggle. If Fireworks
-has approved the staged rollout for a compatible trainer/client pair, enable it
-manually using the rollout-specific instructions. Do not monkeypatch private
-`tinker` internals. Otherwise, keep the compatibility behavior until the
-backend rollout is complete and the cookbook publishes a supported opt-in or
-changes the default.
+Do not describe metadata-only retrieval as a generic large-batch or
+upload-timeout mode. It controls completed future-result downloads, not request
+uploads or trainer execution.
