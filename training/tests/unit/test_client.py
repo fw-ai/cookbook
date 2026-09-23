@@ -9,12 +9,12 @@ import tinker.lib.api_future_impl as tinker_api_future_impl
 from training.utils.client import ReconnectableClient
 
 
-def test_client_disables_tinker_metadata_only_future_retrieval_by_default():
+def test_client_preserves_tinker_metadata_only_future_retrieval_by_default():
     request = tinker_api_future_impl.FutureRetrieveRequest(
         request_id="req-1",
         allow_metadata_only=True,
     )
-    assert request.allow_metadata_only is False
+    assert request.allow_metadata_only is True
 
 
 class _FakeFuture:

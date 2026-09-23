@@ -35,8 +35,6 @@ except ImportError:
         NUM_SEQUENCES = "num_sequences"
         NUM_LOSS_TOKENS = "num_loss_tokens"
 from fireworks.training.sdk.trainer import TrainerJobManager, TrainerServiceEndpoint
-import tinker.lib.api_future_impl as tinker_api_future_impl
-from tinker.types.future_retrieve_request import FutureRetrieveRequest as _FutureRetrieveRequest
 
 logger = logging.getLogger(__name__)
 
@@ -53,23 +51,6 @@ _DEFAULT_FBC_POOLING = "mean"
 _MIN_SDK_FOR_CONTRASTIVE = "1.2.0a78"
 """First published ``fireworks-ai[training]`` release with ``forward_backward_contrastive``
 in an importable cookbook (a77 has the method but lacks other symbols utils imports)."""
-
-
-def _install_tinker_future_retrieve_compat() -> None:
-    """Keep metadata-only disabled until all trainer versions support it."""
-    current = getattr(tinker_api_future_impl, "FutureRetrieveRequest", None)
-    if current is None or getattr(current, "_fw_cookbook_compat", False):
-        return
-
-    def _compat_future_retrieve_request(*args, **kwargs):
-        kwargs.pop("allow_metadata_only", None)
-        return _FutureRetrieveRequest(*args, **kwargs)
-
-    _compat_future_retrieve_request._fw_cookbook_compat = True
-    tinker_api_future_impl.FutureRetrieveRequest = _compat_future_retrieve_request
-
-
-_install_tinker_future_retrieve_compat()
 
 
 class ReconnectableClient:
