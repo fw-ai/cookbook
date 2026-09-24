@@ -393,6 +393,25 @@ def _sampling_args(tmp_path, *extra):
     )
 
 
+def test_textworld_uses_binary_kl_default_threshold(tmp_path) -> None:
+    from training.examples.rl.harbor.recipes.textworld import train as train_textworld
+
+    args = _sampling_args(
+        tmp_path,
+        "--policy-loss",
+        "dppo",
+        "--dppo-divergence",
+        "binary_kl",
+    )
+    config = train_textworld._build_config(
+        args,
+        run_dir=tmp_path / "run",
+        row_count=256,
+    )
+
+    assert config.dppo.threshold == 0.05
+
+
 def test_textworld_sampling_only_requires_a_deployment(tmp_path, monkeypatch):
     from training.examples.rl.harbor.recipes.textworld import train as train_textworld
 

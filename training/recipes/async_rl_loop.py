@@ -1096,7 +1096,11 @@ def main(
                 )
             elif cfg.policy_loss == "dppo":
                 loss_fn = make_dppo_loss_fn(
-                    **common_loss_kwargs,
+                    advantages=adv,
+                    ref_logprobs=ref_lp,
+                    inf_logprobs=inf_lp,
+                    prompt_len=prompt_lens,
+                    old_policy_logprobs=old_policy_logprobs,
                     dppo_config=cfg.dppo,
                 )
             else:
