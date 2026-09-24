@@ -106,7 +106,7 @@ def test_dppo_builder_validates_config(config) -> None:
     "config",
     [
         ScoreCenteringConfig(top_k=0),
-        ScoreCenteringConfig(top_k=6),
+        ScoreCenteringConfig(top_k=9),
         ScoreCenteringConfig(tail_mass_epsilon=0),
     ],
 )

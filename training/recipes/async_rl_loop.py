@@ -67,6 +67,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.dataloader import CursorDataLoader
+from training.utils.data import compute_advantages
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_rl import (
@@ -584,6 +585,7 @@ def main(
     config: Config,
     *,
     rollout_fn_factory: RolloutFnFactory,
+    advantage_fn: Callable[[list[float]], list[float]] = compute_advantages,
     dynamic_filter_fn: DynamicFilterFn | None = None,
     evaluation_fn: RolloutEvaluationFn | None = None,
     evaluation_interval: int = 1,
@@ -597,6 +599,10 @@ def main(
     ``rollout_fn(sample_prompt) -> RolloutRun | None`` is invoked
     ``completions_per_prompt`` times per dataset row (each invocation is
     one trajectory draw against the inference deployment).
+
+    ``advantage_fn`` maps one prompt group's rewards to per-rollout advantages.
+    The default subtracts the group mean and divides by its standard deviation.
+    Supply a mean-only function for REINFORCE with group-centered rewards.
 
     Remote trainer and sampler setup and lifecycle are owned by the SDK-managed
     Tinker path.
@@ -1226,6 +1232,7 @@ def main(
             )
             coordinator = AsyncRLCoordinator(
                 rows=make_row_requests(),
+                advantage_fn=advantage_fn,
                 completions_per_prompt=cfg.completions_per_prompt,
                 prompt_groups_per_step=cfg.prompt_groups_per_step,
                 training_chunks_per_step=cfg.pipeline_chunks_per_step,

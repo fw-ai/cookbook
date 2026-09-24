@@ -94,6 +94,14 @@ run. Each trajectory is then packed as a separate trainer datum. Thus a group
 with `R` surviving runs has `R` rewards and advantages, while its trainer datum
 count is `sum(len(run.segments) for run in runs)` and may exceed `R`.
 
+`main(..., advantage_fn=...)` can override the per-group reward-to-advantage
+calculation. The default `compute_advantages` subtracts the group mean and
+divides by the group standard deviation. For mean-only REINFORCE, pass a
+function that subtracts the mean without that division. Reward scaling belongs
+to the caller; the recipe does not automatically convert binary rewards to
+`-1/+1`. This choice is independent of token-level score centering and gradient
+accumulation normalization.
+
 `RolloutSetup` contains the recipe-owned sampler, tokenizer, tokenizer ID,
 sampling kwargs, inference base URL, API key, deployment model, group size, and
 caller-provided `extras`. Treat `setup.sampler` as borrowed: reuse it for every
