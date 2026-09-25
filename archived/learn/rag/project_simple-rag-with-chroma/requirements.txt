@@ -201,7 +201,7 @@ scikit-learn==1.5.2
 scipy==1.14.1
 sec-api==1.0.18
 sentence-transformers==3.1.1
-setuptools==75.1.0
+setuptools==83.0.0
 shapely==2.0.6
 shellingham==1.5.4
 six==1.16.0
