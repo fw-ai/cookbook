@@ -655,6 +655,7 @@ def main(
             trainer_id=policy_job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
+            save_every=cfg.dcp_save_interval,
         )
 
         if is_multi_teacher:
@@ -945,8 +946,7 @@ def main(
             logger.info("[step %d] optim_step: done (%.1fs)", step, _time.time() - t0)
 
             rollouts_completed = step - step_offset
-            dcp_interval = cfg.dcp_save_interval
-            if dcp_interval > 0 and rollouts_completed > 0 and rollouts_completed % dcp_interval == 0:
+            if ckpt.should_save(rollouts_completed):
                 data_consumed = (resume_info.data_consumed if resume_info else 0) + (
                     rollouts_completed * prompt_groups_per_step
                 )

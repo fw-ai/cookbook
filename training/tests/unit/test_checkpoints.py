@@ -539,6 +539,24 @@ class TestResume:
 # -- save ----------------------------------------------------------------------
 
 
+class TestShouldSave:
+    def test_disabled_by_default(self, log_dir):
+        ckpt, _, _ = _make(log_dir)
+        assert not any(ckpt.should_save(step) for step in range(0, 50))
+
+    def test_fires_every_n_steps(self, log_dir):
+        ckpt = TrainingCheckpoints(
+            MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=10
+        )
+        assert [s for s in range(0, 31) if ckpt.should_save(s)] == [10, 20, 30]
+
+    def test_rejects_negative(self, log_dir):
+        with pytest.raises(UserConfigError, match="save_every"):
+            TrainingCheckpoints(
+                MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=-1
+            )
+
+
 class TestSave:
     def test_resumable_only_writes_dcp_and_dataloader(self, log_dir):
         ckpt, client, fw = _make(log_dir)

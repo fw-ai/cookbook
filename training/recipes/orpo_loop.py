@@ -351,6 +351,7 @@ def main(
             trainer_id=job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
+            save_every=cfg.dcp_save_interval,
         )
 
         resume_info = ckpt.resume(
@@ -474,10 +475,7 @@ def main(
             client.optim_step(adam_params)
             step += 1
 
-            dcp_due = (
-                cfg.dcp_save_interval > 0
-                and step % cfg.dcp_save_interval == 0
-            )
+            dcp_due = ckpt.should_save(step)
             sampler_due = (
                 cfg.sampler_save_interval > 0
                 and step % cfg.sampler_save_interval == 0

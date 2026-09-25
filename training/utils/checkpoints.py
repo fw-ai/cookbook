@@ -20,16 +20,18 @@ Usage::
 
     ckpt = TrainingCheckpoints(client, rlor_mgr,
                                trainer_id=job_id, log_path=cfg.log_path,
-                               lora_rank=cfg.lora_rank)
+                               lora_rank=cfg.lora_rank,
+                               save_every=cfg.dcp_save_interval)
 
     resume_info = ckpt.resume(
         init_from_checkpoint=cfg.init_from_checkpoint,
         warm_start_from_adapter=cfg.warm_start_from_adapter,
     )
 
-    # periodic (RL / SFT)
-    ckpt.save(f"step-{step}", resumable=True, promotable=False,
-              data_consumed=data_consumed)
+    # periodic (RL / SFT); cadence comes from ``save_every``
+    if ckpt.should_save(step):
+        ckpt.save(f"step-{step}", resumable=True, promotable=False,
+                  data_consumed=data_consumed)
 
     # final
     ckpt.save(f"step-{step}", resumable=True, promotable=True,
@@ -389,6 +391,7 @@ class TrainingCheckpoints:
         trainer_id: str,
         log_path: str,
         lora_rank: int = 0,
+        save_every: int = 0,
         serverless: bool = False,
         save_appear_timeout_s: float = 90.0,
         save_stabilize_s: float = 15.0,
@@ -400,6 +403,11 @@ class TrainingCheckpoints:
         self._trainer_id = trainer_id
         self._log_path = log_path
         self._lora_rank = lora_rank
+        if save_every < 0:
+            raise UserConfigError(
+                f"save_every must be >= 0 (0 disables periodic saves), got {save_every}"
+            )
+        self.save_every = save_every
         # In serverless mode trainer_id is the TrainingSession id (not a job),
         # which changes how resume refs are built — see resume().
         self._serverless = serverless
@@ -409,6 +417,14 @@ class TrainingCheckpoints:
         self._save_poll_s = save_poll_s
 
     # -- Save --------------------------------------------------------------
+
+    def should_save(self, step: int) -> bool:
+        """Return True if *step* is due for a periodic resumable checkpoint.
+
+        Fires every ``save_every`` steps (``0`` disables). Callers choose
+        whether *step* is absolute or counted from the resume point.
+        """
+        return self.save_every > 0 and step > 0 and step % self.save_every == 0
 
     def save(
         self,

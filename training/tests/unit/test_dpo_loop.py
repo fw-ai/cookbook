@@ -611,6 +611,9 @@ class TestTrainLoop:
             def __init__(self):
                 self.saves = []
 
+            def should_save(self, step):
+                return step % cfg.dcp_save_interval == 0
+
             def save(self, name, **kwargs):
                 self.saves.append((name, kwargs))
 
@@ -961,6 +964,9 @@ class TestTrainLoop:
         saves: list[dict] = []
 
         class _CapturingCkpt:
+            def should_save(self, step):
+                return True
+
             def save(self, name, *, resumable, promotable, data_consumed):
                 saves.append({"name": name, "data_consumed": data_consumed})
 
@@ -995,6 +1001,9 @@ class TestTrainLoop:
         saves: list[int] = []
 
         class _CapturingCkpt:
+            def should_save(self, step):
+                return True
+
             def save(self, name, *, resumable, promotable, data_consumed):
                 saves.append(data_consumed)
 
