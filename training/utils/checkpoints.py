@@ -407,6 +407,12 @@ class TrainingCheckpoints:
             raise UserConfigError(
                 f"save_every must be >= 0 (0 disables periodic saves), got {save_every}"
             )
+        if save_every == 0:
+            logger.warning(
+                "dcp_save_interval=0: no periodic resumable (DCP) checkpoints will "
+                "be saved, so a run that fails before its final checkpoint cannot "
+                "be resumed. Set dcp_save_interval > 0 to enable resume."
+            )
         self.save_every = save_every
         # In serverless mode trainer_id is the TrainingSession id (not a job),
         # which changes how resume refs are built — see resume().

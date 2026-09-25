@@ -554,6 +554,19 @@ class TestShouldSave:
         )
         assert not any(off.should_save(s) for s in range(0, 50))
 
+    def test_warns_when_disabled(self, log_dir, caplog):
+        with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
+            TrainingCheckpoints(
+                MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=0
+            )
+        assert "dcp_save_interval=0" in caplog.text
+        assert "cannot be resumed" in caplog.text
+
+    def test_no_warning_when_enabled(self, log_dir, caplog):
+        with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
+            TrainingCheckpoints(MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir)
+        assert "dcp_save_interval=0" not in caplog.text
+
     def test_rejects_negative(self, log_dir):
         with pytest.raises(UserConfigError, match="save_every"):
             TrainingCheckpoints(
