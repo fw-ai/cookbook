@@ -706,7 +706,7 @@ class Config:
 
     save_final_checkpoint: bool = True
 
-    dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+    dcp_save_interval: int = 40  # save DCP checkpoint every N steps (0 = off)
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
 

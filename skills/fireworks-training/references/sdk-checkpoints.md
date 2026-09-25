@@ -44,7 +44,7 @@ Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has 
 
 ## When each axis is used
 
-- `cfg.dcp_save_interval` > 0 (default 10 for RL and on-policy distillation, 0 for SFT/DPO/ORPO) → recipe writes resumable DCP checkpoints every N steps via `TrainingCheckpoints(save_every=...)` / `ckpt.should_save(step)`. `0` = off, and `TrainingCheckpoints` logs a warning that the run cannot be resumed before its final checkpoint. RL recipes (`rl_loop`, `async_rl_loop`, `igpo_loop`) and on-policy distillation also warn for values `> 20` (`warn_sparse_saves=True`), since a failure can lose up to N-1 steps; SFT/DPO/ORPO do not.
+- `cfg.dcp_save_interval` > 0 (default 10 for RL and on-policy distillation, 40 for SFT/DPO/ORPO) → recipe writes resumable DCP checkpoints every N steps via `TrainingCheckpoints(save_every=...)` / `ckpt.should_save(step)`. `0` = off, and `TrainingCheckpoints` logs a warning that the run cannot be resumed before its final checkpoint. Values `> 20` also log a warning, since a failure can lose up to N-1 steps.
 - `cfg.sampler_save_interval` > 0 → recipe writes promotable sampler checkpoints every N steps.
 - Managed SFT/DPO/ORPO fixes `dcp_save_interval` at 20 and sets `sampler_save_interval` only when `sampler_checkpoint_save_interval_steps` is positive.
 - End of training → recipe calls `ckpt.save(resumable=True, promotable=True, ...)`.

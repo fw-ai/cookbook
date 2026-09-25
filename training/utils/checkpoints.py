@@ -392,7 +392,6 @@ class TrainingCheckpoints:
         log_path: str,
         lora_rank: int = 0,
         save_every: int = 10,
-        warn_sparse_saves: bool = False,
         serverless: bool = False,
         save_appear_timeout_s: float = 90.0,
         save_stabilize_s: float = 15.0,
@@ -414,7 +413,7 @@ class TrainingCheckpoints:
                 "be saved, so a run that fails before its final checkpoint cannot "
                 "be resumed. Set dcp_save_interval > 0 to enable resume."
             )
-        elif warn_sparse_saves and save_every > 20:
+        elif save_every > 20:
             logger.warning(
                 "dcp_save_interval=%d: resumable (DCP) checkpoints are sparse, so "
                 "a failure can lose up to %d steps of progress. Consider a smaller "

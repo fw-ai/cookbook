@@ -567,7 +567,7 @@ class TestShouldSave:
         with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
             TrainingCheckpoints(
                 MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir,
-                save_every=save_every, warn_sparse_saves=True,
+                save_every=save_every,
             )
         assert f"dcp_save_interval={save_every}" in caplog.text
         assert f"up to {save_every - 1} steps" in caplog.text
@@ -577,17 +577,7 @@ class TestShouldSave:
         with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
             TrainingCheckpoints(
                 MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir,
-                save_every=save_every, warn_sparse_saves=True,
-            )
-        assert "dcp_save_interval" not in caplog.text
-
-    def test_large_interval_does_not_warn_without_opt_in(self, log_dir, caplog):
-        # SFT / DPO / ORPO tolerate sparse DCP saves; only RL and on-policy
-        # distillation opt in to the warning.
-        with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
-            TrainingCheckpoints(
-                MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir,
-                save_every=50,
+                save_every=save_every,
             )
         assert "dcp_save_interval" not in caplog.text
 

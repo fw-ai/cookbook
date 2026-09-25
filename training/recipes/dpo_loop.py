@@ -174,7 +174,7 @@ class Config:
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    dcp_save_interval: int = 0
+    dcp_save_interval: int = 40
     """Save DCP checkpoints every N steps. 0 disables."""
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
