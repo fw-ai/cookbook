@@ -386,7 +386,7 @@ def main():
             extra_values=args.deployment_extra_values,
         ),
         weight_sync_timeout=600,
-        dcp_save_interval=10,
+        dcp_save_interval=20,
         cleanup_on_exit=not args.skip_cleanup,
         wandb=WandBConfig(
             entity=args.wandb_entity,

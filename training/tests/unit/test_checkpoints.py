@@ -562,7 +562,7 @@ class TestShouldSave:
         assert "dcp_save_interval=0" in caplog.text
         assert "cannot be resumed" in caplog.text
 
-    @pytest.mark.parametrize("save_every", [20, 50])
+    @pytest.mark.parametrize("save_every", [21, 50])
     def test_warns_when_interval_is_large(self, log_dir, caplog, save_every):
         with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
             TrainingCheckpoints(
@@ -572,7 +572,7 @@ class TestShouldSave:
         assert f"dcp_save_interval={save_every}" in caplog.text
         assert f"up to {save_every - 1} steps" in caplog.text
 
-    @pytest.mark.parametrize("save_every", [1, 10, 19])
+    @pytest.mark.parametrize("save_every", [1, 10, 20])
     def test_no_warning_for_moderate_interval(self, log_dir, caplog, save_every):
         with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
             TrainingCheckpoints(
