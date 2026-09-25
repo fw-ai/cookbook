@@ -39,6 +39,7 @@ def _firetitan_service_kwargs(
     base_model: str,
     tokenizer_model: str | None,
     max_lora_rank: int | None,
+    projection_head_dim: int | None = None,
     max_context_length: int | None,
     learning_rate: float,
     trainer: TrainerConfig,
@@ -85,6 +86,16 @@ def _firetitan_service_kwargs(
         "hotload_timeout_s": hotload_timeout_s,
         "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
+    # Projection topology is service-scoped. Omit the field entirely for actor
+    # services; the SDK also canonicalizes an explicit zero to ``None``.
+    if isinstance(projection_head_dim, bool) or (
+        projection_head_dim is not None and not isinstance(projection_head_dim, int)
+    ):
+        raise ValueError("projection_head_dim must be a non-negative integer when set")
+    if projection_head_dim is not None and projection_head_dim < 0:
+        raise ValueError("projection_head_dim must be a non-negative integer when set")
+    if projection_head_dim:
+        service_kwargs["projection_head_dim"] = projection_head_dim
     # Keep the default path compatible with the cookbook's declared minimum SDK,
     # which predates reservation_target. An explicit target requires the newer SDK
     # surface and is therefore forwarded only when the caller requests it.
@@ -146,6 +157,7 @@ def build_service_client(
     base_model: str,
     tokenizer_model: str | None,
     max_lora_rank: int | None,
+    projection_head_dim: int | None = None,
     max_context_length: int | None,
     learning_rate: float,
     trainer: TrainerConfig,
@@ -160,6 +172,7 @@ def build_service_client(
         base_model=base_model,
         tokenizer_model=tokenizer_model,
         max_lora_rank=max_lora_rank,
+        projection_head_dim=projection_head_dim,
         max_context_length=max_context_length,
         learning_rate=learning_rate,
         trainer=trainer,

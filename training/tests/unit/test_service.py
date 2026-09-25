@@ -123,6 +123,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
         base_model="accounts/acct/models/base",
         tokenizer_model="Qwen/Qwen3-1.7B",
         max_lora_rank=16,
+        projection_head_dim=3,
         max_context_length=4096,
         learning_rate=1e-5,
         trainer=_trainer_config(),
@@ -141,6 +142,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "base_model": "accounts/acct/models/base",
             "tokenizer_model": "Qwen/Qwen3-1.7B",
             "max_lora_rank": 16,
+            "projection_head_dim": 3,
             "training_shape_id": "ts-x",
             "reference_training_shape_id": "ref-ts-x",
             "trainer_job_id": "job-1",
@@ -206,6 +208,59 @@ def test_build_service_client_forwards_max_lora_rank(monkeypatch):
     )
 
     assert calls[0]["max_lora_rank"] == 32
+    assert "projection_head_dim" not in calls[0]
+
+
+def test_build_service_client_treats_zero_projection_head_dim_as_unset(monkeypatch):
+    calls: list[dict] = []
+
+    class FakeServiceClient:
+        from_firetitan_config = staticmethod(
+            lambda **kwargs: calls.append(kwargs) or "service-sentinel"
+        )
+
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    build_service_client(
+        api_key="k",
+        base_url="https://api",
+        additional_headers=None,
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=32,
+        projection_head_dim=0,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-x"),
+    )
+
+    assert "projection_head_dim" not in calls[0]
+
+
+def test_build_service_client_forwards_service_projection_head_dim(monkeypatch):
+    calls: list[dict] = []
+
+    class FakeServiceClient:
+        from_firetitan_config = staticmethod(
+            lambda **kwargs: calls.append(kwargs) or "service-sentinel"
+        )
+
+    monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    build_service_client(
+        api_key="k",
+        base_url="https://api",
+        additional_headers=None,
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=32,
+        projection_head_dim=2,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-x"),
+    )
+
+    assert calls[0]["projection_head_dim"] == 2
 
 
 def test_build_service_client_defaults_use_reservation_true(monkeypatch):
