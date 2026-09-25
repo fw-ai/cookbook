@@ -562,10 +562,24 @@ class TestShouldSave:
         assert "dcp_save_interval=0" in caplog.text
         assert "cannot be resumed" in caplog.text
 
-    def test_no_warning_when_enabled(self, log_dir, caplog):
+    @pytest.mark.parametrize("save_every", [20, 50])
+    def test_warns_when_interval_is_large(self, log_dir, caplog, save_every):
         with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
-            TrainingCheckpoints(MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir)
-        assert "dcp_save_interval=0" not in caplog.text
+            TrainingCheckpoints(
+                MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir,
+                save_every=save_every,
+            )
+        assert f"dcp_save_interval={save_every}" in caplog.text
+        assert f"up to {save_every - 1} steps" in caplog.text
+
+    @pytest.mark.parametrize("save_every", [1, 10, 19])
+    def test_no_warning_for_moderate_interval(self, log_dir, caplog, save_every):
+        with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
+            TrainingCheckpoints(
+                MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir,
+                save_every=save_every,
+            )
+        assert "dcp_save_interval" not in caplog.text
 
     def test_rejects_negative(self, log_dir):
         with pytest.raises(UserConfigError, match="save_every"):

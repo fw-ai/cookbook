@@ -413,6 +413,14 @@ class TrainingCheckpoints:
                 "be saved, so a run that fails before its final checkpoint cannot "
                 "be resumed. Set dcp_save_interval > 0 to enable resume."
             )
+        elif save_every >= 20:
+            logger.warning(
+                "dcp_save_interval=%d: resumable (DCP) checkpoints are sparse, so "
+                "a failure can lose up to %d steps of progress. Consider a smaller "
+                "dcp_save_interval.",
+                save_every,
+                save_every - 1,
+            )
         self.save_every = save_every
         # In serverless mode trainer_id is the TrainingSession id (not a job),
         # which changes how resume refs are built — see resume().
