@@ -165,7 +165,7 @@ class Config:
     See training/utils/runner.py for file format details.
     """
     save_final_checkpoint: bool = True
-    dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+    dcp_save_interval: int = 40  # save DCP checkpoint every N steps (0 = off)
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
 
@@ -351,6 +351,7 @@ def main(
             trainer_id=job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
+            save_every=cfg.dcp_save_interval,
         )
 
         resume_info = ckpt.resume(
@@ -474,10 +475,7 @@ def main(
             client.optim_step(adam_params)
             step += 1
 
-            dcp_due = (
-                cfg.dcp_save_interval > 0
-                and step % cfg.dcp_save_interval == 0
-            )
+            dcp_due = ckpt.should_save(step)
             sampler_due = (
                 cfg.sampler_save_interval > 0
                 and step % cfg.sampler_save_interval == 0

@@ -706,7 +706,7 @@ class Config:
 
     save_final_checkpoint: bool = True
 
-    dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
+    dcp_save_interval: int = 40  # save DCP checkpoint every N steps (0 = off)
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
 
@@ -1017,6 +1017,7 @@ def main(
                 trainer_id=job_id,
                 log_path=cfg.log_path,
                 lora_rank=cfg.lora_rank,
+                save_every=cfg.dcp_save_interval,
             )
 
         # -- Prepare data ------------------------------------------------------
@@ -1199,10 +1200,7 @@ def main(
             pipe_total_tokens += tokens
             tps = pipe_total_tokens / max(1e-9, time.time() - pipe_started)
 
-            dcp_due = (
-                cfg.dcp_save_interval > 0
-                and s % cfg.dcp_save_interval == 0
-            )
+            dcp_due = ckpt.should_save(s)
             sampler_due = (
                 cfg.sampler_save_interval > 0
                 and s % cfg.sampler_save_interval == 0
@@ -1312,10 +1310,7 @@ def main(
                     epoch_valid_examples += len(batch)
                     step = _pipe_submit(batch, step, cursor.value)
                     checkpoint_step = (
-                        (
-                            cfg.dcp_save_interval > 0
-                            and step % cfg.dcp_save_interval == 0
-                        )
+                        ckpt.should_save(step)
                         or (
                             cfg.sampler_save_interval > 0
                             and step % cfg.sampler_save_interval == 0

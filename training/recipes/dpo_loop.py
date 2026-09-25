@@ -174,7 +174,7 @@ class Config:
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    dcp_save_interval: int = 0
+    dcp_save_interval: int = 40
     """Save DCP checkpoints every N steps. 0 disables."""
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
@@ -482,7 +482,7 @@ async def _train_loop(
             for k, v in optim_result.metrics.items():
                 step_metrics[f"train/{k}"] = v
 
-        dcp_due = cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0
+        dcp_due = ckpt is not None and ckpt.should_save(step)
         sampler_due = (
             cfg.sampler_save_interval > 0
             and step % cfg.sampler_save_interval == 0
@@ -856,6 +856,7 @@ def main(
                 trainer_id=policy_job_id,
                 log_path=cfg.log_path,
                 lora_rank=cfg.lora_rank,
+                save_every=cfg.dcp_save_interval,
             )
 
         resume_info = None

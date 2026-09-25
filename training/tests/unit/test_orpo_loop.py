@@ -41,7 +41,7 @@ def test_config_uses_shared_default_weight_decay():
     cfg = module.Config(log_path="/tmp/orpo_test_logs")
 
     assert cfg.weight_decay == pytest.approx(module.DEFAULT_ADAM["weight_decay"])
-    assert cfg.dcp_save_interval == 0
+    assert cfg.dcp_save_interval == 40
     assert cfg.sampler_save_interval == 0
 
 

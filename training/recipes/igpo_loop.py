@@ -151,7 +151,7 @@ class Config:
     weight_sync_interval: int = 1
     weight_sync_before_training: bool = False
     weight_sync_timeout: int = 600
-    dcp_save_interval: int = 0
+    dcp_save_interval: int = 10
     wandb: WandBConfig = field(
         default_factory=lambda: WandBConfig(project="igpo-tinker")
     )
@@ -366,6 +366,7 @@ def main(
             trainer_id=policy_job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
+            save_every=cfg.dcp_save_interval,
         )
 
         # Resume
@@ -690,7 +691,7 @@ def main(
                 with timer("weight_sync"):
                     saved = policy.save_weights_for_sampler_ext(f"step-{step}")
                     service.hotload_sampler_snapshot(saved.snapshot_name)
-            if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
+            if ckpt.should_save(step):
                 ckpt.save(
                     f"step-{step}",
                     resumable=True,

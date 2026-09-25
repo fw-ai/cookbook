@@ -249,7 +249,7 @@ class Config:
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    dcp_save_interval: int = 0
+    dcp_save_interval: int = 10
     weight_sync_timeout: int = 600
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
     cleanup_on_exit: bool = True
@@ -829,6 +829,7 @@ def main(
             trainer_id=service.trainer_job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
+            save_every=cfg.dcp_save_interval,
         )
 
         resume_info = ckpt.resume(
@@ -1309,12 +1310,7 @@ def main(
                         evaluations.start(batch.batch_id)
 
                         rollouts_completed = batch.batch_id - step_offset
-                        interval = cfg.dcp_save_interval
-                        if (
-                            interval > 0
-                            and rollouts_completed > 0
-                            and rollouts_completed % interval == 0
-                        ):
+                        if ckpt.should_save(rollouts_completed):
                             try:
                                 with wall_timer() as span:
                                     await coordinator.run_blocking(

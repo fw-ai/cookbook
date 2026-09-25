@@ -539,6 +539,55 @@ class TestResume:
 # -- save ----------------------------------------------------------------------
 
 
+class TestShouldSave:
+    def test_defaults_to_every_10_steps(self, log_dir):
+        ckpt, _, _ = _make(log_dir)
+        assert [s for s in range(0, 31) if ckpt.should_save(s)] == [10, 20, 30]
+
+    def test_custom_interval_and_disable(self, log_dir):
+        every_3 = TrainingCheckpoints(
+            MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=3
+        )
+        assert [s for s in range(0, 10) if every_3.should_save(s)] == [3, 6, 9]
+        off = TrainingCheckpoints(
+            MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=0
+        )
+        assert not any(off.should_save(s) for s in range(0, 50))
+
+    def test_warns_when_disabled(self, log_dir, caplog):
+        with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
+            TrainingCheckpoints(
+                MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=0
+            )
+        assert "dcp_save_interval=0" in caplog.text
+        assert "cannot be resumed" in caplog.text
+
+    @pytest.mark.parametrize("save_every", [21, 50])
+    def test_warns_when_interval_is_large(self, log_dir, caplog, save_every):
+        with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
+            TrainingCheckpoints(
+                MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir,
+                save_every=save_every,
+            )
+        assert f"dcp_save_interval={save_every}" in caplog.text
+        assert f"up to {save_every - 1} steps" in caplog.text
+
+    @pytest.mark.parametrize("save_every", [1, 10, 20])
+    def test_no_warning_for_moderate_interval(self, log_dir, caplog, save_every):
+        with caplog.at_level("WARNING", logger="training.utils.checkpoints"):
+            TrainingCheckpoints(
+                MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir,
+                save_every=save_every,
+            )
+        assert "dcp_save_interval" not in caplog.text
+
+    def test_rejects_negative(self, log_dir):
+        with pytest.raises(UserConfigError, match="save_every"):
+            TrainingCheckpoints(
+                MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=-1
+            )
+
+
 class TestSave:
     def test_resumable_only_writes_dcp_and_dataloader(self, log_dir):
         ckpt, client, fw = _make(log_dir)

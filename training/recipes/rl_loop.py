@@ -140,7 +140,7 @@ class Config:
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
-    dcp_save_interval: int = 0
+    dcp_save_interval: int = 10
     weight_sync_timeout: int = 600
     wandb: WandBConfig = field(
         default_factory=lambda: WandBConfig(project="grpo-tinker")
@@ -330,6 +330,7 @@ def main(
             trainer_id=service.trainer_job_id,
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
+            save_every=cfg.dcp_save_interval,
         )
         resume_info = checkpoint.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
@@ -599,10 +600,7 @@ def main(
                 log_metrics_json(step, reward=reward, ref_kl=ref_kl)
                 log_metrics(metrics, step=step)
 
-                if (
-                    cfg.dcp_save_interval > 0
-                    and (step - step_offset) % cfg.dcp_save_interval == 0
-                ):
+                if checkpoint.should_save(step - step_offset):
                     with elapsed_timer("dcp_save") as span:
                         checkpoint.save(
                             f"step-{step}",

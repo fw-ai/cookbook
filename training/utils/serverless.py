@@ -124,6 +124,7 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
         trainer_id=session_id,
         log_path=cfg.log_path,
         lora_rank=cfg.lora_rank,
+        save_every=cfg.dcp_save_interval,
         serverless=True,
         current_run_id=getattr(training_client, "run_id", None),
     )

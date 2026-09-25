@@ -481,6 +481,9 @@ def test_main_collects_trains_and_hotloads_before_next_batch(monkeypatch) -> Non
         def resume(self, **_kwargs):
             return None
 
+        def should_save(self, step):
+            return False
+
         def save(self, name, **_kwargs):
             events.append(f"checkpoint:{name}")
 

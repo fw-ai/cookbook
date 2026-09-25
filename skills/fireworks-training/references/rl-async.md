@@ -350,8 +350,8 @@ durable only after the optimizer step, hotload, and publication succeed. A
 crash during an unfinished batch therefore does not silently advance the
 dataset cursor past uncommitted training data.
 
-`dcp_save_interval=0` disables resumable checkpoints. Set a positive interval
-when resume is required. A serverless bare checkpoint name resumes trainer
+`dcp_save_interval` defaults to 10 (a resumable checkpoint every 10 steps);
+`0` disables resumable checkpoints. A serverless bare checkpoint name resumes trainer
 state and the dataset cursor for the current run; a dedicated explicit full
 resume uses `<current_job_id>:<checkpoint>`. Dedicated bare/path/cross-job and
 serverless cross-run references restore trainer weights and optimizer state but
