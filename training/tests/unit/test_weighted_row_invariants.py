@@ -101,6 +101,7 @@ _EXTRA_TOKENIZERS = {
     "glm53_flash_preserve_thinking": "zai-org/GLM-5.3-Flash",
     "kimi_k25": "moonshotai/Kimi-K2.5",
     "kimi_k27_code": "moonshotai/Kimi-K2.7-Code",
+    "deepseek_v41": "deepseek-ai/DeepSeek-V4.1-Flash",
 }
 
 _TOKENIZER_FOR_RENDERER = {**_MATRIX_TOKENIZERS, **_EXTRA_TOKENIZERS}
