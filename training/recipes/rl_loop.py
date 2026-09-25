@@ -331,6 +331,7 @@ def main(
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
             save_every=cfg.dcp_save_interval,
+            warn_sparse_saves=True,
         )
         resume_info = checkpoint.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
