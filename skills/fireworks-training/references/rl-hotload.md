@@ -58,7 +58,7 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
 |---|---|---|
 | `first_checkpoint_type` | `"base"` | First sampler save is a full snapshot; subsequent saves can be deltas. Do not change. |
 | `weight_sync_timeout` | `600` | Per-hotload timeout in seconds. Bump if you see `Hotload did not complete within 600s` on large models. |
-| `dcp_save_interval` | `0` | DCP (optimizer + weights) save cadence for **resume**. Orthogonal to sampler hotload. `0` = off; no intermediate resume points. |
+| `dcp_save_interval` | `10` | DCP (optimizer + weights) save cadence for **resume**. Orthogonal to sampler hotload. `0` = off; no intermediate resume points. |
 | `dcp_timeout` | `2700` | 45 min default for `save_state` / `load_state_with_optimizer`. |
 | `hot_load_transition_type` | unset (server picks `ASYNC`) | How the deployment treats requests that are mid-generation when the swap lands. See [Inference transition](#inference-transition-async-vs-sync). |
 
@@ -116,7 +116,7 @@ For full-parameter training, the first sampler save is `base` (full weights, ~16
 
 ## `dcp_save_interval` for resume
 
-Separate from hotload: DCP saves persist the full train state (weights + optimizer) so you can resume training if the job dies. `0` (default) = off — if your run crashes mid-training, there is no intermediate resume point. Set this if your run is long enough that a crash is painful.
+Separate from hotload: DCP saves persist the full train state (weights + optimizer) so you can resume training if the job dies. Defaults to `10` (every 10 steps). `0` = off — if your run crashes mid-training, there is no intermediate resume point. Raise it if each DCP save is expensive relative to a step.
 
 ## Two deployments, one trainer (PER_TRAINER only)
 

@@ -82,7 +82,7 @@ def test_throughput_defaults_keep_trainer_fed():
 
     assert cfg.pipeline_depth == 4
     assert cfg.render_workers is None
-    assert cfg.dcp_save_interval == 0
+    assert cfg.dcp_save_interval == 10
     assert cfg.sampler_save_interval == 0
 
 

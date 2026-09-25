@@ -44,7 +44,7 @@ Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has 
 
 ## When each axis is used
 
-- `cfg.dcp_save_interval` > 0 → recipe writes resumable DCP checkpoints every N steps.
+- `cfg.dcp_save_interval` > 0 (default 10) → recipe writes resumable DCP checkpoints every N steps via `TrainingCheckpoints(save_every=...)` / `ckpt.should_save(step)`. `0` = off.
 - `cfg.sampler_save_interval` > 0 → recipe writes promotable sampler checkpoints every N steps.
 - Managed SFT/DPO/ORPO fixes `dcp_save_interval` at 20 and sets `sampler_save_interval` only when `sampler_checkpoint_save_interval_steps` is positive.
 - End of training → recipe calls `ckpt.save(resumable=True, promotable=True, ...)`.

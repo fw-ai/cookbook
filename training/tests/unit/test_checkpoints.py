@@ -540,15 +540,19 @@ class TestResume:
 
 
 class TestShouldSave:
-    def test_disabled_by_default(self, log_dir):
+    def test_defaults_to_every_10_steps(self, log_dir):
         ckpt, _, _ = _make(log_dir)
-        assert not any(ckpt.should_save(step) for step in range(0, 50))
-
-    def test_fires_every_n_steps(self, log_dir):
-        ckpt = TrainingCheckpoints(
-            MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=10
-        )
         assert [s for s in range(0, 31) if ckpt.should_save(s)] == [10, 20, 30]
+
+    def test_custom_interval_and_disable(self, log_dir):
+        every_3 = TrainingCheckpoints(
+            MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=3
+        )
+        assert [s for s in range(0, 10) if every_3.should_save(s)] == [3, 6, 9]
+        off = TrainingCheckpoints(
+            MagicMock(), MagicMock(), trainer_id="job-1", log_path=log_dir, save_every=0
+        )
+        assert not any(off.should_save(s) for s in range(0, 50))
 
     def test_rejects_negative(self, log_dir):
         with pytest.raises(UserConfigError, match="save_every"):

@@ -93,7 +93,7 @@ class TestConfigDefaults:
         cfg = async_rl_loop.Config(log_path="gs://logs")
 
         assert cfg.warm_start_from_adapter is None
-        assert cfg.dcp_save_interval == 0
+        assert cfg.dcp_save_interval == 10
         assert cfg.weight_sync_timeout == 600
 
     def test_config_pipeline_chunks_default_to_one(self) -> None:

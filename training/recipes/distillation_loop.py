@@ -197,7 +197,7 @@ class Config:
     weight_sync_interval: int = 1
     weight_sync_before_training: bool = False
     weight_sync_timeout: int = 600
-    dcp_save_interval: int = 0
+    dcp_save_interval: int = 10
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="distillation-tinker"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     """Optional orchestration outputs written during training."""

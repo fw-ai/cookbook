@@ -391,7 +391,7 @@ class TrainingCheckpoints:
         trainer_id: str,
         log_path: str,
         lora_rank: int = 0,
-        save_every: int = 0,
+        save_every: int = 10,
         serverless: bool = False,
         save_appear_timeout_s: float = 90.0,
         save_stabilize_s: float = 15.0,
