@@ -7,9 +7,11 @@ import tinker
 import torch
 
 from training.utils.rl.score_centering import (
+    MAX_SCORE_CENTERING_TOP_K,
     ScoreCenteringConfig,
     build_score_centering_datums,
     make_score_centering_loss_fn,
+    validate_score_centering_config,
 )
 
 
@@ -82,4 +84,14 @@ def test_score_centering_requires_topk_on_active_positions() -> None:
             sampler_topk_token_ids=[[[], [20]]],
             sampler_topk_logprobs=[[[], [-0.1]]],
             config=ScoreCenteringConfig(top_k=2),
+        )
+
+
+def test_score_centering_accepts_dedicated_top_k_eight() -> None:
+    validate_score_centering_config(ScoreCenteringConfig(top_k=MAX_SCORE_CENTERING_TOP_K))
+    assert ScoreCenteringConfig().top_k == 5
+
+    with pytest.raises(ValueError, match="top_logprobs cap"):
+        validate_score_centering_config(
+            ScoreCenteringConfig(top_k=MAX_SCORE_CENTERING_TOP_K + 1)
         )

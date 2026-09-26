@@ -8,6 +8,7 @@ the rollout behavior policy exceeds a configured threshold.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Literal, Tuple, Union
 
@@ -21,14 +22,23 @@ from training.utils.rl.common import (
 )
 from training.utils.rl.tis import TISConfig
 
+_DEFAULT_THRESHOLD = {
+    "binary_tv": 0.15,
+    "binary_kl": 0.05,
+}
+
 
 @dataclass
 class DPPOConfig:
     """DPPO binary-divergence trust-region configuration."""
 
     divergence: Literal["binary_tv", "binary_kl"] = "binary_tv"
-    threshold: float = 0.15
+    threshold: float | None = None
     ratio_log_cap: float = 20.0
+
+    def __post_init__(self) -> None:
+        if self.threshold is None:
+            self.threshold = _DEFAULT_THRESHOLD.get(self.divergence)
 
 
 def validate_dppo_config(config: DPPOConfig) -> None:
@@ -37,7 +47,7 @@ def validate_dppo_config(config: DPPOConfig) -> None:
         raise ValueError(
             "DPPO divergence must be 'binary_tv' or 'binary_kl'."
         )
-    if config.threshold < 0:
+    if config.threshold is not None and config.threshold < 0:
         raise ValueError("DPPO threshold must be non-negative.")
     if config.ratio_log_cap < 0:
         raise ValueError("DPPO ratio_log_cap must be non-negative.")
@@ -74,8 +84,14 @@ def make_dppo_loss_fn(
     if dppo_config is None:
         dppo_config = DPPOConfig()
     validate_dppo_config(dppo_config)
-    if tis_config is None:
-        tis_config = TISConfig()
+    if tis_config is not None:
+        warnings.warn(
+            "DPPO ignores tis_config because truncated importance sampling "
+            "is not part of its objective.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    assert dppo_config.threshold is not None
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
 
     def policy_fn(ctx):
@@ -100,7 +116,6 @@ def make_dppo_loss_fn(
             -ratio
             * ctx.adv
             * trust_region_mask.detach()
-            * ctx.tis_weight
             * ctx.resp_mask
         )
         return per_token_loss, {
@@ -125,13 +140,19 @@ def make_dppo_loss_fn(
             inf_logprobs,
             prompt_lens,
             old_policy_logprobs,
-            tis_config,
+            # The shared loop requires a TIS config, but DPPO intentionally
+            # ignores its computed weight; infinity also disables truncation.
+            TISConfig(cap=float("inf")),
             data,
             logprobs_list,
             "dppo",
             policy_fn,
         )
-        metrics = dict(result.base_metrics)
+        metrics = {
+            key: value
+            for key, value in result.base_metrics.items()
+            if not key.startswith("tis/")
+        }
         ns = result.n_samples
         metrics["dppo_mask_frac"] = (
             result.extra_sums.get("mask_frac", 0.0) / ns

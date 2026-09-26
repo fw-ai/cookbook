@@ -47,6 +47,7 @@ from training.utils import (
     RawRowCursor,
     RLPromptDataset,
     build_service_client,
+    make_weight_sync,
     wandb_log,
     setup_wandb,
     wandb_finish,
@@ -335,6 +336,9 @@ def main(
             default_timeout=_timeout,
             service=service,
         )
+        publish_weights = make_weight_sync(
+            policy, service, cfg.deployment, extended=True
+        )
         # KL reference (optional in iGPO): the SDK owns the shared-vs-separate
         # decision. LoRA without an explicit reference shape reuses the policy
         # session; full-param (or an explicit reference_training_shape_id)
@@ -377,11 +381,7 @@ def main(
 
         if cfg.weight_sync_before_training:
             with timer("weight_sync"):
-                saved = policy.save_weights_for_sampler_ext(
-                    f"step-{step_offset}",
-                    checkpoint_type="base",
-                )
-                service.hotload_sampler_snapshot(saved.snapshot_name)
+                publish_weights(f"step-{step_offset}", checkpoint_type="base")
 
         # Dataset
         raw_dataset = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
@@ -688,8 +688,7 @@ def main(
             # 5. Sync weights
             if cfg.weight_sync_interval > 0 and step % cfg.weight_sync_interval == 0:
                 with timer("weight_sync"):
-                    saved = policy.save_weights_for_sampler_ext(f"step-{step}")
-                    service.hotload_sampler_snapshot(saved.snapshot_name)
+                    publish_weights(f"step-{step}")
             if cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0:
                 ckpt.save(
                     f"step-{step}",

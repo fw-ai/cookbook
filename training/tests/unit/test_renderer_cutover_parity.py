@@ -48,6 +48,7 @@ class _CharacterTokenizer:
 _BASELINE_CUSTOM_RENDERERS = (
     "deepseek_v4",
     "deepseek_v4_disable_thinking",
+    "deepseek_v41",
     "gemma4",
     "gemma4_thinking",
     "glm5",

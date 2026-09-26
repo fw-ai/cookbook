@@ -6,7 +6,7 @@ import functools
 import warnings
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, Mapping
+from typing import Any, Callable, Dict, Literal, Mapping
 
 from fireworks.training.sdk.client import FiretitanTrainingClient
 from fireworks.training.sdk.deployment import DeploymentConfig
@@ -304,6 +304,13 @@ class DeployConfig:
     """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
     preemptible: bool = False
     """Request preemptible deployment scheduling. Requires an admin API key."""
+
+    weight_sync_transport: Literal["RDMA"] | None = None
+    """Opt in to runtime RDMA publication; unset preserves file-based hotload.
+
+    Requires a compatible SDK and full-parameter trainer/rollout runtime.
+    Use weight_sync() to publish; durable checkpoints are saved separately.
+    """
 
     def to_deployment_config(
         self,

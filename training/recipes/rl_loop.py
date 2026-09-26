@@ -49,6 +49,7 @@ from training.utils import (
     WandBConfig,
     build_renderer,
     build_service_client,
+    make_weight_sync,
     load_deployment_tokenizer,
     load_jsonl_dataset,
     log_metrics,
@@ -303,6 +304,7 @@ def main(
             job_id=service.trainer_job_id,
             service=service,
         )
+        publish_weights = make_weight_sync(policy, service, cfg.deployment)
         reference = None
         if cfg.kl_beta > 0:
             reference = ReconnectableClient.from_training_client(
@@ -344,11 +346,7 @@ def main(
         # The synchronous recipe is always strict on-policy: initialize the
         # sampler from the trainer, then repeat this sync after every update.
         with elapsed_timer("weight_sync") as span:
-            saved = policy.save_weights_for_sampler(
-                f"step-{step_offset}",
-                checkpoint_type="base",
-            )
-            service.hotload_sampler_snapshot(saved.path)
+            publish_weights(f"step-{step_offset}", checkpoint_type="base")
         logger.info("[step %d] initial weight sync (%.1fs)", step_offset, span.elapsed)
         flush_timing()
 
@@ -567,8 +565,7 @@ def main(
 
                 # 4. Publish this policy before the next rollout batch.
                 with elapsed_timer("weight_sync"):
-                    saved = policy.save_weights_for_sampler(f"step-{step}")
-                    service.hotload_sampler_snapshot(saved.path)
+                    publish_weights(f"step-{step}")
 
                 for index in row_indices:
                     row_loader.mark_resolved(index)

@@ -47,6 +47,7 @@ from training.utils import (
     TrainerConfig,
     WandBConfig,
     build_service_client,
+    make_weight_sync,
     load_jsonl_dataset,
     load_deployment_tokenizer,
     log_metrics_json,
@@ -549,6 +550,9 @@ def main(
             default_timeout=cfg.step_timeout or 3600,
             service=service,
         )
+        publish_weights = make_weight_sync(
+            policy, service, cfg.deployment, extended=True
+        )
         tokenizer = load_deployment_tokenizer(cfg.deployment)
         max_seq_len = service.max_context_length
         deployment_id = service.deployment_id
@@ -693,8 +697,7 @@ def main(
 
         if cfg.weight_sync_before_training:
             name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-            saved = policy.save_weights_for_sampler_ext(name, checkpoint_type="base")
-            service.hotload_sampler_snapshot(saved.snapshot_name)
+            publish_weights(name, checkpoint_type="base")
 
         # -- Prepare sampling and training --------------------------------------
 
@@ -989,8 +992,7 @@ def main(
                 logger.info("[step %d] weight_sync: saving + loading...", step)
                 t0 = _time.time()
                 with timer("weight_sync"):
-                    saved = policy.save_weights_for_sampler_ext(f"step-{step}")
-                    service.hotload_sampler_snapshot(saved.snapshot_name)
+                    publish_weights(f"step-{step}")
                 logger.info("[step %d] weight_sync: done (%.1fs)", step, _time.time() - t0)
                 if (
                     cfg.step_eval is not None

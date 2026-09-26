@@ -115,30 +115,6 @@ def _terminal_assistant(prefix: Sequence[Any]) -> Mapping[str, Any] | None:
     return None
 
 
-def _terminal_turn_start(prefix: Sequence[Any]) -> int:
-    """Index of the first message after the prefix's last user message.
-
-    That message onward is the terminal turn: the one target this datum
-    exists to train.
-    """
-    for idx in range(len(prefix) - 1, -1, -1):
-        msg = prefix[idx]
-        if isinstance(msg, Mapping) and msg.get("role") == "user":
-            return idx + 1
-    return 0
-
-
-def _history_demoted_to_context(prefix: Sequence[Any]) -> list[Any]:
-    """Keep per-message flags on the terminal turn, mark history as context."""
-    terminal_start = _terminal_turn_start(prefix)
-    return [
-        msg
-        if idx >= terminal_start or not isinstance(msg, Mapping)
-        else {**msg, "trainable": False}
-        for idx, msg in enumerate(prefix)
-    ]
-
-
 class DisaggregateMultiTurnMixin:
     """Provide a multi-turn-safe ``build_supervised_examples`` for renderers
     that don't satisfy the sequence extension property.
@@ -149,6 +125,47 @@ class DisaggregateMultiTurnMixin:
         class Qwen3SplitRenderer(DisaggregateMultiTurnMixin, Qwen3Renderer):
             pass
     """
+
+    def _is_disaggregation_turn_boundary(
+        self,
+        message: Mapping[str, Any],
+        index: int,
+    ) -> bool:
+        del index
+        return message.get("role") == "user"
+
+    def _demote_history_to_context(self, prefix: Sequence[Any]) -> list[Any]:
+        terminal_start = 0
+        for idx in range(len(prefix) - 1, -1, -1):
+            message = prefix[idx]
+            if isinstance(
+                message, Mapping
+            ) and self._is_disaggregation_turn_boundary(message, idx):
+                terminal_start = idx + 1
+                break
+        return [
+            message
+            if idx >= terminal_start or not isinstance(message, Mapping)
+            else {**message, "trainable": False}
+            for idx, message in enumerate(prefix)
+        ]
+
+    def _disaggregation_end_indices(self, messages: Sequence[Mapping[str, Any]]) -> list[int]:
+        """Exclusive ends for turns that contain at least one assistant."""
+        boundaries = [
+            index
+            for index, message in enumerate(messages)
+            if self._is_disaggregation_turn_boundary(message, index)
+        ]
+        ends: list[int] = []
+        turn_start = 0
+        for boundary in boundaries:
+            if any(message.get("role") == "assistant" for message in messages[turn_start:boundary]):
+                ends.append(boundary)
+            turn_start = boundary
+        if any(message.get("role") == "assistant" for message in messages[turn_start:]):
+            ends.append(len(messages))
+        return ends
 
     def build_supervised_examples(
         self,
@@ -175,10 +192,6 @@ class DisaggregateMultiTurnMixin:
                 self.build_supervised_example(messages, train_on_what=train_on_what)
             ]
 
-        user_message_idxs = [
-            idx for idx, message in enumerate(messages) if message["role"] == "user"
-        ]
-
         if train_on_what not in (
             TrainOnWhat.ALL_ASSISTANT_MESSAGES,
             TrainOnWhat.CUSTOMIZED,
@@ -194,7 +207,7 @@ class DisaggregateMultiTurnMixin:
             )
 
         examples = []
-        for next_user_idx in [*user_message_idxs[1:], len(messages)]:
+        for next_user_idx in self._disaggregation_end_indices(messages):
             prefix = messages[:next_user_idx]
             terminal = _terminal_assistant(prefix)
             # Skip rounds whose terminal assistant the user marked
@@ -210,7 +223,7 @@ class DisaggregateMultiTurnMixin:
             elif train_on_what == TrainOnWhat.CUSTOMIZED and uses_per_message_weights(
                 prefix
             ):
-                prefix = _history_demoted_to_context(prefix)
+                prefix = self._demote_history_to_context(prefix)
                 # A fully trainable terminal turn restates LAST_ASSISTANT_TURN
                 # and a terminal turn masked down to its final answer restates
                 # LAST_ASSISTANT_MESSAGE; either way the weighted row renders

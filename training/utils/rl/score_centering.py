@@ -14,14 +14,18 @@ from typing import Dict, List, Tuple
 import tinker
 import torch
 
-MAX_SCORE_CENTERING_TOP_K = 5
+# Public inference defaults to 5 (``FIREWORKS_MAX_LOGPROBS``). Dedicated
+# deployments can raise that with ``--max-logprobs``. 8 is the cookbook cap
+# for this approximation; the default stays at the public limit.
+PUBLIC_DEFAULT_TOP_LOGPROBS = 5
+MAX_SCORE_CENTERING_TOP_K = 8
 
 
 @dataclass(frozen=True)
 class ScoreCenteringConfig:
     """Top-k sampler-distribution approximation settings."""
 
-    top_k: int = MAX_SCORE_CENTERING_TOP_K
+    top_k: int = PUBLIC_DEFAULT_TOP_LOGPROBS
     tail_mass_epsilon: float = 1e-6
 
 
@@ -30,8 +34,10 @@ def validate_score_centering_config(config: ScoreCenteringConfig) -> None:
         raise ValueError("score centering top_k must be positive.")
     if config.top_k > MAX_SCORE_CENTERING_TOP_K:
         raise ValueError(
-            "score centering top_k exceeds the public inference "
-            f"top_logprobs limit ({MAX_SCORE_CENTERING_TOP_K})."
+            "score centering top_k exceeds the supported sampler "
+            f"top_logprobs cap ({MAX_SCORE_CENTERING_TOP_K}). "
+            "Public inference defaults to 5; set the deployment "
+            "--max-logprobs at least as high as top_k."
         )
     if config.tail_mass_epsilon <= 0:
         raise ValueError("score centering tail_mass_epsilon must be positive.")
