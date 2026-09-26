@@ -1,6 +1,9 @@
 # Local-only data: download or regenerate with prepare_data.py. Never commit.
 dev.json
 dev_databases/
+dev.zip
+dev_databases.zip
+dev_20240627/
 chromadb_text2sql/
 
 # Generated eval-protocol rows (keep only the sample slice).
