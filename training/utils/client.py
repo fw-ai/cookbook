@@ -261,6 +261,10 @@ class ReconnectableClient:
             kwargs["emit_grad_norm_metrics"] = emit_grad_norm_metrics
         return self._require_client().optim_step(params, **kwargs)
 
+    def weight_sync(self):
+        """Wait for one complete RDMA weight sync."""
+        return self._require_client().weight_sync().result(timeout=self._default_timeout)
+
     def save_state(self, name: str, timeout: int = DCP_TIMEOUT_S):
         return self._client.save_state(name).result(timeout=timeout)
 

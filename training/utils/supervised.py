@@ -42,6 +42,7 @@ import training.renderer.glm5 as _glm5_renderer  # noqa: F401 — triggers regis
 import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 — split override
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.deepseek_v41 as _deepseek_v41_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
@@ -71,6 +72,11 @@ from training.renderer.plugins import (
     resolve_renderer_name_from_plugins,
 )
 from training.utils.tokenizers import load_tokenizer
+
+_DEEPSEEK_V41_MODEL_RE = re.compile(
+    r"(?:^|[/_.-])deepseek[-_]?v?4(?:[._-]?1|p1)(?=$|[/_.-])"
+)
+
 
 @dataclass(frozen=True)
 class RenderedSupervisedDatum:
@@ -174,19 +180,26 @@ def build_tool_prefixed_messages(
     if not tool_specs:
         return normalized_messages
     system_prompt = ""
+    response_format: dict[str, Any] | None = None
     has_explicit_empty_system_message = False
     if normalized_messages and normalized_messages[0].get("role") == "system":
-        sys_content = normalized_messages.pop(0).get("content")
+        system_message = normalized_messages.pop(0)
+        sys_content = system_message.get("content")
+        raw_response_format = system_message.get("response_format")
+        if isinstance(raw_response_format, Mapping):
+            response_format = copy.deepcopy(dict(raw_response_format))
         if isinstance(sys_content, str):
             system_prompt = sys_content
             has_explicit_empty_system_message = sys_content == ""
         elif isinstance(sys_content, list):
-            system_prompt = "\n".join(
+            system_prompt = "\n\n".join(
                 part.get("text", "")
                 for part in sys_content
                 if isinstance(part, Mapping) and part.get("type") == "text"
             )
     prefix_messages = list(prefix_builder(tool_specs, system_prompt=system_prompt))
+    if response_format is not None and prefix_messages and prefix_messages[0].get("role") == "system":
+        prefix_messages[0]["response_format"] = response_format  # type: ignore[typeddict-unknown-key]
     if has_explicit_empty_system_message and getattr(
         renderer,
         "_preserves_explicit_empty_system_with_tools",
@@ -302,6 +315,9 @@ def resolve_renderer_name(
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
         return "gemma4"
+    # V4.1 must be matched before V4 because dotted names contain "deepseek-v4".
+    if _DEEPSEEK_V41_MODEL_RE.search(normalized_model_name):
+        return "deepseek_v41"
     # DeepSeek-V4 ships a custom non-Jinja encoder (see encoding_dsv4.py upstream)
     # with thinking blocks and DSML tool calls. Match the V4 family explicitly so
     # we don't accidentally claim V3 (which routes through tinker_cookbook's
@@ -613,6 +629,11 @@ def _get_image_processor_with_remote_code_default(
             tokenizer_model
         )
 
+    if renderer_name == "deepseek_v41":
+        return _deepseek_v41_renderer.DeepseekV41ImageTokenCounter.from_pretrained(
+            tokenizer_model
+        )
+
     if renderer_name in {
         "glm53_flash",
         "glm53_flash_interleaved",
@@ -658,6 +679,7 @@ def renderer_supports_images(renderer_name: str) -> bool:
             "kimi_k3",
             "muse_glimmer",
             "glm53_flash",
+            "deepseek_v41",
         )
     )
 
@@ -899,6 +921,14 @@ def normalize_messages(
                     raise TypeError("Each message tool must be an object")
                 normalized_tools.append(copy.deepcopy(dict(tool)))
             normalized_message["tools"] = normalized_tools  # type: ignore[typeddict-unknown-key]
+
+        response_format = message.get("response_format")
+        if response_format is not None:
+            if not isinstance(response_format, Mapping):
+                raise TypeError("Message response_format must be an object")
+            normalized_message["response_format"] = copy.deepcopy(  # type: ignore[typeddict-unknown-key]
+                dict(response_format)
+            )
 
         tool_calls = message.get("tool_calls")
         if tool_calls is not None:
@@ -1552,7 +1582,10 @@ def _requires_renderer_supervised_examples(
         return False
     if train_on_what not in _SPLIT_REQUIRED_TRAINING_MODES:
         return False
-    return sum(1 for message in messages if message["role"] == "user") > 1
+    turn_ends = getattr(renderer, "_disaggregation_end_indices", None)
+    if callable(turn_ends):
+        return bool(ends := turn_ends(messages)) and (len(ends) > 1 or ends[0] != len(messages))
+    return sum(message["role"] == "user" for message in messages) > 1
 
 
 def _equivalent_single_example_train_on_what(

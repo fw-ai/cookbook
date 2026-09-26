@@ -24,6 +24,10 @@ class _StopAfterRolloutSetup(RuntimeError):
     pass
 
 
+class _StopAfterCoordinatorSetup(RuntimeError):
+    pass
+
+
 def test_evaluation_rollout_context_is_explicit_and_compatible() -> None:
     seen: list[tuple[int, bool]] = []
 
@@ -647,8 +651,10 @@ def test_main_requests_trainer_cleanup_for_empty_job_id(
     assert kwargs["cleanup_trainer_on_close"] is True
 
 
-def test_main_injects_sampler_and_closes_it_before_service(
+@pytest.mark.parametrize("advantage_mode", ["rollout_setup", "default", "mean_only"])
+def test_main_injects_sampler_and_advantages_and_closes_before_service(
     monkeypatch: pytest.MonkeyPatch,
+    advantage_mode: str,
 ) -> None:
     events: list[str] = []
     expected_tokenizer = object()
@@ -729,24 +735,55 @@ def test_main_injects_sampler_and_closes_it_before_service(
         assert not hasattr(setup, "max_context_tokens")
         assert setup.sample_kwargs["max_seq_len"] == 4096
         events.append("rollout_factory")
-        raise _StopAfterRolloutSetup
+        if advantage_mode == "rollout_setup":
+            raise _StopAfterRolloutSetup
+
+        async def rollout(_row):
+            return None
+
+        return rollout
+
+    def mean_only(rewards):
+        mean = sum(rewards) / len(rewards)
+        return [2 * (reward - mean) for reward in rewards]
+
+    def coordinator(**kwargs):
+        advantages = kwargs["advantage_fn"]([1.0, 1.0, 0.0, 0.0])
+        if advantage_mode == "mean_only":
+            assert advantages == [1.0, 1.0, -1.0, -1.0]
+        else:
+            assert advantages == pytest.approx(
+                [0.8660254, 0.8660254, -0.8660254, -0.8660254]
+            )
+        events.append("coordinator")
+        raise _StopAfterCoordinatorSetup
+
+    monkeypatch.setattr(async_rl_loop, "AsyncRLCoordinator", coordinator)
 
     cfg = async_rl_loop.Config(
         log_path="/tmp/async_rl_test_logs",
         kl_beta=0,
         deployment=async_rl_loop.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
     )
-    with pytest.raises(_StopAfterRolloutSetup):
+    error = (
+        _StopAfterRolloutSetup
+        if advantage_mode == "rollout_setup"
+        else _StopAfterCoordinatorSetup
+    )
+    options = {"advantage_fn": mean_only} if advantage_mode == "mean_only" else {}
+    with pytest.raises(error):
         async_rl_loop.main(
             cfg,
             rows=[],
             rollout_fn_factory=rollout_factory,
+            **options,
         )
 
     assert events == [
         "save",
         "hotload",
         "rollout_factory",
+        *([] if advantage_mode == "rollout_setup" else ["coordinator"]),
         "sampler.close",
         "service.close",
     ]

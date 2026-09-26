@@ -1635,6 +1635,7 @@ def test_parse_response_extracts_tool_call(tokenizer, renderer_thinking_keep):
         f"\n\n<{_DSML}tool_calls>\n"
         f'<{_DSML}invoke name="f">\n'
         f'<{_DSML}parameter name="x" string="false">42</{_DSML}parameter>\n'
+        f'<{_DSML}parameter name="x" string="false">43</{_DSML}parameter>\n'
         f"</{_DSML}invoke>\n"
         f"</{_DSML}tool_calls>"
         f"{_EOS_TEXT}"
@@ -1646,4 +1647,4 @@ def test_parse_response_extracts_tool_call(tokenizer, renderer_thinking_keep):
     assert len(msg["tool_calls"]) == 1
     tc = msg["tool_calls"][0]
     assert tc.function.name == "f"
-    assert json.loads(tc.function.arguments) == {"x": 42}
+    assert json.loads(tc.function.arguments) == {"x": 43}

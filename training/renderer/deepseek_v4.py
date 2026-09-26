@@ -69,7 +69,7 @@ import copy
 import json
 import re
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import tinker
 import torch
@@ -103,25 +103,21 @@ _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 _DSML = "｜DSML｜"
 
-_TOOL_CALLS_OPEN = f"<{_DSML}tool_calls>"
-_TOOL_CALLS_CLOSE = f"</{_DSML}tool_calls>"
-_TOOL_CALLS_BOUNDARY = f"\n\n<{_DSML}tool_calls"
-
 # ── Tools / response_format prompt sections ─────────────────────────────────
 
 _TOOLS_TEMPLATE = """## Tools
 
-You have access to a set of tools to help answer the user's question. You can invoke tools by writing a "<{dsml}tool_calls>" block like the following:
+You have access to a set of tools to help answer the user's question. You can invoke tools by writing a "<{dsml}{tool_calls}>" block like the following:
 
-<{dsml}tool_calls>
-<{dsml}invoke name="$TOOL_NAME">
-<{dsml}parameter name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE</{dsml}parameter>
+<{dsml}{tool_calls}>
+<{dsml}{invoke} name="$TOOL_NAME">
+<{dsml}{parameter} name="$PARAMETER_NAME" string="true|false">$PARAMETER_VALUE</{dsml}{parameter}>
 ...
-</{dsml}invoke>
-<{dsml}invoke name="$TOOL_NAME2">
+</{dsml}{invoke}>
+<{dsml}{invoke} name="$TOOL_NAME2">
 ...
-</{dsml}invoke>
-</{dsml}tool_calls>
+</{dsml}{invoke}>
+</{dsml}{tool_calls}>
 
 String parameters should be specified as is and set `string="true"`. For all other types (numbers, booleans, arrays, objects), pass the value in JSON format and set `string="false"`.
 
@@ -140,24 +136,6 @@ _RESPONSE_FORMAT_TEMPLATE = (
     "## Response Format:\n\n"
     "You MUST strictly adhere to the following schema to reply:\n{schema}"
 )
-
-# ── Parsing regexes (mirror encoding_dsv4.parse_tool_calls) ─────────────────
-
-_TOOL_CALLS_BLOCK_RE = re.compile(
-    rf"\n\n<{re.escape(_DSML)}tool_calls>\n(.*?)\n</{re.escape(_DSML)}tool_calls>",
-    re.DOTALL,
-)
-_INVOKE_RE = re.compile(
-    rf'<{re.escape(_DSML)}invoke name="([^"]+)">\n(.*?)\n</{re.escape(_DSML)}invoke>',
-    re.DOTALL,
-)
-_PARAMETER_RE = re.compile(
-    rf'<{re.escape(_DSML)}parameter name="([^"]+)" string="(true|false)">'
-    rf"(.*?)"
-    rf"</{re.escape(_DSML)}parameter>",
-    re.DOTALL,
-)
-
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -257,8 +235,8 @@ def _extract_reasoning_and_text(content: Any) -> tuple[str, str]:
     )
 
 
-def _normalize_tool_arguments(raw: str) -> dict[str, Any]:
-    """Tinker stores tool args as a JSON string; decode it once for rendering.
+def _normalize_tool_arguments(raw: str, *, decode_passes: int = 1) -> dict[str, Any]:
+    """Decode Tinker's JSON-string tool arguments for rendering.
 
     Mirrors the encoder's defensive fallback: if ``raw`` doesn't parse as
     a JSON object, wrap it as ``{"arguments": raw}`` so we never crash on
@@ -266,37 +244,54 @@ def _normalize_tool_arguments(raw: str) -> dict[str, Any]:
     """
     if not raw:
         return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"arguments": raw}
+    parsed: Any = raw
+    for _ in range(decode_passes):
+        if not isinstance(parsed, str):
+            break
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError:
+            break
     if not isinstance(parsed, Mapping):
         return {"arguments": raw}
     return dict(parsed)
 
 
-def _format_tool_calls(tool_calls: list[ToolCall]) -> str:
+def _format_tool_calls(
+    tool_calls: list[ToolCall],
+    *,
+    calls_name: str = "tool_calls",
+    invoke_name: str = "invoke",
+    parameter_name: str = "parameter",
+    argument_decode_passes: int = 1,
+) -> str:
     """Render a list of tool calls as a single DSML ``<…tool_calls>`` block."""
     invokes: list[str] = []
     for tc in tool_calls:
-        args = _normalize_tool_arguments(tc.function.arguments)
+        args = _normalize_tool_arguments(tc.function.arguments, decode_passes=argument_decode_passes)
         param_lines = [
-            f'<{_DSML}parameter name="{k}" string="'
+            f'<{_DSML}{parameter_name} name="{k}" string="'
             f'{"true" if isinstance(v, str) else "false"}">'
             f"{v if isinstance(v, str) else _to_json(v)}"
-            f"</{_DSML}parameter>"
+            f"</{_DSML}{parameter_name}>"
             for k, v in args.items()
         ]
         invokes.append(
-            f'<{_DSML}invoke name="{tc.function.name}">\n'
+            f'<{_DSML}{invoke_name} name="{tc.function.name}">\n'
             + "\n".join(param_lines)
-            + f"\n</{_DSML}invoke>"
+            + f"\n</{_DSML}{invoke_name}>"
         )
     body = "\n".join(invokes)
-    return f"\n\n{_TOOL_CALLS_OPEN}\n{body}\n{_TOOL_CALLS_CLOSE}"
+    return f"\n\n<{_DSML}{calls_name}>\n{body}\n</{_DSML}{calls_name}>"
 
 
-def _render_tools_section(tools: list[Mapping[str, Any]]) -> str:
+def _render_tools_section(
+    tools: list[Mapping[str, Any]],
+    *,
+    calls_name: str = "tool_calls",
+    invoke_name: str = "invoke",
+    parameter_name: str = "parameter",
+) -> str:
     """Render OpenAI-format tool schemas into the ``## Tools`` block.
 
     Mirrors ``encoding_dsv4.render_tools`` exactly: each ``tool`` is
@@ -307,6 +302,9 @@ def _render_tools_section(tools: list[Mapping[str, Any]]) -> str:
     function_dicts = [tool["function"] for tool in tools]
     return _TOOLS_TEMPLATE.format(
         dsml=_DSML,
+        tool_calls=calls_name,
+        invoke=invoke_name,
+        parameter=parameter_name,
         think_open=_THINK_OPEN,
         think_close=_THINK_CLOSE,
         tool_schemas="\n".join(_to_json(t) for t in function_dicts),
@@ -334,7 +332,11 @@ def _has_any_tools(messages: list[Message]) -> bool:
 # ── Preprocessing (mirror encoder's merge + sort + drop pipeline) ───────────
 
 
-def _merge_tool_messages(messages: list[Message]) -> list[Message]:
+def _merge_tool_messages(
+    messages: list[Message],
+    *,
+    user_blocks: Callable[[Any], list[dict[str, Any]]] | None = None,
+) -> list[Message]:
     """Fold ``role=tool`` messages into the previous user's ``content_blocks``.
 
     Mirrors ``encoding_dsv4.merge_tool_messages``. User messages always get
@@ -363,22 +365,23 @@ def _merge_tool_messages(messages: list[Message]) -> list[Message]:
             continue
 
         if role == "user":
-            text_block = {
-                "type": "text",
-                "text": _visible_text(msg.get("content", "")),
-            }
+            content_blocks = (
+                user_blocks(msg.get("content", ""))
+                if user_blocks is not None
+                else [{"type": "text", "text": _visible_text(msg.get("content", ""))}]
+            )
             if (
                 merged
                 and merged[-1].get("role") == "user"
                 and "content_blocks" in merged[-1]
                 and merged[-1].get("task") is None
             ):
-                merged[-1]["content_blocks"].append(text_block)
+                merged[-1]["content_blocks"].extend(content_blocks)
             else:
                 new_msg: dict[str, Any] = {
                     "role": "user",
                     "content": msg.get("content", ""),
-                    "content_blocks": [text_block],
+                    "content_blocks": content_blocks,
                 }
                 for key in ("task", "wo_eos", "mask", "trainable"):
                     if key in msg:
@@ -484,6 +487,15 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
     one full supervised sequence instead.
     """
 
+    _eos_text = _EOS_TEXT
+    _think_open = _THINK_OPEN
+    _think_close = _THINK_CLOSE
+    _tool_calls_name = "tool_calls"
+    _tool_invoke_name = "invoke"
+    _tool_parameter_name = "parameter"
+    _tool_argument_decode_passes = 1
+    _strict_tool_parsing = False
+
     def __init__(
         self,
         tokenizer: Tokenizer,
@@ -499,6 +511,53 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         # Set per-call by ``_preprocess`` so ``render_message`` can pick the
         # right assistant header without re-checking the message list.
         self._effective_strip = strip_thinking_from_history
+
+    def _format_tool_calls(self, tool_calls: list[ToolCall]) -> str:
+        return _format_tool_calls(
+            tool_calls,
+            calls_name=self._tool_calls_name,
+            invoke_name=self._tool_invoke_name,
+            parameter_name=self._tool_parameter_name,
+            argument_decode_passes=self._tool_argument_decode_passes,
+        )
+
+    def _render_tools_section(self, tools: list[Mapping[str, Any]]) -> str:
+        return _render_tools_section(
+            tools,
+            calls_name=self._tool_calls_name,
+            invoke_name=self._tool_invoke_name,
+            parameter_name=self._tool_parameter_name,
+        )
+
+    def _last_assistant_turn_boundary(self, messages: list[Message]) -> int:
+        """Last real user message, excluding synthetic tool-result users."""
+        return max(
+            (
+                idx
+                for idx, message in enumerate(messages)
+                if message.get("role") == "user"
+                and any(
+                    block.get("type") == "text"
+                    for block in message.get("content_blocks", [])
+                )
+            ),
+            default=-1,
+        )
+
+    def _assistant_starts_thinking(
+        self,
+        message: Message,
+        ctx: RenderContext,
+    ) -> bool:
+        del message
+        is_terminal = ctx.last_user_index < 0 or ctx.idx > ctx.last_user_index
+        return self.thinking_mode == "thinking" and (
+            not self._effective_strip or is_terminal
+        )
+
+    def _assistant_emits_header(self, message: Message, ctx: RenderContext) -> bool:
+        del message, ctx
+        return True
 
     # ---- public Renderer API --------------------------------------------------
 
@@ -554,18 +613,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
             (idx for idx, m in enumerate(merged) if m.get("role") == "user"),
             default=-1,
         )
-        last_real_user_idx = max(
-            (
-                idx
-                for idx, m in enumerate(merged)
-                if m.get("role") == "user"
-                and any(
-                    block.get("type") == "text"
-                    for block in m.get("content_blocks", [])
-                )
-            ),
-            default=-1,
-        )
+        last_real_user_idx = self._last_assistant_turn_boundary(merged)
 
         chunks_weights: list[tuple[tinker.types.ModelInputChunk, int]] = []
         if self._bos_tokens:
@@ -636,27 +684,68 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         completions: returns ``ok=False`` when the EOS hasn't shown up yet.
         """
         text = self.tokenizer.decode(response)
-        eos_idx = text.find(_EOS_TEXT)
+        eos_idx = text.find(self._eos_text)
         ok = eos_idx >= 0
         if ok:
             text = text[:eos_idx]
 
         reasoning = ""
-        if self.thinking_mode == "thinking" and _THINK_CLOSE in text:
-            head, _, text = text.partition(_THINK_CLOSE)
-            reasoning = head.removeprefix(_THINK_OPEN).strip("\n")
+        if self.thinking_mode == "thinking" and self._think_close in text:
+            head, _, text = text.partition(self._think_close)
+            reasoning = head.removeprefix(self._think_open).strip("\n")
 
         tool_calls: list[ToolCall] = []
         unparsed: list[UnparsedToolCall] = []
-        block_match = _TOOL_CALLS_BLOCK_RE.search(text)
+        calls_tag = re.escape(f"{_DSML}{self._tool_calls_name}")
+        invoke_tag = re.escape(f"{_DSML}{self._tool_invoke_name}")
+        parameter_tag = re.escape(f"{_DSML}{self._tool_parameter_name}")
+        block_re = re.compile(rf"\n\n<{calls_tag}>\n(.*?)\n</{calls_tag}>", re.DOTALL)
+        invoke_re = re.compile(rf'<{invoke_tag} name="([^"]+)">\n(.*?)\n</{invoke_tag}>', re.DOTALL)
+        parameter_re = re.compile(
+            rf'<{parameter_tag} name="([^"]+)" string="(true|false)">(.*?)</{parameter_tag}>',
+            re.DOTALL,
+        )
+        block_match = block_re.search(text)
         if block_match:
             content = text[: block_match.start()]
-            for invoke in _INVOKE_RE.finditer(block_match.group(1)):
+            block_body = block_match.group(1)
+            invokes = list(invoke_re.finditer(block_body))
+            malformed_body = invoke_re.sub("", block_body).strip()
+            if malformed_body and self._strict_tool_parsing:
+                unparsed.append(
+                    UnparsedToolCall(
+                        raw_text=block_match.group(0),
+                        error="Malformed tool_calls body",
+                    )
+                )
+            for invoke in invokes:
                 name = invoke.group(1)
                 args: dict[str, Any] = {}
-                for param in _PARAMETER_RE.finditer(invoke.group(2)):
+                invoke_body = invoke.group(2)
+                parameters = list(parameter_re.finditer(invoke_body))
+                if parameter_re.sub("", invoke_body).strip() and self._strict_tool_parsing:
+                    unparsed.append(
+                        UnparsedToolCall(
+                            raw_text=invoke.group(0),
+                            error="Malformed tool parameter",
+                        )
+                    )
+                    continue
+                duplicate_parameter = False
+                for param in parameters:
                     key, is_str, value = param.group(1), param.group(2), param.group(3)
+                    if key in args and self._strict_tool_parsing:
+                        unparsed.append(
+                            UnparsedToolCall(
+                                raw_text=invoke.group(0),
+                                error=f"Duplicate tool parameter: {key}",
+                            )
+                        )
+                        duplicate_parameter = True
+                        break
                     args[key] = value if is_str == "true" else _parse_value(value)
+                if duplicate_parameter:
+                    continue
                 tool_calls.append(
                     ToolCall(
                         function=ToolCall.FunctionBody(
@@ -673,6 +762,14 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
                         error="Unexpected content after tool_calls block",
                     )
                 )
+        elif self._strict_tool_parsing and f"\n\n<{_DSML}{self._tool_calls_name}" in text:
+            content, _, malformed = text.partition(f"\n\n<{_DSML}{self._tool_calls_name}")
+            unparsed.append(
+                UnparsedToolCall(
+                    raw_text=f"<{_DSML}{self._tool_calls_name}{malformed}",
+                    error="Malformed tool_calls block",
+                )
+            )
         else:
             content = text
 
@@ -781,7 +878,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         tools = message.get("tools")
         response_format = message.get("response_format")
         if tools:
-            body += "\n\n" + _render_tools_section(list(tools))
+            body += "\n\n" + self._render_tools_section(list(tools))
         if response_format:
             body += "\n\n" + _RESPONSE_FORMAT_TEMPLATE.format(
                 schema=_to_json(response_format)
@@ -827,22 +924,24 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
                 parts.append(f"[Unsupported {block_type}]")
         return "\n\n".join(parts)
 
-    def _assistant_header_str(self, ctx: RenderContext) -> str:
+    def _assistant_header_str(self, message: Message, ctx: RenderContext) -> str:
         # Boundary suffix from the *previous* user/developer message, attributed
         # here as the assistant's own header so masking lines up.
-        is_terminal = ctx.last_user_index < 0 or ctx.idx > ctx.last_user_index
-        thinking_branch = self.thinking_mode == "thinking" and (
-            not self._effective_strip or is_terminal
+        if not self._assistant_emits_header(message, ctx):
+            return ""
+        return _ASSISTANT_SP + (
+            _THINK_OPEN
+            if self._assistant_starts_thinking(message, ctx)
+            else _THINK_CLOSE
         )
-        return _ASSISTANT_SP + (_THINK_OPEN if thinking_branch else _THINK_CLOSE)
 
     def _render_assistant(
         self,
         message: Message,
         ctx: RenderContext,
     ) -> RenderedMessage:
-        header_str = self._assistant_header_str(ctx)
-        emit_thinking_body = header_str.endswith(_THINK_OPEN)
+        header_str = self._assistant_header_str(message, ctx)
+        emit_thinking_body = self._assistant_starts_thinking(message, ctx)
 
         # The encoder reads ``reasoning_content`` directly from the message;
         # we mirror that, but also accept the cookbook conventions of
@@ -864,7 +963,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
 
         tool_calls = message.get("tool_calls") or []
         if tool_calls:
-            body += _format_tool_calls(list(tool_calls))
+            body += self._format_tool_calls(list(tool_calls))
 
         body += _EOS_TEXT
 

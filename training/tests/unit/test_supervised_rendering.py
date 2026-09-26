@@ -1632,6 +1632,14 @@ def test_resolve_renderer_name_prefers_deepseek_v4() -> None:
     assert resolve_renderer_name("custom/DeepSeekV4-finetune") == "deepseek_v4"
 
 
+def test_resolve_renderer_name_prefers_deepseek_v41_over_v4() -> None:
+    """V4.1 contains the V4 substring and must not inherit the V4 encoder."""
+    assert resolve_renderer_name("deepseek-ai/DeepSeek-V4.1-Flash") == "deepseek_v41"
+    assert resolve_renderer_name("accounts/fireworks/models/deepseek-v41-flash") == "deepseek_v41"
+    assert resolve_renderer_name("custom/DeepSeekV41-finetune") == "deepseek_v41"
+    assert resolve_renderer_name("deepseek-ai/DeepSeek-V4-Flash") == "deepseek_v4"
+
+
 def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
     """GLM-5.x tokenizers should resolve to versioned GLM renderers."""
     assert resolve_renderer_name("zai-org/GLM-5.1") == "glm5"
@@ -1667,6 +1675,7 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
         ("glm53_flash_preserve_thinking", True),
         ("glm_moe_dsa", False),
         ("deepseek_v4", False),
+        ("deepseek_v41", True),
     ],
 )
 def test_renderer_supports_images_matches_renderer_capability(
@@ -1690,6 +1699,7 @@ def test_renderer_supports_images_matches_renderer_capability(
         ("glm53_flash_interleaved", True),
         ("glm53_flash_preserve_thinking", True),
         ("deepseek_v4", False),
+        ("deepseek_v41", False),
     ],
 )
 def test_renderer_supports_tool_images_is_explicit(

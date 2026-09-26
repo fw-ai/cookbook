@@ -15,6 +15,27 @@ from fireworks.training.sdk.managed import FiretitanProvisioningConfig
 from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 
 
+def make_weight_sync(
+    policy: Any, service: Any, deployment: DeployConfig, *, extended: bool = False
+):
+    """Select publication once, preserving FILE names and initial-base requests."""
+    if deployment.weight_sync_transport == "RDMA":
+        return lambda name, **kwargs: policy.weight_sync()
+    save = (
+        policy.save_weights_for_sampler_ext
+        if extended
+        else policy.save_weights_for_sampler
+    )
+
+    def publish(name, **kwargs):
+        saved = save(name, **kwargs)
+        return service.hotload_sampler_snapshot(
+            saved.snapshot_name if extended else saved.path
+        )
+
+    return publish
+
+
 def resolve_router_replay_enabled(
     *,
     requested: bool,
@@ -39,6 +60,7 @@ def _firetitan_service_kwargs(
     base_model: str,
     tokenizer_model: str | None,
     max_lora_rank: int | None,
+    projection_head_dim: int | None = None,
     max_context_length: int | None,
     learning_rate: float,
     trainer: TrainerConfig,
@@ -85,6 +107,16 @@ def _firetitan_service_kwargs(
         "hotload_timeout_s": hotload_timeout_s,
         "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
+    # Projection topology is service-scoped. Omit the field entirely for actor
+    # services; the SDK also canonicalizes an explicit zero to ``None``.
+    if isinstance(projection_head_dim, bool) or (
+        projection_head_dim is not None and not isinstance(projection_head_dim, int)
+    ):
+        raise ValueError("projection_head_dim must be a non-negative integer when set")
+    if projection_head_dim is not None and projection_head_dim < 0:
+        raise ValueError("projection_head_dim must be a non-negative integer when set")
+    if projection_head_dim:
+        service_kwargs["projection_head_dim"] = projection_head_dim
     # Keep the default path compatible with the cookbook's declared minimum SDK,
     # which predates reservation_target. An explicit target requires the newer SDK
     # surface and is therefore forwarded only when the caller requests it.
@@ -119,8 +151,14 @@ def _firetitan_service_kwargs(
         raise ValueError(
             "wait_for_trainer_before_deployment requires PER_TRAINER weight sync"
         )
+    if deployment.weight_sync_transport is not None:
+        if deployment.weight_sync_transport != "RDMA":
+            raise ValueError("weight_sync_transport must be 'RDMA' or None")
+        if deployment.weight_sync_scope != WeightSyncScope.PER_TRAINER:
+            raise ValueError("RDMA weight sync requires PER_TRAINER weight sync")
     supported = {f.name for f in fields(FiretitanProvisioningConfig)}
     optional_deploy = {
+        "weight_sync_transport": deployment.weight_sync_transport,
         "wait_for_trainer_before_deployment": deployment.wait_for_trainer_before_deployment,
     }
     for name, value in optional_deploy.items():
@@ -146,6 +184,7 @@ def build_service_client(
     base_model: str,
     tokenizer_model: str | None,
     max_lora_rank: int | None,
+    projection_head_dim: int | None = None,
     max_context_length: int | None,
     learning_rate: float,
     trainer: TrainerConfig,
@@ -160,6 +199,7 @@ def build_service_client(
         base_model=base_model,
         tokenizer_model=tokenizer_model,
         max_lora_rank=max_lora_rank,
+        projection_head_dim=projection_head_dim,
         max_context_length=max_context_length,
         learning_rate=learning_rate,
         trainer=trainer,

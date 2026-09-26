@@ -43,6 +43,10 @@ class _FakeInnerClient:
         self.calls.append((params, kwargs))
         return self.future
 
+    def weight_sync(self):
+        self.calls.append("weight_sync")
+        return self.future
+
     def save_weights_for_sampler_ext(self, name, *, checkpoint_type=None):
         self.calls.append(("save_weights_for_sampler_ext", name, checkpoint_type))
         return self.saved_sampler
@@ -125,6 +129,14 @@ class _FakeHolder:
         except Exception:
             pass
         return self.future
+
+
+def test_weight_sync_waits_without_checkpoint_options():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    assert client.weight_sync() == {"ok": True, "timeout": 123}
+    assert inner.calls == ["weight_sync"]
 
 
 def test_optim_step_converts_legacy_string_normalization():

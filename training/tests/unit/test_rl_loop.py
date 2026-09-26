@@ -60,7 +60,11 @@ def test_main_threads_private_weights_only_checkpoint_override(monkeypatch) -> N
         reference_client_job_id = None
 
         def create_training_client(self, *_args, **_kwargs):
-            return object()
+            return SimpleNamespace(
+                save_weights_for_sampler=lambda *_args, **_kwargs: pytest.fail(
+                    "weight publication must not run before this test stops setup"
+                )
+            )
 
         def close(self):
             pass
@@ -575,7 +579,11 @@ def test_main_passes_renderer_name_to_rollout_renderer(monkeypatch):
         max_context_length = 4096
 
         def create_training_client(self, *_args, **_kwargs):
-            return object()
+            return SimpleNamespace(
+                save_weights_for_sampler=lambda *_args, **_kwargs: pytest.fail(
+                    "weight publication must not run before this test stops setup"
+                )
+            )
 
         def create_deployment_sampler(self, *_args, **_kwargs):
             return object()

@@ -168,7 +168,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("binary_tv", "binary_kl"),
         default="binary_tv",
     )
-    parser.add_argument("--dppo-threshold", type=float, default=0.15)
+    parser.add_argument("--dppo-threshold", type=float, default=None)
     parser.add_argument("--dppo-ratio-log-cap", type=float, default=20.0)
     parser.add_argument(
         "--score-centering-top-k",

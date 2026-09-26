@@ -55,6 +55,7 @@ from training.utils import (
     WandBConfig,
     ReconnectableClient,
     build_service_client,
+    make_weight_sync,
     flush_phase_trace,
     log_metrics,
     load_deployment_tokenizer,
@@ -67,6 +68,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.dataloader import CursorDataLoader
+from training.utils.data import compute_advantages
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.rl import PromptGroup
 from training.utils.rl.async_rl import (
@@ -584,6 +586,7 @@ def main(
     config: Config,
     *,
     rollout_fn_factory: RolloutFnFactory,
+    advantage_fn: Callable[[list[float]], list[float]] = compute_advantages,
     dynamic_filter_fn: DynamicFilterFn | None = None,
     evaluation_fn: RolloutEvaluationFn | None = None,
     evaluation_interval: int = 1,
@@ -597,6 +600,10 @@ def main(
     ``rollout_fn(sample_prompt) -> RolloutRun | None`` is invoked
     ``completions_per_prompt`` times per dataset row (each invocation is
     one trajectory draw against the inference deployment).
+
+    ``advantage_fn`` maps one prompt group's rewards to per-rollout advantages.
+    The default subtracts the group mean and divides by its standard deviation.
+    Supply a mean-only function for REINFORCE with group-centered rewards.
 
     Remote trainer and sampler setup and lifecycle are owned by the SDK-managed
     Tinker path.
@@ -809,6 +816,7 @@ def main(
             job_id=service.trainer_job_id,
             service=service,
         )
+        publish_weights = make_weight_sync(policy, service, cfg.deployment)
         reference = None
         if cfg.kl_beta > 0:
             reference_training_client = service.create_reference_client(
@@ -844,11 +852,7 @@ def main(
             )
 
         with elapsed_timer("weight_sync") as span:
-            saved = policy.save_weights_for_sampler(
-                f"step-{step_offset}",
-                checkpoint_type="base",
-            )
-            service.hotload_sampler_snapshot(saved.path)
+            publish_weights(f"step-{step_offset}", checkpoint_type="base")
         logger.info(
             "[step %d] initial weight sync (%.1fs)",
             step_offset,
@@ -1096,7 +1100,11 @@ def main(
                 )
             elif cfg.policy_loss == "dppo":
                 loss_fn = make_dppo_loss_fn(
-                    **common_loss_kwargs,
+                    advantages=adv,
+                    ref_logprobs=ref_lp,
+                    inf_logprobs=inf_lp,
+                    prompt_len=prompt_lens,
+                    old_policy_logprobs=old_policy_logprobs,
                     dppo_config=cfg.dppo,
                 )
             else:
@@ -1202,8 +1210,7 @@ def main(
 
         def sync_weights(step: int) -> float:
             with wall_timer() as span:
-                saved = policy.save_weights_for_sampler(f"step-{step}")
-                service.hotload_sampler_snapshot(saved.path)
+                publish_weights(f"step-{step}")
             return span.elapsed
 
         async def run_training() -> tuple[int, dict[str, Any]]:
@@ -1222,6 +1229,7 @@ def main(
             )
             coordinator = AsyncRLCoordinator(
                 rows=make_row_requests(),
+                advantage_fn=advantage_fn,
                 completions_per_prompt=cfg.completions_per_prompt,
                 prompt_groups_per_step=cfg.prompt_groups_per_step,
                 training_chunks_per_step=cfg.pipeline_chunks_per_step,

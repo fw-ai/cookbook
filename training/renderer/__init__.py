@@ -20,6 +20,7 @@ from training._vendor.tinker_cookbook_0_4_3.exceptions import RendererError as R
 from training._vendor.tinker_cookbook_0_4_3.renderers import *  # noqa: F403
 
 from training.renderer import deepseek_v4 as _deepseek_v4  # noqa: F401  (registers "deepseek_v4")
+from training.renderer import deepseek_v41 as _deepseek_v41  # noqa: F401  (registers "deepseek_v41")
 from training.renderer import gemma4 as _gemma4  # noqa: F401  (registers "gemma4")
 from training.renderer import glm5 as _glm5  # noqa: F401  (registers "glm5")
 from training.renderer import kimi_k26 as _kimi_k26  # noqa: F401  (registers Kimi K2.5/2.6)

@@ -52,6 +52,7 @@ from training.utils import (
     wandb_finish,
     log_metrics_json,
     build_service_client,
+    make_weight_sync,
     read_api_extra_headers_env,
     validate_config,
     load_jsonl_dataset,
@@ -382,6 +383,9 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
             job_id=service.trainer_job_id,
             service=service,
         )
+        publish_weights = make_weight_sync(
+            policy, service, cfg.deployment, extended=True
+        )
         policy_job_id = service.trainer_job_id
         sampler = service.create_deployment_sampler()
         reference = None
@@ -416,8 +420,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
             name = (
                 f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
             )
-            saved = policy.save_weights_for_sampler_ext(name, checkpoint_type="base")
-            service.hotload_sampler_snapshot(saved.snapshot_name)
+            publish_weights(name, checkpoint_type="base")
 
         # Rollout processor
         rollout_base_url = sampler.base_url.rstrip("/") + (
@@ -717,8 +720,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     and step % WEIGHT_SYNC_INTERVAL == 0
                 ):
                     with timer("weight_sync"):
-                        saved = policy.save_weights_for_sampler_ext(f"step-{step}")
-                        service.hotload_sampler_snapshot(saved.snapshot_name)
+                        publish_weights(f"step-{step}")
 
                 if (
                     DCP_SAVE_INTERVAL > 0
