@@ -15,6 +15,27 @@ from fireworks.training.sdk.managed import FiretitanProvisioningConfig
 from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 
 
+def make_weight_sync(
+    policy: Any, service: Any, deployment: DeployConfig, *, extended: bool = False
+):
+    """Select publication once, preserving FILE names and initial-base requests."""
+    if deployment.weight_sync_transport == "RDMA":
+        return lambda name, **kwargs: policy.weight_sync()
+    save = (
+        policy.save_weights_for_sampler_ext
+        if extended
+        else policy.save_weights_for_sampler
+    )
+
+    def publish(name, **kwargs):
+        saved = save(name, **kwargs)
+        return service.hotload_sampler_snapshot(
+            saved.snapshot_name if extended else saved.path
+        )
+
+    return publish
+
+
 def resolve_router_replay_enabled(
     *,
     requested: bool,
@@ -130,8 +151,14 @@ def _firetitan_service_kwargs(
         raise ValueError(
             "wait_for_trainer_before_deployment requires PER_TRAINER weight sync"
         )
+    if deployment.weight_sync_transport is not None:
+        if deployment.weight_sync_transport != "RDMA":
+            raise ValueError("weight_sync_transport must be 'RDMA' or None")
+        if deployment.weight_sync_scope != WeightSyncScope.PER_TRAINER:
+            raise ValueError("RDMA weight sync requires PER_TRAINER weight sync")
     supported = {f.name for f in fields(FiretitanProvisioningConfig)}
     optional_deploy = {
+        "weight_sync_transport": deployment.weight_sync_transport,
         "wait_for_trainer_before_deployment": deployment.wait_for_trainer_before_deployment,
     }
     for name, value in optional_deploy.items():

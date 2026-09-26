@@ -111,6 +111,7 @@ __all__ = [
     "resolve_renderer_snapshot",
     "prepare_sampling_messages",
     "build_service_client",
+    "make_weight_sync",
     "resolve_router_replay_enabled",
     "setup_wandb",
     "configure_phase_tracing",
@@ -189,7 +190,11 @@ from training.utils.runner import (
     RunStatus,
     UserConfigError,
 )
-from training.utils.service import build_service_client, resolve_router_replay_enabled
+from training.utils.service import (
+    build_service_client,
+    make_weight_sync,
+    resolve_router_replay_enabled,
+)
 from training.utils.streaming import (
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,

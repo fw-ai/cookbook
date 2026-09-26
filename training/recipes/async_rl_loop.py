@@ -55,6 +55,7 @@ from training.utils import (
     WandBConfig,
     ReconnectableClient,
     build_service_client,
+    make_weight_sync,
     flush_phase_trace,
     log_metrics,
     load_deployment_tokenizer,
@@ -815,6 +816,7 @@ def main(
             job_id=service.trainer_job_id,
             service=service,
         )
+        publish_weights = make_weight_sync(policy, service, cfg.deployment)
         reference = None
         if cfg.kl_beta > 0:
             reference_training_client = service.create_reference_client(
@@ -850,11 +852,7 @@ def main(
             )
 
         with elapsed_timer("weight_sync") as span:
-            saved = policy.save_weights_for_sampler(
-                f"step-{step_offset}",
-                checkpoint_type="base",
-            )
-            service.hotload_sampler_snapshot(saved.path)
+            publish_weights(f"step-{step_offset}", checkpoint_type="base")
         logger.info(
             "[step %d] initial weight sync (%.1fs)",
             step_offset,
@@ -1212,8 +1210,7 @@ def main(
 
         def sync_weights(step: int) -> float:
             with wall_timer() as span:
-                saved = policy.save_weights_for_sampler(f"step-{step}")
-                service.hotload_sampler_snapshot(saved.path)
+                publish_weights(f"step-{step}")
             return span.elapsed
 
         async def run_training() -> tuple[int, dict[str, Any]]:

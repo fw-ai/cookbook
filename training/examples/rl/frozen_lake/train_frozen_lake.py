@@ -53,6 +53,7 @@ from training.utils import (
     wandb_finish,
     log_metrics_json,
     build_service_client,
+    make_weight_sync,
     read_api_extra_headers_env,
     build_training_datum_from_token_mask,
     validate_config,
@@ -526,6 +527,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             job_id=service.trainer_job_id,
             service=service,
         )
+        publish_weights = make_weight_sync(
+            policy, service, cfg.deployment, extended=True
+        )
         policy_job_id = service.trainer_job_id
         sampler = service.create_deployment_sampler()
         reference = None
@@ -555,8 +559,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
         step_offset = resume_info.step if resume_info else 0
         prior_rows_consumed = resume_info.data_consumed if resume_info else 0
         name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-        saved = policy.save_weights_for_sampler_ext(name, checkpoint_type="base")
-        service.hotload_sampler_snapshot(saved.snapshot_name)
+        publish_weights(name, checkpoint_type="base")
 
         # -- Build rollout processor ----------------------------------------
         rollout_base_url = sampler.base_url.rstrip("/") + (
@@ -751,8 +754,7 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
             def _weight_sync(step: int) -> float:
                 logger.info("[step %d] weight_sync: saving + loading...", step)
                 with wall_timer() as span:
-                    saved = policy.save_weights_for_sampler_ext(f"step-{step}")
-                    service.hotload_sampler_snapshot(saved.snapshot_name)
+                    publish_weights(f"step-{step}")
                 logger.info(
                     "[step %d] weight_sync: done (%.1fs)",
                     step,
