@@ -620,16 +620,15 @@ def main(
             api_key=api_key,
             base_url=base_url,
         )
-        rollout_fn = rollout_fn_factory(
-            _rollout_setup(
-                cfg,
-                tokenizer=tokenizer,
-                sampler=sampler,
-                api_key=api_key,
-                extras=rollout_extras,
-                router_replay_enabled=router_replay_enabled,
-            )
+        rollout_setup = _rollout_setup(
+            cfg,
+            tokenizer=tokenizer,
+            sampler=sampler,
+            api_key=api_key,
+            extras=rollout_extras,
+            router_replay_enabled=router_replay_enabled,
         )
+        rollout_fn = rollout_fn_factory(rollout_setup)
         rollout_context_names = _rollout_context_param_names(rollout_fn)
         evaluation_rollout_fn = make_evaluation_rollout_fn(rollout_fn)
         if rows is None:
@@ -916,6 +915,9 @@ def main(
                                     optimizer_batch=batch,
                                 )
                                 await sampler.replace(next_client)
+                                # Sidecar harnesses (Harbor TITO) read setup.model when
+                                # each trial launches, not the live sampler.
+                                rollout_setup.model = sampler.model
                             published = coordinator.publish(batch)
                             telemetry.finish_step(
                                 batch=batch,
