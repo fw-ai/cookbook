@@ -13,6 +13,7 @@ IGPO example) and `train_*_serverless.py` on the shared pool
 | [`frozen_lake/`](./frozen_lake/) | text or image observations, multi-turn tool env (Eval Protocol) | `train_frozen_lake.py` | — |
 | [`multihop_qa/`](./multihop_qa/) | multi-turn search, IGPO turn-level reward (`rl_loop` + `igpo.prepare_batch`) | `train_multihop_qa_igpo.py` | — |
 | [`experiment/sao/`](./experiment/sao/) | experimental SAO/PPO with a value-head critic | `qwen3_4b_sao.py` | — |
+| [`nemo_gym/`](./nemo_gym/) | multi-turn tool use via NeMo Gym resources/agent servers, token-exact proxy | `train.py` | — |
 
 Sandboxed agentic RL lives in [`../harbor_rl/`](../harbor_rl/). Deprecated
 examples are in [`../archive/`](../archive/).
