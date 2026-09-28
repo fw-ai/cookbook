@@ -499,6 +499,7 @@ def _build_trial_config(
     agent_provider: str = "fireworks-rl",
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     tool_profile: str = "coding",
+    agent_extra_kwargs: Mapping[str, Any] | None = None,
     collect_tito_artifacts: bool = True,
 ) -> Any:
     """Merge a native TrialConfig template with Fireworks-owned runtime fields."""
@@ -552,19 +553,31 @@ def _build_trial_config(
     if tool_timeout_seconds < 1:
         raise ValueError("TITO Harbor tool timeout must be positive")
     if tool_profile not in {"coding", "textworld"}:
-        raise ValueError(
-            f"unsupported Harbor agent tool profile: {tool_profile!r}"
-        )
+        raise ValueError(f"unsupported Harbor agent tool profile: {tool_profile!r}")
     agent["import_path"] = agent_import_path
     agent["model_name"] = f"{agent_provider}/policy"
+    inference_host = parsed_inference_url.hostname
     agent["extra_allowed_hosts"] = list(
         dict.fromkeys(
             [
                 *agent.get("extra_allowed_hosts", ()),
-                parsed_inference_url.hostname,
+                inference_host,
             ]
         )
     )
+    environment["extra_allowed_hosts"] = list(
+        dict.fromkeys(
+            [
+                *environment.get("extra_allowed_hosts", ()),
+                inference_host,
+            ]
+        )
+    )
+    extra_agent_kwargs = dict(agent_extra_kwargs or {})
+    reserved = {"sidecar_bundle_path", "sidecar_launch_spec", "context_limit", "output_limit", "tool_timeout_seconds"}
+    clobbered = reserved & extra_agent_kwargs.keys()
+    if clobbered:
+        raise ValueError(f"agent_extra_kwargs may not override TITO fields: {sorted(clobbered)}")
     agent_kwargs = {
         "sidecar_bundle_path": str(sidecar_bundle_path),
         "sidecar_launch_spec": sidecar_launch_spec,
@@ -575,7 +588,7 @@ def _build_trial_config(
     }
     if tool_profile != "coding":
         agent_kwargs["tool_profile"] = tool_profile
-    agent["kwargs"] = agent_kwargs
+    agent["kwargs"] = {**agent_kwargs, **extra_agent_kwargs}
 
     artifacts = list(document.get("artifacts") or ())
     if collect_tito_artifacts:
@@ -596,9 +609,7 @@ def _build_trial_config(
             artifacts.append(
                 {
                     "source": source,
-                    "destination": str(
-                        _LOG_ARTIFACT_DESTINATION / Path(source).name
-                    ),
+                    "destination": str(_LOG_ARTIFACT_DESTINATION / Path(source).name),
                 }
             )
         if bool(sidecar_spec.get("debug_enabled")):
@@ -785,6 +796,7 @@ async def run_harbor_trial(
     terminal_failure_reward: float | None = None,
     tool_timeout_seconds: int = DEFAULT_HARNESS_TOOL_TIMEOUT_SECONDS,
     tool_profile: str = "coding",
+    agent_extra_kwargs: Mapping[str, Any] | None = None,
     retry_include_exceptions: Any = DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS,
     artifact_processor: ArtifactProcessPool | None = None,
     materializer: Callable[[HarborTrialOutcome], RolloutRun | None] | None = None,
@@ -829,6 +841,7 @@ async def run_harbor_trial(
             agent_version=agent_version,
             tool_timeout_seconds=tool_timeout_seconds,
             tool_profile=tool_profile,
+            agent_extra_kwargs=agent_extra_kwargs,
             collect_tito_artifacts=require_trajectory_artifact,
         )
         result = None

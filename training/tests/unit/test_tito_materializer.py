@@ -178,6 +178,19 @@ def _attempt(turn_id: str, emission: str = "completed") -> TITOResponseAttempt:
     )
 
 
+def _assert_coverage_conserved(run) -> None:
+    metrics = run.metadata["tito_metrics"]
+    lost = sum(
+        value
+        for key, value in metrics.items()
+        if key.startswith("tito/coverage/lost_")
+    )
+    assert metrics["tito/coverage/sampled_completion_tokens"] == (
+        metrics["tito/coverage/trained_tokens"] + lost
+    )
+    assert metrics["tito/coverage/unaccounted_tokens"] == 0
+
+
 def test_materializes_exact_append_and_pads_completion_only_r3() -> None:
     first = _turn("one", (1, 2), (3, 4), routes=("r3", "r4"))
     second = _turn(
@@ -340,6 +353,13 @@ def test_bounded_realign_masks_reconstructed_prior_response_in_one_example() -> 
         run.metadata["tito_materialized_segments"][0]["tito_realigned_masked_tokens"]
         == 3
     )
+    # Both completions were sampled (4 tokens). Realign overwrote the first
+    # completion, so only the second completion stays trainable.
+    coverage = run.metadata["tito_metrics"]
+    assert coverage["tito/coverage/sampled_completion_tokens"] == 4
+    assert coverage["tito/coverage/trained_tokens"] == 2
+    assert coverage["tito/coverage/lost_realign_overwritten"] == 2
+    _assert_coverage_conserved(run)
 
 
 def test_incremental_junction_replaces_only_declared_checkpoint_tail() -> None:
@@ -371,6 +391,11 @@ def test_incremental_junction_replaces_only_declared_checkpoint_tail() -> None:
         ]
         == 1
     )
+    # The trimmed token was a trainable sampled completion; it is charged to
+    # the checkpoint_trimmed cause, not silently dropped.
+    coverage = run.metadata["tito_metrics"]
+    assert coverage["tito/coverage/lost_checkpoint_trimmed"] == 1
+    _assert_coverage_conserved(run)
 
 
 def test_later_continuation_proves_prior_ambiguous_turn_visible() -> None:
@@ -511,6 +536,142 @@ def test_fail_closed_only_sample_is_omitted_from_training() -> None:
 
     assert run.segments == []
     assert run.metadata["tito_masked_fail_closed_turn_count"] == 1
+    coverage = run.metadata["tito_metrics"]
+    assert coverage["tito/coverage/sampled_completion_tokens"] == 2
+    assert coverage["tito/coverage/trained_tokens"] == 0
+    assert coverage["tito/coverage/lost_fail_closed_masked"] == 2
+
+
+def test_realign_overwritten_masked_tokens_leave_the_fail_closed_bucket() -> None:
+    summary = _turn("summary", (1, 2), (3, 4))
+    policy = _turn(
+        "policy",
+        (1, 2, 9, 8, 5),
+        (6, 7),
+        disposition="realign",
+        prefix_match_tokens=2,
+        realign_from_token=2,
+        realigned_masked_tokens=3,
+    )
+    run = materialize_tito_trajectory(
+        _result(
+            (summary, policy),
+            (_attempt("summary"), _attempt("policy")),
+            classification_sources={"summary": "fail_closed"},
+        ),
+        reward=1.0,
+    )
+
+    assert run.segments[0].loss_mask == [0, 0, 0, 0, 0, 1, 1]
+    coverage = run.metadata["tito_metrics"]
+    # The overwritten masked completion is charged to realign_overwritten,
+    # not double-counted as fail_closed_masked.
+    assert coverage["tito/coverage/lost_realign_overwritten"] == 2
+    assert coverage["tito/coverage/lost_fail_closed_masked"] == 0
+    assert coverage["tito/coverage/trained_tokens"] == 2
+    _assert_coverage_conserved(run)
+
+
+def test_realign_across_a_prompt_suffix_charges_only_completions() -> None:
+    first = _turn("one", (1, 2), (3, 4))
+    second = _turn(
+        "two",
+        (1, 2, 3, 4, 5),  # token 5 is a tool-output suffix, never sampled
+        (6, 7),
+        disposition="append",
+        prefix_match_tokens=4,
+    )
+    third = _turn(
+        "three",
+        (1, 2, 3, 4, 9),
+        (10,),
+        disposition="realign",
+        prefix_match_tokens=4,
+        realign_from_token=4,
+        realigned_masked_tokens=1,
+    )
+    run = materialize_tito_trajectory(
+        _result((first, second, third), (_attempt("one"), _attempt("two"), _attempt("three"))),
+        reward=1.0,
+    )
+
+    assert run.segments[0].tokens == [1, 2, 3, 4, 9, 10]
+    assert run.segments[0].loss_mask == [0, 0, 1, 1, 0, 1]
+    coverage = run.metadata["tito_metrics"]
+    # The overwritten tail [5, 6, 7] holds only two sampled completions;
+    # charging the suffix token as well would over-count and underflow.
+    assert coverage["tito/coverage/lost_realign_overwritten"] == 2
+    _assert_coverage_conserved(run)
+
+
+def test_checkpoint_trim_across_a_prompt_suffix_charges_only_completions() -> None:
+    first = _turn("one", (1, 2), (3, 4))
+    second = _turn(
+        "two",
+        (1, 2, 3, 4, 5),
+        (6, 7),
+        disposition="append",
+        prefix_match_tokens=4,
+    )
+    third = _turn(
+        "three",
+        (1, 2, 3, 4, 5, 8),
+        (10, 11),
+        disposition="append",
+        prefix_match_tokens=6,
+        incremental_checkpoint_trim_tokens=3,  # trims [5, 6, 7]: suffix + completion
+    )
+    run = materialize_tito_trajectory(
+        _result((first, second, third), (_attempt("one"), _attempt("two"), _attempt("three"))),
+        reward=1.0,
+    )
+
+    assert run.segments[0].tokens == [1, 2, 3, 4, 5, 8, 10, 11]
+    assert run.segments[0].loss_mask == [0, 0, 1, 1, 0, 0, 1, 1]
+    coverage = run.metadata["tito_metrics"]
+    assert coverage["tito/coverage/lost_checkpoint_trimmed"] == 2
+    _assert_coverage_conserved(run)
+
+
+def test_visible_turns_after_a_visibility_break_are_charged_as_lost() -> None:
+    first = _turn("one", (1, 2), (3, 4))
+    hidden = _turn("hidden", (1, 2, 3, 4, 5), (6, 7))
+    third = _turn("three", (9, 10), (11, 12))
+    run = materialize_tito_trajectory(
+        _result(
+            (first, hidden, third),
+            (
+                _attempt("one"),
+                _attempt("hidden", emission="ambiguous"),
+                _attempt("three"),
+            ),
+            segment_turns=((first, hidden, third),),
+        ),
+        reward=1.0,
+    )
+
+    assert [sample.tokens for sample in run.segments] == [[1, 2, 3, 4]]
+    coverage = run.metadata["tito_metrics"]
+    assert coverage["tito/coverage/lost_invisible"] == 2
+    # The third turn is visible but unreachable past the break; its tokens
+    # were dropped from training and must be attributed.
+    assert coverage["tito/coverage/lost_break_dropped"] == 2
+    _assert_coverage_conserved(run)
+
+
+def test_invisible_turn_tokens_are_counted_as_lost() -> None:
+    turn = _turn("hidden", (1, 2), (3, 4, 5))
+    run = materialize_tito_trajectory(
+        _result((turn,), (_attempt("hidden", emission="ambiguous"),)),
+        reward=0.0,
+    )
+
+    assert run.segments == []
+    coverage = run.metadata["tito_metrics"]
+    assert coverage["tito/coverage/sampled_completion_tokens"] == 3
+    assert coverage["tito/coverage/trained_tokens"] == 0
+    assert coverage["tito/coverage/lost_invisible"] == 3
+    _assert_coverage_conserved(run)
 
 
 def test_training_sequence_limit_omits_whole_turn_without_truncation() -> None:
@@ -532,6 +693,7 @@ def test_training_sequence_limit_omits_whole_turn_without_truncation() -> None:
     assert run.metadata["tito_max_context_tokens"] == 4
     assert run.metadata["tito_retention_dropped_turn_count"] == 1
     assert run.metadata["tito_retention_dropped_trainable_tokens"] == 2
+    _assert_coverage_conserved(run)
 
 
 def test_training_limit_resumes_from_a_later_exact_prompt() -> None:

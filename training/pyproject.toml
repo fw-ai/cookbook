@@ -28,6 +28,9 @@ dependencies = [
     "orjson",
     "hydra-core>=1.3,<2",
     "pillow>=12.3.0",
+    # datasets/mimo/mcp client and the task bundles' MCP servers are 1.x;
+    # 2.x removed FastMCP. Keep in sync with the image pin (mcp==1.30.0).
+    "mcp>=1.8,<2",
 ]
 
 [project.optional-dependencies]
@@ -75,6 +78,13 @@ packages = [
     "training.examples.rl.eval_protocol_chat.remote_server",
     "training.examples.rl.frozen_lake",
     "training.examples.rl.harbor",
+    "training.examples.rl.harbor.datasets",
+    "training.examples.rl.harbor.datasets.mimo",
+    "training.examples.rl.harbor.datasets.mimo.assets",
+    "training.examples.rl.harbor.datasets.mimo.assets.webdev",
+    "training.examples.rl.harbor.datasets.mimo.mcp",
+    "training.examples.rl.harbor.datasets.mimo.music_scorer",
+    "training.examples.rl.harbor.mimoagent",
     "training.examples.rl.harbor.mini_swe",
     "training.examples.rl.harbor.opencode",
     "training.examples.rl.harbor.pi",
@@ -125,6 +135,12 @@ markers = [
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Vendored MiMo graders. The music scorer and webdev shot script are copied
+# unchanged so scores stay comparable with MiMo's published runs.
+"examples/rl/harbor/datasets/mimo/music_scorer/**" = ["E731"]
+"examples/rl/harbor/datasets/mimo/assets/**" = ["E731"]
 
 [tool.coverage.run]
 branch = true

@@ -96,7 +96,16 @@ class _SampleBuilder:
     turns: list[TITOTurn] = field(default_factory=list)
     masked_fail_closed_turns: int = 0
     realigned_masked_tokens: int = 0
+    realign_overwritten_tokens: int = 0
+    realign_overwritten_masked_tokens: int = 0
     incremental_checkpoint_trimmed_tokens: int = 0
+    trimmed_masked_tokens: int = 0
+    trimmed_sampled_tokens: int = 0
+    fail_closed_appended_tokens: int = 0
+    # Parallel to tokens: True exactly at sampled completion positions. The
+    # loss mask alone cannot tell a masked completion from a tool-output or
+    # other prompt-suffix token, and only completions count as sampled.
+    completion_origin: list[bool] = field(default_factory=list)
 
     @classmethod
     def from_turn(cls, turn: TITOTurn) -> "_SampleBuilder":
@@ -120,6 +129,7 @@ class _SampleBuilder:
                 else None
             ),
             response_routes=[] if turn.routing_matrices is not None else None,
+            completion_origin=[False] * len(prompt),
         )
 
     def can_append(self, turn: TITOTurn) -> bool:
@@ -150,11 +160,22 @@ class _SampleBuilder:
             raise ValueError("turn has invalid bounded realignment evidence")
         start = turn.realign_from_token
         assert start is not None
+        # Only sampled completions at and after `start` leave training; the
+        # overwritten tail may also hold tool-output or other prompt-suffix
+        # tokens, which were never sampled and are not coverage.
+        overwritten_origin = self.completion_origin[start:]
+        overwritten_mask = self.loss_mask[start:]
+        self.realign_overwritten_tokens += sum(overwritten_origin)
+        self.realign_overwritten_masked_tokens += sum(
+            1 for origin, mask in zip(overwritten_origin, overwritten_mask)
+            if origin and mask == 0
+        )
         prompt = list(turn.exact_prompt_ids)
         replacement = prompt[start:]
         self.tokens[start:] = replacement
         self.logprobs[start:] = [0.0] * len(replacement)
         self.loss_mask[start:] = [0] * len(replacement)
+        self.completion_origin[start:] = [False] * len(replacement)
         if self.inference_topk_token_ids is not None:
             self.inference_topk_token_ids[start:] = [[] for _ in replacement]
         if self.inference_topk_logprobs is not None:
@@ -165,7 +186,9 @@ class _SampleBuilder:
             route_start = start - len(self.prompt_ids)
             if route_start < 0:
                 raise ValueError("realignment cannot replace the initial prompt")
-            self.response_routes = concat_routing(self.response_routes[:route_start], [""] * len(replacement))
+            self.response_routes = concat_routing(
+                self.response_routes[:route_start], [""] * len(replacement)
+            )
         self.realigned_masked_tokens += turn.realigned_masked_tokens
         self._append_completion(turn, trainable=trainable)
 
@@ -180,9 +203,21 @@ class _SampleBuilder:
                 raise ValueError(
                     "incremental checkpoint trim is not safely materializable"
                 )
+            # Only sampled completions in the trimmed tail are coverage; the
+            # tail may reach past the last completion into prompt-suffix
+            # tokens, which were never sampled. Masked completions were
+            # fail-closed and must not also stay in the fail-closed bucket.
+            trimmed_origin = self.completion_origin[retained:]
+            trimmed_mask = self.loss_mask[retained:]
+            self.trimmed_sampled_tokens += sum(trimmed_origin)
+            self.trimmed_masked_tokens += sum(
+                1 for origin, mask in zip(trimmed_origin, trimmed_mask)
+                if origin and mask == 0
+            )
             del self.tokens[retained:]
             del self.logprobs[retained:]
             del self.loss_mask[retained:]
+            del self.completion_origin[retained:]
             if self.inference_topk_token_ids is not None:
                 del self.inference_topk_token_ids[retained:]
             if self.inference_topk_logprobs is not None:
@@ -200,6 +235,7 @@ class _SampleBuilder:
         self.tokens.extend(suffix)
         self.logprobs.extend([0.0] * len(suffix))
         self.loss_mask.extend([0] * len(suffix))
+        self.completion_origin.extend([False] * len(suffix))
         if self.inference_topk_token_ids is not None:
             self.inference_topk_token_ids.extend([] for _ in suffix)
         if self.inference_topk_logprobs is not None:
@@ -214,7 +250,9 @@ class _SampleBuilder:
                 raise ValueError(
                     "R3 must be present for every turn in one TITO segment"
                 )
-            self.response_routes = concat_routing(self.response_routes, [""] * len(suffix))
+            self.response_routes = concat_routing(
+                self.response_routes, [""] * len(suffix)
+            )
         elif turn.routing_matrices is not None:
             raise ValueError("R3 cannot begin partway through one TITO segment")
 
@@ -224,8 +262,14 @@ class _SampleBuilder:
         if turn.prompt_routing_matrices is not None:
             start = turn.prompt_routing_start
             routes = copy_routing(turn.prompt_routing_matrices)
-            if start is None or start < 0 or start + len(routes) != len(self.tokens) - 1:
-                raise ValueError("Incremental prompt routes do not cover the prompt suffix")
+            if (
+                start is None
+                or start < 0
+                or start + len(routes) != len(self.tokens) - 1
+            ):
+                raise ValueError(
+                    "Incremental prompt routes do not cover the prompt suffix"
+                )
             if self.response_routes is None:
                 raise ValueError("Prompt R3 requires completion R3")
             boundary = len(self.prompt_ids) - 1
@@ -233,12 +277,17 @@ class _SampleBuilder:
                 self.initial_routes = [""] * boundary
             first_count = max(0, boundary - start)
             if first_count:
-                self.initial_routes = concat_routing(self.initial_routes[:start], routes[:first_count])
-            self.response_routes = concat_routing(self.response_routes[:max(0, start - boundary)], routes[first_count:])
+                self.initial_routes = concat_routing(
+                    self.initial_routes[:start], routes[:first_count]
+                )
+            self.response_routes = concat_routing(
+                self.response_routes[: max(0, start - boundary)], routes[first_count:]
+            )
         completion = list(turn.exact_completion_ids)
         self.tokens.extend(completion)
         self.logprobs.extend(_required_sampling_logprobs(turn))
         self.loss_mask.extend([int(trainable)] * len(completion))
+        self.completion_origin.extend([True] * len(completion))
         if self.inference_topk_token_ids is not None:
             if turn.inference_topk_token_ids is None:
                 self.inference_topk_token_ids = None
@@ -254,6 +303,7 @@ class _SampleBuilder:
                 )
         if not trainable:
             self.masked_fail_closed_turns += 1
+            self.fail_closed_appended_tokens += len(completion)
         if self.raw_logprobs is not None:
             if turn.inference_logprobs is None or len(turn.inference_logprobs) != len(
                 completion
@@ -270,7 +320,9 @@ class _SampleBuilder:
                 raise ValueError(
                     f"turn {turn.turn_id} has completion-misaligned R3 matrices"
                 )
-            self.response_routes = concat_routing(self.response_routes, turn.routing_matrices)
+            self.response_routes = concat_routing(
+                self.response_routes, turn.routing_matrices
+            )
         self.turns.append(turn)
 
     def build(self, reward: float) -> RolloutSample:
@@ -279,7 +331,11 @@ class _SampleBuilder:
             # Trainer model_input has len(tokens)-1 positions. Completion-only
             # R3 is padded here for the first prompt and for every later
             # external/tool suffix while retaining one route per sampled token.
-            initial = self.initial_routes if self.initial_routes is not None else [""] * (len(self.prompt_ids) - 1)
+            initial = (
+                self.initial_routes
+                if self.initial_routes is not None
+                else [""] * (len(self.prompt_ids) - 1)
+            )
             routing = concat_routing(initial, self.response_routes)
             if self.initial_routes is not None and routing_has_gaps(routing):
                 raise ValueError("Incremental prompt R3 left an uncovered input token")
@@ -381,7 +437,14 @@ def materialize_tito_trajectory(
     materialized_segments: list[dict[str, Any]] = []
     masked_fail_closed_turns = 0
     retention_dropped_turns = 0
+    retention_dropped_tokens = 0
     retention_dropped_trainable_tokens = 0
+    realign_overwritten_tokens = 0
+    deleted_masked_tokens = 0
+    checkpoint_trimmed_tokens = 0
+    fail_closed_appended_tokens = 0
+    break_dropped_tokens = 0
+    trained_tokens = 0
     for segment_index, segment in enumerate(result.segments):
         retained: list[TITOTurn] = []
         for turn in segment.turns:
@@ -390,6 +453,12 @@ def materialize_tito_trajectory(
             if turn.turn_id not in visible:
                 break
             retained.append(turn)
+        # Turns after the break that the harness still shows are dropped from
+        # training only because the chain broke ahead of them; their sampled
+        # tokens are lost by cause `break_dropped`, not silently.
+        for turn in segment.turns[len(retained) :]:
+            if turn.turn_id not in abandoned and turn.turn_id in visible:
+                break_dropped_tokens += len(turn.exact_completion_ids)
         if not retained:
             continue
 
@@ -444,6 +513,7 @@ def materialize_tito_trajectory(
                     builders.append(builder)
                 builder = None
                 retention_dropped_turns += 1
+                retention_dropped_tokens += len(turn.exact_completion_ids)
                 if turn.turn_id not in fail_closed_turn_ids:
                     retention_dropped_trainable_tokens += len(turn.exact_completion_ids)
                 continue
@@ -480,6 +550,13 @@ def materialize_tito_trajectory(
 
         for physical_index, item in enumerate(builders):
             masked_fail_closed_turns += item.masked_fail_closed_turns
+            realign_overwritten_tokens += item.realign_overwritten_tokens
+            deleted_masked_tokens += (
+                item.realign_overwritten_masked_tokens + item.trimmed_masked_tokens
+            )
+            checkpoint_trimmed_tokens += item.trimmed_sampled_tokens
+            fail_closed_appended_tokens += item.fail_closed_appended_tokens
+            trained_tokens += sum(item.loss_mask)
             if not any(item.loss_mask):
                 continue
             samples.append(item.build(reward))
@@ -497,7 +574,49 @@ def materialize_tito_trajectory(
                     ),
                 }
             )
+    sampled_completion_tokens = sum(
+        len(turn.exact_completion_ids) for turn in chronological_turns
+    )
+    abandoned_tokens = sum(
+        len(turns_by_id[turn_id].exact_completion_ids) for turn_id in abandoned
+    )
+    # Coverage buckets are disjoint so that sampled == trained + sum(lost_*).
+    # Fail-closed masked means *present but masked* in a final sample: tokens
+    # later deleted by a realign overwrite or a checkpoint trim are charged to
+    # those causes instead, never double-counted.
+    fail_closed_masked_tokens = fail_closed_appended_tokens - deleted_masked_tokens
+    if fail_closed_masked_tokens < 0:
+        raise ValueError("fail-closed coverage accounting underflowed")
+    invisible_tokens = sum(
+        len(turn.exact_completion_ids)
+        for turn in chronological_turns
+        if turn.turn_id not in visible and turn.turn_id not in abandoned
+    )
+    unaccounted_tokens = sampled_completion_tokens - (
+        trained_tokens
+        + fail_closed_masked_tokens
+        + realign_overwritten_tokens
+        + checkpoint_trimmed_tokens
+        + retention_dropped_tokens
+        + abandoned_tokens
+        + invisible_tokens
+        + break_dropped_tokens
+    )
     tito_metrics = result.metrics.flattened(root="tito")
+    tito_metrics.update(
+        {
+            "tito/coverage/sampled_completion_tokens": float(sampled_completion_tokens),
+            "tito/coverage/trained_tokens": float(trained_tokens),
+            "tito/coverage/lost_realign_overwritten": float(realign_overwritten_tokens),
+            "tito/coverage/lost_checkpoint_trimmed": float(checkpoint_trimmed_tokens),
+            "tito/coverage/lost_retention_dropped": float(retention_dropped_tokens),
+            "tito/coverage/lost_abandoned": float(abandoned_tokens),
+            "tito/coverage/lost_fail_closed_masked": float(fail_closed_masked_tokens),
+            "tito/coverage/lost_invisible": float(invisible_tokens),
+            "tito/coverage/lost_break_dropped": float(break_dropped_tokens),
+            "tito/coverage/unaccounted_tokens": float(unaccounted_tokens),
+        }
+    )
     model_malformed_calls = int(
         result.metrics.counters.get("parser/model_malformed", 0)
     )

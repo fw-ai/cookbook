@@ -22,6 +22,9 @@ from fireworks.training.sdk import (
     TITOMetricSummary,
     TITOTrajectoryArtifact,
 )
+from training.examples.rl.harbor.mimoagent import (
+    prepare_tasks as prepare_mimoagent_tasks,
+)
 from training.examples.rl.harbor.mini_swe import prepare_tasks as prepare_mini_swe_tasks
 from training.examples.rl.harbor.mini_swe import rollout as mini_swe_rollout
 from training.examples.rl.harbor.opencode import prepare_tasks as prepare_opencode_tasks
@@ -1382,6 +1385,7 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
     assert config.agent.kwargs["sidecar_launch_spec"] == sidecar_launch_spec
     assert "tool_profile" not in config.agent.kwargs
     assert config.agent.extra_allowed_hosts == ["api.fireworks.ai"]
+    assert config.environment.extra_allowed_hosts == ["api.fireworks.ai"]
     assert not getattr(config.environment, "extra_docker_compose", [])
     assert config.artifacts[-5:] == [
         {
@@ -1405,6 +1409,37 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
             "destination": "tito/logs/sidecar.stderr",
         },
     ]
+
+
+def _extra_kwargs_trial_config(tmp_path, agent_extra_kwargs):
+    return harbor_adapter._build_trial_config(
+        _fake_harbor(),
+        template={"environment": {"type": "docker"}},
+        task_config={"path": "/tasks/example"},
+        run_id="run",
+        trials_dir=tmp_path,
+        harbor_environment="docker",
+        sidecar_bundle_path=tmp_path / "bundle",
+        sidecar_launch_spec=json.dumps(
+            {"api_key": "secret", "inference_base_url": "https://api.fireworks.ai"}
+        ),
+        context_limit=4096,
+        output_limit=1024,
+        agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
+        agent_version=DEFAULT_OPENCODE_VERSION,
+        agent_extra_kwargs=agent_extra_kwargs,
+    )
+
+
+def test_trial_config_passes_agent_extra_kwargs(tmp_path) -> None:
+    config = _extra_kwargs_trial_config(tmp_path, {"arm": "cc"})
+    assert config.agent.kwargs["arm"] == "cc"
+    assert config.agent.kwargs["output_limit"] == 1024
+
+
+def test_trial_config_rejects_extra_kwargs_clobbering_tito_fields(tmp_path) -> None:
+    with pytest.raises(ValueError, match="may not override TITO fields"):
+        _extra_kwargs_trial_config(tmp_path, {"output_limit": 1})
 
 
 def test_reward_only_trial_config_omits_tito_artifact_downloads(tmp_path) -> None:
@@ -1839,6 +1874,14 @@ def test_pi_overflow_retry_marks_only_the_discarded_length_turn() -> None:
             ),
             "# Added by fireworks TITO harbor.mini_swe.prepare_tasks",
             "transformers==5.10.4",
+        ),
+        (
+            lambda source, destination: prepare_mimoagent_tasks.prepare(
+                source,
+                destination,
+            ),
+            "# Added by fireworks TITO harbor.mimoagent.prepare_tasks",
+            "XiaomiMiMo/mimoagent.git@467f0a19016f0ac4d63b8d17a1f0da9ba07f232c",
         ),
     ],
 )

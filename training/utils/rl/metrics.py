@@ -262,6 +262,49 @@ def publish_tito_sidecar_metrics(
         splits / eligible_boundaries if eligible_boundaries else 0.0
     )
     metrics["tito/lineage/realigns"] = float(merged.get("tito/lineage/realign", 0.0))
+    for public_name, source in (
+        ("contract_change", "tito/lineage/boundary_reason_contract_change"),
+        ("history_rewrite", "tito/lineage/boundary_reason_history_rewrite"),
+        (
+            "incremental_unsupported",
+            "tito/lineage/boundary_reason_incremental_unsupported",
+        ),
+        ("token_drift", "tito/lineage/boundary_reason_unbounded_or_ambiguous_drift"),
+    ):
+        if source in merged:
+            metrics[f"tito/lineage/new_segment/{public_name}"] = merged[source]
+    for kind in ("prior_context", "assistant_roundtrip", "truncated"):
+        source = f"tito/lineage/history_rewrite_{kind}"
+        if source in merged:
+            metrics[f"tito/lineage/history_rewrite/{kind}"] = merged[source]
+    if "tito/lineage/realigned_masked_tokens_sum" in merged:
+        metrics["tito/lineage/realigned_masked_tokens"] = merged[
+            "tito/lineage/realigned_masked_tokens_sum"
+        ]
+    sampled_tokens = merged.get("tito/coverage/sampled_completion_tokens")
+    if sampled_tokens:
+        trained_tokens = float(merged.get("tito/coverage/trained_tokens", 0.0))
+        metrics["tito/coverage/sampled_completion_tokens"] = float(sampled_tokens)
+        metrics["tito/coverage/trained_tokens"] = trained_tokens
+        metrics["tito/coverage/trained_fraction"] = trained_tokens / float(
+            sampled_tokens
+        )
+    for cause in (
+        "realign_overwritten",
+        "checkpoint_trimmed",
+        "retention_dropped",
+        "abandoned",
+        "fail_closed_masked",
+        "invisible",
+        "break_dropped",
+    ):
+        source = f"tito/coverage/lost_{cause}"
+        if source in merged:
+            metrics[f"tito/coverage/lost/{cause}"] = merged[source]
+    if "tito/coverage/unaccounted_tokens" in merged:
+        metrics["tito/coverage/unaccounted_tokens"] = merged[
+            "tito/coverage/unaccounted_tokens"
+        ]
     metrics["tito/parser/model_malformed"] = float(
         merged.get("tito/parser/model_malformed", 0.0)
     )
