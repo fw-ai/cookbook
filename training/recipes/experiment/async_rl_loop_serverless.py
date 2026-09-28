@@ -43,6 +43,7 @@ from training.recipes.async_rl_loop import (
     make_evaluation_rollout_fn,
 )
 from training.train_loop import DynamicFilterFn
+from training.utils.termination import TerminatedBySignal
 from training.utils import (
     DEFAULT_ADAM,
     WandBConfig,
@@ -582,7 +583,7 @@ def main(
 
     def _signal_handler(signum, _frame):
         name = signal.Signals(signum).name
-        raise SystemExit(f"Terminated by {name}")
+        raise TerminatedBySignal(name)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)

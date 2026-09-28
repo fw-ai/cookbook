@@ -46,6 +46,7 @@ from fireworks.training.sdk.training_spec import (
     normalize_lr_scheduler_spec,
 )
 
+from training.utils.termination import TerminatedBySignal
 from training.utils.client import GradAccNormalization
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
@@ -700,7 +701,7 @@ def main(
 
     def _signal_handler(signum, _):
         name = signal.Signals(signum).name
-        raise SystemExit(f"Terminated by {name}")
+        raise TerminatedBySignal(name)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)

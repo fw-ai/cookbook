@@ -40,6 +40,7 @@ from fireworks.training.sdk.training_spec import (
 )
 from training.renderer import get_text_content
 
+from training.utils.termination import TerminatedBySignal
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
@@ -220,7 +221,7 @@ def main(
 
     def _signal_handler(signum, _):
         name = signal.Signals(signum).name
-        raise SystemExit(f"Terminated by {name}")
+        raise TerminatedBySignal(name)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)

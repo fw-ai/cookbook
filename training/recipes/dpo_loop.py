@@ -56,6 +56,7 @@ from fireworks.training.sdk.training_spec import (
 )
 from tqdm import tqdm
 
+from training.utils.termination import TerminatedBySignal
 from training.utils import (
     DEFAULT_ADAM,
     AppendOnlyPickleLog,
@@ -723,7 +724,7 @@ def main(
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
         logger.warning("Received %s — raising SystemExit for cleanup", name)
-        raise SystemExit(f"Terminated by {name}")
+        raise TerminatedBySignal(name)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
