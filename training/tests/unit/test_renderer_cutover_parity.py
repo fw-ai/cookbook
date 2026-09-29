@@ -173,6 +173,12 @@ def test_model_routing_exports_vendored_snapshot() -> None:
     assert fireworks_functions == vendored_functions
 
 
+def test_nemotron35_lightning_recommends_compact_thinking_renderers() -> None:
+    assert fireworks_model_info.get_recommended_renderer_names(
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+    ) == ["nemotron3_ultra", "nemotron3_ultra_disable_thinking"]
+
+
 def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:
     repository_root = Path(
         subprocess.run(

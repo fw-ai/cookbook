@@ -256,8 +256,17 @@ def resolve_renderer_name(
         or "kimi-k2p7-code" in normalized_model_name
     ):
         return "kimi_k27_code"
-    if "nemotron-3-ultra" in normalized_model_name or "nemotron3-ultra" in normalized_model_name:
-        # Ultra's HF template uses different think wrapping than Super/Nano.
+    if any(
+        model_alias in normalized_model_name
+        for model_alias in (
+            "nemotron-3-ultra",
+            "nemotron3-ultra",
+            "nemotron-3.5-lightning",
+            "nemotron-lightning-3p5",
+        )
+    ):
+        # Ultra and 3.5 Lightning use the same compact think wrapping, which
+        # differs from Super/Nano around the closing </think> boundary.
         return "nemotron3_ultra"
     if "nemotron" in normalized_model_name:
         # Route the Nemotron family to tinker_cookbook's upstream Nemotron-3
