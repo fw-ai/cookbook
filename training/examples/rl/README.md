@@ -59,7 +59,7 @@ The remaining entries are independent examples with narrower goals:
 - [`visual_toolbench/`](./visual_toolbench/) — a custom visual tool-use loop.
 - [`eval_protocol_chat/`](./eval_protocol_chat/) — chat rollouts through an Eval
   Protocol remote processor.
-- [`nemo_gym_multistep/`](./nemo_gym_multistep/) — real multi-turn tool-use
+- [`nemo_gym/`](./nemo_gym/) — real multi-turn tool-use
   rollouts driven by a NeMo Gym resources/agent server, with exact token
   ids/logprobs recorded via a proxy in front of the async RL loop's sampler.
 - [`vanilla_sampler.py`](./vanilla_sampler.py) — a minimal sampler example.
