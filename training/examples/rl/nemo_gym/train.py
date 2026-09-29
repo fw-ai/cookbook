@@ -173,6 +173,14 @@ def write_nemo_gym_config(*, proxy_port: int) -> None:
         "  responses_api_models:\n"
         "    inference_provider:\n"
         "      uses_reasoning_parser: true\n"
+        # correlate_via_user_field is the NeMo Gym-side opt-in for exactly the
+        # `user`-field propagation this proxy keys sessions on -- see
+        # https://github.com/NVIDIA-NeMo/Gym/pull/3783 (built on #3374,
+        # already merged). Requires #3783 merged in your installed NeMo Gym
+        # version; on an older install this key is unrecognized by
+        # InferenceProviderConfig -- if `gym env start` fails validating
+        # env.yaml, drop this line and apply #3783's diff locally instead.
+        "      correlate_via_user_field: true\n"
     )
     logger.info("wrote env.yaml pointing at the proxy (port %d)", proxy_port)
 
