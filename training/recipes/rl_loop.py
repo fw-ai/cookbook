@@ -73,12 +73,14 @@ from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
 from training.utils.rl.rollout import (
     Rollout,
+    build_multimodal_completions_prompt_token_ids,
     model_input_to_token_ids,
     rollout_to_prompt_group,
     sampled_completion_to_rollout_run,
 )
 from training.utils.rl.sync_batch import collect_prompt_groups
 from training.utils.rl.tis import TISConfig
+from training.utils.supervised import has_non_text_chunks
 from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -397,13 +399,22 @@ def main(
             if not messages:
                 return None
             model_input = response_renderer.build_generation_prompt(messages)
-            prompt_token_ids = model_input_to_token_ids(model_input)
+            multimodal = has_non_text_chunks(model_input)
+            prompt_kwargs: dict[str, Any] = {}
+            if multimodal:
+                prompt_token_ids, images = build_multimodal_completions_prompt_token_ids(
+                    messages, model_input, tokenizer, renderer=response_renderer
+                )
+                prompt_kwargs["images"] = images
+            else:
+                prompt_token_ids = model_input_to_token_ids(model_input)
             try:
                 sampled = await sampler.sample_with_prompt_tokens(
                     prompt_token_ids,
                     n=cfg.completions_per_prompt,
                     stop=response_renderer.get_stop_sequences(),
                     **sample_kwargs,
+                    **prompt_kwargs,
                 )
             except Exception as error:
                 logger.warning("Sampling row %d failed: %s", cursor_index, error)
@@ -420,7 +431,11 @@ def main(
             ]
             runs = []
             for sample, reward in zip(sampled, rewards, strict=True):
-                run = sampled_completion_to_rollout_run(sample, reward=reward)
+                run = sampled_completion_to_rollout_run(
+                    sample,
+                    reward=reward,
+                    prompt_model_input=model_input if multimodal else None,
+                )
                 if run is None:
                     return None
                 runs.append(run)

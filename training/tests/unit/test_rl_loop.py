@@ -3,11 +3,14 @@ from __future__ import annotations
 import importlib
 import inspect
 import pkgutil
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import tinker
+from fireworks.training.sdk.routing import RoutingReferences
+from fireworks.training.sdk.sampling import SampledCompletion
 
 import training.recipes.rl_loop as module
 from training.utils.rl.losses import PromptGroup
@@ -20,6 +23,10 @@ class _StopAfterRenderer(RuntimeError):
 
 
 class _StopAfterProvisioning(RuntimeError):
+    pass
+
+
+class _StopAfterSampling(RuntimeError):
     pass
 
 
@@ -624,3 +631,128 @@ def test_main_passes_renderer_name_to_rollout_renderer(monkeypatch):
         "tokenizer_model": "Qwen/Qwen3.5-9B",
         "renderer_name": "glm_moe_dsa",
     }
+
+
+@pytest.mark.parametrize("multimodal", [False, True])
+@pytest.mark.parametrize("routing_format", [None, "base64_inline", "parquet_v1"])
+def test_default_rollout_preserves_images_and_sdk_routing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, multimodal: bool, routing_format: str | None
+) -> None:
+    chunks = [tinker.EncodedTextChunk(tokens=[10, 11])]
+    if multimodal:
+        chunks.append(tinker.types.ImageChunk(data=b"image", format="png", expected_tokens=4))
+    chunks.append(tinker.EncodedTextChunk(tokens=[12]))
+    prompt = tinker.ModelInput(chunks=chunks)
+    expanded_tokens = [10, 11] + ([0] * 4 if multimodal else []) + [12]
+    routes = None
+    if routing_format == "base64_inline":
+        routes = ["route-30", "route-40"]
+    elif routing_format == "parquet_v1":
+        routes = RoutingReferences(
+            2,
+            ({"format": "parquet_v1", "row_count": 2, "artifact_id": "capture"},),
+            ({"input_token_start": 0, "count": 2, "file_index": 0, "file_row_start": 0},),
+        )
+    sampling_calls = []
+
+    async def sample_with_prompt_tokens(tokens: list[int], **kwargs: Any) -> list[SampledCompletion]:
+        sampling_calls.append((tokens, kwargs))
+        return [
+            SampledCompletion(
+                text="answer",
+                full_tokens=expanded_tokens + [30, 40],
+                prompt_len=len(expanded_tokens),
+                finish_reason="stop",
+                sampling_logprobs=[-0.31, -0.41],
+                inference_logprobs=[-0.3, -0.4],
+                routing_matrices=routes,
+            )
+            for _ in range(kwargs["n"])
+        ]
+
+    training_clients = []
+    policy = object()
+
+    class _Service:
+        trainer_job_id = "trainer"
+        max_context_length = 4096
+
+        def create_training_client(self, *_args: Any, **_kwargs: Any) -> object:
+            training_clients.append(policy)
+            return policy
+
+        def create_deployment_sampler(self, **_kwargs: Any) -> SimpleNamespace:
+            assert training_clients == [policy]
+            return SimpleNamespace(sample_with_prompt_tokens=sample_with_prompt_tokens)
+
+        def close(self) -> None:
+            pass
+
+    row = {"messages": [{"role": "user", "content": "question"}]}
+    groups = []
+
+    async def collect(_iterator: Any, *, sample_prompt: Any, **_kwargs: Any) -> None:
+        groups.append(await sample_prompt(row, cursor_index=0))
+        raise _StopAfterSampling
+
+    _stub_provisioning_dependencies(monkeypatch)
+    monkeypatch.setattr(module, "build_service_client", lambda **_kwargs: _Service())
+    monkeypatch.setattr(
+        module,
+        "ReconnectableClient",
+        SimpleNamespace(from_training_client=lambda client, **_kwargs: client),
+    )
+    monkeypatch.setattr(module, "make_weight_sync", lambda *_args: lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        module,
+        "TrainingCheckpoints",
+        lambda *_args, **_kwargs: SimpleNamespace(resume=lambda **_kw: None),
+    )
+    monkeypatch.setattr(
+        module,
+        "build_renderer",
+        lambda *_args: SimpleNamespace(
+            image_placeholder_token_id=99,
+            build_generation_prompt=lambda _messages: prompt,
+            get_stop_sequences=lambda: ["STOP"],
+            parse_response=lambda _tokens: (Message(role="assistant", content="answer"), True),
+        ),
+    )
+    monkeypatch.setattr(module, "collect_prompt_groups", collect)
+    monkeypatch.setattr(module, "reward_fn", lambda _text, _row: 1.0)
+    monkeypatch.setattr(module, "log_metrics", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(_StopAfterSampling):
+        module.main(
+            module.Config(
+                log_path=str(tmp_path),
+                kl_beta=0,
+                completions_per_prompt=2,
+                router_replay=routing_format is not None,
+                deployment=module.DeployConfig(tokenizer_model="tokenizer"),
+            ),
+            rows=[row],
+        )
+
+    [(tokens, kwargs)] = sampling_calls
+    assert tokens == [10, 11] + ([99] if multimodal else []) + [12]
+    assert kwargs.get("images") == (["data:image/png;base64,aW1hZ2U="] if multimodal else None)
+    assert kwargs["n"] == 2
+    assert kwargs["stop"] == ["STOP"]
+    assert kwargs["logprobs"] is True
+    assert kwargs.get("include_routing_matrix", False) == (routing_format is not None)
+    assert not kwargs.get("echo", False)
+    assert "routing_matrix_format" not in kwargs
+    [group] = groups
+    assert len(group.data) == 2
+    assert group.raw_inf_logprobs[0][-2:] == [-0.3, -0.4]
+    for datum in group.data:
+        assert datum.model_input.length == len(expanded_tokens) + 1
+        assert module.has_non_text_chunks(datum.model_input) == multimodal
+        if multimodal:
+            assert datum.model_input.chunks[1].data == b"image"
+        if routing_format == "parquet_v1":
+            assert datum.model_input.routing_matrix_format == "parquet_v1"
+            assert datum.model_input.routing_references["files"][0]["artifact_id"] == "capture"
+        elif routing_format == "base64_inline":
+            assert datum.model_input.routing_matrices[-1] == "route-40"
