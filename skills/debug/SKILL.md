@@ -2,10 +2,11 @@
 name: debug
 description: >-
   Diagnose Fireworks training and deployment issues, including stuck or failed
-  jobs, error messages, poor quality, checkpoint and resume problems, and
-  deployments that are ready but not serving. Use for systematic read-only
-  triage before retrying. Use configure for a new or approved retry run; use
-  research when the starting method, data, or cookbook example is unclear.
+  jobs, error messages, poor quality, checkpoint and resume problems, LoRA
+  adapter load mismatches, and deployments that are ready but not serving. Use
+  for systematic read-only triage before retrying. Use configure for a new or
+  approved retry run; use research when the starting method, data, or cookbook
+  example is unclear.
 ---
 
 # Debug
