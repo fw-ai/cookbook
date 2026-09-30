@@ -104,6 +104,64 @@ def test_router_replay_follows_model_architecture(monkeypatch, is_moe):
     )
 
 
+def test_router_replay_stays_on_when_model_read_is_forbidden(monkeypatch):
+    class ForbiddenClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def model_is_moe(self, model):
+            raise RuntimeError(
+                f"Failed to fetch model details for {model!r} (HTTP 403): forbidden"
+            )
+
+    monkeypatch.setattr(service, "FireworksClient", ForbiddenClient)
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+        )
+        is True
+    )
+
+
+def test_router_replay_reraises_other_model_read_errors(monkeypatch):
+    class FailingClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def model_is_moe(self, model):
+            raise RuntimeError(
+                f"Failed to fetch model details for {model!r} (HTTP 500): unavailable"
+            )
+
+    monkeypatch.setattr(service, "FireworksClient", FailingClient)
+
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+        )
+
+
 def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
     calls: list[dict] = []
 

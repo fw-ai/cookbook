@@ -36,6 +36,15 @@ def make_weight_sync(
     return publish
 
 
+def _model_read_forbidden(exc: BaseException) -> bool:
+    """True when the architecture probe was rejected rather than answered.
+
+    The SDK reports that as ``HTTP 403``. A forbidden read cannot distinguish a
+    dense model from one that needs Router Replay, so the caller keeps it on.
+    """
+    return "HTTP 403" in str(exc)
+
+
 def resolve_router_replay_enabled(
     *,
     requested: bool,
@@ -47,12 +56,17 @@ def resolve_router_replay_enabled(
     """Enable Router Replay only when the base model can produce routing data."""
     if not requested:
         return False
-    with FireworksClient(
-        api_key=api_key,
-        base_url=base_url,
-        additional_headers=additional_headers,
-    ) as client:
-        return client.model_is_moe(base_model)
+    try:
+        with FireworksClient(
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=additional_headers,
+        ) as client:
+            return client.model_is_moe(base_model)
+    except RuntimeError as exc:
+        if _model_read_forbidden(exc):
+            return True
+        raise
 
 
 def _firetitan_service_kwargs(
