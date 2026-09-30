@@ -11,7 +11,8 @@ import tinker
 import training.recipes.sft_loop as module
 from training.utils import supervised as supervised_utils
 from training.utils.checkpoints import TrainingCheckpoints
-from training.utils.runner import UserConfigError
+from training.utils.runner import DatasetError, UserConfigError
+from training.utils.streaming import JSONL_ROW_INDEX_KEY
 
 
 class _StopAfterProvisioning(RuntimeError):
@@ -806,3 +807,26 @@ class TestPrepareDatasets:
         assert eval_data == []
         assert len(train_ds) == 1
         assert "too small for auto carve-out" in caplog.text
+
+
+def test_render_worker_returns_dataset_error_for_the_parent(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise DatasetError("Image aspect ratio 630.0 exceeds the maximum of 200")
+
+    monkeypatch.setattr(module, "render_messages_to_datums", _boom)
+    module._worker_state["renderer"] = object()
+    module._worker_state["train_on_what"] = "all_assistant_messages"
+    try:
+        error = module._render_one_worker(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                JSONL_ROW_INDEX_KEY: 175,
+            }
+        )
+    finally:
+        module._worker_state.pop("renderer", None)
+        module._worker_state.pop("train_on_what", None)
+    assert isinstance(error, DatasetError)
+    assert str(error).startswith("row 175: Image aspect ratio 630.0")
+    with pytest.raises(DatasetError, match="row 175"):
+        module._flatten_rendered_batch([error])

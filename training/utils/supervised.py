@@ -47,6 +47,7 @@ import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.qwen2_5 as _qwen2_5_renderer  # noqa: F401 — triggers register_renderer
+from training.image_geometry import ImageGeometryError
 from training.utils.runner import DatasetError
 from training.renderer.thinking_trace import (
     ResolvedThinkingTraceRendererPlan,
@@ -1521,12 +1522,15 @@ def render_messages_to_datum(
     effective_train_on_what = requested_train_on_what
     if any("trainable" in m for m in normalized_messages):
         effective_train_on_what = TrainOnWhat.CUSTOMIZED
-    rendered_input, weights = _render_singular_example(
-        renderer,
-        normalized_messages,
-        effective_train_on_what,
-        requested_train_on_what,
-    )
+    try:
+        rendered_input, weights = _render_singular_example(
+            renderer,
+            normalized_messages,
+            effective_train_on_what,
+            requested_train_on_what,
+        )
+    except ImageGeometryError as exc:
+        raise DatasetError(str(exc)) from exc
     return _build_rendered_supervised_datum(
         rendered_input,
         weights,
@@ -1730,12 +1734,15 @@ def render_messages_to_datums(
     if any("trainable" in m for m in normalized_messages):
         effective_train_on_what = TrainOnWhat.CUSTOMIZED
 
-    examples = _build_renderer_supervised_examples(
-        renderer,
-        normalized_messages,
-        effective_train_on_what,
-        requested_train_on_what,
-    )
+    try:
+        examples = _build_renderer_supervised_examples(
+            renderer,
+            normalized_messages,
+            effective_train_on_what,
+            requested_train_on_what,
+        )
+    except ImageGeometryError as exc:
+        raise DatasetError(str(exc)) from exc
 
     return [
         _build_rendered_supervised_datum(

@@ -87,6 +87,10 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.resource_autosizing import select_render_worker_count
+from training.utils.streaming import (
+    dataset_error_for_rendered_row,
+    raise_rendered_dataset_errors,
+)
 from training.utils.serverless import setup_serverless_training
 from training.utils.runner_state import write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
@@ -240,7 +244,7 @@ def _init_pair_worker(
     )
 
 
-def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | None:
+def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | DatasetError | None:
     """Render one JSONL row to a Datum-pair dict, or ``None`` to drop.
 
     Combines schema normalisation (chosen / rejected / samples / OpenAI),
@@ -250,11 +254,14 @@ def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | None:
     pair = normalize_preference_row(row)
     if pair is None:
         return None
-    rendered = render_preference_pair(
-        pair["chosen"], pair["rejected"],
-        renderer=_pair_worker_state["renderer"],
-        tokenizer=_pair_worker_state["tokenizer"],
-    )
+    try:
+        rendered = render_preference_pair(
+            pair["chosen"], pair["rejected"],
+            renderer=_pair_worker_state["renderer"],
+            tokenizer=_pair_worker_state["tokenizer"],
+        )
+    except DatasetError as exc:
+        return dataset_error_for_rendered_row(row, exc)
     if rendered is None:
         return None
     max_seq_len = _pair_worker_state["max_seq_len"]
@@ -597,6 +604,7 @@ async def _train_loop(
             batch = await asyncio.to_thread(next, loader_iter, sentinel)
             if batch is sentinel:
                 break
+            raise_rendered_dataset_errors(batch)
             batches_consumed += 1
             delta = min(batch_size, total_raw_rows - raw_rows_consumed)
             raw_rows_consumed += delta

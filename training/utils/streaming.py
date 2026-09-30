@@ -260,6 +260,33 @@ def _drop_none_collate(batch: List[Any]) -> List[Any]:
     return [d for d in batch if d is not None]
 
 
+def dataset_error_for_rendered_row(row: dict, exc: BaseException) -> DatasetError:
+    """Return a dataset error whose message survives a DataLoader worker.
+
+    Workers must return this instead of raising. PyTorch rebuilds a raised
+    worker exception around the traceback, which would leak into the public
+    training status.
+    """
+    message = str(exc)
+    row_index = row.get(JSONL_ROW_INDEX_KEY)
+    if isinstance(row_index, int) and not isinstance(row_index, bool):
+        prefix = f"row {row_index}: "
+        if not message.startswith(prefix):
+            message = prefix + message
+    if isinstance(exc, DatasetError) and str(exc) == message:
+        return exc
+    return DatasetError(message)
+
+
+def raise_rendered_dataset_errors(batch: List[Any]) -> None:
+    """Re-raise dataset errors that render workers returned in ``batch``."""
+    for item in batch:
+        if isinstance(item, DatasetError):
+            raise item
+        if isinstance(item, list):
+            raise_rendered_dataset_errors(item)
+
+
 def make_render_dataloader(
     dataset: torch_data.Dataset,
     *,
