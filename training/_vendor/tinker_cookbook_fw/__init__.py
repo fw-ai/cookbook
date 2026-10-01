@@ -4,8 +4,10 @@ Used only by SDFT. Copied from
 https://github.com/fw-ai-external/tinker-cookbook at commit
 ``b1223e5535edea2efb824bfe73a38d35e0067439`` (branch ``fireworks``). Only the
 files that the fork changes (to run on ``FiretitanTrainingClient``) and that
-SDFT needs are copied here, in the fork's layout. Everything else is imported
-from upstream ``tinker-cookbook==0.5.7``, installed with the ``sdft`` extra.
+SDFT needs are copied here, in the fork's layout, plus one Fireworks-added
+serverless branch, ``distillation/sdft_serverless.py`` (from ``sdft.py``),
+which ``training/recipes/sdft_loop.py`` runs. Everything else is imported from
+upstream ``tinker-cookbook==0.5.7``, installed with the ``sdft`` extra.
 
 See ``README.md`` for what changed and how to re-sync. Re-sync from the fork
 rather than editing these files in place.

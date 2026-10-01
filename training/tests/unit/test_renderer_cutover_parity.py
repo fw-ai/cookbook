@@ -31,7 +31,10 @@ _DISTRIBUTION_REQUIREMENT = re.compile(
 
 # SDFT intentionally runs on upstream tinker-cookbook plus the
 # Fireworks-modified modules vendored in training/_vendor/tinker_cookbook_fw.
-_SDFT_TINKER_COOKBOOK_IMPORT_PATHS = ("training/_vendor/tinker_cookbook_fw/",)
+_SDFT_TINKER_COOKBOOK_IMPORT_PATHS = (
+    "training/_vendor/tinker_cookbook_fw/",
+    "training/recipes/sdft_loop.py",
+)
 _SDFT_TINKER_COOKBOOK_REQUIREMENT_FILES = frozenset(
     {"training/pyproject.toml", "training/uv.lock"}
 )
