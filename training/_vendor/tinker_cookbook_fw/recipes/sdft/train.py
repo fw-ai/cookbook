@@ -13,21 +13,21 @@ provides per-token KL signals to train a student model.
 
 Example usage:
     # SciKnowEval (paper's science benchmark)
-    python -m training.recipes.sdft.train \
+    python -m training._vendor.tinker_cookbook_fw.recipes.sdft.train \
         model_name=Qwen/Qwen3-8B \
         dataset=sciknoweval \
         groups_per_batch=32 \
         learning_rate=2e-5
 
     # ToolAlpaca (paper's tool-use benchmark)
-    python -m training.recipes.sdft.train \
+    python -m training._vendor.tinker_cookbook_fw.recipes.sdft.train \
         model_name=Qwen/Qwen3-8B \
         dataset=toolalpaca \
         groups_per_batch=32 \
         learning_rate=2e-5
 
     # Debug run (small batch)
-    python -m training.recipes.sdft.train \
+    python -m training._vendor.tinker_cookbook_fw.recipes.sdft.train \
         groups_per_batch=4 group_size=1 \
         max_tokens=256 max_steps=5
 """
@@ -41,7 +41,7 @@ import chz
 
 from tinker_cookbook import cli_utils
 from training._vendor.tinker_cookbook_fw import checkpoint_utils
-from training.utils.distillation import sdft
+from training._vendor.tinker_cookbook_fw.distillation import sdft
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ class CLIConfig:
 
 async def cli_main(cli_config: CLIConfig) -> None:
     """Convert CLI config to full config and run SDFT training."""
-    from training.recipes.sdft.datasets import (
+    from tinker_cookbook.recipes.sdft.datasets import (
         SciKnowEvalSDFTBuilder,
         ToolAlpacaSDFTBuilder,
     )

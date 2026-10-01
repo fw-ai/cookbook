@@ -13,7 +13,7 @@ import pytest
 import tinker
 import torch
 
-from training.utils.distillation.sdft import (
+from training._vendor.tinker_cookbook_fw.distillation.sdft import (
     DEFAULT_DEMO_TEMPLATE,
     MASK_LOGPROB,
     Config,
@@ -25,12 +25,12 @@ from training.utils.distillation.sdft import (
     build_topk_distillation_datums,
     reverse_kl_custom_loss,
 )
-from training.utils.distillation.sdft import (
+from training._vendor.tinker_cookbook_fw.distillation.sdft import (
     main as sdft_main,
 )
 from tinker_cookbook.exceptions import ConfigurationError, DataError
-from training.recipes.sdft.datasets import SDFTDataset, _format_sciknoweval_choices
-from training.recipes.sdft.eval import (
+from tinker_cookbook.recipes.sdft.datasets import SDFTDataset, _format_sciknoweval_choices
+from tinker_cookbook.recipes.sdft.eval import (
     evaluate_science_correctness,
     evaluate_tooluse_correctness,
     extract_action_inputs,

@@ -34,7 +34,7 @@ Two distillation modes are supported (controlled by :class:`Config` ``.topk``):
 Example usage::
 
     # SDFT with top-K=20 distillation on tool-use data
-    python -m training.recipes.sdft.train \\
+    python -m training._vendor.tinker_cookbook_fw.recipes.sdft.train \\
         model_name=Qwen/Qwen3.6-35B-A3B \\
         dataset=toolalpaca \\
         toolalpaca_data_path=~/Self-Distillation/data/tooluse_data/train_data \\
@@ -962,7 +962,7 @@ async def main(
     Args:
         cfg: Training configuration. See :class:`Config`.
         sdft_dataset: Dataset providing (builders, questions, golden_answers)
-            batches. Use :class:`~training.recipes.sdft.datasets.SDFTDataset`.
+            batches. Use :class:`~tinker_cookbook.recipes.sdft.datasets.SDFTDataset`.
         test_dataset: Optional test dataset for periodic evaluation.
     """
     if cfg.reverse and cfg.topk == 0:

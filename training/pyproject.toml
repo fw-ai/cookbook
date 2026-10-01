@@ -34,8 +34,8 @@ dependencies = [
 eval = [
     "eval-protocol>=0.3.32",
 ]
-# recipes/sdft runs on upstream tinker-cookbook plus the Fireworks-modified
-# modules in training._vendor.tinker_cookbook_fw. Only SDFT imports these.
+# SDFT (training._vendor.tinker_cookbook_fw) runs on upstream tinker-cookbook
+# plus the Fireworks-modified modules vendored there. Only SDFT imports these.
 sdft = [
     "chz>=0.4.0",
     "tinker-cookbook==0.5.7",
@@ -61,6 +61,9 @@ packages = [
     "training._vendor.tinker_cookbook_0_4_3.renderers",
     "training._vendor.tinker_cookbook_0_4_3.supervised",
     "training._vendor.tinker_cookbook_fw",
+    "training._vendor.tinker_cookbook_fw.distillation",
+    "training._vendor.tinker_cookbook_fw.recipes",
+    "training._vendor.tinker_cookbook_fw.recipes.sdft",
     "training._vendor.tinker_cookbook_fw.rl",
     "training._vendor.tinker_cookbook_fw.supervised",
     "training.case-studies.agentic_rl_text2sql",
@@ -104,7 +107,6 @@ packages = [
     "training.provision.tests",
     "training.recipes",
     "training.recipes.experiment",
-    "training.recipes.sdft",
     "training.renderer",
     "training.renderer.tito",
     "training.renderer.verifier",
