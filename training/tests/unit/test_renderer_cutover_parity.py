@@ -29,6 +29,16 @@ _DISTRIBUTION_REQUIREMENT = re.compile(
     r")"
 )
 
+# SDFT intentionally runs on upstream tinker-cookbook plus the
+# Fireworks-modified modules vendored in training/_vendor/tinker_cookbook_fw.
+_SDFT_TINKER_COOKBOOK_IMPORT_PATHS = (
+    "training/_vendor/tinker_cookbook_fw/",
+    "training/recipes/sdft_loop.py",
+)
+_SDFT_TINKER_COOKBOOK_REQUIREMENT_FILES = frozenset(
+    {"training/pyproject.toml", "training/uv.lock"}
+)
+
 
 class _CharacterTokenizer:
     """Small reversible tokenizer for dependency-free renderer parity checks."""
@@ -187,6 +197,9 @@ def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:
             capture_output=True,
             text=True,
         ).stdout.strip()
+    ).resolve()
+    cookbook_prefix = (
+        Path(__file__).resolve().parents[3].relative_to(repository_root).as_posix()
     )
     tracked_files = subprocess.run(
         ["git", "ls-files"],
@@ -201,15 +214,23 @@ def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:
     for relative_path in tracked_files:
         if "training/_vendor/tinker_cookbook_0_4_3/" in relative_path:
             continue
+        cookbook_path = (
+            relative_path
+            if cookbook_prefix == "."
+            else relative_path.removeprefix(f"{cookbook_prefix}/")
+        )
         path = repository_root / relative_path
         try:
             source = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        for match in _DISTRIBUTION_REQUIREMENT.finditer(source):
-            line_number = source.count("\n", 0, match.start()) + 1
-            forbidden_requirements.append(f"{relative_path}:{line_number}")
+        if cookbook_path not in _SDFT_TINKER_COOKBOOK_REQUIREMENT_FILES:
+            for match in _DISTRIBUTION_REQUIREMENT.finditer(source):
+                line_number = source.count("\n", 0, match.start()) + 1
+                forbidden_requirements.append(f"{relative_path}:{line_number}")
         if path.suffix not in {".py", ".ipynb"}:
+            continue
+        if cookbook_path.startswith(_SDFT_TINKER_COOKBOOK_IMPORT_PATHS):
             continue
         if path.suffix == ".ipynb":
             notebook = json.loads(source)
