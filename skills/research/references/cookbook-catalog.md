@@ -53,6 +53,7 @@ Training API loops when the customer needs a custom harness.
 | `async_rl_loop.py` | GRPO (async) |
 | `igpo_loop.py` | IGPO multi-turn |
 | `distillation_loop.py` | Distillation / OPD |
+| `sdft_loop.py` | SDFT on serverless (needs the `sdft` extra) |
 | `embedding_loop.py` | Embedding / contrastive |
 
 ## Match priority

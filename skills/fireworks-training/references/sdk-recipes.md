@@ -12,6 +12,9 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | RL (simpler, synchronous GRPO scaffold) | `training/recipes/rl_loop.py` |
 | Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
 | Distillation / OPD / SDFT | `training/recipes/distillation_loop.py` — see [`sdk-distillation.md`](sdk-distillation.md) |
+| SDFT on the shared serverless pool (no trainer job or deployment; install with `uv pip install -e '.[sdft]'`) | `training/recipes/sdft_loop.py` — runs the vendored tinker-cookbook SDFT loop |
+
+For `sdft_loop.py`, make sure to register your dataset in `recipes/sdft/datasets.py`.
 
 ## "Reference loop" means these files
 
