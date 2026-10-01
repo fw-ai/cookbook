@@ -74,17 +74,18 @@ Whichever RFT route you use, the reward can come from three places:
 
 Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw-ai/cookbook`:
 - `training/recipes/` — loop scripts (e.g. `async_rl_loop`)
-- `training/recipes/experiment/` — experimental infrastructure variants, including async serverless RL
+- `training/recipes/experiment/` — experimental infrastructure variants, including async serverless RL and SAO/PPO
 - `training/examples/` — worked RL / SFT / DPO / ORPO
 - `training/utils/` — config, data loading, losses, metrics
 
-Recipes cover SFT, DPO/ORPO, and RL (GRPO, DAPO, GSPO, CISPO).
+Recipes cover SFT, DPO/ORPO, and RL (GRPO, SAO/PPO, DAPO, GSPO, CISPO).
 
 ## Core SDK primitives
 
 - `forward_backward` — built-in losses by id (e.g. `"cross_entropy"`), no extra forward pass.
 - `forward_backward_custom(datums, loss_fn)` — your Python loss; returns per-token logprobs with gradients. **Loss runs locally; forward/backward run on remote GPUs.**
 - `forward` — forward-only (e.g. reference-model logprobs); optional `loss_fn_config={"top_k": K}` returns per-token top-K logprobs/indices — see below.
+- `forward_projection(datums)` — forward-only raw projection-head outputs (`loss_fn_outputs[i]["projection"]`, shape `[tokens, projection_head_dim]`) for a trainer created with `projection_head_dim`. Accumulates no gradients; train the head with `forward_backward_custom(..., output="projection")`. See `recipes/experiment/ppo_value_head_loop.py`.
 - `optim_step(...)` — optimizer update after gradient accumulation.
 - `save_weights_for_sampler()` + `create_sampling_client()` — export a checkpoint + stand up a sampler (weight sync for eval/rollouts).
 

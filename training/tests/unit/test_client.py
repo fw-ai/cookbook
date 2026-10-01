@@ -47,6 +47,10 @@ class _FakeInnerClient:
         self.calls.append("weight_sync")
         return self.future
 
+    def forward_projection(self, data):
+        self.calls.append(("forward_projection", data))
+        return self.future
+
     def save_weights_for_sampler_ext(self, name, *, checkpoint_type=None):
         self.calls.append(("save_weights_for_sampler_ext", name, checkpoint_type))
         return self.saved_sampler
@@ -312,6 +316,16 @@ def test_forward_backward_custom_embedding_path_forwards_kwargs():
             {"output": "embedding", "pooling": "last"},
         )
     ]
+
+
+def test_forward_projection_waits_for_result():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    result = client.forward_projection("data")
+
+    assert result == {"ok": True, "timeout": 123}
+    assert inner.calls == [("forward_projection", "data")]
 
 
 def test_forward_backward_contrastive_delegates_to_sdk():

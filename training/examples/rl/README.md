@@ -64,3 +64,9 @@ The remaining entries are independent examples with narrower goals:
 These examples intentionally remain useful references, but their APIs and
 layouts should not be treated as one common architecture. New agentic RL work
 should prefer the Harbor-based recipe structure above.
+
+## Experimental
+
+- [`SAO/`](./SAO/) — token-level SAO/PPO with a separate value-head critic.
+  Projection-head support is not validated for every model. See the
+  [Qwen3-4B runbook](./SAO/QWEN3_4B_SAO.md).
