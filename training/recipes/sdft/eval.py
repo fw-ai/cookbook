@@ -1,3 +1,7 @@
+# Adapted from thinking-machines-lab/tinker-cookbook (Apache-2.0, Copyright 2025 Thinking Machines Lab)
+# via the fw-ai-external/tinker-cookbook fork at b1223e5 (tinker_cookbook/recipes/sdft/eval.py).
+# Unmodified apart from this header.
+# See training/_vendor/tinker_cookbook_fw/README.md.
 """
 Evaluation functions for SDFT recipe.
 

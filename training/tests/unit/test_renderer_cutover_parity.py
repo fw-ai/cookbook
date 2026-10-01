@@ -29,6 +29,17 @@ _DISTRIBUTION_REQUIREMENT = re.compile(
     r")"
 )
 
+# The SDFT recipe intentionally runs on upstream tinker-cookbook plus the
+# Fireworks-modified modules vendored in training/_vendor/tinker_cookbook_fw.
+_SDFT_TINKER_COOKBOOK_IMPORT_PATHS = (
+    "training/_vendor/tinker_cookbook_fw/",
+    "training/recipes/sdft/",
+    "training/utils/distillation/sdft.py",
+)
+_SDFT_TINKER_COOKBOOK_REQUIREMENT_FILES = frozenset(
+    {"training/pyproject.toml", "training/uv.lock"}
+)
+
 
 class _CharacterTokenizer:
     """Small reversible tokenizer for dependency-free renderer parity checks."""
@@ -200,10 +211,13 @@ def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:
             source = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        for match in _DISTRIBUTION_REQUIREMENT.finditer(source):
-            line_number = source.count("\n", 0, match.start()) + 1
-            forbidden_requirements.append(f"{relative_path}:{line_number}")
+        if relative_path not in _SDFT_TINKER_COOKBOOK_REQUIREMENT_FILES:
+            for match in _DISTRIBUTION_REQUIREMENT.finditer(source):
+                line_number = source.count("\n", 0, match.start()) + 1
+                forbidden_requirements.append(f"{relative_path}:{line_number}")
         if path.suffix not in {".py", ".ipynb"}:
+            continue
+        if relative_path.startswith(_SDFT_TINKER_COOKBOOK_IMPORT_PATHS):
             continue
         if path.suffix == ".ipynb":
             notebook = json.loads(source)

@@ -1,3 +1,8 @@
+# Adapted from thinking-machines-lab/tinker-cookbook (Apache-2.0, Copyright 2025 Thinking Machines Lab)
+# via the fw-ai-external/tinker-cookbook fork at b1223e5 (tinker_cookbook/recipes/sdft/benchmark.py).
+# Modified by Fireworks AI:
+#   - Import paths rewritten for this repository.
+# See training/_vendor/tinker_cookbook_fw/README.md.
 """
 SDFT Benchmark Script.
 
@@ -13,23 +18,23 @@ but the pattern (SDFT > SFT) should hold.
 
 Usage:
     # Run all comparisons (base eval, SFT, SDFT — independent from same base)
-    python -m tinker_cookbook.recipes.sdft.benchmark \
+    python -m training.recipes.sdft.benchmark \
         dataset=sciknoweval
 
     # Eval base model only
-    python -m tinker_cookbook.recipes.sdft.benchmark \
+    python -m training.recipes.sdft.benchmark \
         dataset=sciknoweval phase=base_eval
 
     # SFT training only (independent from SDFT)
-    python -m tinker_cookbook.recipes.sdft.benchmark \
+    python -m training.recipes.sdft.benchmark \
         dataset=sciknoweval phase=sft
 
     # SDFT training only (independent from SFT)
-    python -m tinker_cookbook.recipes.sdft.benchmark \
+    python -m training.recipes.sdft.benchmark \
         dataset=sciknoweval phase=sdft
 
     # Eval an existing checkpoint
-    python -m tinker_cookbook.recipes.sdft.benchmark \
+    python -m training.recipes.sdft.benchmark \
         dataset=sciknoweval phase=eval_checkpoint \
         checkpoint_path=tinker://...
 """
@@ -44,7 +49,8 @@ from typing import Literal
 import chz
 import tinker
 
-from tinker_cookbook import checkpoint_utils, cli_utils, renderers
+from tinker_cookbook import cli_utils, renderers
+from training._vendor.tinker_cookbook_fw import checkpoint_utils
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.utils.git_rev import recipe_user_metadata
 
@@ -143,8 +149,8 @@ async def run_base_eval(config: BenchmarkConfig) -> dict[str, float]:
 
 async def run_sft(config: BenchmarkConfig) -> str | None:
     """Run SFT training from the base model and return checkpoint path."""
-    from tinker_cookbook.recipes.sdft.datasets import ScienceArrowSFTBuilder
-    from tinker_cookbook.supervised import train as sl_train
+    from training.recipes.sdft.datasets import ScienceArrowSFTBuilder
+    from training._vendor.tinker_cookbook_fw.supervised import train as sl_train
     from tinker_cookbook.supervised.types import ChatDatasetBuilderCommonConfig
 
     renderer_name = await _resolve_renderer(config)
@@ -202,8 +208,8 @@ async def run_sft(config: BenchmarkConfig) -> str | None:
 
 async def run_sdft(config: BenchmarkConfig) -> str | None:
     """Run SDFT training from the base model and return checkpoint path."""
-    from tinker_cookbook.distillation import sdft
-    from tinker_cookbook.recipes.sdft.datasets import SDFTDataset, load_science_from_arrow
+    from training.utils.distillation import sdft
+    from training.recipes.sdft.datasets import SDFTDataset, load_science_from_arrow
 
     renderer_name = await _resolve_renderer(config)
     tokenizer = get_tokenizer(config.model_name)
@@ -299,8 +305,8 @@ def _build_evaluator(
     renderer: renderers.Renderer,
 ):  # type: ignore[return]
     """Build the appropriate evaluator for the dataset using the paper's eval data."""
-    from tinker_cookbook.recipes.sdft.datasets import load_science_from_arrow
-    from tinker_cookbook.recipes.sdft.eval import SciKnowEvalEvaluator
+    from training.recipes.sdft.datasets import load_science_from_arrow
+    from training.recipes.sdft.eval import SciKnowEvalEvaluator
 
     expanded_data_dir = str(Path(config.data_dir).expanduser())
 

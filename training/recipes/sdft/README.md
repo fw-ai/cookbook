@@ -71,7 +71,7 @@ export TINKER_API_KEY=<your-key>
 
 ```bash
 # SDFT on tool-use (top-K distillation, K=20)
-python -m tinker_cookbook.recipes.sdft.train \
+python -m training.recipes.sdft.train \
     model_name=Qwen/Qwen3.5-35B-A3B \
     dataset=toolalpaca \
     toolalpaca_data_path=Self-Distillation/data/tooluse_data/train_data \
@@ -86,7 +86,7 @@ python -m tinker_cookbook.recipes.sdft.train \
 The key experiment: train sequentially on two tasks and measure retention.
 
 ```bash
-python -m tinker_cookbook.recipes.sdft.run_continual_learning \
+python -m training.recipes.sdft.run_continual_learning \
     model_name=Qwen/Qwen3.5-35B-A3B \
     data_dir=Self-Distillation/data \
     methods=sft,sdft_topk \
@@ -100,7 +100,7 @@ python -m tinker_cookbook.recipes.sdft.run_continual_learning \
 ### Debug run
 
 ```bash
-python -m tinker_cookbook.recipes.sdft.train \
+python -m training.recipes.sdft.train \
     model_name=Qwen/Qwen3.5-35B-A3B \
     dataset=sciknoweval \
     groups_per_batch=4 \
@@ -178,3 +178,19 @@ python -m tinker_cookbook.recipes.sdft.train \
 - Shenfeld et al., ["Self-Distillation Enables Continual Learning"](https://arxiv.org/abs/2601.19897), 2026
 - [Official implementation](https://github.com/idanshen/Self-Distillation) (TRL-based, Qwen2.5-7B)
 - [Tinker loss functions](https://tinker-docs.thinkingmachines.ai/tinker/losses) (top-K distillation, cross_entropy)
+
+## Installing on Fireworks
+
+This recipe needs the optional `sdft` extra, which installs upstream
+`tinker-cookbook`. From `cookbook/training`:
+
+```bash
+uv pip install -e '.[sdft]'
+```
+
+---
+
+Adapted from [thinking-machines-lab/tinker-cookbook](https://github.com/thinking-machines-lab/tinker-cookbook)
+(Apache-2.0, Copyright 2025 Thinking Machines Lab) via the
+[fw-ai-external fork](https://github.com/fw-ai-external/tinker-cookbook). Modified by
+Fireworks AI; see [`training/_vendor/tinker_cookbook_fw/README.md`](../../_vendor/tinker_cookbook_fw/README.md).

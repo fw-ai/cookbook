@@ -1,3 +1,9 @@
+# Adapted from thinking-machines-lab/tinker-cookbook (Apache-2.0, Copyright 2025 Thinking Machines Lab)
+# via the fw-ai-external/tinker-cookbook fork at b1223e5 (tinker_cookbook/recipes/sdft/sdft_test.py).
+# Modified by Fireworks AI:
+#   - Test the Firetitan top-K path with FiretitanTrainingClient mocks.
+#   - Import paths rewritten for this repository.
+# See training/_vendor/tinker_cookbook_fw/README.md.
 """Unit tests for SDFT recipe (no API key needed)."""
 
 import math
@@ -7,7 +13,7 @@ import pytest
 import tinker
 import torch
 
-from tinker_cookbook.distillation.sdft import (
+from training.utils.distillation.sdft import (
     DEFAULT_DEMO_TEMPLATE,
     MASK_LOGPROB,
     Config,
@@ -19,12 +25,12 @@ from tinker_cookbook.distillation.sdft import (
     build_topk_distillation_datums,
     reverse_kl_custom_loss,
 )
-from tinker_cookbook.distillation.sdft import (
+from training.utils.distillation.sdft import (
     main as sdft_main,
 )
 from tinker_cookbook.exceptions import ConfigurationError, DataError
-from tinker_cookbook.recipes.sdft.datasets import SDFTDataset, _format_sciknoweval_choices
-from tinker_cookbook.recipes.sdft.eval import (
+from training.recipes.sdft.datasets import SDFTDataset, _format_sciknoweval_choices
+from training.recipes.sdft.eval import (
     evaluate_science_correctness,
     evaluate_tooluse_correctness,
     extract_action_inputs,

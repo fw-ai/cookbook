@@ -1,3 +1,11 @@
+# Adapted from thinking-machines-lab/tinker-cookbook (Apache-2.0, Copyright 2025 Thinking Machines Lab)
+# via the fw-ai-external/tinker-cookbook fork at b1223e5 (tinker_cookbook/distillation/sdft.py).
+# Modified by Fireworks AI:
+#   - Teacher top-K logprobs come from a top-K forward on a frozen
+#     FiretitanTrainingClient; training and weight sync run on Firetitan clients
+#     and a Fireworks deployment.
+#   - Import paths rewritten for this repository.
+# See training/_vendor/tinker_cookbook_fw/README.md.
 """
 Self-Distillation Fine-Tuning (SDFT).
 
@@ -26,7 +34,7 @@ Two distillation modes are supported (controlled by :class:`Config` ``.topk``):
 Example usage::
 
     # SDFT with top-K=20 distillation on tool-use data
-    python -m tinker_cookbook.recipes.sdft.train \\
+    python -m training.recipes.sdft.train \\
         model_name=Qwen/Qwen3.6-35B-A3B \\
         dataset=toolalpaca \\
         toolalpaca_data_path=~/Self-Distillation/data/tooluse_data/train_data \\
@@ -59,7 +67,8 @@ from fireworks.training.sdk import (
     WeightSyncer,
 )
 from tinker.types import LossFnType
-from tinker_cookbook import checkpoint_utils, model_info, renderers
+from tinker_cookbook import model_info, renderers
+from training._vendor.tinker_cookbook_fw import checkpoint_utils
 from tinker_cookbook.display import colorize_example
 from tinker_cookbook.eval.evaluators import (
     SamplingClientEvaluator,
@@ -75,7 +84,7 @@ from tinker_cookbook.rl.metric_util import (
     compute_trajectory_metrics,
 )
 from tinker_cookbook.rl.rollouts import do_group_rollout_and_filter_constant_reward
-from tinker_cookbook.rl.train import (
+from training._vendor.tinker_cookbook_fw.rl.train import (
     save_checkpoint_and_get_sampling_client,
     train_step,
 )
@@ -953,7 +962,7 @@ async def main(
     Args:
         cfg: Training configuration. See :class:`Config`.
         sdft_dataset: Dataset providing (builders, questions, golden_answers)
-            batches. Use :class:`~tinker_cookbook.recipes.sdft.datasets.SDFTDataset`.
+            batches. Use :class:`~training.recipes.sdft.datasets.SDFTDataset`.
         test_dataset: Optional test dataset for periodic evaluation.
     """
     if cfg.reverse and cfg.topk == 0:

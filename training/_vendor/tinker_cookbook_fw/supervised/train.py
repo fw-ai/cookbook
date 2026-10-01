@@ -1,0 +1,635 @@
+# Adapted from thinking-machines-lab/tinker-cookbook (Apache-2.0, Copyright 2025 Thinking Machines Lab)
+# via the fw-ai-external/tinker-cookbook fork at b1223e5 (tinker_cookbook/supervised/train.py).
+# Modified by Fireworks AI:
+#   - Create the training client with FiretitanServiceClient; support cross-job
+#     resume; tolerate missing per-datum logprobs.
+#   - Use tinker-cookbook 0.5.7's NLLEvaluator (training-client forward) for
+#     the test-set NLL instead of the later SamplerNLLEvaluator.
+#   - Import paths rewritten for this repository.
+# See training/_vendor/tinker_cookbook_fw/README.md.
+"""
+Supervised fine-tuning (SFT)
+
+This module implements a pipelined supervised learning training loop. For background on
+why we pipeline requests, see https://tinker-docs.thinkingmachines.ai/under-the-hood.
+For a minimal, pedagogical example of SL training without these optimizations,
+refer to `tinker_cookbook/recipes/sl_loop.py`.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass
+from pathlib import Path
+
+import chz
+import tinker
+from fireworks.training.sdk import FiretitanServiceClient, FiretitanTrainingClient
+from tinker.lib.public_interfaces import APIFuture
+
+from tinker_cookbook import model_info
+from training._vendor.tinker_cookbook_fw import checkpoint_utils
+from tinker_cookbook.display import colorize_example
+from tinker_cookbook.eval.evaluators import (
+    Evaluator,
+    EvaluatorBuilder,
+    SamplingClientEvaluator,
+    TrainingClientEvaluator,
+)
+from tinker_cookbook.exceptions import ConfigurationError
+from tinker_cookbook.supervised.common import compute_bpb, compute_mean_nll
+from tinker_cookbook.supervised.nll_evaluator import NLLEvaluator
+from tinker_cookbook.supervised.types import SupervisedDatasetBuilder
+from tinker_cookbook.tokenizer_utils import get_tokenizer
+from tinker_cookbook.utils import ml_log, trace
+from tinker_cookbook.utils.lr_scheduling import (
+    LRSchedule,
+    compute_schedule_lr_multiplier,
+)
+from tinker_cookbook.utils.misc_utils import iteration_dir
+
+logger = logging.getLogger(__name__)
+
+
+@chz.chz
+class Config:
+    """Configuration for supervised fine-tuning.
+
+    This ``chz`` dataclass holds every knob for a supervised learning run: model
+    selection, learning-rate schedule, checkpointing cadence, evaluation, and logging.
+
+    Attributes:
+        log_path (str): Directory for checkpoints, metrics, and trace files.
+            Tilde (``~``) is expanded automatically.
+        model_name (str): HuggingFace model identifier (e.g. ``"Qwen/Qwen3-8B"``).
+        recipe_name (str): Slug identifying the recipe driving this run
+            (e.g. ``"recipe_sl_basic"``).  Attached as ``user_metadata`` on the
+            ``ServiceClient`` so all downstream training/sampling calls inherit it.
+        load_checkpoint_path (str | None): Path to a Tinker checkpoint to
+            initialise weights from. ``None`` starts from the base model.
+        renderer_name (str | None): Renderer to apply when tokenising chat
+            messages.  Should match the model family (e.g. ``"qwen3"``).
+        dataset_builder (SupervisedDatasetBuilder): Builder that produces
+            the training (and optionally evaluation) dataset.
+        learning_rate (float): Peak learning rate. Default ``1e-4``.
+        lr_schedule (LRSchedule): Learning-rate schedule type.
+            Default ``"linear"`` decay.
+        num_epochs (int): Number of passes over the dataset. Default ``1``.
+        lora_rank (int): LoRA rank for the adapter. Default ``32``.
+        base_url (str | None): Override the Tinker service URL.
+        evaluator_builders (list[EvaluatorBuilder]): Factories for evaluators
+            run every ``eval_every`` steps.
+        infrequent_evaluator_builders (list[EvaluatorBuilder]): Factories for
+            evaluators run every ``infrequent_eval_every`` steps.
+        save_every (int): Save a checkpoint every *N* steps (0 disables).
+        eval_every (int): Run evaluators every *N* steps (0 disables).
+        infrequent_eval_every (int): Run infrequent evaluators every *N* steps
+            (0 disables).
+        ttl_seconds (int | None): Time-to-live for periodic checkpoints.
+            The final checkpoint is kept indefinitely. Default ``604800`` (7 days).
+        adam_beta1 (float): Adam beta1. Default ``0.9``.
+        adam_beta2 (float): Adam beta2. Default ``0.95``.
+        adam_eps (float): Adam epsilon. Default ``1e-8``.
+        wandb_project (str | None): Weights & Biases project name.
+        wandb_name (str | None): Weights & Biases run name.
+        enable_trace (bool): Enable async tracing to ``trace_events.jsonl``.
+        span_chart_every (int): Write a Gantt-chart HTML every *N* steps
+            (0 disables).
+        max_steps (int | None): Hard cap on training steps.  ``None`` trains
+            for ``num_epochs * n_batches``.
+        async_periodic_saves (bool): When ``True``, periodic checkpoint saves
+            run as fire-and-forget background tasks instead of blocking the
+            training loop.  The checkpoint record is written to
+            ``checkpoints.jsonl`` once the save completes.  The final
+            checkpoint always blocks.  Default ``False``.
+        submit_ahead (int): How many batches to submit ahead of the one being
+            waited on.  ``1`` (default) matches the historical single-lookahead
+            behavior; ``0`` disables pipelining entirely; higher values deepen
+            the pipeline for more overlap at the cost of memory.
+
+    Example::
+
+        from tinker_cookbook.supervised import train
+
+        config = train.Config(
+            log_path="~/logs/sft-run",
+            model_name="Qwen/Qwen3-8B",
+            dataset_builder=my_dataset_builder,
+            learning_rate=1e-4,
+        )
+        asyncio.run(train.main(config))
+    """
+
+    # Required parameters
+    log_path: str = chz.field(munger=lambda _, s: str(Path(s).expanduser()))
+    model_name: str
+    recipe_name: str
+    load_checkpoint_path: str | None = None
+    renderer_name: str | None = None
+    dataset_builder: SupervisedDatasetBuilder
+
+    # Training parameters
+    learning_rate: float = 1e-4
+    lr_schedule: LRSchedule = "linear"
+    num_epochs: int = 1
+
+    # Model parameters
+    lora_rank: int = 32
+
+    # Infrastructure parameters
+    base_url: str | None = None
+
+    # Checkpointing and evaluation (0 = disabled for *_every fields)
+    evaluator_builders: list[EvaluatorBuilder] = chz.field(default_factory=list)
+    infrequent_evaluator_builders: list[EvaluatorBuilder] = chz.field(default_factory=list)
+    # Step-based periodic checkpoint cadence
+    save_every: int = 20
+    # Token-based periodic checkpoint cadence
+    save_every_tokens: int = 0
+    # Wall-clock periodic checkpoint cadence in seconds
+    save_every_seconds: float = 0.0
+    eval_every: int = 10
+    infrequent_eval_every: int = 100
+    # Periodic checkpoints use this TTL; the final checkpoint is kept indefinitely.
+    ttl_seconds: int | None = 604800  # 7 days
+    # Rolling checkpoint cadence (0 = disabled). Saves training state for resume
+    # but skips the sampler-weight export, making it cheaper than periodic checkpoints.
+    rolling_save_every: int = 0
+    # TTL for rolling checkpoints; short to auto-clean if explicit deletion fails.
+    rolling_ttl_seconds: int = 7200  # 2 hours
+    # When True, periodic checkpoint saves run as background asyncio tasks
+    # (fire-and-forget) instead of blocking the training loop. The final
+    # checkpoint always blocks regardless of this setting.
+    async_periodic_saves: bool = False
+
+    # Adam optimizer parameters
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.95
+    adam_eps: float = 1e-8
+
+    # Logging parameters
+    wandb_project: str | None = None
+    wandb_name: str | None = None
+
+    enable_trace: bool = False
+    span_chart_every: int = 0
+
+    # Maximum number of training steps. If None, train for num_epochs * n_batches.
+    max_steps: int | None = None
+
+    # How many batches to submit ahead of the one being waited on.
+    # 1 = historical single-lookahead behavior (submit N+1 while finishing N).
+    # 0 = no pipelining, 2+ = deeper pipeline.
+    submit_ahead: int = 1
+
+    fireworks_base_model: str | None = None
+
+
+@dataclass
+class SubmittedBatch:
+    """A batch that has been submitted to the Tinker service but not yet resolved.
+
+    Holds the API futures for the forward-backward and optimizer-step calls along
+    with bookkeeping needed to log metrics and save checkpoints once the futures
+    complete.
+
+    Attributes:
+        fwd_bwd_future (APIFuture[tinker.ForwardBackwardOutput]): Future for
+            the forward-backward pass.
+        optim_step_future (APIFuture[tinker.OptimStepResponse]): Future for
+            the optimizer step.
+        metrics (dict[str, int | float | str]): Accumulated metrics dict that
+            will be logged after the batch resolves.
+        data (list): The list of ``tinker.Datum`` objects sent in this batch.
+        step (int): Global training step index.
+        epoch_idx (int): Current epoch index.
+        batch_idx (int): Batch index within the current epoch.
+        eval_metrics (dict[str, float] | None): Evaluation metrics gathered
+            before this step was submitted, or ``None``.
+        infrequent_eval_metrics (dict[str, float] | None): Infrequent
+            evaluation metrics, or ``None``.
+    """
+
+    # fwd_future: APIFuture[tinker.ForwardBackwardOutput]
+    fwd_bwd_future: APIFuture[tinker.ForwardBackwardOutput]
+    optim_step_future: APIFuture[tinker.OptimStepResponse]
+    metrics: dict[str, int | float | str]
+    data: list
+    step: int
+    epoch_idx: int
+    batch_idx: int
+    eval_metrics: dict[str, float] | None = None
+    infrequent_eval_metrics: dict[str, float] | None = None
+    # Sum of `datum.model_input.length` across this batch's data
+    num_tokens: int = 0
+
+
+async def run_evals(
+    evaluators: list[Evaluator],
+    training_client: tinker.TrainingClient | FiretitanTrainingClient,
+    step: int,
+) -> dict[str, float]:
+    """Evaluate the current model weights and prefix results with ``test/``.
+
+    The helper is called immediately before optimizer step *step* is submitted, so it
+    measures the weights produced after step ``step-1`` (or the initial weights for
+    step 0).  Training-client evaluators run against the mutable training client,
+    while sampling evaluators request a fresh ``SamplingClient`` snapshot via
+    ``save_weights_and_get_sampling_client_async`` to ensure their work uses a fixed
+    checkpoint.
+
+    Args:
+        evaluators (list[Evaluator]): Evaluators to run.
+        training_client (tinker.TrainingClient): The active training client
+            whose weights will be evaluated.
+        step (int): The training step index (used for logging context).
+
+    Returns:
+        dict[str, float]: Metric name to value mapping.
+    """
+
+    metrics = {}
+    sampling_client = None
+
+    @trace.scope
+    async def run_evaluator(evaluator: Evaluator) -> dict[str, float]:
+        trace.update_scope_context(
+            {
+                "step": step,
+                "evaluator_name": type(evaluator).__name__,
+            }
+        )
+        if isinstance(evaluator, TrainingClientEvaluator):
+            trace.update_scope_context({"evaluator_type": "TrainingClientEvaluator"})
+            return await evaluator(training_client)
+        elif isinstance(evaluator, SamplingClientEvaluator):
+            trace.update_scope_context({"evaluator_type": "SamplingClientEvaluator"})
+            # Create sampling client lazily, only when needed
+            nonlocal sampling_client
+            if sampling_client is None:
+                # Snapshot the current pre-step weights and create a new sampling client.
+                sampling_client = await training_client.save_weights_and_get_sampling_client_async()
+            return await evaluator(sampling_client)
+        else:
+            raise ConfigurationError(f"Unknown evaluator type: {type(evaluator)}")
+
+    for evaluator in evaluators:
+        eval_metrics = await run_evaluator(evaluator)
+        # Add test/ prefix to all metrics
+        metrics.update(eval_metrics)
+
+    return metrics
+
+
+@trace.scope
+async def main(config: Config):
+    """Run the standard supervised learning loop used by the supervised recipes.
+
+    Responsibilities:
+
+    1. Initialize logging, build the dataset/evaluator objects, construct (or resume)
+       the training client, and determine the ``epoch``/``batch`` indices to start from.
+    2. Iterate over batches: fetch data, optionally run evaluations before submitting
+       the optimizer step (so they observe pre-step weights), issue ``forward_backward``
+       and ``optim_step`` requests, and log metrics once the futures resolve.
+    3. Save checkpoints at the configured cadence so runs can resume or export weights,
+       then emit a final checkpoint when training completes.
+
+    Training and evaluation metrics share the same ``step`` index to keep dashboards
+    easy to read.
+
+    Args:
+        config (Config): Fully populated training configuration.
+            See :class:`Config` for fields and usage example.
+    """
+    resume_info = checkpoint_utils.get_last_checkpoint(config.log_path)
+    if resume_info:
+        start_epoch = resume_info.epoch or 0
+        start_batch = resume_info.batch
+        resumed_elapsed_tokens: int = int(resume_info.get("elapsed_tokens", 0))
+    else:
+        start_epoch = 0
+        start_batch = 0
+        resumed_elapsed_tokens = 0
+    # (start_epoch, start_batch) now represent the next batch to execute if resuming.
+
+    ml_logger = ml_log.setup_logging(
+        log_dir=config.log_path,
+        wandb_project=config.wandb_project,
+        wandb_name=config.wandb_name,
+        config=config,
+        do_configure_logging_module=True,
+    )
+    store = ml_logger.store
+    if config.enable_trace:
+        # Get and rename the current (main) task
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            current_task.set_name("main")
+        trace_events_path = str(Path(config.log_path) / "trace_events.jsonl")
+        logger.info(f"Tracing is enabled. Trace events will be saved to {trace_events_path}")
+        logger.info(
+            f"Run `python tinker_cookbook/utils/trace.py {trace_events_path} trace.json` and visualize in chrome://tracing or https://ui.perfetto.dev/"
+        )
+        trace.trace_init(output_file=trace_events_path)
+
+    service_client = FiretitanServiceClient(
+        base_url=config.base_url,
+    )
+
+    user_metadata: dict[str, str] = {}
+    if wandb_link := ml_logger.get_logger_url():
+        user_metadata["wandb_link"] = wandb_link
+    checkpoint_utils.add_renderer_name_to_user_metadata(user_metadata, config.renderer_name)
+    model_info.warn_if_renderer_not_recommended(config.model_name, config.renderer_name)
+
+    if config.fireworks_base_model is None:
+        raise ConfigurationError(
+            "fireworks_base_model must be specified when creating a Fireworks training client."
+        )
+
+    training_client = service_client.create_training_client(
+        base_model=config.fireworks_base_model,
+        lora_rank=config.lora_rank,
+        user_metadata=user_metadata,
+    )
+    current_job_id = checkpoint_utils.extract_trainer_job_id(config.base_url)
+    if resume_info:
+        # Resuming interrupted training - load optimizer state for proper continuation.
+        # load_state_with_optimizer returns an APIFuture; await it so a load failure
+        # surfaces here instead of silently corrupting the next forward_backward.
+        # If the checkpoint was written by a different trainer job, rewrite the local
+        # state name into an opaque cross_job:// reference the trainer can resolve.
+        source_job_id = resume_info.get("source_trainer_job_id")
+        load_path = resume_info.state_path
+        if source_job_id and source_job_id != current_job_id:
+            load_path = training_client.resolve_checkpoint_path(
+                load_path, source_job_id=source_job_id
+            )
+            logger.info(
+                f"Cross-job resume: rewriting {resume_info.state_path!r} from "
+                f"job {source_job_id!r} into {load_path!r}"
+            )
+        load_future = training_client.load_state_with_optimizer(load_path)
+        await load_future.result_async()
+        logger.info(f"Resumed training from {load_path}")
+    elif config.load_checkpoint_path:
+        # Starting fresh from a checkpoint - load weights only (fresh optimizer)
+        raise ValueError(
+            "Loading weights from a checkpoint is not supported. Please specify the base model when starting the fireworks rlor-trainer-job."
+        )
+
+    checkpoint_mgr = checkpoint_utils.CheckpointManager(
+        training_client=training_client,
+        service_client=service_client,
+        log_path=config.log_path,
+        save_every=config.save_every,
+        save_every_tokens=config.save_every_tokens,
+        save_every_seconds=config.save_every_seconds,
+        ttl_seconds=config.ttl_seconds,
+        rolling_save_every=config.rolling_save_every,
+        rolling_ttl_seconds=config.rolling_ttl_seconds,
+        store=store,
+        async_periodic_saves=config.async_periodic_saves,
+    )
+    checkpoint_mgr.restore_last_saved_tokens(resumed_elapsed_tokens)
+    elapsed_tokens: int = resumed_elapsed_tokens
+
+    dataset, maybe_test_dataset = config.dataset_builder()
+    n_batches = len(dataset)
+    total_steps = n_batches * config.num_epochs
+    if config.max_steps is not None:
+        total_steps = min(total_steps, config.max_steps)
+    progress_denominator = total_steps if total_steps > 0 else 1
+    tokenizer = get_tokenizer(config.model_name)
+
+    evaluators = [evaluator() for evaluator in config.evaluator_builders]
+    if maybe_test_dataset is not None:
+        # Pass the tokenizer so the evaluator also reports test/bpb (bits per
+        # byte), a tokenizer-independent NLL that is comparable across models.
+        evaluators.append(NLLEvaluator.from_dataset(maybe_test_dataset, tokenizer=tokenizer))
+
+    infrequent_evaluators = [evaluator() for evaluator in config.infrequent_evaluator_builders]
+    logger.info(
+        f"Training for {n_batches} batches x {config.num_epochs} epochs = {n_batches * config.num_epochs} steps"
+    )
+
+    @trace.scope
+    async def submit_batch(epoch_idx: int, batch_idx: int) -> SubmittedBatch:
+        step = epoch_idx * n_batches + batch_idx
+        trace.update_scope_context({"step": step})
+
+        metrics: dict[str, int | float | str] = {"epoch": epoch_idx}
+        metrics["progress"] = step / progress_denominator
+
+        learning_rate = config.learning_rate * compute_schedule_lr_multiplier(
+            lr_schedule=config.lr_schedule,
+            step=step,
+            total_steps=total_steps,
+        )
+        metrics["learning_rate"] = learning_rate
+
+        adam_params = tinker.AdamParams(
+            learning_rate=learning_rate,
+            beta1=config.adam_beta1,
+            beta2=config.adam_beta2,
+            eps=config.adam_eps,
+        )
+
+        async with trace.scope_span("get_batch"):
+            data = dataset.get_batch(batch_idx)
+        if data:
+            logger.info(colorize_example(data[0], tokenizer))
+
+        # Trigger evaluations BEFORE submitting training operations so they snapshot pre-step weights
+        eval_metrics = None
+        if evaluators and config.eval_every > 0 and step % config.eval_every == 0:
+            async with trace.scope_span("evals"):
+                eval_metrics = await run_evals(evaluators, training_client, step)
+
+        infrequent_eval_metrics = None
+        if (
+            infrequent_evaluators
+            and config.infrequent_eval_every > 0
+            and step % config.infrequent_eval_every == 0
+        ):
+            async with trace.scope_span("infrequent_evals"):
+                infrequent_eval_metrics = await run_evals(
+                    infrequent_evaluators, training_client, step
+                )
+
+        # fwd_future = await training_client.forward_async(data, "cross_entropy")
+        fwd_bwd_future = await training_client.forward_backward_async(data, loss_fn="cross_entropy")
+        optim_step_future = await training_client.optim_step_async(adam_params)
+
+        return SubmittedBatch(
+            # fwd_future=fwd_future,
+            fwd_bwd_future=fwd_bwd_future,
+            optim_step_future=optim_step_future,
+            metrics=metrics,
+            data=data,
+            step=step,
+            epoch_idx=epoch_idx,
+            batch_idx=batch_idx,
+            eval_metrics=eval_metrics,
+            infrequent_eval_metrics=infrequent_eval_metrics,
+            num_tokens=sum(datum.model_input.length for datum in data),
+        )
+
+    @trace.scope
+    async def finish_batch(submitted: SubmittedBatch):
+        nonlocal elapsed_tokens
+        trace.update_scope_context({"step": submitted.step})
+
+        metrics = submitted.metrics
+        metrics["progress"] = min((submitted.step + 1) / progress_denominator, 1.0)
+
+        elapsed_tokens += submitted.num_tokens
+        await checkpoint_mgr.maybe_save_async(
+            step=submitted.step,
+            loop_state={
+                "epoch": submitted.epoch_idx,
+                "batch": submitted.batch_idx,
+                "elapsed_tokens": elapsed_tokens,
+            },
+            elapsed_tokens=elapsed_tokens,
+        )
+
+        async with trace.scope_span("step"):
+            fwd_bwd_result = await submitted.fwd_bwd_future.result_async()
+            optim_step_result = await submitted.optim_step_future.result_async()
+
+        if optim_step_result.metrics:
+            metrics.update(optim_step_result.metrics)
+
+        weights = [datum.loss_fn_inputs["weights"] for datum in submitted.data]
+        # Per-datum logprobs are only present when the backend returns them
+        # (upstream tinker does, firetitan's cross_entropy backward does not).
+        # Compute train_mean_nll only when shapes match; otherwise fall back to
+        # whatever the backend put in fwd_bwd_result.metrics (e.g. ce_loss_sum,
+        # response_tokens) so wandb still gets a training-loss signal.
+        loss_outputs = fwd_bwd_result.loss_fn_outputs or []
+        logprobs = [x["logprobs"] for x in loss_outputs if isinstance(x, dict) and "logprobs" in x]
+        train_mean_nll = None
+        if len(logprobs) == len(weights) and len(logprobs) > 0:
+            train_mean_nll = compute_mean_nll(logprobs, weights)
+        elif fwd_bwd_result.metrics:
+            ce_sum = fwd_bwd_result.metrics.get("ce_loss_sum")
+            resp_tokens = fwd_bwd_result.metrics.get("response_tokens")
+            if ce_sum is not None and resp_tokens:
+                train_mean_nll = float(ce_sum) / float(resp_tokens)
+
+        metrics.update(
+            num_sequences=len(submitted.data),
+            num_tokens=submitted.num_tokens,
+            num_loss_tokens=sum(
+                sum(datum.loss_fn_inputs["weights"].data) for datum in submitted.data
+            ),
+        )
+        # Bits per byte: a tokenizer-independent counterpart to train_mean_nll,
+        # letting NLL be compared across models with different tokenizers.
+        if submitted.data and "target_tokens" in submitted.data[0].loss_fn_inputs:
+            target_tokens = [datum.loss_fn_inputs["target_tokens"] for datum in submitted.data]
+            metrics["train_mean_bpb"] = compute_bpb(logprobs, weights, target_tokens, tokenizer)
+
+        if fwd_bwd_result.metrics:
+            for k, v in fwd_bwd_result.metrics.items():
+                metrics[f"train/{k}"] = v
+        if train_mean_nll is not None:
+            metrics["train_mean_nll"] = train_mean_nll
+
+        # Merge evaluation metrics gathered before the training step was submitted
+        if submitted.eval_metrics is not None:
+            metrics.update(submitted.eval_metrics)
+
+        if submitted.infrequent_eval_metrics is not None:
+            metrics.update(submitted.infrequent_eval_metrics)
+
+    log_path = Path(config.log_path)
+
+    async def finish_and_log(submitted: SubmittedBatch, window: trace.IterationWindow) -> None:
+        """Finish a batch, merge timing metrics, and log."""
+        await finish_batch(submitted)
+        submitted.metrics.update(window.get_timing_metrics())
+        window.save_timing(submitted.step, store=store)
+        if config.span_chart_every > 0 and submitted.step % config.span_chart_every == 0:
+            iter_dir = iteration_dir(log_path, submitted.step)
+            if iter_dir is not None:
+                iter_dir.mkdir(parents=True, exist_ok=True)
+                trace.save_gantt_chart_html(window, submitted.step, iter_dir / "timing_gantt.html")
+        ml_logger.log_metrics(metrics=submitted.metrics, step=submitted.step)
+
+    assert config.submit_ahead >= 0, f"submit_ahead must be >= 0, got {config.submit_ahead}"
+
+    # Each step gets its own IterationWindow. Since async is cooperative
+    # (single-threaded), we swap the active window in trace._iteration_window
+    # around each phase so @scope spans land in the correct window.
+    pending: deque[tuple[SubmittedBatch, trace.IterationWindow, float]] = deque()
+    max_pending = 1 + config.submit_ahead
+
+    def _activate_window(window: trace.IterationWindow):
+        return trace._iteration_window.set(window)
+
+    def _deactivate_window(token):
+        trace._iteration_window.reset(token)
+
+    async def drain_oldest() -> None:
+        oldest, window, t_start = pending.popleft()
+        token = _activate_window(window)
+        try:
+            await finish_and_log(oldest, window)
+        finally:
+            window._total_time = time.perf_counter() - t_start
+            _deactivate_window(token)
+
+    reached_max_steps = False
+    for epoch_idx in range(start_epoch, config.num_epochs):
+        logger.info(f"Starting epoch {epoch_idx}")
+        dataset.set_epoch(seed=epoch_idx)
+
+        start_batch_idx = start_batch if epoch_idx == start_epoch else 0
+        for batch_idx in range(start_batch_idx, n_batches):
+            step = epoch_idx * n_batches + batch_idx
+            if config.max_steps is not None and step >= config.max_steps:
+                reached_max_steps = True
+                break
+            window = trace.IterationWindow()
+            t_start = time.perf_counter()
+            token = _activate_window(window)
+            try:
+                submitted_batch = await submit_batch(epoch_idx, batch_idx)
+            finally:
+                _deactivate_window(token)
+            pending.append((submitted_batch, window, t_start))
+            if len(pending) >= max_pending:
+                await drain_oldest()
+        if reached_max_steps:
+            break
+
+    while pending:
+        await drain_oldest()
+
+    did_train = start_epoch < config.num_epochs and (
+        config.max_steps is None or start_epoch * n_batches + start_batch < config.max_steps
+    )
+    if did_train:
+        await checkpoint_mgr.save_final_async(
+            loop_state={
+                "epoch": config.num_epochs,
+                "batch": 0,
+                "elapsed_tokens": elapsed_tokens,
+            },
+        )
+    else:
+        logger.info("Training was already complete; nothing to do")
+        await checkpoint_mgr.finalize_async()
+
+    ml_logger.close()
+    logger.info("Training completed successfully")
+
+
+if __name__ == "__main__":
+    chz.nested_entrypoint(lambda config: asyncio.run(main(config)), allow_hyphens=True)

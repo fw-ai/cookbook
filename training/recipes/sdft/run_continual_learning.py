@@ -1,3 +1,8 @@
+# Adapted from thinking-machines-lab/tinker-cookbook (Apache-2.0, Copyright 2025 Thinking Machines Lab)
+# via the fw-ai-external/tinker-cookbook fork at b1223e5 (tinker_cookbook/recipes/sdft/run_continual_learning.py).
+# Modified by Fireworks AI:
+#   - Import paths rewritten for this repository.
+# See training/_vendor/tinker_cookbook_fw/README.md.
 """
 Continual learning experiment: SFT vs SDFT (old) vs SDFT (top-K).
 
@@ -12,14 +17,14 @@ Three methods are compared from the same base model:
 
 Usage:
     # Run everything (all methods, all LRs, both stages)
-    python -m tinker_cookbook.recipes.sdft.run_continual_learning
+    python -m training.recipes.sdft.run_continual_learning
 
     # Run a single configuration
-    python -m tinker_cookbook.recipes.sdft.run_continual_learning \
+    python -m training.recipes.sdft.run_continual_learning \
         methods=sdft_topk learning_rates=1e-3 stages=1
 
     # Dry run (print configs without running)
-    python -m tinker_cookbook.recipes.sdft.run_continual_learning dry_run=true
+    python -m training.recipes.sdft.run_continual_learning dry_run=true
 """
 
 import asyncio
@@ -30,14 +35,15 @@ from typing import Literal
 
 import chz
 
-from tinker_cookbook import checkpoint_utils, renderers
-from tinker_cookbook.distillation import sdft
-from tinker_cookbook.recipes.sdft.datasets import (
+from tinker_cookbook import renderers
+from training._vendor.tinker_cookbook_fw import checkpoint_utils
+from training.utils.distillation import sdft
+from training.recipes.sdft.datasets import (
     SDFTDataset,
     load_science_from_arrow,
     load_tooluse_from_arrow,
 )
-from tinker_cookbook.supervised import train as sl_train
+from training._vendor.tinker_cookbook_fw.supervised import train as sl_train
 from tinker_cookbook.supervised.types import ChatDatasetBuilderCommonConfig
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
@@ -106,7 +112,7 @@ async def run_sft_stage(
     load_checkpoint_path: str | None = None,
 ) -> str | None:
     """Run SFT training on a task and return the checkpoint path."""
-    from tinker_cookbook.recipes.sdft.datasets import (
+    from training.recipes.sdft.datasets import (
         ScienceArrowSFTBuilder,
         TooluseArrowSFTBuilder,
     )
