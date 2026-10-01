@@ -51,6 +51,7 @@ __all__ = [
     "InfraConfig",
     "TrainerConfig",
     "JsonlRenderDataset",
+    "resolve_jsonl_shards",
     "MemTracer",
     "ReconnectableClient",
     "RewardFn",
@@ -202,6 +203,7 @@ from training.utils.streaming import (
     AppendOnlyPickleLog,
     JsonlRenderDataset,
     make_render_dataloader,
+    resolve_jsonl_shards,
 )
 from training.utils.supervised import (
     RenderedChunkSpan,

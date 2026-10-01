@@ -117,6 +117,7 @@ class Config:
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
+    """Path to the training dataset: a JSONL file or a directory of .jsonl shards."""
     tokenizer_model: str = ""  # HuggingFace model name for client-side tokenization
     tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
     tokenizer_trust_remote_code: bool | None = None

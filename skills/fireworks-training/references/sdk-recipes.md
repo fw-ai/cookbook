@@ -13,7 +13,10 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | SAO / token-level PPO with a separate value-head critic (experimental; not validated for every model) | `training/recipes/experiment/ppo_value_head_loop.py` — runnable Qwen3-4B example in `training/examples/rl/SAO/qwen3_4b_sao.py` |
 | Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
 | Distillation / OPD / SDFT | `training/recipes/distillation_loop.py` — see [`sdk-distillation.md`](sdk-distillation.md) |
-| SDFT on the shared serverless pool (no trainer job or deployment; install with `uv pip install -e '.[sdft]'`) | `training/recipes/sdft_loop.py` — runs the vendored tinker-cookbook SDFT loop |
+| SDFT on the shared serverless pool (no trainer job or deployment) | `training/recipes/sdft_loop.py` — runs the vendored tinker-cookbook SDFT loop |
+
+For `sdft_loop.py`, install the optional SDFT dependencies from `training/` with
+`uv pip install -e '.[sdft]'`.
 
 For `sdft_loop.py`, make sure to register your dataset in `recipes/sdft/datasets.py`.
 

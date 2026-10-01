@@ -20,7 +20,7 @@ Usage:
 
 Config args:
     base_model       Fireworks model ID (default: qwen3-235b-a22b-instruct-2507)
-    dataset          Path to preference JSONL file
+    dataset          Path to preference JSONL file (or directory of .jsonl shards)
     tokenizer_model  HuggingFace model name for client-side tokenization
     tokenizer_revision Optional HuggingFace revision for client-side tokenization
     orpo_lambda      Weight for odds-ratio loss term (default: 1.0)

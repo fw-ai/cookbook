@@ -23,6 +23,7 @@ be released after epoch 0).
 
 from __future__ import annotations
 
+import bisect
 import json
 import logging
 import os
@@ -80,10 +81,65 @@ def _scan_jsonl_offsets(path: str, max_examples: int | None = None) -> List[int]
     return offsets
 
 
+def resolve_jsonl_shards(path: str) -> List[str]:
+    """Resolve a dataset path to a deterministic list of JSONL shard files.
+
+    Dataset staging (managed ``stage_gcs_dataset``) returns a *directory*
+    when a BYOB dataset has multiple JSONL shards and a single file
+    otherwise; both shapes must load identically downstream. Shards are
+    never concatenated into one file (that would double staging storage).
+
+    Shard policy:
+
+    * ``path`` is a regular file -> ``[path]`` (the extension is not
+      filtered, an explicit file path is always honored).
+    * ``path`` is a directory -> every file whose name ends in
+      ``.jsonl``, discovered recursively, in sorted POSIX
+      relative-path order so the concatenated row order -- and with it
+      every row index, resume cursor, and eval carve-out -- is stable
+      across runs. Hidden files are included like any other shard
+      (staging never writes dot-files, and skipping them would let a
+      valid shard silently vanish).
+    * ``path`` is missing, an empty directory, or a directory with no
+      ``.jsonl`` shards -> ``DatasetError``. We never silently train on
+      zero or partial data.
+
+    This selects the same shards as managed-side ``collect_jsonl_files``
+    (``firetitan.train.managed.jsonl_io``). Only the cookbook guarantees
+    globally sorted relative paths: the managed validator checks all rows
+    without assigning recipe row indices, and managed RFT materializes its
+    own rows in directory traversal order. Their row indices are not shared
+    with the SFT/DPO/ORPO recipe resume cursors or eval splits.
+    """
+    if os.path.isfile(path):
+        return [path]
+    if not os.path.isdir(path):
+        raise DatasetError(
+            f"Dataset path {path!r} does not exist or is not a file/directory."
+        )
+    shards: List[str] = []
+    for root, _dirs, names in os.walk(path):
+        for name in names:
+            if name.endswith(".jsonl"):
+                shards.append(os.path.join(root, name))
+    shards.sort(
+        key=lambda p: os.path.relpath(p, path).replace(os.sep, "/")
+    )
+    if not shards:
+        raise DatasetError(
+            f"Dataset directory {path!r} contains no '*.jsonl' shards; "
+            "refusing to load an empty dataset."
+        )
+    return shards
+
+
 class JsonlRenderDataset(torch_data.Dataset):
     """Map-style dataset that lazily renders each JSONL row on access.
 
-    A single linear scan at construction time builds the byte-offset
+    ``path`` may be a single JSONL file or a multi-shard directory (see
+    :func:`resolve_jsonl_shards`); shards are read in deterministic
+    sorted order without concatenating them. A linear scan per shard at
+    construction time builds the byte-offset
     table; each ``__getitem__(i)`` is a seek + readline + ``json.loads``
     + ``render_fn``. ``render_fn`` must be a top-level (module-level)
     function so it is picklable for spawn workers.
@@ -106,20 +162,50 @@ class JsonlRenderDataset(torch_data.Dataset):
     ):
         self._path = path
         self._render_fn = render_fn
-        self._offsets = _scan_jsonl_offsets(path, max_examples)
+        # ``path`` may be a single JSONL file or a staged multi-shard
+        # directory (see :func:`resolve_jsonl_shards`). Rows are numbered
+        # shard-major: global row g maps to shard ``bisect(...)`` at that
+        # shard's local offset. All state is plain lists / str / the
+        # picklable render_fn, so spawn DataLoader workers can rebuild it.
+        self._shard_paths = resolve_jsonl_shards(path)
+        self._shard_offsets: List[List[int]] = []
+        remaining = max_examples
+        for shard in self._shard_paths:
+            if remaining is not None and remaining <= 0:
+                break
+            offsets = _scan_jsonl_offsets(shard, remaining)
+            self._shard_offsets.append(offsets)
+            if remaining is not None:
+                remaining -= len(offsets)
+                if remaining <= 0:
+                    break
+        # Cumulative shard start rows; ``self._shard_starts[k]`` is the
+        # first global row index of shard k (``_shard_starts[-1]`` is the
+        # total row count).
+        self._shard_starts: List[int] = [0]
+        for offsets in self._shard_offsets:
+            self._shard_starts.append(self._shard_starts[-1] + len(offsets))
         self._index_map: List[int] = (
             list(indices)
             if indices is not None
-            else list(range(len(self._offsets)))
+            else list(range(self._shard_starts[-1]))
         )
         self._row_index_key = row_index_key
 
     def __len__(self) -> int:
         return len(self._index_map)
 
+    def _locate(self, g: int) -> tuple[str, int]:
+        """Map global row ``g`` to ``(shard_path, byte_offset)``."""
+        k = bisect.bisect_right(self._shard_starts, g) - 1
+        return (
+            self._shard_paths[k],
+            self._shard_offsets[k][g - self._shard_starts[k]],
+        )
+
     def __getitem__(self, i: int) -> Any:
-        offset = self._offsets[self._index_map[i]]
-        with open(self._path, "rb") as f:
+        shard_path, offset = self._locate(self._index_map[i])
+        with open(shard_path, "rb") as f:
             f.seek(offset)
             line = f.readline()
         row = json.loads(line.decode("utf-8"))
@@ -130,26 +216,28 @@ class JsonlRenderDataset(torch_data.Dataset):
     def with_indices(self, indices: List[int]) -> "JsonlRenderDataset":
         """Return a view of this dataset restricted to ``indices``.
 
-        Shares the underlying offset table and render_fn; only the
+        Shares the underlying shard/offset tables and render_fn; only the
         index mapping differs. Used to carve out a contiguous eval slice
         from the head of the training data without rescanning the file.
         """
         view = object.__new__(type(self))
         view._path = self._path
         view._render_fn = self._render_fn
-        view._offsets = self._offsets
+        view._shard_paths = self._shard_paths
+        view._shard_offsets = self._shard_offsets
+        view._shard_starts = self._shard_starts
         view._index_map = list(indices)
         view._row_index_key = self._row_index_key
         return view
 
     @property
     def num_underlying_rows(self) -> int:
-        return len(self._offsets)
+        return self._shard_starts[-1]
 
     def approx_row_sizes(self) -> List[int]:
         """Return a cheap per-item size proxy: raw JSONL byte length.
 
-        Byte length is already derivable from the offset table built at
+        Byte length is already derivable from the offset tables built at
         construction (no rendering / tokenization needed) and correlates
         strongly with token count, so it is a good sort key for
         :class:`LengthGroupedBatchSampler`. Values are aligned with
@@ -160,16 +248,18 @@ class JsonlRenderDataset(torch_data.Dataset):
         weaker for base64-image multimodal rows. Keep length grouping
         opt-in for that reason.
         """
-        try:
-            file_size = os.path.getsize(self._path)
-        except OSError:
-            file_size = self._offsets[-1] if self._offsets else 0
-        n = len(self._offsets)
-        full_sizes = [
-            (self._offsets[j + 1] if j + 1 < n else file_size) - self._offsets[j]
-            for j in range(n)
-        ]
-        return [full_sizes[j] for j in self._index_map]
+        full_sizes: List[int] = []
+        for shard_path, offsets in zip(self._shard_paths, self._shard_offsets):
+            try:
+                file_size = os.path.getsize(shard_path)
+            except OSError:
+                file_size = offsets[-1] if offsets else 0
+            n = len(offsets)
+            full_sizes.extend(
+                (offsets[j + 1] if j + 1 < n else file_size) - offsets[j]
+                for j in range(n)
+            )
+        return [full_sizes[g] for g in self._index_map]
 
 
 # ---------------------------------------------------------------------------

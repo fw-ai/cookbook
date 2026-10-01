@@ -666,6 +666,7 @@ class Config:
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
+    """Path to the training dataset: a JSONL file or a directory of .jsonl shards."""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
     tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
     tokenizer_trust_remote_code: bool | None = None
@@ -785,7 +786,8 @@ class Config:
     Defaults to 4 to overlap server-side preparation with GPU compute."""
 
     evaluation_dataset: str = ""
-    """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
+    """Path to an explicit eval dataset (JSONL file or directory of .jsonl
+    shards).  When set, auto-carveout
     is skipped and this dataset is used for evaluation instead."""
 
     eval_auto_carveout: bool = False
