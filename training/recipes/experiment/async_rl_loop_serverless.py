@@ -428,13 +428,16 @@ def _rollout_setup(
     )
 
 
-def _router_replay_enabled(cfg: Config, *, api_key: str, base_url: str) -> bool:
+def _router_replay_enabled(
+    cfg: Config, *, api_key: str, base_url: str, training_client: Any | None = None
+) -> bool:
     enabled = resolve_router_replay_enabled(
         requested=cfg.router_replay,
         api_key=api_key,
         base_url=base_url,
         additional_headers=read_api_extra_headers_env(),
         base_model=cfg.base_model,
+        training_client=training_client,
     )
     if enabled:
         warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
@@ -485,6 +488,7 @@ def run_sampling_preflight(
                 cfg,
                 api_key=api_key,
                 base_url=base_url,
+                training_client=training_client,
             ),
         )
         rollout_fn = rollout_fn_factory(setup)
@@ -620,6 +624,7 @@ def main(
             cfg,
             api_key=api_key,
             base_url=base_url,
+            training_client=training_client,
         )
         rollout_setup = _rollout_setup(
             cfg,

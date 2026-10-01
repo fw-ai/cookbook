@@ -104,6 +104,236 @@ def test_router_replay_follows_model_architecture(monkeypatch, is_moe):
     )
 
 
+@pytest.mark.parametrize("advertised", [False, True])
+def test_router_replay_uses_trainer_capability_without_model_lookup(
+    monkeypatch, advertised
+):
+    # Trainer-authoritative: no GET model at all, so a private early-access
+    # base model (GET model -> 403) no longer breaks the R3 decision.
+    monkeypatch.setattr(
+        service,
+        "FireworksClient",
+        lambda **_kwargs: pytest.fail("model lookup should not run"),
+    )
+    training_client = SimpleNamespace(supports_router_replay=advertised)
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/fireworks/models/private",
+            training_client=training_client,
+        )
+        is advertised
+    )
+
+
+def test_router_replay_not_requested_ignores_trainer_capability(monkeypatch):
+    monkeypatch.setattr(
+        service,
+        "FireworksClient",
+        lambda **_kwargs: pytest.fail("model lookup should not run"),
+    )
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=False,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+            training_client=SimpleNamespace(supports_router_replay=True),
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "training_client",
+    [
+        None,  # recipe did not pass a client (pre-change callers)
+        SimpleNamespace(),  # older SDK: attribute absent
+        SimpleNamespace(supports_router_replay=None),  # older trainer: unknown
+    ],
+)
+def test_router_replay_falls_back_to_model_probe_when_capability_unknown(
+    monkeypatch, training_client
+):
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def model_is_moe(self, model):
+            assert model == "accounts/acct/models/base"
+            return True
+
+    monkeypatch.setattr(service, "FireworksClient", FakeClient)
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+            training_client=training_client,
+        )
+        is True
+    )
+
+
+# The last-resort path needs the SDK's typed ModelDetailsUnavailableError; on
+# an older SDK the placeholder is never raised and a 403 propagates as before.
+_TYPED_PROBE_ERROR = hasattr(
+    __import__("fireworks.training.sdk", fromlist=["x"]),
+    "ModelDetailsUnavailableError",
+)
+requires_typed_probe_error = pytest.mark.skipif(
+    not _TYPED_PROBE_ERROR,
+    reason="SDK predates ModelDetailsUnavailableError (last resort disabled)",
+)
+
+
+def _probe_raising(exc):
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def model_is_moe(self, model):
+            raise exc
+
+    return FakeClient
+
+
+@requires_typed_probe_error
+@pytest.mark.parametrize("status", [403, 404])
+def test_router_replay_last_resort_honors_user_flag_when_model_not_visible(
+    monkeypatch, caplog, status
+):
+    # Last resort: trainer did not report and the model record is not visible
+    # to this caller (private early-access base model). Honor the user's
+    # router_replay=True, with a warning, instead of crashing the recipe.
+    monkeypatch.setattr(
+        service,
+        "FireworksClient",
+        _probe_raising(
+            service.ModelDetailsUnavailableError(
+                f"Failed to fetch model details (HTTP {status})", status_code=status
+            )
+        ),
+    )
+
+    with caplog.at_level("WARNING"):
+        enabled = resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/fireworks/models/private",
+            training_client=SimpleNamespace(supports_router_replay=None),
+        )
+
+    assert enabled is True
+    assert "honoring router_replay=True" in caplog.text
+
+
+def test_router_replay_last_resort_still_off_when_user_disabled(monkeypatch):
+    # The user flag can only keep R3 on; it never turns it on by itself.
+    monkeypatch.setattr(
+        service,
+        "FireworksClient",
+        lambda **_kwargs: pytest.fail("model lookup should not run"),
+    )
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=False,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/fireworks/models/private",
+        )
+        is False
+    )
+
+
+@requires_typed_probe_error
+@pytest.mark.parametrize(
+    "exc",
+    [
+        # A real control-plane failure is not "not visible": keep raising.
+        pytest.param(
+            "server-error",
+            id="http-500",
+        ),
+        # A readable record with no MoE flag: capability is genuinely unknown.
+        pytest.param("missing-flag", id="missing-moe-flag"),
+    ],
+)
+def test_router_replay_real_probe_failures_still_raise(monkeypatch, exc):
+    err = (
+        service.ModelDetailsUnavailableError(
+            "Failed to fetch model details (HTTP 500)", status_code=500
+        )
+        if exc == "server-error"
+        else ValueError("Base model is missing baseModelDetails.moe")
+    )
+    monkeypatch.setattr(service, "FireworksClient", _probe_raising(err))
+
+    with pytest.raises(type(err)):
+        resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+        )
+
+
+def test_router_replay_clear_dense_answer_overrides_user_flag(monkeypatch):
+    # A clear "dense" answer wins over router_replay=True from either source.
+    class DenseProbe:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def model_is_moe(self, model):
+            return False
+
+    monkeypatch.setattr(service, "FireworksClient", DenseProbe)
+    for training_client in (None, SimpleNamespace(supports_router_replay=False)):
+        assert (
+            resolve_router_replay_enabled(
+                requested=True,
+                api_key="k",
+                base_url="https://api",
+                additional_headers=None,
+                base_model="accounts/acct/models/dense",
+                training_client=training_client,
+            )
+            is False
+        )
+
+
 def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
     calls: list[dict] = []
 

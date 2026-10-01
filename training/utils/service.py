@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import fields
 from typing import Any
 
@@ -12,7 +13,20 @@ from fireworks.training.sdk import (
 )
 from fireworks.training.sdk.managed import FiretitanProvisioningConfig
 
+try:
+    from fireworks.training.sdk import ModelDetailsUnavailableError
+except ImportError:  # SDK < this change: no typed error, so no last-resort path
+
+    class ModelDetailsUnavailableError(RuntimeError):  # type: ignore[no-redef]
+        """Placeholder never raised by an older SDK, so its RuntimeError
+        propagates unchanged (today's behavior)."""
+
+        status_code = 0
+
+
 from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
+
+logger = logging.getLogger(__name__)
 
 
 def make_weight_sync(
@@ -43,16 +57,59 @@ def resolve_router_replay_enabled(
     base_url: str,
     additional_headers: dict[str, str] | None,
     base_model: str,
+    training_client: Any | None = None,
 ) -> bool:
-    """Enable Router Replay only when the base model can produce routing data."""
+    """Enable Router Replay only when the base model can produce routing data.
+
+    A clear capability answer always wins; the user's ``requested`` flag is
+    only honored when the model is MoE, or as a last resort when no source can
+    answer:
+
+    1. ``requested`` is False -> off.
+    2. The trainer advertised ``supports_router_replay`` (a real bool) on
+       ``training_client``: dense -> off even if requested (logged); MoE ->
+       honor ``requested``. No model GET happens.
+    3. Otherwise (older trainer / no client) probe the model's MoE flag with
+       the same rule: dense -> off, MoE -> honor ``requested``.
+    4. Last resort: the probe is 403/404 (the model record is not visible to
+       this caller, e.g. a private early-access base model) -> honor
+       ``requested`` with a warning. Any other probe failure -- control-plane
+       errors or a record with no MoE flag -- still raises, so R3 is never
+       silently changed on a real error.
+    """
     if not requested:
         return False
-    with FireworksClient(
-        api_key=api_key,
-        base_url=base_url,
-        additional_headers=additional_headers,
-    ) as client:
-        return client.model_is_moe(base_model)
+    advertised = getattr(training_client, "supports_router_replay", None)
+    if isinstance(advertised, bool):
+        if not advertised:
+            logger.info(
+                "Router Replay disabled: trainer reports base model %s is dense",
+                base_model,
+            )
+        return advertised
+    try:
+        with FireworksClient(
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=additional_headers,
+        ) as client:
+            is_moe = client.model_is_moe(base_model)
+    except ModelDetailsUnavailableError as exc:
+        if exc.status_code not in (403, 404):
+            raise
+        logger.warning(
+            "Router Replay: cannot determine whether %s is MoE (model record not "
+            "visible to this caller, HTTP %d) and the trainer did not report it; "
+            "honoring router_replay=True as requested. If the model is dense, "
+            "sampling will reject the routing request -- rerun with "
+            "--router-replay false.",
+            base_model,
+            exc.status_code,
+        )
+        return True
+    if not is_moe:
+        logger.info("Router Replay disabled: base model %s is dense", base_model)
+    return is_moe
 
 
 def _firetitan_service_kwargs(
