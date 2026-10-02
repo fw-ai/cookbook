@@ -145,6 +145,39 @@ Asynchronous Optimization, arXiv 2607.07508):
 See the [Qwen3-4B SAO example](examples/rl/SAO/QWEN3_4B_SAO.md) for a runnable
 four-prompt smoke test and a DeepMath starting point.
 
+Weight sync automatically uses RDMA for dedicated full-parameter training when
+the trainer and every inference replica advertise RDMA support. LoRA and older
+images use save-weights followed by file hotload. Missing capability fields
+mean unsupported; setting `weight_sync_transport="RDMA"` does not bypass this
+check. The negotiated result is available as `policy.supports_rdma_weight_sync`.
+Errors during an RDMA transfer are surfaced instead of retrying with files.
+Deployments using gateway shard fan-out also use FILE hotload.
+
+Recipes create the publication callback once, after attaching the policy client:
+
+```python
+from training.utils.service import make_weight_sync
+
+# policy is the cookbook's ReconnectableClient; service owns the deployment.
+publish_weights = make_weight_sync(policy, service, cfg.deployment)
+
+# Before the first rollout and after each optimizer step:
+publish_weights(f"step-{step}")
+```
+
+The `if` is centralized in [`make_weight_sync`](utils/service.py):
+
+| Negotiated capability at setup | Publication calls |
+| --- | --- |
+| `supports_rdma_weight_sync is True` | `policy.weight_sync()` |
+| False or missing, including LoRA and older SDKs | `saved = policy.save_weights_for_sampler(name)`, then `service.hotload_sampler_snapshot(saved.path)` |
+
+These cookbook calls wait for completion. Keep using the same callback throughout
+the run: the SDK's `weight_sync()` rechecks runtime support and performs the two
+FILE steps itself if support disappears. Recipes do not need another `if` inside
+the training loop. See the [RL recipe](recipes/rl_loop.py) and
+[FrozenLake example](examples/rl/frozen_lake/train_frozen_lake.py).
+
 **Distillation / OPD** (`recipes/distillation_loop.py`) -- also requires:
 
 | Field | What to set |

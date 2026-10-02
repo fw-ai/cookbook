@@ -317,7 +317,7 @@ For each optimizer batch:
 3. Each chunk runs reference/old-policy work and forward/backward.
 4. After the final chunk, the recipe performs one optimizer step.
 5. The recipe joins any evaluation of the current sampler version.
-6. The recipe saves and hotloads sampler weights.
+6. The recipe synchronizes sampler weights through [negotiated RDMA or save → FILE hotload](rl-hotload.md#transport-negotiation).
 7. `coordinator.publish(batch)` advances the policy version, commits accepted
    rows to the durable cursor, records metrics, and wakes the producer.
 8. If the published step is an evaluation step, its evaluation starts in the

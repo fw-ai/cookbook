@@ -10,7 +10,7 @@ The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/ch
 - `promotable=True` → sampler write (HF safetensors). Eligible for `promote_checkpoint`.
 - Both → DCP + sampler in one call.
 
-Periodic dedicated recipe saves evaluate DCP and sampler cadences independently. Managed SFT/DPO/ORPO uses a server-managed DCP interval and forwards the customer's optional sampler interval separately. When both are due on the same step, one call writes both checkpoint types. The final save is `resumable=True, promotable=True`. RL weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves.
+Periodic dedicated recipe saves evaluate DCP and sampler cadences independently. Managed SFT/DPO/ORPO uses a server-managed DCP interval and forwards the customer's optional sampler interval separately. When both are due on the same step, one call writes both checkpoint types. The final save is `resumable=True, promotable=True`. RL FILE weight sync saves sampler checkpoints with `save_weights_for_sampler_ext` and hotloads the returned snapshot identity; those sampler rows are separate from DCP resume saves. Negotiated RDMA weight sync publishes temporary GPU weights without creating sampler checkpoint rows. Explicit resumable/promotable saves remain necessary; see [transport negotiation](rl-hotload.md#transport-negotiation).
 
 ### Snapshot type is part of the contract
 

@@ -23,7 +23,7 @@ _INSTALLED_PACKAGE_IMPORT = re.compile(
 )
 _DISTRIBUTION_REQUIREMENT = re.compile(
     r"(?im)(?:"
-    r"^[^\n]*(?:pip(?:3)?|uv[ \t]+pip)[ \t]+install[^\n#]*\btinker-cookbook\b"
+    r"^[^\n]*(?:pip(?:3)?|uv[ \t]+pip)[ \t]+install[^\n#`]*\btinker-cookbook\b"
     r"|^[ \t\"']*tinker-cookbook(?:\[[^\]]+\])?(?:[ \t=<>~!;\"']|$)"
     r"|\bname[ \t]*=[ \t]*\"tinker-cookbook\""
     r")"
@@ -187,6 +187,29 @@ def test_nemotron35_lightning_recommends_compact_thinking_renderers() -> None:
     assert fireworks_model_info.get_recommended_renderer_names(
         "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
     ) == ["nemotron3_ultra", "nemotron3_ultra_disable_thinking"]
+
+
+@pytest.mark.parametrize(
+    ("source", "forbidden"),
+    [
+        ("pip install {package}", True),
+        ("pip3 install --upgrade {package}", True),
+        ("`uv pip install '{package}[extra]'`", True),
+        ('"{package}>=0.4"', True),
+        ('name = "{package}"', True),
+        ("`pip install other` followed by {package} documentation", False),
+        (
+            "| Install with `uv pip install -e '.[sdft]'` | Vendored {package} loop |",
+            False,
+        ),
+        ("pip install other # {package} is vendored", False),
+    ],
+)
+def test_distribution_requirement_stops_at_inline_code_boundary(
+    source: str, forbidden: bool
+) -> None:
+    source = source.format(package="tinker-cookbook")
+    assert bool(_DISTRIBUTION_REQUIREMENT.search(source)) is forbidden
 
 
 def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:

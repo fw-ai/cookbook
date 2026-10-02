@@ -9,7 +9,8 @@ with deployment creation:
 
 Waiting gives the trainer first claim on available capacity, but it is not a
 placement policy. Use ``--bypass-reservation`` to opt both resources out of
-account reservation defaulting.
+account reservation defaulting. That opt-in requires a superuser API key
+because deployment reservation bypass uses the privileged ``extraValues`` field.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -135,7 +136,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bypass-reservation",
         action="store_true",
-        help="Set trainer use_reservation=false and deployment bypass_reservation=true.",
+        help=(
+            "Set trainer use_reservation=false and deployment bypass_reservation=true "
+            "(requires a superuser API key)."
+        ),
     )
     parser.add_argument(
         "--trainer-ready-timeout-s",

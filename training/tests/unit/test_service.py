@@ -14,6 +14,35 @@ from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 from training.utils.service import build_service_client, resolve_router_replay_enabled
 
 
+@pytest.mark.parametrize("capability", [None, False, True])
+@pytest.mark.parametrize("configured_rdma", [False, True])
+@pytest.mark.parametrize("extended", [False, True])
+def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, extended):
+    from unittest.mock import Mock
+
+    policy = SimpleNamespace(
+        weight_sync=Mock(),
+        save_weights_for_sampler=Mock(return_value=SimpleNamespace(path="saved")),
+        save_weights_for_sampler_ext=Mock(return_value=SimpleNamespace(snapshot_name="saved")),
+    )
+    if capability is not None:
+        policy.supports_rdma_weight_sync = capability
+    managed_service = SimpleNamespace(hotload_sampler_snapshot=Mock())
+    deployment = DeployConfig(weight_sync_transport="RDMA" if configured_rdma else None)
+    sync = service.make_weight_sync(policy, managed_service, deployment, extended=extended)
+    sync("step-1", checkpoint_type="base")
+    if capability is True:
+        policy.weight_sync.assert_called_once_with()
+        policy.save_weights_for_sampler.assert_not_called()
+        policy.save_weights_for_sampler_ext.assert_not_called()
+        managed_service.hotload_sampler_snapshot.assert_not_called()
+    else:
+        save = policy.save_weights_for_sampler_ext if extended else policy.save_weights_for_sampler
+        save.assert_called_once_with("step-1", checkpoint_type="base")
+        managed_service.hotload_sampler_snapshot.assert_called_once_with("saved")
+        policy.weight_sync.assert_not_called()
+
+
 def _trainer_config(**overrides) -> TrainerConfig:
     fields = dict(
         training_shape_id="ts-x",
@@ -38,6 +67,32 @@ def _trainer_config(**overrides) -> TrainerConfig:
     )
     fields.update(overrides)
     return TrainerConfig(**fields)
+
+
+@pytest.mark.parametrize("max_lora_rank", [0, 8])
+@pytest.mark.parametrize("transport", [None, "RDMA"])
+def test_weight_sync_config_does_not_inject_admin_overrides(max_lora_rank, transport):
+    config = dict(
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=max_lora_rank,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-policy"),
+        deployment=DeployConfig(deployment_shape="ds-policy", weight_sync_transport=transport),
+    )
+    if transport is not None and "weight_sync_transport" not in inspect.signature(
+        service.FiretitanProvisioningConfig
+    ).parameters:
+        # The minimum supported SDK predates the explicit RDMA hint. Automatic
+        # mode must still work, while an unsupported explicit hint stays loud.
+        with pytest.raises(RuntimeError, match="has no 'weight_sync_transport' field"):
+            service._firetitan_service_kwargs(**config)
+        return
+    kwargs = service._firetitan_service_kwargs(**config)
+
+    for key in ("extra_args", "extra_values", "deployment_extra_args", "deployment_extra_values"):
+        assert kwargs.get(key) is None
 
 
 def _deployment_config(**overrides) -> DeployConfig:

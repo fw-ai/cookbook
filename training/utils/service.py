@@ -33,7 +33,7 @@ def make_weight_sync(
     policy: Any, service: Any, deployment: DeployConfig, *, extended: bool = False
 ):
     """Select publication once, preserving FILE names and initial-base requests."""
-    if deployment.weight_sync_transport == "RDMA":
+    if getattr(policy, "supports_rdma_weight_sync", False) is True:
         return lambda name, **kwargs: policy.weight_sync()
     save = (
         policy.save_weights_for_sampler_ext

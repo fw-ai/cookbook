@@ -97,6 +97,24 @@ def loss_fn(data, logprobs_list):   # logprobs_list: per-token, requires_grad
     ...
 ```
 
+### Gradient norm metrics (SFT and RL)
+
+Telemetry defaults to off. Enable it on each optimizer update:
+
+```python
+result = training_client.optim_step(
+    params, emit_grad_norm_metrics=True,
+).result()
+print(result.metrics)
+```
+
+Log `result.metrics` with the optimizer step. `True` emits global L2
+`grad_norm` and `grad_norm_rms`; `"detailed"` adds parameter-bucket norms.
+`grad_norm` is after accumulation normalization and before clipping; preserve
+the run's normalization setting. Keys may have a `:last` suffix.
+For `async_rl_loop`, set `Config(grad_norm_metrics="basic")` (or `"detailed"`).
+Verify the first step's logs; missing metrics do not mean zero gradients.
+
 ### Top-K logprobs from `forward` (entropy / distributional KL)
 
 `forward` (forward-only, no gradient) accepts an optional `loss_fn_config={"top_k": K}`. When set, the trainer returns per-token top-K logprobs and their vocab ids alongside the requested-token `logprobs`, in the same pass — no separate full-vocab forward needed:
