@@ -12,7 +12,7 @@ Use **one AskQuestion** to pick a category, then STOP. Plain language only.
 | **Job state** | stuck, not starting, RUNNING at 0%, no progress |
 | **Error message** | failed, Internal error, RESOURCE_EXHAUSTED, 429, 412 |
 | **Quality** | trained but worse, reward collapsed, no improvement |
-| **Resume / checkpoint** | resume broken, checkpoint not found, AlreadyExists |
+| **Resume / checkpoint** | resume broken, checkpoint not found, AlreadyExists, adapter key mismatch |
 | **Deploy / serving** | READY but wrong output, LoRA serves base, 404 on inference |
 
 Record `entry_skill: debug` and the category in the run manifest.
@@ -64,6 +64,11 @@ answer to `triage_category` (`job_state`, `error_message`, `quality`,
 2. Reconcile planned IDs — `AlreadyExists` means query, never blind replace.
 3. Training API: confirm cookbook commit and checkpoint name match.
 4. Warm-start errors: check `HF_PEFT_ADDON` vs base model conflicts.
+5. `Adapter key mismatch` or `loaded 0/N tensors`: the checkpoint's LoRA
+   modules differ from the trainer. Copy the checkpoint's full saved
+   target-module list onto `loraTargetModules` for a new trainer, then load
+   the adapter. An explicit list replaces the default, so pass every saved
+   name. See the error catalog. Do not retry the same trainer.
 
 ## Path: Deploy / serving
 

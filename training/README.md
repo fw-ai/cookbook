@@ -10,6 +10,7 @@ Each recipe is a single Python file you can fork and customize.
 | Recipe | File | Description |
 | --- | --- | --- |
 | GRPO | `recipes/rl_loop.py` | Opinionated synchronous RL using group-normalized advantages and a direct client-side GRPO loss. |
+| SAO / PPO + value head (experimental) | `recipes/experiment/ppo_value_head_loop.py` | Token-level PPO with separate actor and critic trainers and an independent critic projection head; `sao_config()` switches to SAO (DIS, adaptive GAE, faster critic updates, value pretraining). Not validated for every model. |
 | Async GRPO | `recipes/async_rl_loop.py` | The same client-side GRPO update with rollout/train overlap and bounded off-policy staleness. |
 | IGPO (multi-turn turn-level Information Gain) | `recipes/igpo_loop.py` | GRPO + per-turn IG rewards for agent trajectories (Wang et al., ICLR 2026). |
 | Distillation / OPD | `recipes/distillation_loop.py` | Sampled-token on-policy distillation. The student rolls out on policy, one or more teachers score those same tokens, and training uses the server-side importance-sampling loss. |
@@ -55,7 +56,7 @@ uv pip install -e .
 ```
 
 > **Training uses the 1.x SDK.** This cookbook requires
-> `fireworks-ai[training]>=1.2.11,<2`, which is available as a stable release;
+> `fireworks-ai[training]>=1.2.18,<2`, which is available as a stable release;
 > `--pre` is not required. The legacy `0.19.20` package has no
 > `fireworks.training` module. Install the cookbook dependencies above before
 > running recipes.
@@ -118,6 +119,64 @@ the two.
 
 The synchronous recipe always hotloads before the first rollout and after
 every optimizer step. It has no sampler-refresh cadence knob.
+
+**SAO / PPO with an independent value head** (experimental;
+`recipes/experiment/ppo_value_head_loop.py`) trains two models from the same base model:
+
+- the actor samples responses and learns from token-level advantages;
+- the critic predicts one value per token through a separate projection head;
+- actor and critic checkpoints are saved independently.
+
+The default `critic_projection_head_dim=1` produces one raw scalar per token.
+For a categorical critic, set a dimension greater than one and provide an
+equally sized `critic_value_support`; the recipe decodes the value as the
+softmax expectation over that support.
+
+The default `Config` is that reference-PPO baseline. `sao_config(log_path,
+**overrides)` applies the SAO settings (`SAO_SETTINGS`; SAO is Single-rollout
+Asynchronous Optimization, arXiv 2607.07508):
+
+- DIS actor loss against rollout logprobs;
+- response-length-adaptive GAE;
+- two critic updates per rollout batch and post-update actor advantages;
+- MLP-only critic LoRA;
+- optional value pretraining with held-out checkpoint selection.
+
+See the [Qwen3-4B SAO example](examples/rl/SAO/QWEN3_4B_SAO.md) for a runnable
+four-prompt smoke test and a DeepMath starting point.
+
+Weight sync automatically uses RDMA for dedicated full-parameter training when
+the trainer and every inference replica advertise RDMA support. LoRA and older
+images use save-weights followed by file hotload. Missing capability fields
+mean unsupported; setting `weight_sync_transport="RDMA"` does not bypass this
+check. The negotiated result is available as `policy.supports_rdma_weight_sync`.
+Errors during an RDMA transfer are surfaced instead of retrying with files.
+Deployments using gateway shard fan-out also use FILE hotload.
+
+Recipes create the publication callback once, after attaching the policy client:
+
+```python
+from training.utils.service import make_weight_sync
+
+# policy is the cookbook's ReconnectableClient; service owns the deployment.
+publish_weights = make_weight_sync(policy, service, cfg.deployment)
+
+# Before the first rollout and after each optimizer step:
+publish_weights(f"step-{step}")
+```
+
+The `if` is centralized in [`make_weight_sync`](utils/service.py):
+
+| Negotiated capability at setup | Publication calls |
+| --- | --- |
+| `supports_rdma_weight_sync is True` | `policy.weight_sync()` |
+| False or missing, including LoRA and older SDKs | `saved = policy.save_weights_for_sampler(name)`, then `service.hotload_sampler_snapshot(saved.path)` |
+
+These cookbook calls wait for completion. Keep using the same callback throughout
+the run: the SDK's `weight_sync()` rechecks runtime support and performs the two
+FILE steps itself if support disappears. Recipes do not need another `if` inside
+the training loop. See the [RL recipe](recipes/rl_loop.py) and
+[FrozenLake example](examples/rl/frozen_lake/train_frozen_lake.py).
 
 **Distillation / OPD** (`recipes/distillation_loop.py`) -- also requires:
 
@@ -219,12 +278,13 @@ For detailed guides, configuration reference, and examples, see the official doc
 
 ```
 recipes/                                Training loop scripts (fork these)
-recipes/experiment/                     Experimental recipe variants, including async serverless RL
+recipes/experiment/                     Experimental recipe variants, including async serverless RL and SAO/PPO
 utils/                                  Shared config, data loading, loss functions, metrics
 examples/sft/                           Worked example: SFT getting started
 examples/embedding/                     Worked example: embedding (retrieval) fine-tuning
 examples/dpo/                           Worked example: DPO
 examples/orpo/ifeval/                   Worked example: IFEval with ORPO
+examples/rl/SAO/                        Experimental Qwen3-4B SAO/PPO example
 examples/rl/deepmath/                   GRPO on DeepMath (rl_loop)
 examples/rl/frozen_lake/                Frozen Lake tool-use RL (custom loop)
 examples/rl/single_turn_token_in/       Async RL single-turn, token-in rollout

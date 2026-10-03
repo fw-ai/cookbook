@@ -16,6 +16,7 @@ integration test against ``sft_loop.main``.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -29,6 +30,7 @@ from training.utils.streaming import (
     LengthGroupedBatchSampler,
     _scan_jsonl_offsets,
     make_render_dataloader,
+    resolve_jsonl_shards,
 )
 
 
@@ -701,3 +703,92 @@ class TestAppendOnlyPickleLog:
         log.close()
         log.close()  # second call no-ops
         log.close_write()  # also safe
+
+
+# ---------------------------------------------------------------------------
+# Multi-shard (staged directory) datasets -- FIR2-2500
+# ---------------------------------------------------------------------------
+
+
+def _write_shard_dataset(root) -> str:
+    """3-shard dataset ordered by sorted relative path: a, b, sub/c -> ids 0..4."""
+    root = str(root)
+    os.makedirs(os.path.join(root, "sub"), exist_ok=True)
+    for rel, rows in (
+        ("b.jsonl", [{"i": 2}]),
+        ("a.jsonl", [{"i": 0}, {"i": 1}]),
+        ("sub/c.jsonl", [{"i": 3}, {"i": 4}]),
+    ):
+        with open(os.path.join(root, rel), "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+    # Non-JSONL files must be ignored during shard discovery.
+    with open(os.path.join(root, "notes.txt"), "w") as f:
+        f.write("not a shard\n")
+    return root
+
+
+def test_resolve_jsonl_shards_single_file(tmp_path):
+    path = str(tmp_path / "one.jsonl")
+    _write_jsonl(path, [{"i": 0}])
+    assert resolve_jsonl_shards(path) == [path]
+
+
+def test_resolve_jsonl_shards_directory_sorted_recursive(tmp_path):
+    root = _write_shard_dataset(tmp_path)
+    # Global relative-path sorting differs from os.walk's root-first order.
+    os.makedirs(os.path.join(root, "a"))
+    _write_jsonl(os.path.join(root, "a", "nested.jsonl"), [{"i": 5}])
+    rels = [os.path.relpath(p, root) for p in resolve_jsonl_shards(root)]
+    assert rels == ["a.jsonl", "a/nested.jsonl", "b.jsonl", "sub/c.jsonl"]
+
+
+@pytest.mark.parametrize("rel,match", [("missing.jsonl", "does not exist"), (None, "no '\*.jsonl' shards")])
+def test_resolve_jsonl_shards_rejects_unusable_paths(tmp_path, rel, match):
+    """Empty / no-shard directories and missing paths fail closed."""
+    path = str(tmp_path / rel) if rel else str(tmp_path)
+    with pytest.raises(DatasetError, match=match):
+        resolve_jsonl_shards(path)
+
+
+def test_dataset_multi_shard_ordering_indexing_and_row_indices(tmp_path):
+    """Cross-shard getitem, with_indices views, and global row indices."""
+    # Passthrough render_fn so the attached row-index key survives.
+    ds = JsonlRenderDataset(_write_shard_dataset(tmp_path), lambda row: row, row_index_key=JSONL_ROW_INDEX_KEY)
+    assert len(ds) == 5
+    assert ds.num_underlying_rows == 5
+    # Global order is shard-major in sorted relative-path order, so row
+    # indices (and resume cursors built on them) are stable across runs.
+    rows = [ds[i] for i in range(len(ds))]
+    assert [row["i"] for row in rows] == [0, 1, 2, 3, 4]
+    assert [row[JSONL_ROW_INDEX_KEY] for row in rows] == [0, 1, 2, 3, 4]
+    view = ds.with_indices([4, 0, 2])
+    assert [view[i]["i"] for i in range(len(view))] == [4, 0, 2]
+    assert [view[i][JSONL_ROW_INDEX_KEY] for i in range(len(view))] == [4, 0, 2]
+
+
+def test_dataset_multi_shard_max_examples_spans_shards(tmp_path):
+    ds = JsonlRenderDataset(_write_shard_dataset(tmp_path), _identity_render, max_examples=4)
+    assert len(ds) == 4
+    assert [ds[i]["id"] for i in range(len(ds))] == [0, 1, 2, 3]
+
+    ds_all = JsonlRenderDataset(_write_shard_dataset(tmp_path), _identity_render)
+    assert ds_all.approx_row_sizes() == [9, 9, 9, 9, 9]
+
+
+def test_dataset_multi_shard_rejects_malformed_row_with_shard_context(tmp_path):
+    root = _write_shard_dataset(tmp_path)
+    with open(os.path.join(root, "b.jsonl"), "a") as f:
+        f.write('{"i":\n')
+    with pytest.raises(DatasetError, match=r"b\.jsonl:2: invalid JSONL"):
+        JsonlRenderDataset(root, _identity_render)
+
+
+def test_dataset_multi_shard_pickles_for_spawn_workers(tmp_path):
+    # Spawn DataLoader workers rebuild the dataset by unpickling it, so all
+    # dataset state must stay picklable (plain lists + module render_fn).
+    import pickle
+
+    ds = JsonlRenderDataset(_write_shard_dataset(tmp_path), _identity_render)
+    clone = pickle.loads(pickle.dumps(ds))
+    assert [clone[i]["id"] for i in range(len(clone))] == [0, 1, 2, 3, 4]

@@ -223,6 +223,28 @@ tokens without the serving cost of `echo=True`. Use full-sequence replay only
 when the extra alignment is worth that throughput cost. For Harbor/TITO prompt
 capture, see the [agentic rollout example](rl-agentic.md#cookbook-example).
 
+Dense models skip R3 automatically. The MoE decision comes from the trainer:
+its `create_model` response advertises `supports_router_replay`, exposed as
+`training_client.supports_router_replay` and consumed by
+`resolve_router_replay_enabled(training_client=...)`, so recipes that pass the
+bound training client decide R3 without GETting the base model (a private
+early-access base model rejects that GET with 403). The model probe still runs
+when there is no trainer answer: a trainer that predates the field (`None`), or
+a path with no trainer at all -- e.g. the Harbor TextWorld sampling-only
+evaluation, which calls the resolver without `training_client`. There a 403/404
+takes the last-resort path below rather than failing. `routing_matrix_format`
+(`parquet_v1`) is the R3 wire format and is advertised for dense models too, so
+it is not an on/off signal.
+
+A clear answer always wins over the recipe's `router_replay` flag: a dense
+model turns R3 off even when `router_replay=True`, and a MoE model follows the
+flag. The flag decides alone only as a last resort, when the trainer did not
+report and the model probe returns 403/404 (the record is not visible to the
+caller); that path logs a warning, and if the model is actually dense the first
+sample rejects the routing request, so rerun with `--router-replay false`. Any
+other probe failure (control-plane error, or a record with no MoE flag) still
+raises.
+
 One optimizer batch requests `B = P × G` logical rollout results. The number of
 trainer trajectories can be larger when a result contains multiple
 `RolloutSample`s. The scheduler balances its `min(P, K)` non-empty chunk
@@ -295,7 +317,7 @@ For each optimizer batch:
 3. Each chunk runs reference/old-policy work and forward/backward.
 4. After the final chunk, the recipe performs one optimizer step.
 5. The recipe joins any evaluation of the current sampler version.
-6. The recipe saves and hotloads sampler weights.
+6. The recipe synchronizes sampler weights through [negotiated RDMA or save → FILE hotload](rl-hotload.md#transport-negotiation).
 7. `coordinator.publish(batch)` advances the policy version, commits accepted
    rows to the durable cursor, records metrics, and wakes the producer.
 8. If the published step is an evaluation step, its evaluation starts in the

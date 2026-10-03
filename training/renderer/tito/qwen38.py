@@ -54,6 +54,7 @@ class Qwen38TITORenderer:
     ) -> None:
         self.tokenizer = tokenizer
         self.renderer_id = QWEN38_RENDERER_NAME
+        self._label = "Qwen3.8"
         self.certification_id = certification.certification_id
         self.tokenizer_fingerprint = certification.tokenizer_fingerprint
         self._im_end_token = self._single_token("<|im_end|>")
@@ -63,7 +64,7 @@ class Qwen38TITORenderer:
     def _single_token(self, text: str) -> int:
         tokens = self.tokenizer.encode(text, add_special_tokens=False)
         if len(tokens) != 1:
-            raise ValueError(f"Qwen3.8 expected {text!r} to encode as one token")
+            raise ValueError(f"{self._label} expected {text!r} to encode as one token")
         return int(tokens[0])
 
     def _encode(self, text: str) -> list[int]:
@@ -157,7 +158,9 @@ class Qwen38TITORenderer:
         reasoning: str | None = None
         if "</think>" in content:
             if not content.startswith("<think>"):
-                raise ValueError("Qwen3.8 reasoning close has no opening boundary")
+                raise ValueError(
+                    f"{self._label} reasoning close has no opening boundary"
+                )
             reasoning, content = content[len("<think>") :].split("</think>", 1)
             content = content.lstrip("\n")
         elif finish_reason == "length":
@@ -172,7 +175,7 @@ class Qwen38TITORenderer:
         elif content.startswith("<think>"):
             # A clean stop before the prompt-opened reasoning boundary closes
             # is malformed structured output, not visible assistant text.
-            raise ValueError("Qwen3.8 reasoning open has no closing boundary")
+            raise ValueError(f"{self._label} reasoning open has no closing boundary")
 
         # Tool markup is protocol only after the reasoning boundary. Malformed
         # model output is classified by the engine; the renderer must not
@@ -185,14 +188,16 @@ class Qwen38TITORenderer:
             name = match.group(1).strip()
             body = match.group(2)
             if not name:
-                raise ValueError("Qwen3.8 tool call is missing a function name")
+                raise ValueError(f"{self._label} tool call is missing a function name")
             arguments = {
                 item.group(1).strip(): self._parse_argument(item.group(2))
                 for item in _QWEN_TOOL_ARG_RE.finditer(body)
             }
             residue = _QWEN_TOOL_ARG_RE.sub("", body).strip()
             if residue:
-                raise ValueError(f"unparsed Qwen3.8 tool-call content: {residue!r}")
+                raise ValueError(
+                    f"unparsed {self._label} tool-call content: {residue!r}"
+                )
             calls.append(
                 {
                     "type": "function",
@@ -206,7 +211,7 @@ class Qwen38TITORenderer:
         cleaned.append(content[position:])
         content = "".join(cleaned)
         if "<tool_call>" in content or "</tool_call>" in content:
-            raise ValueError("unparsed Qwen3.8 tool-call boundary")
+            raise ValueError(f"unparsed {self._label} tool-call boundary")
 
         allowed_tool_names = {
             str((tool.get("function") or {}).get("name"))
@@ -220,7 +225,9 @@ class Qwen38TITORenderer:
                 for call in calls
             )
         ):
-            raise ValueError("Qwen3.8 tool call names are absent from the request")
+            raise ValueError(
+                f"{self._label} tool call names are absent from the request"
+            )
 
         message: dict[str, Any] = {"role": "assistant", "content": content}
         if reasoning is not None:
@@ -252,7 +259,7 @@ class Qwen38TITORenderer:
                 finish_reason,
             )
         if not clean and finish_reason != "length":
-            raise ValueError("unclean Qwen3.8 renderer parse")
+            raise ValueError(f"unclean {self._label} renderer parse")
         message = _ensure_tool_call_ids(message, completion_ids)
         tool_calls = message.get("tool_calls") or []
         if finish_reason == "length" and tool_calls:

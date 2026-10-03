@@ -110,16 +110,17 @@ One unpinned first LoRA SFT pass: `lora_rank 8`, `learning_rate ~1.5e-4`, 1 epoc
 
 - **Default to SFT.** DPO only with preference pairs; RFT only with a reward/verifiable task.
 - **Validate dataset format before uploading** — JSONL, one object/line, right schema, roles in order. Min 3, max 3M.
+- **Datasets may be a single JSONL file or a directory of `.jsonl` shards.** The managed SFT/DPO/ORPO recipes load a staged shard directory in sorted shard order (never concatenated); an empty directory or one with no `.jsonl` shards fails before training starts.
 - **DPO is one-turn only.**
 - **Start LoRA + defaults** (rank 8, 1 epoch, LR ~1e-4); change one thing at a time, watch the curves.
 - **Iterate cheap first** — validate evaluator/data on a small model before scaling.
 
 ## Validate before uploading (run this first)
 
-Catch format errors locally before `firectl dataset create`. A malformed row otherwise surfaces as a late, often masked, failure. Set `method`, run this on your JSONL, and fix any rejection before uploading:
+Catch format errors locally before `firectl dataset create`. A malformed row otherwise surfaces as a late, often masked, failure. Set `method`, run this on your JSONL file or shard directory, and fix any rejection before uploading:
 
 ```python
-import json, sys
+import json, os, sys
 
 method = "sft"   # "sft" | "dpo" | "sdk-rft"
 sdk_reward_required_fields = []         # e.g. ["ground_truth"]
@@ -159,12 +160,34 @@ def validate_preference_output(value, line_no, field):
     assert isinstance(message, dict) and message.get("role") == "assistant", f"line {line_no}: {field} must be one assistant message"
     assert isinstance(message.get("content"), (str, list)) and message["content"], f"line {line_no}: empty {field} content"
 
+def iter_dataset_lines(path):
+    if os.path.isfile(path):
+        shards = [path]
+    else:
+        assert os.path.isdir(path), f"dataset path does not exist: {path}"
+        shards = sorted(
+            os.path.join(root, name)
+            for root, _, names in os.walk(path)
+            for name in names if name.endswith(".jsonl")
+        )
+        assert shards, f"no .jsonl shards in {path}"
+    for shard in shards:
+        with open(shard) as source:
+            for line_no, line in enumerate(source, 1):
+                yield f"{shard}:{line_no}", line
+
 n = 0
-for i, line in enumerate(open(sys.argv[1]), 1):
+first = None
+for i, line in iter_dataset_lines(sys.argv[1]):
     line = line.strip()
     if not line:
         continue
-    o = json.loads(line)
+    try:
+        o = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{i}: invalid JSONL: {exc}") from exc
+    if first is None:
+        first = o
     n += 1
     assert n <= 3_000_000, "maximum 3,000,000 examples"
     if method == "sft":
@@ -188,7 +211,6 @@ assert n >= 3, "need at least 3 examples"
 warnings = []
 if n < 1000:
     warnings.append(f"{n} rows meets the 3-row minimum but is far below the ~1000+ recommended for quality; treat as smoke-only, not evidence of generalization")
-first = json.loads(next(l for l in open(sys.argv[1]) if l.strip()))
 detected = "dpo" if ("preferred_output" in first or "chosen" in first) else "sft/rft"
 if method == "dpo" and detected != "dpo":
     warnings.append("requested method=dpo but rows look SFT/RFT-shaped (no preferred_output/chosen) -> wrong method or wrong file")

@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from training.image_geometry import ImageGeometryError
 from training.utils import fileio
 
 logger = logging.getLogger(__name__)
@@ -248,7 +249,7 @@ class RunnerIO:
                 # the safe internal status instead of leaking it to the file.
                 error_code = _GRPC_INTERNAL
                 error_message = _INTERNAL_ERROR_MESSAGE
-            elif isinstance(exc_val, UserConfigError):
+            elif isinstance(exc_val, (UserConfigError, ImageGeometryError)):
                 # User-config errors (bad W&B credentials, etc.) are user-actionable;
                 # surface them as INVALID_ARGUMENT instead of the generic
                 # FAILED_PRECONDITION so the control plane preserves the actionable

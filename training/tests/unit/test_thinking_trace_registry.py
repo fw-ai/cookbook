@@ -124,6 +124,13 @@ class _StringTokenizer:
             "nemotron3_ultra_interleaved",
             [True, False],
         ),
+        (
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+            "nemotron3-ultra",
+            ["interleaved", "preserved"],
+            "nemotron3_ultra_interleaved",
+            [True, False],
+        ),
     ],
 )
 def test_registered_model_matrix(
@@ -361,9 +368,14 @@ def test_public_semantics_select_vendor_specific_renderer_adapters() -> None:
         "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
         thinking_trace_history_mode="preserved",
     )
+    lightning = resolve_renderer_plan(
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+        thinking_trace_history_mode="preserved",
+    )
     assert nemotron_interleaved.renderer_name == "nemotron3_interleaved"
     assert nemotron.renderer_name == "nemotron3_preserved"
     assert ultra.renderer_name == "nemotron3_ultra_preserved"
+    assert lightning.renderer_name == "nemotron3_ultra_preserved"
 
     qwen38_interleaved = resolve_renderer_plan(
         "Qwen/Qwen3.8-27B",

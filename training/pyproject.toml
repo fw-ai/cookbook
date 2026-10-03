@@ -7,7 +7,7 @@ name = "fireworks-training-cookbook"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fireworks-ai[training]>=1.2.15,<2",
+    "fireworks-ai[training]>=1.2.18,<2",
     # Preserve the runtime floors previously supplied by tinker-cookbook.
     "aiohttp>=3.9.0",
     "pydantic>=2.0.0",
@@ -28,11 +28,20 @@ dependencies = [
     "orjson",
     "hydra-core>=1.3,<2",
     "pillow>=12.3.0",
+    # datasets/mimo/mcp client and the task bundles' MCP servers are 1.x;
+    # 2.x removed FastMCP. Keep in sync with the image pin (mcp==1.30.0).
+    "mcp>=1.8,<2",
 ]
 
 [project.optional-dependencies]
 eval = [
     "eval-protocol>=0.3.32",
+]
+# SDFT (training._vendor.tinker_cookbook_fw) runs on upstream tinker-cookbook
+# plus the Fireworks-modified modules vendored there. Only SDFT imports these.
+sdft = [
+    "chz>=0.4.0",
+    "tinker-cookbook==0.5.7",
 ]
 dev = [
     "fireworks-training-cookbook[eval]",
@@ -54,6 +63,12 @@ packages = [
     "training._vendor.tinker_cookbook_0_4_3",
     "training._vendor.tinker_cookbook_0_4_3.renderers",
     "training._vendor.tinker_cookbook_0_4_3.supervised",
+    "training._vendor.tinker_cookbook_fw",
+    "training._vendor.tinker_cookbook_fw.distillation",
+    "training._vendor.tinker_cookbook_fw.recipes",
+    "training._vendor.tinker_cookbook_fw.recipes.sdft",
+    "training._vendor.tinker_cookbook_fw.rl",
+    "training._vendor.tinker_cookbook_fw.supervised",
     "training.case-studies.agentic_rl_text2sql",
     "training.case-studies.common",
     "training.case-studies.dpo_style",
@@ -75,6 +90,13 @@ packages = [
     "training.examples.rl.eval_protocol_chat.remote_server",
     "training.examples.rl.frozen_lake",
     "training.examples.rl.harbor",
+    "training.examples.rl.harbor.datasets",
+    "training.examples.rl.harbor.datasets.mimo",
+    "training.examples.rl.harbor.datasets.mimo.assets",
+    "training.examples.rl.harbor.datasets.mimo.assets.webdev",
+    "training.examples.rl.harbor.datasets.mimo.mcp",
+    "training.examples.rl.harbor.datasets.mimo.music_scorer",
+    "training.examples.rl.harbor.mimoagent",
     "training.examples.rl.harbor.mini_swe",
     "training.examples.rl.harbor.opencode",
     "training.examples.rl.harbor.pi",
@@ -84,6 +106,7 @@ packages = [
     "training.examples.rl.harbor.recipes.terminal_bench",
     "training.examples.rl.harbor.recipes.textworld",
     "training.examples.rl.harbor.tito",
+    "training.examples.rl.SAO",
     "training.examples.rl.single_turn_token_in",
     "training.examples.rl.visual_toolbench",
     "training.examples.serverless_dpo",
@@ -115,6 +138,14 @@ packages = [
 [tool.setuptools.package-data]
 "training.provision" = ["*.yaml"]
 "training._vendor.tinker_cookbook_0_4_3" = ["LICENSE"]
+"training._vendor.tinker_cookbook_fw" = ["LICENSE"]
+
+[tool.uv]
+# tinker-cookbook (the sdft extra) declares transformers<=5.5.4; keep this
+# project's transformers pin authoritative.
+override-dependencies = [
+    "transformers==5.10.4",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["training/tests"]
@@ -125,6 +156,12 @@ markers = [
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Vendored MiMo graders. The music scorer and webdev shot script are copied
+# unchanged so scores stay comparable with MiMo's published runs.
+"examples/rl/harbor/datasets/mimo/music_scorer/**" = ["E731"]
+"examples/rl/harbor/datasets/mimo/assets/**" = ["E731"]
 
 [tool.coverage.run]
 branch = true

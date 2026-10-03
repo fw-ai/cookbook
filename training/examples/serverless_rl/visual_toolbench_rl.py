@@ -616,6 +616,7 @@ class ServerlessVisualToolbenchRL:
             base_url=FIREWORKS_API_BASE_URL,
             additional_headers=None,
             base_model=cfg.base_model,
+            training_client=self.training_client,
         )
 
         session = getattr(self.service, "training_session_name", None) or getattr(

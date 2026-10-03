@@ -137,6 +137,7 @@ class InfraConfig:
     node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
+    """Explicit trainer arguments. Requires a superuser API key."""
     trainer_replica_count: int | None = None
     """Data-parallel trainer replica count for service-mode HSDP launches.
 
@@ -194,6 +195,7 @@ class TrainerConfig:
     pending_timeout_s: float = 48 * 60 * 60
     """Capacity-placement budget while the trainer remains ``PENDING``."""
     extra_args: list[str] | None = None
+    """Explicit trainer arguments. Requires a superuser API key."""
     replica_count: int | None = None
     """Data-parallel trainer replica count for service-mode HSDP launches."""
     inactivity_timeout: str | None = None
@@ -285,6 +287,7 @@ class DeployConfig:
     """How long to wait for the serving pod to cycle after a re-attach PATCH
     (separate from the full deployment creation timeout)."""
     deployment_extra_args: list[str] | None = None
+    """Explicit serving arguments. Requires a superuser API key."""
     tokenizer_model: str | None = None
     """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).
     Required for client-side tokenization (GRPO)."""
@@ -301,15 +304,15 @@ class DeployConfig:
     replica_count: int | None = None
     """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None
-    """Extra Helm values for the deployment (e.g. ``{"priorityClass": "deployment"}``)."""
+    """Explicit deployment chart overrides. Requires a superuser API key."""
     preemptible: bool = False
     """Request preemptible deployment scheduling. Requires an admin API key."""
 
     weight_sync_transport: Literal["RDMA"] | None = None
-    """Opt in to runtime RDMA publication; unset preserves file-based hotload.
+    """Compatibility option; eligible full-parameter runtimes negotiate RDMA automatically.
 
-    Requires a compatible SDK and full-parameter trainer/rollout runtime.
-    Use weight_sync() to publish; durable checkpoints are saved separately.
+    Recipes choose weight_sync() or save followed by hotload from runtime
+    capabilities. Durable checkpoints are saved separately from RDMA.
     """
 
     def to_deployment_config(

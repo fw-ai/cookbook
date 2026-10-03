@@ -644,6 +644,7 @@ class ServerlessCountdownRL:
             base_url=_control_plane_base_url(cfg.api_base_url),
             additional_headers=None,
             base_model=self.base_model,
+            training_client=self.training_client,
         )
         if cfg.router_replay and not self.router_replay_enabled:
             print(f"Router Replay skipped for dense model {self.base_model}", flush=True)

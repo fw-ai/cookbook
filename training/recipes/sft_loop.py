@@ -54,6 +54,7 @@ from fireworks.training.sdk.training_spec import (
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
+from training.utils.termination import TerminatedBySignal
 from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
@@ -87,6 +88,10 @@ from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.serverless import setup_serverless_training
 from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
 from training.utils.resource_autosizing import select_render_worker_count
+from training.utils.streaming import (
+    dataset_error_for_rendered_row,
+    raise_rendered_dataset_errors,
+)
 from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
@@ -487,24 +492,32 @@ def _resolved_renderer_name(
     )
 
 
-def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
+def _render_one_worker(
+    row: dict,
+) -> tinker.Datum | list[tinker.Datum] | DatasetError | None:
     """Render a chat row to one or more Datums, dropping empty / long sequences.
 
     Reads renderer / train_on_what / max_seq_len from the per-process
     ``_worker_state`` populated by ``_init_render_worker``. Top-level
     so spawn workers can pickle it as the DataLoader's render_fn.
+
+    Dataset errors are returned, not raised, so the parent process can
+    re-raise them with the original public message.
     """
     messages = row.get("messages", [])
     if not messages:
         return None
     tools = row.get("tools")
-    rendered_examples = render_messages_to_datums(
-        messages,
-        renderer=_worker_state["renderer"],
-        train_on_what=_worker_state["train_on_what"],
-        tools=tools,
-        reduction="mean",
-    )
+    try:
+        rendered_examples = render_messages_to_datums(
+            messages,
+            renderer=_worker_state["renderer"],
+            train_on_what=_worker_state["train_on_what"],
+            tools=tools,
+            reduction="mean",
+        )
+    except DatasetError as exc:
+        return dataset_error_for_rendered_row(row, exc)
     if not isinstance(rendered_examples, list):
         rendered_examples = [rendered_examples]
     valid_rendered_examples = [
@@ -547,6 +560,7 @@ def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
     for item in (ds[i] for i in range(n)):
         if item is None:
             continue
+        raise_rendered_dataset_errors([item])
         if isinstance(item, list):
             datums.extend(item)
         else:
@@ -555,8 +569,9 @@ def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
 
 
 def _flatten_rendered_batch(
-    batch: list[tinker.Datum | list[tinker.Datum]],
+    batch: list[tinker.Datum | list[tinker.Datum] | DatasetError],
 ) -> list[tinker.Datum]:
+    raise_rendered_dataset_errors(batch)
     datums: list[tinker.Datum] = []
     for item in batch:
         if isinstance(item, list):
@@ -651,6 +666,7 @@ class Config:
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
+    """Path to the training dataset: a JSONL file or a directory of .jsonl shards."""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
     tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
     tokenizer_trust_remote_code: bool | None = None
@@ -770,7 +786,8 @@ class Config:
     Defaults to 4 to overlap server-side preparation with GPU compute."""
 
     evaluation_dataset: str = ""
-    """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
+    """Path to an explicit eval dataset (JSONL file or directory of .jsonl
+    shards).  When set, auto-carveout
     is skipped and this dataset is used for evaluation instead."""
 
     eval_auto_carveout: bool = False
@@ -909,7 +926,7 @@ def main(
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
         logger.warning("Received %s — raising SystemExit for cleanup", name)
-        raise SystemExit(f"Terminated by {name}")
+        raise TerminatedBySignal(name)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)

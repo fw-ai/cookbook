@@ -23,10 +23,20 @@ _INSTALLED_PACKAGE_IMPORT = re.compile(
 )
 _DISTRIBUTION_REQUIREMENT = re.compile(
     r"(?im)(?:"
-    r"^[^\n]*(?:pip(?:3)?|uv[ \t]+pip)[ \t]+install[^\n#]*\btinker-cookbook\b"
+    r"^[^\n]*(?:pip(?:3)?|uv[ \t]+pip)[ \t]+install[^\n#`]*\btinker-cookbook\b"
     r"|^[ \t\"']*tinker-cookbook(?:\[[^\]]+\])?(?:[ \t=<>~!;\"']|$)"
     r"|\bname[ \t]*=[ \t]*\"tinker-cookbook\""
     r")"
+)
+
+# SDFT intentionally runs on upstream tinker-cookbook plus the
+# Fireworks-modified modules vendored in training/_vendor/tinker_cookbook_fw.
+_SDFT_TINKER_COOKBOOK_IMPORT_PATHS = (
+    "training/_vendor/tinker_cookbook_fw/",
+    "training/recipes/sdft_loop.py",
+)
+_SDFT_TINKER_COOKBOOK_REQUIREMENT_FILES = frozenset(
+    {"training/pyproject.toml", "training/uv.lock"}
 )
 
 
@@ -173,6 +183,35 @@ def test_model_routing_exports_vendored_snapshot() -> None:
     assert fireworks_functions == vendored_functions
 
 
+def test_nemotron35_lightning_recommends_compact_thinking_renderers() -> None:
+    assert fireworks_model_info.get_recommended_renderer_names(
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+    ) == ["nemotron3_ultra", "nemotron3_ultra_disable_thinking"]
+
+
+@pytest.mark.parametrize(
+    ("source", "forbidden"),
+    [
+        ("pip install {package}", True),
+        ("pip3 install --upgrade {package}", True),
+        ("`uv pip install '{package}[extra]'`", True),
+        ('"{package}>=0.4"', True),
+        ('name = "{package}"', True),
+        ("`pip install other` followed by {package} documentation", False),
+        (
+            "| Install with `uv pip install -e '.[sdft]'` | Vendored {package} loop |",
+            False,
+        ),
+        ("pip install other # {package} is vendored", False),
+    ],
+)
+def test_distribution_requirement_stops_at_inline_code_boundary(
+    source: str, forbidden: bool
+) -> None:
+    source = source.format(package="tinker-cookbook")
+    assert bool(_DISTRIBUTION_REQUIREMENT.search(source)) is forbidden
+
+
 def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:
     repository_root = Path(
         subprocess.run(
@@ -181,6 +220,9 @@ def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:
             capture_output=True,
             text=True,
         ).stdout.strip()
+    ).resolve()
+    cookbook_prefix = (
+        Path(__file__).resolve().parents[3].relative_to(repository_root).as_posix()
     )
     tracked_files = subprocess.run(
         ["git", "ls-files"],
@@ -195,15 +237,23 @@ def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:
     for relative_path in tracked_files:
         if "training/_vendor/tinker_cookbook_0_4_3/" in relative_path:
             continue
+        cookbook_path = (
+            relative_path
+            if cookbook_prefix == "."
+            else relative_path.removeprefix(f"{cookbook_prefix}/")
+        )
         path = repository_root / relative_path
         try:
             source = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        for match in _DISTRIBUTION_REQUIREMENT.finditer(source):
-            line_number = source.count("\n", 0, match.start()) + 1
-            forbidden_requirements.append(f"{relative_path}:{line_number}")
+        if cookbook_path not in _SDFT_TINKER_COOKBOOK_REQUIREMENT_FILES:
+            for match in _DISTRIBUTION_REQUIREMENT.finditer(source):
+                line_number = source.count("\n", 0, match.start()) + 1
+                forbidden_requirements.append(f"{relative_path}:{line_number}")
         if path.suffix not in {".py", ".ipynb"}:
+            continue
+        if cookbook_path.startswith(_SDFT_TINKER_COOKBOOK_IMPORT_PATHS):
             continue
         if path.suffix == ".ipynb":
             notebook = json.loads(source)

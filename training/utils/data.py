@@ -6,13 +6,14 @@ import copy
 import json
 import logging
 import math
-from typing import Any, Dict, Iterator, List
+from typing import Any, Dict, Iterable, Iterator, List
 
 import torch
 import requests
 
 from fireworks.training.sdk.errors import request_with_retries
 from training.utils.runner import DatasetError
+from training.utils.streaming import resolve_jsonl_shards
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +55,34 @@ class RLPromptDataset:
 
 
 def load_jsonl_dataset(path_or_url: str, max_rows: int | None = None) -> List[Dict[str, Any]]:
-    """Load a JSONL dataset from a local path or URL."""
+    """Load a JSONL dataset from a local path, directory, or URL.
+
+    A local directory is read as a multi-shard dataset (see
+    :func:`training.utils.streaming.resolve_jsonl_shards`); shards are
+    loaded in deterministic sorted order, never concatenated.
+    """
+    rows: list[dict] = []
+
+    def append_rows(lines: Iterable[str]) -> None:
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            rows.append(json.loads(line))
+            if max_rows is not None and len(rows) >= max_rows:
+                break
+
     if path_or_url.startswith("http://") or path_or_url.startswith("https://"):
         resp = request_with_retries(requests.get, path_or_url, timeout=30)
         resp.raise_for_status()
-        lines = resp.text.strip().split("\n")
+        append_rows(resp.text.strip().split("\n"))
     else:
-        with open(path_or_url) as f:
-            lines = f.readlines()
+        for shard in resolve_jsonl_shards(path_or_url):
+            with open(shard) as f:
+                append_rows(f)
+            if max_rows is not None and len(rows) >= max_rows:
+                break
 
-    rows: list[dict] = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        rows.append(json.loads(line))
-        if max_rows is not None and len(rows) >= max_rows:
-            break
     logger.info("Loaded %d examples from dataset", len(rows))
     return rows
 
@@ -137,20 +149,25 @@ def iter_preference_examples(
     See :func:`load_preference_dataset` for the eager equivalent and the
     SFT v2 streaming render fix (fw-ai/cookbook#371) for the motivating
     OOM context.
+
+    ``path`` may also be a multi-shard directory (see
+    :func:`training.utils.streaming.resolve_jsonl_shards`); shards are
+    streamed in deterministic sorted order.
     """
     yielded = 0
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            pair = normalize_preference_row(json.loads(line))
-            if pair is None:
-                continue
-            yield pair
-            yielded += 1
-            if max_pairs is not None and yielded >= max_pairs:
-                return
+    for shard in resolve_jsonl_shards(path):
+        with open(shard) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                pair = normalize_preference_row(json.loads(line))
+                if pair is None:
+                    continue
+                yield pair
+                yielded += 1
+                if max_pairs is not None and yielded >= max_pairs:
+                    return
 
 
 def _load_jsonl_object(line: str, *, path: str, line_no: int) -> dict[str, Any]:
@@ -183,8 +200,28 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
     Unlike :func:`iter_preference_examples`, this eager loader is strict:
     malformed rows fail fast with file:line context so ORPO / older DPO
     callers surface customer dataset issues early.
+
+    ``path`` may also be a multi-shard directory (see
+    :func:`training.utils.streaming.resolve_jsonl_shards`); shards are
+    loaded in deterministic sorted order, never concatenated.
     """
     data: list[dict[str, Any]] = []
+    for shard in resolve_jsonl_shards(path):
+        _load_preference_shard(shard, data, max_pairs)
+        if max_pairs is not None and len(data) >= max_pairs:
+            break
+    return data
+
+
+def _load_preference_shard(
+    path: str, data: list[dict[str, Any]], max_pairs: int | None
+) -> None:
+    """Append preference pairs parsed from one JSONL shard to ``data``.
+
+    ``path`` is a single shard file; error context uses shard:line so
+    multi-shard datasets report which shard failed. Stops appending once
+    ``max_pairs`` valid pairs are already in ``data``.
+    """
     with open(path) as f:
         for line_no, raw_line in enumerate(f, start=1):
             line = raw_line.strip()
@@ -278,7 +315,7 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
                 )
             if max_pairs is not None and len(data) >= max_pairs:
                 break
-    return data
+    return
 
 
 def extract_text(item: dict[str, Any]) -> str:

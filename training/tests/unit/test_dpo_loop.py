@@ -1464,3 +1464,34 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
     service.create_reference_client.assert_not_called()
     service.release_references.assert_not_called()
     assert sampler.close.called and service.close.called
+
+
+# ---------------------------------------------------------------------------
+# Multi-shard (staged directory) datasets -- FIR2-2500
+# ---------------------------------------------------------------------------
+
+
+def _shard_row_id(row: dict) -> dict:
+    """Module-level render_fn for multi-shard JsonlRenderDataset tests."""
+    return {"i": row["i"]}
+
+
+def test_pair_dataset_multi_shard_directory(tmp_path):
+    """DPO's JsonlRenderDataset loads a staged multi-shard directory.
+
+    Global rows follow sorted shard order, so the RawRowCursor resume math
+    (built on ``len(pair_dataset)``) stays deterministic.
+    """
+    import os
+
+    root = str(tmp_path)
+    for rel, ids in (("a.jsonl", range(0, 5, 2)), ("b.jsonl", range(1, 5, 2))):
+        with open(os.path.join(root, rel), "w") as f:
+            for i in ids:
+                f.write(json.dumps({"i": i}) + "\n")
+
+    pair_dataset = JsonlRenderDataset(root, _shard_row_id)
+    assert len(pair_dataset) == 5
+    # a.jsonl holds rows 0,2,4 and sorts before b.jsonl (rows 1,3).
+    assert [pair_dataset[i]["i"] for i in range(len(pair_dataset))] == [0, 2, 4, 1, 3]
+    assert pair_dataset.num_underlying_rows == 5
