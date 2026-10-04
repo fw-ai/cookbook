@@ -71,23 +71,34 @@ windows, save it once:
 security add-generic-password -U -a "$USER" -s FIREWORKS_API_KEY -w
 ```
 
-`security` prompts for the key and does not echo it. Then add this line to
+`security` prompts for the key and does not echo it. Then add these lines to
 `~/.zshrc`:
 
 ```zsh
-export FIREWORKS_API_KEY="$(security find-generic-password -a "$USER" -s FIREWORKS_API_KEY -w 2>/dev/null)"
+if fw_key="$(security find-generic-password -a "$USER" -s FIREWORKS_API_KEY -w 2>/dev/null)" && [[ -n "$fw_key" ]]; then
+  export FIREWORKS_API_KEY="$fw_key"
+fi
+unset fw_key
 ```
 
 Open a new terminal. macOS may ask once whether Terminal may read that
-Keychain item. The project `.env` is still what the cookbook loads when you
-run from `training/`; the Keychain line makes the same key available to other
-shells.
+Keychain item.
 
-Confirm the file is loaded without printing the key:
+`python-dotenv` does not override a variable that is already set, even when it
+is empty. If `FIREWORKS_API_KEY` exists in the shell, the cookbook uses it
+instead of `training/.env`. Clear an empty or stale value with
+`unset FIREWORKS_API_KEY`.
+
+Check both sources without printing the key:
 
 ```zsh
-python -c 'import os; from dotenv import load_dotenv; load_dotenv(".env"); print("key loaded" if os.getenv("FIREWORKS_API_KEY") else "key missing")'
+echo "shell key length: ${#FIREWORKS_API_KEY}"
+python -c 'import os; from dotenv import dotenv_values, load_dotenv; f=dotenv_values(".env").get("FIREWORKS_API_KEY") or ""; load_dotenv(".env"); print(".env key length:", len(f)); print("key loaded" if os.getenv("FIREWORKS_API_KEY") else "key missing")'
 ```
+
+A shell length of `0` with `key missing` means an empty exported variable is
+hiding `.env`; run `unset FIREWORKS_API_KEY`. A `.env` length of `0` means the
+key was not saved; rerun the hidden prompt from `training/`.
 
 ## Verify
 
