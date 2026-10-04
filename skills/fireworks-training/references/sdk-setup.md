@@ -11,6 +11,9 @@ conda create -n cookbook python=3.12 -y && conda activate cookbook
 python -m pip install -e .
 
 # Option B: uv
+# If `uv` is not found, install it and load ~/.local/bin:
+#   curl -LsSf https://astral.sh/uv/install.sh | sh
+#   source "$HOME/.local/bin/env"
 uv venv --python 3.12 && source .venv/bin/activate
 uv pip install -e .
 ```
@@ -23,14 +26,67 @@ its runtime and recipe dependencies directly in `pyproject.toml`.
 
 ## Credentials
 
-Set your API key via `.env` (auto-loaded by `python-dotenv`) or environment variable:
+Create an account-scoped key at
+[app.fireworks.ai/settings/users/api-keys](https://app.fireworks.ai/settings/users/api-keys).
+The training examples load `FIREWORKS_API_KEY` from `training/.env` through
+`python-dotenv`. `.env` is gitignored. Type the key at the hidden prompt; do
+not paste it into chat, a notebook cell, or a committed file.
+
+Run these commands from `cookbook/training` after the install above.
+
+### Linux or any bash shell
 
 ```bash
-# Option A: .env file in training/
-echo 'FIREWORKS_API_KEY="your-api-key"' > .env
+read -rsp "Fireworks API key: " FIREWORKS_API_KEY
+echo
+printf 'FIREWORKS_API_KEY=%s\n' "$FIREWORKS_API_KEY" > .env
+chmod 600 .env
+unset FIREWORKS_API_KEY
+```
 
-# Option B: export
-export FIREWORKS_API_KEY="your-api-key"
+### macOS
+
+macOS Terminal uses zsh. `uv` from the official installer lives in
+`~/.local/bin`, which is not on `PATH` until you load it:
+
+```zsh
+source "$HOME/.local/bin/env"
+```
+
+Store the key in the same `training/.env` file the examples read:
+
+```zsh
+cd cookbook/training
+read -rs "FIREWORKS_API_KEY?Fireworks API key: "
+echo
+printf 'FIREWORKS_API_KEY=%s\n' "$FIREWORKS_API_KEY" > .env
+chmod 600 .env
+unset FIREWORKS_API_KEY
+```
+
+To keep the key in the Mac system Keychain and load it in new Terminal
+windows, save it once:
+
+```zsh
+security add-generic-password -U -a "$USER" -s FIREWORKS_API_KEY -w
+```
+
+`security` prompts for the key and does not echo it. Then add this line to
+`~/.zshrc`:
+
+```zsh
+export FIREWORKS_API_KEY="$(security find-generic-password -a "$USER" -s FIREWORKS_API_KEY -w 2>/dev/null)"
+```
+
+Open a new terminal. macOS may ask once whether Terminal may read that
+Keychain item. The project `.env` is still what the cookbook loads when you
+run from `training/`; the Keychain line makes the same key available to other
+shells.
+
+Confirm the file is loaded without printing the key:
+
+```zsh
+python -c 'import os; from dotenv import load_dotenv; load_dotenv(".env"); print("key loaded" if os.getenv("FIREWORKS_API_KEY") else "key missing")'
 ```
 
 ## Verify
