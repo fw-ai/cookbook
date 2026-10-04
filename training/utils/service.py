@@ -34,7 +34,12 @@ def make_weight_sync(
 ):
     """Select publication once, preserving FILE names and initial-base requests."""
     if getattr(policy, "supports_rdma_weight_sync", False) is True:
-        return lambda name, **kwargs: policy.weight_sync()
+        def publish(name: str, **kwargs: Any) -> Any:
+            result = policy.weight_sync()
+            logger.info("Weight sync completed: %s", "RDMA" if result.optimizer_version is not None else "FILE")
+            return result
+
+        return publish
     save = (
         policy.save_weights_for_sampler_ext
         if extended
@@ -43,9 +48,11 @@ def make_weight_sync(
 
     def publish(name, **kwargs):
         saved = save(name, **kwargs)
-        return service.hotload_sampler_snapshot(
+        result = service.hotload_sampler_snapshot(
             saved.snapshot_name if extended else saved.path
         )
+        logger.info("Weight sync completed: FILE")
+        return result
 
     return publish
 

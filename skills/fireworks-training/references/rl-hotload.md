@@ -48,6 +48,11 @@ do not reconnect or implement transport fallback. Reused deployments keep their
 existing RDMA enablement setting. Errors after RDMA publication is accepted
 are surfaced rather than retried as FILE.
 
+Each completed recipe publication logs `Weight sync completed: RDMA` or
+`Weight sync completed: FILE`. Use this result to identify the transport that
+actually completed; an initial RDMA capability advertisement alone does not
+prove a later publication used RDMA.
+
 RDMA publications are temporary and do not create promotable sampler
 checkpoints. Keep explicit resumable/promotable checkpoint saves enabled when
 needed. The bucket scopes and incremental snapshot chain below describe FILE

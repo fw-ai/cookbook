@@ -17,11 +17,11 @@ from training.utils.service import build_service_client, resolve_router_replay_e
 @pytest.mark.parametrize("capability", [None, False, True])
 @pytest.mark.parametrize("configured_rdma", [False, True])
 @pytest.mark.parametrize("extended", [False, True])
-def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, extended):
+def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, extended, caplog):
     from unittest.mock import Mock
 
     policy = SimpleNamespace(
-        weight_sync=Mock(),
+        weight_sync=Mock(return_value=SimpleNamespace(optimizer_version=0)),
         save_weights_for_sampler=Mock(return_value=SimpleNamespace(path="saved")),
         save_weights_for_sampler_ext=Mock(return_value=SimpleNamespace(snapshot_name="saved")),
     )
@@ -30,7 +30,9 @@ def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, ext
     managed_service = SimpleNamespace(hotload_sampler_snapshot=Mock())
     deployment = DeployConfig(weight_sync_transport="RDMA" if configured_rdma else None)
     sync = service.make_weight_sync(policy, managed_service, deployment, extended=extended)
-    sync("step-1", checkpoint_type="base")
+    with caplog.at_level("INFO", logger=service.__name__):
+        sync("step-1", checkpoint_type="base")
+    assert f"Weight sync completed: {'RDMA' if capability is True else 'FILE'}" in caplog.text
     if capability is True:
         policy.weight_sync.assert_called_once_with()
         policy.save_weights_for_sampler.assert_not_called()
@@ -41,6 +43,17 @@ def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, ext
         save.assert_called_once_with("step-1", checkpoint_type="base")
         managed_service.hotload_sampler_snapshot.assert_called_once_with("saved")
         policy.weight_sync.assert_not_called()
+
+
+def test_weight_sync_logs_file_when_sdk_falls_back(caplog):
+    from unittest.mock import Mock
+
+    result = SimpleNamespace(optimizer_version=None)
+    policy = SimpleNamespace(supports_rdma_weight_sync=True, weight_sync=Mock(return_value=result))
+    sync = service.make_weight_sync(policy, None, DeployConfig())
+    with caplog.at_level("INFO", logger=service.__name__):
+        assert sync("step-1") is result
+    assert "Weight sync completed: FILE" in caplog.text
 
 
 def _trainer_config(**overrides) -> TrainerConfig:
