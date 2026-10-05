@@ -46,7 +46,6 @@ def test_waits_for_trainer_before_creating_deployment() -> None:
         def create_or_get(self, config):
             events.append("create-deployment")
             assert config.hot_load_trainer_job == trainer_endpoint.job_name
-            assert config.extra_values == {"bypass_reservation": "true"}
             return SimpleNamespace(state="CREATING")
 
         def wait_for_ready(self, deployment_id, **_kwargs):

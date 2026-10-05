@@ -10,9 +10,16 @@ built-in arithmetic prompts are a small end-to-end check, not a math benchmark.
 
 - A Fireworks API key with dedicated Training API access.
 - The example uses the Qwen3-4B LoRA training shape
-  `accounts/fireworks/trainingShapes/qwen3-4b-minimum-lora` for both the actor
-  and the critic. Override it with `--training-shape` or
-  `FIREWORKS_TRAINING_SHAPE`.
+  `accounts/fireworks/trainingShapes/qwen3-4b-minimum-lora` for the actor.
+  Override it with `--training-shape` or `FIREWORKS_TRAINING_SHAPE`.
+- For a new critic, supply `--critic-training-shape` or
+  `FIREWORKS_CRITIC_TRAINING_SHAPE` with a
+  validated Qwen3-4B LoRA shape that already configures a one-dimensional
+  critic projection head. The SDK selects the model-handle dimension; it does
+  not configure trainer topology through launch overrides. Obtain the shape
+  from your training administrator before running the example.
+- To reattach an existing critic, provide `--critic-job-id`; its trainer must
+  already have the one-dimensional critic head. A new critic shape is optional.
 
 Install and run the standalone cookbook:
 
@@ -21,6 +28,7 @@ git clone https://github.com/fw-ai/cookbook.git
 cd cookbook/training
 uv venv --python 3.12
 uv pip install --python .venv/bin/python -e .
+export FIREWORKS_CRITIC_TRAINING_SHAPE='your-validated-critic-shape'
 export FIREWORKS_API_KEY='your-training-api-key'
 .venv/bin/python -m training.examples.rl.SAO.qwen3_4b_sao \
   --output-dir ./qwen3_4b_sao_run

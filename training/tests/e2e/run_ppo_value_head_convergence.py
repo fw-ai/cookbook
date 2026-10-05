@@ -40,6 +40,12 @@ def run() -> dict[str, object]:
     training_shape = os.environ.get(
         "FIREWORKS_E2E_LORA_TRAINING_SHAPE", QWEN3_4B_LORA_SHAPE
     )
+    critic_shape = os.environ.get("FIREWORKS_E2E_CRITIC_TRAINING_SHAPE")
+    if not critic_shape:
+        raise ValueError(
+            "Set FIREWORKS_E2E_CRITIC_TRAINING_SHAPE to a validated shape "
+            "configured with a one-dimensional critic head."
+        )
     tokenizer_model = os.environ.get(
         "FIREWORKS_E2E_TOKENIZER_MODEL", QWEN3_4B_TOKENIZER
     )
@@ -121,7 +127,7 @@ def run() -> dict[str, object]:
             critic_lora_rank=64,
             critic_lora_alpha=128,
             actor_trainer=TrainerConfig(**trainer),
-            critic_trainer=TrainerConfig(**trainer),
+            critic_trainer=TrainerConfig(**{**trainer, "training_shape_id": critic_shape}),
             deployment=DeployConfig(
                 tokenizer_model=tokenizer_model,
                 replica_count=1,

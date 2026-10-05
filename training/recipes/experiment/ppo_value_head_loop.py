@@ -189,11 +189,9 @@ class Config:
             training_shape_id=QWEN3_4B_LORA_SHAPE,
         )
     )
-    critic_trainer: TrainerConfig = field(
-        default_factory=lambda: TrainerConfig(
-            training_shape_id=QWEN3_4B_LORA_SHAPE,
-        )
-    )
+    # Supply a validated shape configured with the requested projection head,
+    # or reattach a critic trainer that already has that topology.
+    critic_trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(
         default_factory=lambda: DeployConfig(
             tokenizer_model=QWEN3_4B_TOKENIZER,
@@ -1317,6 +1315,12 @@ def main(
         raise ValueError("Provide either cfg.dataset or rows= to main().")
     if not cfg.deployment.tokenizer_model:
         raise ValueError("deployment.tokenizer_model is required.")
+    if not (cfg.critic_trainer.training_shape_id or cfg.critic_trainer.job_id):
+        raise ValueError(
+            "critic_trainer.training_shape_id must identify a validated shape "
+            "configured with critic_projection_head_dim, or set critic_trainer.job_id "
+            "to reattach a trainer with that topology."
+        )
 
     def _signal_handler(signum, _):
         name = signal.Signals(signum).name

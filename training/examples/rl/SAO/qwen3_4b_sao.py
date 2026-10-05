@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--dataset", help="JSONL rows with messages and ground_truth")
+    critic_shape = os.environ.get("FIREWORKS_CRITIC_TRAINING_SHAPE")
+    parser.add_argument(
+        "--critic-training-shape",
+        default=critic_shape,
+        help="Validated Qwen3-4B LoRA shape configured with a one-dimensional critic head",
+    )
     parser.add_argument(
         "--task",
         choices=("arithmetic", "deepmath"),
@@ -88,7 +94,10 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("WANDB_ENTITY"),
         help="Optional W&B entity",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.critic_training_shape and not args.critic_job_id:
+        parser.error("provide --critic-training-shape or --critic-job-id")
+    return args
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -125,7 +134,7 @@ def run(args: argparse.Namespace) -> dict:
         actor_trainer=trainer,
         critic_trainer=TrainerConfig(
             job_id=args.critic_job_id,
-            training_shape_id=args.training_shape,
+            training_shape_id=args.critic_training_shape,
             inactivity_timeout="1800s",
         ),
         deployment=DeployConfig(

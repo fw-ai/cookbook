@@ -137,7 +137,7 @@ class InfraConfig:
     node_count: int | None = None
     trainer_timeout_s: float = 3600
     extra_args: list[str] | None = None
-    """Explicit trainer arguments. Requires a superuser API key."""
+    """Opaque trainer arguments for testing. Requires a superuser API key."""
     trainer_replica_count: int | None = None
     """Data-parallel trainer replica count for service-mode HSDP launches.
 
@@ -195,7 +195,7 @@ class TrainerConfig:
     pending_timeout_s: float = 48 * 60 * 60
     """Capacity-placement budget while the trainer remains ``PENDING``."""
     extra_args: list[str] | None = None
-    """Explicit trainer arguments. Requires a superuser API key."""
+    """Opaque trainer arguments for testing. Requires a superuser API key."""
     replica_count: int | None = None
     """Data-parallel trainer replica count for service-mode HSDP launches."""
     inactivity_timeout: str | None = None
@@ -287,7 +287,7 @@ class DeployConfig:
     """How long to wait for the serving pod to cycle after a re-attach PATCH
     (separate from the full deployment creation timeout)."""
     deployment_extra_args: list[str] | None = None
-    """Explicit serving arguments. Requires a superuser API key."""
+    """Opaque serving arguments for testing. Requires a superuser API key."""
     tokenizer_model: str | None = None
     """HuggingFace model name for the tokenizer (e.g. ``Qwen/Qwen3-1.7B``).
     Required for client-side tokenization (GRPO)."""
@@ -304,7 +304,7 @@ class DeployConfig:
     replica_count: int | None = None
     """If set, pin the deployment to a fixed replica count."""
     extra_values: dict[str, str] | None = None
-    """Explicit deployment chart overrides. Requires a superuser API key."""
+    """Opaque deployment overrides for testing. Requires a superuser API key."""
     preemptible: bool = False
     """Request preemptible deployment scheduling. Requires an admin API key."""
 

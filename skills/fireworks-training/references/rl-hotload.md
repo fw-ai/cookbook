@@ -24,12 +24,14 @@ status identifies that path, and its publication responses do not carry the
 RDMA completion protocol. Do not choose a predecessor from its concatenated
 shard ledgers.
 
+Generic trainer/deployment overrides are opaque, opt-in testing interfaces;
+leave them unset in recipes and provision configs.
+
 RDMA resources are configured by the platform/shape. Do not add `extra_args`,
 `extra_values`, or their deployment variants to enable it: these require a
 superuser API key. The normal SDK/cookbook path sends none of these overrides;
-unconfigured runtimes keep FILE. Existing explicit admin options, including
-projection-head provisioning and deployment reservation bypass, require a
-superuser key and are separate from transport negotiation.
+unconfigured runtimes keep FILE. Experimental trainer topology belongs in the
+training shape; public model-handle options do not add launch overrides.
 
 Recipes use `make_weight_sync`, which reads the negotiated
 `policy.supports_rdma_weight_sync` property. An older installed SDK without

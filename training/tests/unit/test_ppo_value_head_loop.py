@@ -319,6 +319,7 @@ def test_injected_rollouts_do_not_provision_actor_deployment(monkeypatch) -> Non
         module.main(
             module.Config(
                 log_path="/tmp/ppo-value-test",
+                critic_trainer=module.TrainerConfig(training_shape_id="critic-shape"),
                 deployment=module.DeployConfig(tokenizer_model="tokenizer"),
             ),
             sample_prompt_fn=sample_prompt,
@@ -397,3 +398,12 @@ def test_actor_helper_selects_language_model_logprobs() -> None:
     assert calls[0] == ("forward", data, "cross_entropy")
     assert calls[1][0] == "backward"
     assert calls[1][3] == {"precomputed_forward": forward_result}
+
+
+def test_missing_critic_shape_fails_before_provisioning(monkeypatch) -> None:
+    def unexpected_provision(**_kwargs):
+        raise AssertionError("invalid topology must fail before resource creation")
+
+    monkeypatch.setattr(module, "build_service_client", unexpected_provision)
+    with pytest.raises(ValueError, match="critic_trainer.training_shape_id"):
+        module.main(module.Config(log_path="/tmp/test"), rows=[{"id": 1}])

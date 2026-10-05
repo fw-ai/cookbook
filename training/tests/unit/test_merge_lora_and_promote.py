@@ -73,8 +73,3 @@ def test_parse_args_accepts_adapter_gcs_alias(monkeypatch):
     )
 
     assert merge_tool.parse_args().adapter == "gs://bucket/adapter"
-
-
-@pytest.mark.parametrize("precision", ["source", "bf16", "nvfp4", "mxfp8", "fp8_block128"])
-def test_export_precision_does_not_force_full_model_dequantization(precision):
-    assert merge_tool._training_quant_extra_args(precision) == []

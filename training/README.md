@@ -132,6 +132,11 @@ For a categorical critic, set a dimension greater than one and provide an
 equally sized `critic_value_support`; the recipe decodes the value as the
 softmax expectation over that support.
 
+Set `critic_trainer.training_shape_id` to a validated shape that already
+configures the requested head, or `critic_trainer.job_id` to reattach a trainer
+with that topology. The public SDK does not add trainer launch overrides for
+the head dimension.
+
 The default `Config` is that reference-PPO baseline. `sao_config(log_path,
 **overrides)` applies the SAO settings (`SAO_SETTINGS`; SAO is Single-rollout
 Asynchronous Optimization, arXiv 2607.07508):

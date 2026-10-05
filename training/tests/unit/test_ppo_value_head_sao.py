@@ -505,6 +505,7 @@ def test_main_creates_mlp_only_critic_session(monkeypatch) -> None:
             module.Config(
                 log_path="/tmp/ppo-value-test",
                 critic_train_attn=False,
+                critic_trainer=module.TrainerConfig(training_shape_id="critic-shape"),
                 deployment=module.DeployConfig(tokenizer_model="tokenizer"),
             ),
             sample_prompt_fn=sample_prompt,

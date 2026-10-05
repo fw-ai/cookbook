@@ -35,7 +35,7 @@ def test_to_deployment_config_includes_extra_values():
     deploy_cfg = config_module.DeployConfig(
         deployment_id="dep-123",
         deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
-        extra_values={"priorityClass": "deployment"},
+        extra_values={"testValue": "test-value"},
     )
 
     deployment_config = deploy_cfg.to_deployment_config(
@@ -47,7 +47,7 @@ def test_to_deployment_config_includes_extra_values():
     assert deployment_config.deployment_id == "dep-123"
     assert deployment_config.region is None
     assert deployment_config.disable_speculative_decoding is False
-    assert deployment_config.extra_values == {"priorityClass": "deployment"}
+    assert deployment_config.extra_values == {"testValue": "test-value"}
 
 
 def test_to_deployment_config_omits_region():
