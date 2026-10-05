@@ -851,14 +851,15 @@ def run_eval(
     client: ReconnectableClient,
     batch_size: int,
     step: int,
-    epoch: int,
+    epoch: int | None,
 ) -> float | None:
     """Run evaluation without affecting model weights or optimizer state.
 
     Uses forward (no backward) so weights, gradient state, and Adam moments
     are untouched. Logprobs come back from the server; the training loss
     function is invoked client-side purely to compute metrics, and the
-    returned loss tensor is discarded.
+    returned loss tensor is discarded. ``epoch=None`` marks the
+    pre-training baseline eval.
     """
     if not eval_data:
         return None
@@ -897,8 +898,8 @@ def run_eval(
     eval_ppl = perplexity_from_nll(eval_loss)
 
     logger.info(
-        "[Eval] Epoch %d | Loss: %.4f | PPL: %.2f | Tokens: %d",
-        epoch + 1,
+        "[Eval] %s | Loss: %.4f | PPL: %.2f | Tokens: %d",
+        "Pre-training" if epoch is None else f"Epoch {epoch + 1}",
         eval_loss,
         eval_ppl,
         eval_resp_tokens,
@@ -1164,6 +1165,31 @@ def main(
         remaining_raw_rows = max(0, total_raw_rows - cursor.value)
         total_steps_estimate = step + ((remaining_raw_rows + effective_batch_size - 1) // effective_batch_size)
 
+        def _eval_and_record(step: int, epoch: int | None) -> None:
+            try:
+                eval_loss = run_eval(
+                    eval_data=eval_data,
+                    client=client,
+                    batch_size=cfg.batch_size,
+                    step=step,
+                    epoch=epoch,
+                )
+                if eval_loss is not None:
+                    runner.append_metrics(
+                        step,
+                        {"eval/loss": eval_loss, "eval/ppl": perplexity_from_nll(eval_loss)},
+                    )
+            except Exception as e:
+                phase = "pre-training" if epoch is None else f"epoch {epoch + 1}"
+                logger.warning("Eval failed at %s, continuing: %s", phase, e)
+
+        start_running(runner, total_steps=total_steps_estimate)
+
+        # Pre-training baseline (skipped on resume). Must run before
+        # pipe_started so it does not dilute train/tokens_per_sec.
+        if eval_data and step == 0:
+            _eval_and_record(step=step, epoch=None)
+
         # Always-on intra-step async + optional inter-step pipelining
         in_flight: deque = deque()
         pipe_started = time.time()
@@ -1306,8 +1332,6 @@ def main(
                 except Exception as e:
                     logger.warning("pipeline drain: %s", e)
 
-        start_running(runner, total_steps=total_steps_estimate)
-
         try:
             for epoch in range(completed_epochs, cfg.epochs):
                 loader_generator.manual_seed(cfg.seed + epoch)
@@ -1368,21 +1392,7 @@ def main(
 
                 # Run eval after each epoch
                 if eval_data:
-                    try:
-                        eval_loss = run_eval(
-                            eval_data=eval_data,
-                            client=client,
-                            batch_size=cfg.batch_size,
-                            step=step,
-                            epoch=epoch,
-                        )
-                        if eval_loss is not None:
-                            runner.append_metrics(
-                                step,
-                                {"eval/loss": eval_loss, "eval/ppl": perplexity_from_nll(eval_loss)},
-                            )
-                    except Exception as e:
-                        logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
+                    _eval_and_record(step=step, epoch=epoch)
         finally:
             # Drain in-flight ops on exit (incl. SIGTERM) to avoid leaking partial batches.
             _pipe_drain_safe()
