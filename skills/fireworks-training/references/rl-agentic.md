@@ -79,6 +79,17 @@ Muse Glimmer. Interleaved GLM history remains uncertified.
 The offline SFT/DPO renderer registry does not establish TITO or lightweight
 sidecar support. Both builders reject unsupported or mismatched pairs.
 
+For renderer review, submit the model/tokenizer repository and exact
+revision, tokenizer fingerprint, renderer implementation, and tests covering
+text, reasoning, null tool-only content, single/parallel tool calls, argument
+order, tool results, stop boundaries, and multi-turn history rewrites. Include
+raw sampled token IDs and aligned logprobs from a live run, plus token-for-token
+HF-template and sampled-completion round-trip comparisons. The
+[`renderer-verification.md`](renderer-verification.md) workflow supplies live
+parity evidence. HF parity alone does not certify sampled-history continuity.
+Adapters can use `training.renderer.tito.plugins`; registration does not certify
+a renderer. Certification applies only to the exact pinned model/tokenizer pair.
+
 For another model family, implement the shared loss-agnostic conversation and
 assistant-parse primitives, characterize complete multi-turn
 text/reasoning/tool/stop rendering against live sampled token IDs, add a
@@ -93,6 +104,44 @@ full-history model implementation or wait for support; do not bypass either
 check merely because an SFT renderer or chat template exists. Defining
 `prepare_incremental_prompt` is an explicit renderer-author assertion, not
 automatic coverage inherited from the base renderer certification.
+
+### Host-side runtime for isolated Docker agents
+
+An SDK host process can own the sampler, tokenizer, and sidecar while an agent
+container contains only its existing runtime. Set `bind_address` to that Docker
+network's bridge gateway IP, obtained from `docker network inspect`; the SDK
+advertises the same address in the trajectory endpoint. For example:
+
+```python
+sidecar = TITOSidecar.from_deployment_sampler(
+    setup.sampler,
+    renderer=renderer,
+    max_context_tokens=131072,
+    max_output_tokens=4096,
+    bind_address=bridge_gateway_ip,
+)
+await sidecar.start()
+endpoint = sidecar.create_trajectory()
+```
+
+Pass `endpoint.openai_base_url` and its per-trajectory `api_key` to the agent
+through your private harness configuration. No SDK/tokenizer install in the
+problem image or `--network host` is required. The default remains `127.0.0.1`;
+only specific IPv4/IPv6 addresses are accepted, not wildcard binds or hostnames.
+Binding is not a security boundary by itself: use dedicated Docker networks
+and host firewall rules to restrict which containers can reach the listener
+and other host services. Each trajectory still requires its own credential.
+The existing Harbor adapters continue to launch their sidecar in the sandbox.
+
+The sidecar buffers an entire completion before emitting assistant SSE data;
+it does not stream model tokens as they arrive. Streamed tool calls carry
+zero-based `index` values; non-streaming responses and stored lineage do not.
+Responses preserve parser-produced function argument strings, including key
+order and whitespace. Canonical JSON is used separately for semantic history
+and request identity. Semantic equivalence never overrides exact prompt-token
+alignment: if the harness or template changes history tokens, the configured
+drift policy still applies. GLM template inputs map null assistant content to
+an empty string so it cannot render as literal `None`.
 
 ### Slime reference
 

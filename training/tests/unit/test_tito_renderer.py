@@ -118,6 +118,28 @@ def _tools() -> list[dict]:
     ]
 
 
+@pytest.mark.parametrize("content", [None, ""])
+def test_glm_null_tool_assistant_is_empty_at_template_boundary(content: str | None) -> None:
+    renderer, tokenizer = _renderer()
+    request = TITOChatRequest.from_openai(
+        {
+            "messages": [
+                {"role": "user", "content": "call echo"},
+                {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": [
+                        {"type": "function", "function": {"name": "echo", "arguments": '{"message":"green"}'}},
+                    ],
+                },
+            ],
+        }
+    )
+    renderer.render_conversation_tokens(request)
+    assert tokenizer.render_calls[0][0][1]["content"] == ""
+    assert request.wire_value()["messages"][1]["content"] is content
+
+
 def test_full_history_render_delegates_once_to_the_chat_template() -> None:
     renderer, tokenizer = _renderer()
     payload = {

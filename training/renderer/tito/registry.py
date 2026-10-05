@@ -73,7 +73,7 @@ def _build_qwen38_tito_renderer(
 
 _TITO_RENDERER_CERTIFICATIONS = (
     TITORendererCertification(
-        certification_id="glm-5.3-preserved@935644c0-experimental-r3",
+        certification_id="glm-5.3-preserved@935644c0-experimental-r4",
         renderer_names=frozenset({GLM53_RENDERER_NAME}),
         tokenizer_fingerprint=(
             "354d31d912584b016d9777f7b384cd552989bfb6080ed37c0d71a50c53c2ab77"
@@ -81,7 +81,7 @@ _TITO_RENDERER_CERTIFICATIONS = (
         renderer_factory=_build_glm53_tito_renderer,
     ),
     TITORendererCertification(
-        certification_id="glm-5.2-preserved@b4734de4-v7",
+        certification_id="glm-5.2-preserved@b4734de4-v8",
         renderer_names=frozenset({GLM52_RENDERER_NAME}),
         tokenizer_fingerprint=(
             "5591741bd28d5acb92d4b7d735e0084d4d76d9ce50e2afe99aec6b01e1ef3ef0"
