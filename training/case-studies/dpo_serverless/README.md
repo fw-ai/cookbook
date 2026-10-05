@@ -42,8 +42,36 @@ export FIREWORKS_API_KEY=fw_...
 jupyter lab case-studies/dpo_serverless/dpo_ultrafeedback_serverless.ipynb
 ```
 
-Defaults are a real training run: ~1 epoch over 2968 preference pairs, **2.5–3 hours**. Lower
-`MAX_PAIRS` and `STEPS` in the config cell for a smoke test. Promotion is off by default.
+**Use an account-scoped API key.** Serverless training rejects keys with access to multiple
+accounts — creating the training client fails with `create_session: account not found`.
+
+On Colab, uncomment the block at the top of the setup cell. It clones the repo and installs
+`training/` itself, so you get the repo's pinned `transformers` / `torch` / `tinker` versions rather
+than whatever is preinstalled.
+
+## Cost and run size
+
+Run-All on a fresh kernel **spends nothing**. `RUN_LIVE = False` in the config cell, and every cell
+that calls the paid serverless trainer starts with `%%live` and prints a skip notice instead. The data
+download, validation, the section 4 math, and the rendering checks all still run.
+
+Set `RUN_LIVE = True` to train. Serverless training bills per token on three meters (prefill, sample,
+train). Check current rates on the [pricing page](https://fireworks.ai/pricing) or the
+[training cost estimator](https://docs.fireworks.ai/fine-tuning/cost-estimator).
+
+| | `STEPS` | `MAX_PAIRS` | what it is |
+| --- | --- | --- | --- |
+| **default (smoke)** | 10 | 200 | proves the pipeline end to end; 80 pair-visits, too short to move the win-rate |
+| **full run** | 370 | 3000 | ~1 epoch over 2968 pairs, **2.5–3 hours** wall-clock including the reference pass |
+
+Rough token volume for the full run, at the ~400-token median sequence length on this dataset:
+
+- **train:** 370 steps × 8 pairs × 2 sequences ≈ 2.4M tokens
+- **prefill:** ≈ 2.3M for the one-off reference pass, plus ≈ 0.5M for about 20 held-out evals
+- **sample:** win-rate generations, 2 × `EVAL_PAIRS` responses of at most 2048 tokens each,
+  plus the judge calls (billed as ordinary serverless inference)
+
+`EARLY_STOP_CHOSEN_DROP` can end the run before `STEPS`. Promotion is off by default.
 
 **Teardown:** nothing. No deployment, no trainer job — the sampling clients release when the notebook
 exits.
