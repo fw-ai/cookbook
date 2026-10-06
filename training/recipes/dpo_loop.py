@@ -62,6 +62,7 @@ from training.utils import (
     AppendOnlyPickleLog,
     DatasetError,
     DeployConfig,
+    GcsJsonlRenderDataset,
     NO_VALID_PREFERENCE_PAIRS_MESSAGE,
     TrainerConfig,
     JsonlRenderDataset,
@@ -103,6 +104,12 @@ logger = logging.getLogger(__name__)
 # constant seed keeps the grouped order deterministic across runs/resume while
 # still de-correlating batch length from training step.
 _DPO_LENGTH_GROUP_SEED = 0
+DATASET_LOADING_MODE_STAGE = "stage"
+DATASET_LOADING_MODE_STREAM = "stream"
+SUPPORTED_DATASET_LOADING_MODES = {
+    DATASET_LOADING_MODE_STAGE,
+    DATASET_LOADING_MODE_STREAM,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +125,10 @@ class Config:
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     """Path to the training dataset: a JSONL file or a directory of .jsonl shards."""
+    dataset_loading_mode: str = DATASET_LOADING_MODE_STAGE
+    """How to load ``dataset``. ``stage`` reads a local/staged JSONL path.
+    ``stream`` reads plaintext ``gs://`` JSONL shards through bounded GCS range
+    requests and avoids a full local payload copy."""
     tokenizer_model: str = ""  # HuggingFace model name for client-side tokenization
     tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
     tokenizer_trust_remote_code: bool | None = None
@@ -395,8 +406,35 @@ def _forward_backward_pairs(
 _DONE = object()
 
 
+def _normalize_dataset_loading_mode(mode: str) -> str:
+    normalized = mode.strip().lower().replace("-", "_")
+    if normalized not in SUPPORTED_DATASET_LOADING_MODES:
+        raise DatasetError(
+            f"Unsupported dataset_loading_mode {mode!r}; expected 'stage' or 'stream'."
+        )
+    return normalized
+
+
+def _make_pair_dataset(
+    cfg: Config,
+) -> JsonlRenderDataset | GcsJsonlRenderDataset:
+    mode = _normalize_dataset_loading_mode(cfg.dataset_loading_mode)
+    if mode == DATASET_LOADING_MODE_STAGE:
+        return JsonlRenderDataset(cfg.dataset, _render_pair_worker)
+    if not cfg.dataset.startswith("gs://"):
+        raise DatasetError(
+            "dataset_loading_mode='stream' requires a gs:// dataset path; "
+            f"got {cfg.dataset!r}."
+        )
+    if cfg.group_by_length:
+        raise DatasetError(
+            "dataset_loading_mode='stream' does not support group_by_length yet."
+        )
+    return GcsJsonlRenderDataset(cfg.dataset, _render_pair_worker)
+
+
 async def _train_loop(
-    pair_dataset: JsonlRenderDataset,
+    pair_dataset: JsonlRenderDataset | GcsJsonlRenderDataset,
     ref_cache_log: AppendOnlyPickleLog | None,
     reference: ReconnectableClient | SamplerReference,
     policy: ReconnectableClient,
@@ -899,7 +937,7 @@ def main(
         _init_pair_worker(*init_args)
         worker_init_fn = functools.partial(_init_pair_worker, *init_args)
 
-        pair_dataset = JsonlRenderDataset(cfg.dataset, _render_pair_worker)
+        pair_dataset = _make_pair_dataset(cfg)
         if len(pair_dataset) == 0:
             raise DatasetError(f"No data found in {cfg.dataset}")
 

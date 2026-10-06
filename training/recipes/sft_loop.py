@@ -59,6 +59,7 @@ from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
     DatasetError,
+    GcsJsonlRenderDataset,
     NO_VALID_TRAINING_EXAMPLES_MESSAGE,
     TrainerConfig,
     JSONL_ROW_INDEX_KEY,
@@ -107,6 +108,12 @@ _worker_state: dict = {}
 RENDER_SAMPLE_LIMIT_ENV = "FIRETITAN_SFT_RENDER_SAMPLES_LIMIT"
 DEFAULT_RENDER_SAMPLE_LIMIT = 20
 MAX_VISION_RENDER_SAMPLE_RESERVE = 5
+DATASET_LOADING_MODE_STAGE = "stage"
+DATASET_LOADING_MODE_STREAM = "stream"
+SUPPORTED_DATASET_LOADING_MODES = {
+    DATASET_LOADING_MODE_STAGE,
+    DATASET_LOADING_MODE_STREAM,
+}
 
 
 def _parse_render_samples_limit(value: str) -> int | None:
@@ -554,7 +561,10 @@ def compute_eval_carveout(
     return 0 if carveout >= total_samples else carveout
 
 
-def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
+def _render_eagerly(
+    ds: JsonlRenderDataset | GcsJsonlRenderDataset,
+    n: int,
+) -> List[tinker.Datum]:
     """Render the first ``n`` rows of ``ds`` in-process, dropping Nones."""
     datums: List[tinker.Datum] = []
     for item in (ds[i] for i in range(n)):
@@ -566,6 +576,47 @@ def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
         else:
             datums.append(item)
     return datums
+
+
+def _normalize_dataset_loading_mode(mode: str) -> str:
+    normalized = mode.strip().lower().replace("-", "_")
+    if normalized not in SUPPORTED_DATASET_LOADING_MODES:
+        raise DatasetError(
+            f"Unsupported dataset_loading_mode {mode!r}; expected 'stage' or 'stream'."
+        )
+    return normalized
+
+
+def _make_jsonl_dataset(
+    *,
+    path: str,
+    render_fn: Any,
+    cfg: "Config",
+    max_examples: int | None = None,
+) -> JsonlRenderDataset | GcsJsonlRenderDataset:
+    mode = _normalize_dataset_loading_mode(cfg.dataset_loading_mode)
+    if mode == DATASET_LOADING_MODE_STAGE:
+        return JsonlRenderDataset(
+            path,
+            render_fn,
+            max_examples=max_examples,
+            row_index_key=JSONL_ROW_INDEX_KEY,
+        )
+    if not path.startswith("gs://"):
+        raise DatasetError(
+            "dataset_loading_mode='stream' requires a gs:// dataset path; "
+            f"got {path!r}."
+        )
+    if cfg.group_by_length:
+        raise DatasetError(
+            "dataset_loading_mode='stream' does not support group_by_length yet."
+        )
+    return GcsJsonlRenderDataset(
+        path,
+        render_fn,
+        max_examples=max_examples,
+        row_index_key=JSONL_ROW_INDEX_KEY,
+    )
 
 
 def _flatten_rendered_batch(
@@ -583,7 +634,7 @@ def _flatten_rendered_batch(
 
 def _prepare_datasets(
     cfg: "Config",
-) -> tuple[JsonlRenderDataset, List[tinker.Datum]]:
+) -> tuple[JsonlRenderDataset | GcsJsonlRenderDataset, List[tinker.Datum]]:
     """Build the training dataset and (optional) eval set.
 
     Eval can come from an explicit ``cfg.evaluation_dataset`` or be
@@ -592,20 +643,20 @@ def _prepare_datasets(
     rows but otherwise preserves raw-file order; the training loader
     still does its own per-epoch shuffling.
     """
-    training_ds = JsonlRenderDataset(
-        cfg.dataset,
-        _render_one_worker,
+    training_ds = _make_jsonl_dataset(
+        path=cfg.dataset,
+        render_fn=_render_one_worker,
+        cfg=cfg,
         max_examples=cfg.max_examples,
-        row_index_key=JSONL_ROW_INDEX_KEY,
     )
     if len(training_ds) == 0:
         raise DatasetError(f"No examples found in {cfg.dataset}")
 
     if cfg.evaluation_dataset:
-        eval_ds = JsonlRenderDataset(
-            cfg.evaluation_dataset,
-            _render_one_worker,
-            row_index_key=JSONL_ROW_INDEX_KEY,
+        eval_ds = _make_jsonl_dataset(
+            path=cfg.evaluation_dataset,
+            render_fn=_render_one_worker,
+            cfg=cfg,
         )
         eval_data = _render_eagerly(eval_ds, len(eval_ds))
         logger.info(
@@ -667,6 +718,10 @@ class Config:
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
     """Path to the training dataset: a JSONL file or a directory of .jsonl shards."""
+    dataset_loading_mode: str = DATASET_LOADING_MODE_STAGE
+    """How to load ``dataset``. ``stage`` reads a local/staged JSONL path.
+    ``stream`` reads plaintext ``gs://`` JSONL shards through bounded GCS range
+    requests and avoids a full local payload copy."""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
     tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
     tokenizer_trust_remote_code: bool | None = None

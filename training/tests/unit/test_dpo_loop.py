@@ -56,6 +56,59 @@ def test_config_uses_shared_default_weight_decay():
     assert cfg.render_workers is None
 
 
+def test_make_pair_dataset_stage_uses_local_jsonl(tmp_path):
+    path = tmp_path / "pairs.jsonl"
+    path.write_text('{"chosen": [], "rejected": []}\n')
+    cfg = module.Config(log_path=str(tmp_path), dataset=str(path))
+
+    ds = module._make_pair_dataset(cfg)
+
+    assert isinstance(ds, JsonlRenderDataset)
+
+
+def test_make_pair_dataset_stream_uses_gcs_dataset(monkeypatch, tmp_path):
+    calls: list[tuple[str, object]] = []
+
+    class _FakeGcsDataset:
+        def __init__(self, path, render_fn):
+            calls.append((path, render_fn))
+
+    monkeypatch.setattr(module, "GcsJsonlRenderDataset", _FakeGcsDataset)
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset="gs://bucket/pairs.jsonl",
+        dataset_loading_mode=module.DATASET_LOADING_MODE_STREAM,
+    )
+
+    ds = module._make_pair_dataset(cfg)
+
+    assert isinstance(ds, _FakeGcsDataset)
+    assert calls == [("gs://bucket/pairs.jsonl", module._render_pair_worker)]
+
+
+def test_make_pair_dataset_stream_rejects_local_path(tmp_path):
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset=str(tmp_path / "pairs.jsonl"),
+        dataset_loading_mode=module.DATASET_LOADING_MODE_STREAM,
+    )
+
+    with pytest.raises(module.DatasetError, match="requires a gs:// dataset path"):
+        module._make_pair_dataset(cfg)
+
+
+def test_make_pair_dataset_stream_rejects_group_by_length(tmp_path):
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        dataset="gs://bucket/pairs.jsonl",
+        dataset_loading_mode=module.DATASET_LOADING_MODE_STREAM,
+        group_by_length=True,
+    )
+
+    with pytest.raises(module.DatasetError, match="does not support group_by_length"):
+        module._make_pair_dataset(cfg)
+
+
 def test_output_model_requires_promotable_final_checkpoint():
     cfg = module.Config(
         log_path="/tmp/dpo_test_logs",

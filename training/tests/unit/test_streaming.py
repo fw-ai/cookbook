@@ -20,11 +20,13 @@ import os
 
 import pytest
 
+import training.utils.streaming as streaming
 from training.utils.runner import DatasetError
 from training.utils.streaming import (
     AppendOnlyPickleLog,
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,
+    GcsJsonlRenderDataset,
     JSONL_ROW_INDEX_KEY,
     JsonlRenderDataset,
     LengthGroupedBatchSampler,
@@ -128,6 +130,66 @@ def _filter_odd_render(row: dict) -> dict | None:
     return {"id": row["i"]}
 
 
+class _FakeGcsBlob:
+    def __init__(self, name: str, data: bytes, generation: int = 7):
+        self.name = name
+        self._data = data
+        self.size = len(data)
+        self.generation = generation
+        self.download_calls = 0
+
+    def download_as_bytes(self, *, start: int, end: int) -> bytes:
+        self.download_calls += 1
+        return self._data[start : end + 1]
+
+
+class _FakeGcsBucket:
+    def __init__(self, blobs: dict[str, _FakeGcsBlob]):
+        self._blobs = blobs
+
+    def get_blob(self, name: str) -> _FakeGcsBlob | None:
+        return self._blobs.get(name)
+
+    def blob(self, name: str, generation: int | None = None) -> _FakeGcsBlob:
+        blob = self._blobs[name]
+        assert generation in (None, blob.generation)
+        return blob
+
+
+class _FakeGcsClient:
+    def __init__(self, blobs_by_bucket: dict[str, dict[str, bytes]]):
+        self._buckets = {
+            bucket: {
+                name: _FakeGcsBlob(name=name, data=data, generation=i + 1)
+                for i, (name, data) in enumerate(blobs.items())
+            }
+            for bucket, blobs in blobs_by_bucket.items()
+        }
+
+    def bucket(self, name: str) -> _FakeGcsBucket:
+        return _FakeGcsBucket(self._buckets[name])
+
+    def list_blobs(self, bucket_name: str, *, prefix: str):
+        return [
+            blob
+            for name, blob in self._buckets[bucket_name].items()
+            if name.startswith(prefix)
+        ]
+
+
+def _install_fake_gcs(monkeypatch: pytest.MonkeyPatch, blobs: dict[str, dict[str, bytes]]) -> _FakeGcsClient:
+    client = _FakeGcsClient(blobs)
+    monkeypatch.setattr(streaming, "_make_gcs_client", lambda: client)
+    return client
+
+
+@pytest.fixture(autouse=True)
+def _clear_gcs_index_cache():
+    streaming._GCS_JSONL_INDEX_CACHE.clear()
+    yield
+    streaming._GCS_JSONL_INDEX_CACHE.clear()
+
+
 def test_dataset_basic_indexing(tmp_path):
     path = str(tmp_path / "data.jsonl")
     _write_jsonl(path, [{"i": i} for i in range(5)])
@@ -223,6 +285,110 @@ def test_dataset_does_not_add_source_row_index_by_default(tmp_path):
     ds = JsonlRenderDataset(path, render)
 
     assert ds[0] == {"i": 0}
+
+
+def test_gcs_dataset_range_reads_rows(monkeypatch):
+    payload = b'{"i": 0}\n{"i": 1}\n{"i": 2}\n'
+    _install_fake_gcs(monkeypatch, {"bucket": {"data/train.jsonl": payload}})
+
+    ds = GcsJsonlRenderDataset(
+        "gs://bucket/data/train.jsonl",
+        _identity_render,
+        row_index_key=JSONL_ROW_INDEX_KEY,
+        block_size=10,
+    )
+
+    assert len(ds) == 3
+    assert ds.num_underlying_rows == 3
+    assert ds[2] == {"id": 2, "doubled": 4}
+    assert ds[0] == {"id": 0, "doubled": 0}
+    assert ds.approx_row_sizes() == [9, 9, 9]
+
+
+def test_gcs_dataset_prefix_uses_sorted_jsonl_shards(monkeypatch):
+    _install_fake_gcs(
+        monkeypatch,
+        {
+            "bucket": {
+                "prefix/b.jsonl": b'{"i": 2}\n',
+                "prefix/a.jsonl": b'{"i": 1}\n',
+                "prefix/ignore.txt": b'{"i": 100}\n',
+            }
+        },
+    )
+
+    ds = GcsJsonlRenderDataset("gs://bucket/prefix", _identity_render)
+
+    assert [ds[i]["id"] for i in range(len(ds))] == [1, 2]
+
+
+def test_gcs_dataset_iter_raw_rows_preserves_uri_line_and_object(monkeypatch):
+    payload = b'\n{"i": 0}\n{"i": 1}\n'
+    _install_fake_gcs(monkeypatch, {"bucket": {"train.jsonl": payload}})
+
+    ds = GcsJsonlRenderDataset("gs://bucket/train.jsonl", _identity_render)
+
+    assert list(ds.iter_raw_rows()) == [
+        ("gs://bucket/train.jsonl", 2, {"i": 0}),
+        ("gs://bucket/train.jsonl", 3, {"i": 1}),
+    ]
+
+
+def test_gcs_dataset_row_callback_runs_during_offset_scan(monkeypatch):
+    payload = b'\n{"i": 0}\n{"i": 1}\n'
+    client = _install_fake_gcs(monkeypatch, {"bucket": {"train.jsonl": payload}})
+    blob = client.bucket("bucket").blob("train.jsonl")
+    seen = []
+
+    ds = GcsJsonlRenderDataset(
+        "gs://bucket/train.jsonl",
+        _identity_render,
+        row_callback=lambda uri, line, row: seen.append((uri, line, row)),
+    )
+
+    assert len(ds) == 2
+    assert seen == [
+        ("gs://bucket/train.jsonl", 2, {"i": 0}),
+        ("gs://bucket/train.jsonl", 3, {"i": 1}),
+    ]
+    scan_downloads = blob.download_calls
+    assert scan_downloads == 1
+
+    GcsJsonlRenderDataset("gs://bucket/train.jsonl", _identity_render)
+
+    assert blob.download_calls == scan_downloads
+
+
+def test_gcs_dataset_reuses_cached_offset_index(monkeypatch):
+    payload = b'{"i": 0}\n{"i": 1}\n'
+    client = _install_fake_gcs(monkeypatch, {"bucket": {"train.jsonl": payload}})
+    blob = client.bucket("bucket").blob("train.jsonl")
+
+    first = GcsJsonlRenderDataset("gs://bucket/train.jsonl", _identity_render, block_size=8)
+    scan_downloads = blob.download_calls
+    second = GcsJsonlRenderDataset("gs://bucket/train.jsonl", _identity_render, block_size=8)
+
+    assert len(first) == len(second) == 2
+    assert scan_downloads > 0
+    assert blob.download_calls == scan_downloads
+
+
+def test_gcs_dataset_with_indices_view(monkeypatch):
+    payload = b'{"i": 0}\n{"i": 1}\n{"i": 2}\n{"i": 3}\n'
+    _install_fake_gcs(monkeypatch, {"bucket": {"train.jsonl": payload}})
+    full = GcsJsonlRenderDataset("gs://bucket/train.jsonl", _identity_render, block_size=12)
+
+    view = full.with_indices([3, 1])
+
+    assert [view[i]["id"] for i in range(len(view))] == [3, 1]
+    assert len(full) == 4
+
+
+def test_gcs_dataset_rejects_malformed_jsonl(monkeypatch):
+    _install_fake_gcs(monkeypatch, {"bucket": {"train.jsonl": b'{"i": 0}\n{"i":\n'}})
+
+    with pytest.raises(DatasetError, match="invalid JSONL"):
+        GcsJsonlRenderDataset("gs://bucket/train.jsonl", _identity_render)
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +909,10 @@ def test_resolve_jsonl_shards_directory_sorted_recursive(tmp_path):
     assert rels == ["a.jsonl", "a/nested.jsonl", "b.jsonl", "sub/c.jsonl"]
 
 
-@pytest.mark.parametrize("rel,match", [("missing.jsonl", "does not exist"), (None, "no '\*.jsonl' shards")])
+@pytest.mark.parametrize(
+    "rel,match",
+    [("missing.jsonl", "does not exist"), (None, r"no '\*.jsonl' shards")],
+)
 def test_resolve_jsonl_shards_rejects_unusable_paths(tmp_path, rel, match):
     """Empty / no-shard directories and missing paths fail closed."""
     path = str(tmp_path / rel) if rel else str(tmp_path)
@@ -754,7 +923,11 @@ def test_resolve_jsonl_shards_rejects_unusable_paths(tmp_path, rel, match):
 def test_dataset_multi_shard_ordering_indexing_and_row_indices(tmp_path):
     """Cross-shard getitem, with_indices views, and global row indices."""
     # Passthrough render_fn so the attached row-index key survives.
-    ds = JsonlRenderDataset(_write_shard_dataset(tmp_path), lambda row: row, row_index_key=JSONL_ROW_INDEX_KEY)
+    ds = JsonlRenderDataset(
+        _write_shard_dataset(tmp_path),
+        lambda row: row,
+        row_index_key=JSONL_ROW_INDEX_KEY,
+    )
     assert len(ds) == 5
     assert ds.num_underlying_rows == 5
     # Global order is shard-major in sorted relative-path order, so row

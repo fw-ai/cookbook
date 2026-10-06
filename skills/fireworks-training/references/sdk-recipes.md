@@ -30,6 +30,12 @@ Always required on `Config` (with `trainer=TrainerConfig(...)`):
 
 - `base_model` — `accounts/fireworks/models/<name>`
 - `dataset` — path to JSONL
+- `dataset_loading_mode` — optional, default `"stage"`. Leave this default for
+  normal recipe runs. `"stream"` is for Fireworks-managed SFT/DPO jobs whose
+  dataset is a `gs://` JSONL object or prefix and is validated/read by bounded
+  GCS range reads instead of staging the payload onto the orchestrator disk.
+  Stream mode does not support local paths, CMEK datasets, or
+  `group_by_length`.
 - `tokenizer_model` — HF model name
 - `log_path` — directory for `dataloader.json` and logs
 - `trainer.training_shape_id` — optional override; leave unset for auto-selection. `accelerator_type` and `accelerator_count` are unsupported; do not set manual `node_count` (see [`sdk-shapes.md`](sdk-shapes.md))
