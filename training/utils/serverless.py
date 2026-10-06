@@ -63,6 +63,19 @@ class ServerlessCheckpointClient:
         )
 
 
+def enable_serverless_supervised_409_retry(service: FiretitanServiceClient) -> None:
+    """Opt an existing SFT/DPO serverless service into capacity-409 retries.
+
+    Older supported SDK releases lack this optional hook; leave their retry
+    behavior unchanged rather than preventing training from starting. Call
+    before creating or resuming a training client. This does not select a
+    trainer backend or opt other workloads in.
+    """
+    enable_retry = getattr(service, "_enable_serverless_supervised_409_retry", None)
+    if enable_retry is not None:
+        enable_retry()
+
+
 def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, stack):
     """Build the training + checkpoint handles for a serverless LoRA run.
 
@@ -88,6 +101,10 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
         default_headers=additional_headers or None,
     )
     stack.callback(service.close)
+    # This helper is shared by the serverless SFT and DPO recipes only. Opt the
+    # holder in before model creation so create/retrieve and training futures
+    # share the narrowly scoped capacity-409 retry policy.
+    enable_serverless_supervised_409_retry(service)
     training_client = service.create_lora_training_client(
         cfg.base_model,
         rank=cfg.lora_rank,

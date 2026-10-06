@@ -68,6 +68,7 @@ except ImportError:
 from training.utils import WandBConfig, setup_wandb, wandb_finish, wandb_log
 from training.utils.data import normalize_preference_row
 from training.utils.losses import make_batch_dpo_loss_fn
+from training.utils.serverless import enable_serverless_supervised_409_retry
 from training.utils.supervised import (
     build_renderer,
     render_preference_pair,
@@ -339,6 +340,7 @@ class ServerlessUltraFeedbackDPO:
             api_key=cfg.api_key,
             base_url=_serverless_base_url(cfg.api_base_url),
         )
+        enable_serverless_supervised_409_retry(self.service)
 
         # Resume vs fresh start. Resuming derives base_model / lora_rank from
         # the checkpoint itself, so a resumed run cannot silently disagree
