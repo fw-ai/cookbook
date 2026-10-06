@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -27,6 +28,8 @@ from training.utils.rl.async_rl.producer import (
     _PRODUCER_FINISHED,
 )
 from training.utils.rl.rollout.group_assembler import AdvantageFn
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -105,6 +108,13 @@ class AsyncRLCoordinator:
     @property
     def resolved_rows(self) -> int:
         return self._producer.resolved_rows
+
+    def restore_train_spill(self) -> int:
+        """Load spilled PromptGroups for the next batch. Call before start()."""
+
+        if self._started:
+            raise RuntimeError("restore_train_spill must run before start()")
+        return self._producer.restore_from_spill()
 
     def start(self) -> None:
         if self._started:
@@ -229,6 +239,12 @@ class AsyncRLCoordinator:
                 self._executor = None
 
     async def __aenter__(self) -> AsyncRLCoordinator:
+        restored = self.restore_train_spill()
+        if restored:
+            logger.info(
+                "reloaded %d groups from train_spill before producer start",
+                restored,
+            )
         self.start()
         return self
 

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Hashable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TypeAlias
 
 from training.train_loop import DynamicFilterFn
@@ -21,6 +22,12 @@ from training.utils.rl.async_rl.errors import (
     RecoverableCircuitBreaker,
     RolloutErrorClassifier,
 )
+from training.utils.rl.async_rl.group_spill import (
+    clear_batch as clear_spill_batch,
+    load_batch as load_spill_batch,
+    spill_root_from_env,
+    write_group as write_spill_group,
+)
 from training.utils.rl.rollout.group_assembler import (
     AdvantageFn,
     GroupAssembler,
@@ -34,6 +41,10 @@ from training.utils.rl.rollout.types import (
 logger = logging.getLogger(__name__)
 
 RunFactory: TypeAlias = Callable[[int], Awaitable[RolloutRun | None]]
+
+
+async def _spill_stub_run(_version: int) -> RolloutRun | None:
+    raise RuntimeError("spilled row must not be re-rolled")
 
 
 @dataclass(slots=True)
@@ -209,6 +220,97 @@ class RolloutProducer:
             name="async-rl-rollout-producer",
         )
 
+    def restore_from_spill(self, spill_root: Path | None = None) -> int:
+        """Reload accepted groups for the next batch from disk.
+
+        Must run before ``start()``. Skips matching dataset rows so spilled
+        groups are not rolled again. Returns the number of groups restored.
+        """
+
+        if self._driver_task is not None:
+            raise RuntimeError("restore_from_spill must run before start()")
+        if self._fill_batch is not None:
+            raise RuntimeError("restore_from_spill called after fill already started")
+        root = spill_root if spill_root is not None else spill_root_from_env()
+        if root is None:
+            return 0
+        spill = load_spill_batch(root, self._next_batch_id)
+        if spill is None:
+            return 0
+        if spill.target_groups != self._groups_per_batch:
+            raise RuntimeError(
+                "spill target_groups mismatch: "
+                f"spill={spill.target_groups} producer={self._groups_per_batch}"
+            )
+        if spill.chunk_targets != self._chunk_targets:
+            logger.warning(
+                "spill chunk_targets %s != producer %s; using producer targets",
+                spill.chunk_targets,
+                self._chunk_targets,
+            )
+
+        batch = self._batch_for_next_group()
+        if batch.batch_id != spill.batch_id:
+            raise RuntimeError(
+                f"spill batch_id {spill.batch_id} != next batch {batch.batch_id}"
+            )
+
+        # Contiguous sequences from 0 so publish cursor flush works even if the
+        # prior process had reject gaps in its sequence space.
+        for item in spill.groups:
+            self._skip_source_row(item.source_token)
+            sequence = self._next_sequence
+            self._next_sequence += 1
+            self._cursor[sequence] = _CursorEntry(
+                request=RolloutRow(
+                    row_id=item.source_token,
+                    run_factory=_spill_stub_run,
+                ),
+                batch_id=batch.batch_id,
+            )
+            chunk = batch._append_group(
+                sequence=sequence,
+                group=item.group,
+                submit_version=item.submit_version,
+                source_token=item.source_token,
+            )
+            self._accepted_samples += self._cpp
+            self._stats.rows_accepted += 1
+            if chunk is not None:
+                self._emit_chunk(batch, chunk)
+
+        if batch.realized_groups == batch.target_groups:
+            self._seal_fill_batch()
+
+        logger.info(
+            "reloaded %d groups from train_spill batch-%d (target %d)",
+            spill.realized_groups,
+            spill.batch_id,
+            spill.target_groups,
+        )
+        return spill.realized_groups
+
+    def _skip_source_row(self, source_token: Hashable) -> None:
+        """Consume one dataset row that was already rolled into the spill."""
+
+        if self._prefetched is not None:
+            row = self._prefetched
+            self._prefetched = None
+        else:
+            try:
+                row = next(self._rows)
+            except StopIteration:
+                self._source_exhausted = True
+                raise RuntimeError(
+                    f"spill restore needs row {source_token!r} but dataset is exhausted"
+                ) from None
+        if row.row_id != source_token:
+            logger.warning(
+                "spill row skip mismatch: expected %r got %r (still skipping)",
+                source_token,
+                row.row_id,
+            )
+
     async def aclose(self) -> None:
         if self._closing:
             if self._driver_task is not None:
@@ -246,6 +348,14 @@ class RolloutProducer:
         self._published_version = batch.batch_id
         self._next_publish_batch_id += 1
         del self._batches[batch.batch_id]
+        spill_root = spill_root_from_env()
+        if spill_root is not None:
+            try:
+                clear_spill_batch(spill_root, batch.batch_id)
+            except Exception:
+                logger.exception(
+                    "train spill clear failed batch=%d", batch.batch_id
+                )
         self._driver_wake.set()
         return self.resolved_rows
 
@@ -510,6 +620,26 @@ class RolloutProducer:
             submit_version=resolution.min_submit_version,
             source_token=source_token,
         )
+        spill_root = spill_root_from_env()
+        if spill_root is not None:
+            try:
+                write_spill_group(
+                    spill_root,
+                    batch_id=batch.batch_id,
+                    sequence=sequence,
+                    group=resolution.pg,
+                    source_token=source_token,
+                    submit_version=resolution.min_submit_version,
+                    target_groups=batch.target_groups,
+                    chunk_targets=batch.chunk_targets,
+                )
+            except Exception:
+                logger.exception(
+                    "train spill write failed batch=%d sequence=%d",
+                    batch.batch_id,
+                    sequence,
+                )
+                raise
         if chunk is not None:
             self._emit_chunk(batch, chunk)
         if batch.realized_groups == batch.target_groups:
