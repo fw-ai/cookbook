@@ -84,6 +84,19 @@ def _finish_reason(completion: Any, message: dict[str, Any]) -> str:
     return "tool_calls" if message.get("tool_calls") else "stop"
 
 
+def _flatten_message_content(message: dict[str, Any]) -> None:
+    """Make ``content`` a plain string, as the OpenAI chat-completions spec requires.
+
+    Some renderers (e.g. ``kimi_k3``) return typed content parts
+    (``[{"type": "text", "text": ...}]``) even for plain text, while others
+    (e.g. ``qwen3_5``) return a string. NeMo Gym's ``inference_provider`` does
+    string arithmetic on ``content`` and 500s on a list.
+    """
+    content = message.get("content")
+    if content is not None and not isinstance(content, str):
+        message["content"] = flatten_content(content)
+
+
 def _fix_tool_calls_for_openai(message: dict[str, Any]) -> None:
     """Coerce ``Renderer.to_openai_message()``'s tool_calls into real OpenAI shape.
 
@@ -241,6 +254,7 @@ class RecordingProxy:
             raise web.HTTPServiceUnavailable(text="sampler not ready -- set_sampler() not called yet")
         session = self.get_or_create_session(rollout_id)
         t0 = time.monotonic()
+        logger.info("proxy: rollout_id=%s turn=%d request received", rollout_id, session.turn_count)
 
         async with session.lock:
             messages = list(body.get("messages") or [])
@@ -260,6 +274,10 @@ class RecordingProxy:
             requested = body.get("max_tokens") or body.get("max_completion_tokens")
             max_tokens = min(int(requested), self._max_sample_tokens) if requested else self._max_sample_tokens
 
+            logger.info(
+                "proxy: rollout_id=%s prompt=%d tokens, calling sampler (+%.1fs)",
+                rollout_id, len(prompt_ids), time.monotonic() - t0,
+            )
             completions = await session.training.sample_with_prompt_tokens(
                 self._sampler,
                 prompt_ids,
@@ -285,6 +303,7 @@ class RecordingProxy:
 
             parsed_message = self._renderer.parse_completion(output_tokens)
             _fix_tool_calls_for_openai(parsed_message)
+            _flatten_message_content(parsed_message)
             finish_reason = _finish_reason(completion, parsed_message)
 
             if is_user_sim:
@@ -305,7 +324,7 @@ class RecordingProxy:
                 session.leaf_id = node.node_id
                 session.turn_count += 1
 
-        logger.debug("proxy: rollout_id=%s turn=%d served in %.1fs", rollout_id, session.turn_count, time.monotonic() - t0)
+        logger.info("proxy: rollout_id=%s turn=%d served in %.1fs", rollout_id, session.turn_count, time.monotonic() - t0)
         return web.json_response(self._completion_payload(parsed_message, output_tokens, finish_reason))
 
     @staticmethod

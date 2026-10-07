@@ -13,6 +13,7 @@ from training.examples.rl.nemo_gym.proxy import (
     RolloutSession,
     _finish_reason,
     _fix_tool_calls_for_openai,
+    _flatten_message_content,
     _is_user_simulator_call,
 )
 from training.utils.rl.agent.trajectory import TurnRecord
@@ -146,3 +147,32 @@ def test_tool_calls_coerced_to_openai_shape():
     _fix_tool_calls_for_openai(msg)
     call = msg["tool_calls"][0]
     assert call["id"].startswith("call_") and call["function"]["arguments"] == '{"a": 1}'
+
+
+def test_typed_content_parts_are_flattened_to_a_string():
+    msg = {"role": "assistant", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
+    _flatten_message_content(msg)
+    assert msg["content"] == "ab"
+    already = {"role": "assistant", "content": "x"}
+    _flatten_message_content(already)
+    assert already["content"] == "x"
+    none = {"role": "assistant", "content": None, "tool_calls": [1]}
+    _flatten_message_content(none)
+    assert none["content"] is None
+
+
+def test_response_content_is_string_when_renderer_returns_parts():
+    class _PartsRenderer(_StubRenderer):
+        def parse_completion(self, tokens):
+            return {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
+
+    proxy = _proxy(_StubSampler())
+    proxy._renderer = _PartsRenderer()
+
+    async def run():
+        async with TestClient(TestServer(proxy.app)) as client:
+            resp = await client.post("/v1/chat/completions", json=_body(user="9-0"))
+            return await resp.json()
+
+    payload = asyncio.run(run())
+    assert payload["choices"][0]["message"]["content"] == "hi"
