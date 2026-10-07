@@ -1034,8 +1034,8 @@ class TestTrainLoop:
         # Final DCP save records raw rows (incl. drops), not just the 4 trained pairs.
         assert saves[-1]["data_consumed"] == 6
 
-    def test_data_consumed_threads_prior_value_on_resume(self, tmp_path, monkeypatch):
-        """Cursor pre-resumed to ``persisted=100`` accumulates new raw rows on top."""
+    def test_completed_cursor_does_not_retrain_dataset(self, tmp_path, monkeypatch):
+        """A completed source cursor must not replay optimizer updates."""
         events: dict = {}
         _stub_train_step_deps(monkeypatch, events)
 
@@ -1063,10 +1063,9 @@ class TestTrainLoop:
                 ckpt=_CapturingCkpt(),
             )
         )
-        # 4 raw rows this run on top of 100 prior → cursor=104.
-        assert step == 12
-        assert cursor.value == 104
-        assert saves[-1] == 104
+        assert step == 10
+        assert cursor.value == 100
+        assert saves == []
 
     def test_data_consumed_grows_per_epoch_in_multi_epoch(self, tmp_path, monkeypatch):
         """Multi-epoch replay advances ``data_consumed`` by ``total_raw_rows`` per epoch."""
@@ -1440,11 +1439,9 @@ def test_sampler_reference_rejects_missing_scores(values):
         module.SamplerReference(sampler, timeout=10).forward([datum], "cross_entropy")
 
 
-@pytest.mark.parametrize("field", ["init_from_checkpoint", "warm_start_from_adapter"])
-def test_serverless_dpo_rejects_resume_before_setup(field):
-    cfg = module.Config(log_path="unused", serverless=True)
-    setattr(cfg, field, "prior-policy")
-    with pytest.raises(ValueError, match="does not support warm starts or resume"):
+def test_serverless_dpo_rejects_warm_start_before_setup():
+    cfg = module.Config(log_path="unused", serverless=True, warm_start_from_adapter="prior-policy")
+    with pytest.raises(ValueError, match="does not support warm starts"):
         module.main(cfg)
 
 
@@ -1474,7 +1471,9 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
     )
     monkeypatch.setattr(module, "build_service_client", Mock(side_effect=AssertionError("dedicated provisioning")))
     monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args: ["pair"])
+    ckpt.resume.return_value = None
     runner = Mock()
+    runner.persisted_reference_checkpoint.return_value = None
     runner.__enter__ = Mock(return_value=runner)
     runner.__exit__ = Mock(return_value=False)
     monkeypatch.setattr(module, "RunnerIO", lambda *args: runner)
@@ -1484,7 +1483,10 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
         service.create_sampling_client.assert_called_once_with(model_path="snapshot://initial-reference")
         assert isinstance(args[2], module.SamplerReference)
         assert args[3] is policy
-        ckpt.resume.assert_not_called()
+        ckpt.resume.assert_called_once_with(
+            init_from_checkpoint=None, warm_start_from_adapter=None,
+            prefer_current_run=False,
+        )
         if failure == "training":
             raise RuntimeError("training failed")
         kwargs["on_ref_done"]()
@@ -1548,3 +1550,26 @@ def test_pair_dataset_multi_shard_directory(tmp_path):
     # a.jsonl holds rows 0,2,4 and sorts before b.jsonl (rows 1,3).
     assert [pair_dataset[i]["i"] for i in range(len(pair_dataset))] == [0, 2, 4, 1, 3]
     assert pair_dataset.num_underlying_rows == 5
+
+
+@pytest.mark.parametrize("epochs,consumed,step_offset", [(1,2,1),(3,2,1),(3,6,3),(3,8,4),(3,4,3)])
+def test_dpo_resume_skips_committed_batches_across_epochs(tmp_path, monkeypatch, epochs, consumed, step_offset):
+    events = {}
+    _stub_train_step_deps(monkeypatch, events)
+    ds = _make_pair_dataset(tmp_path, n=4)
+    cache = AppendOnlyPickleLog(str(tmp_path / "resume-cache.pkl")) if epochs > 1 else None
+    policy = _FakePolicy()
+    cursor = _new_cursor(max_rows=4*epochs, persisted=consumed)
+    try:
+        step = asyncio.run(module._train_loop(ds, cache, _FakeReference(), policy,
+            _adam_params(), module.Config(log_path=str(tmp_path),epochs=epochs,batch_size=2,render_workers=0),
+            step_offset, cursor=cursor))
+    finally:
+        if cache is not None:
+            cache.close()
+    assert step == 2*epochs
+    assert policy.optim_step_count == 2*epochs-step_offset
+    trained = [[p["chosen_datum"]["id"] for p in batch] for batch, _ in events["flush_batches"]]
+    expected = ([["c0","c1"],["c2","c3"]]*epochs)[step_offset:]
+    assert trained == expected
+    assert cursor.value == 4*epochs

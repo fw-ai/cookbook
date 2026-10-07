@@ -1,6 +1,6 @@
 # Checkpoints — where state lives
 
-The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/checkpoints.py`. The control plane is the source of truth for what checkpoints exist; the only cookbook-side state is `dataloader.json`, which maps each saved checkpoint name to a `data_consumed` counter (one int per row).
+The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/checkpoints.py`. The control plane is the source of truth for what checkpoints exist; the only cookbook-side state is `dataloader.json`, which records each saved checkpoint’s recipe step and `data_consumed` cursor.
 
 ## Two axes
 
@@ -34,11 +34,18 @@ request-level user error rather than a trainer-wide failure.
 
 ## `dataloader.json`
 
-Written to `{log_path}/dataloader.json`. Single int per checkpoint name:
+Written to `{log_path}/dataloader.json` as a versioned recovery manifest:
 
 ```json
-{"step-10": 40, "step-50": 200}
+{"schema_version": 1, "checkpoints": {"step-10": {"step": 10, "data_consumed": 40}}}
 ```
+
+Legacy `{checkpoint_name: data_consumed}` files remain readable. A save commits
+its cursor entry after the DCP becomes visible. With a versioned manifest, only
+checkpoints with committed entries are complete recovery points: auto-resume
+ignores unfinished saves, and explicit optimizer-preserving restore rejects a
+missing entry rather than resetting the cursor. Managed serverless resume also
+selects the newest complete checkpoint/cursor pair before rotating sessions.
 
 Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has been, in the new model. The control plane (`FireworksClient.list_checkpoints(job_id)`) is queried at resume / promote time for everything else.
 
@@ -102,8 +109,10 @@ Priority inside `TrainingCheckpoints.resume` (highest first):
 1. `init_from_checkpoint` — explicit DCP load. A dedicated
    `<current_job_id>:<checkpoint>` or serverless current-run bare reference
    restores weights, optimizer, recipe step, and the local dataset cursor.
-   Dedicated bare/path/cross-job and serverless cross-run references restore
-   weights and optimizer but start a new recipe position at step/cursor 0.
+   Dedicated bare/cross-job references restore weights and optimizer but
+   start at recipe step/cursor 0. Serverless cross-run references restore the
+   recipe cursor when matching client state remains at the same `log_path`;
+   without a manifest they initialize a new recipe position at 0.
 2. Newest resumable row on the control plane for the current trainer — auto-resume.
 3. `warm_start_from_adapter` — fresh start with adapter weights.
 4. None — fresh start from `base_model`.
@@ -142,10 +151,39 @@ To initialize a new recipe run from another DCP checkpoint:
   trainers, and `<other-session>:<checkpoint>` is rejected rather than silently
   redirected to the current run.
 
-Cross-job/cross-run DCP initialization restores both weights and optimizer
-state, but resets cookbook-owned step and dataset cursor to 0. Use
-`warm_start_from_adapter` when you specifically want LoRA weights only and a
-fresh optimizer.
+Cross-job DCP initialization restores weights and optimizer state but resets
+the recipe step and cursor. Serverless cross-run continuation also restores
+matching committed client state from the same `log_path`. A versioned manifest
+with no entry for the selected checkpoint is an incomplete recovery point and
+is rejected; it never silently replays the dataset with an advanced optimizer.
+
+Explicit references retain priority over current-run checkpoints by default.
+SFT/DPO's `prefer_current_run_checkpoint=True` opts continuation into preferring
+newer complete checkpoints saved by the replacement run; managed serverless
+resume sets this automatically. If the replacement has no complete save, it
+continues from the previous-attempt reference instead. Failed relaunches reuse
+an already prepared session, and attempts that fail before their first save
+retain the prior recovery reference.
+
+Managed parent checkpoint APIs retain prior attempts' original session and storage
+bindings. Historical checkpoints remain listable and independently promotable
+while a replacement run has not yet bound, and after it moves to another trainer.
+Resume also recreates a missing owned output-model placeholder before dispatch;
+it does not overwrite unrelated models that reuse the name.
+
+Serverless DPO stores its fixed reference at a stable job-level
+`runner.reference_checkpoint_file`, separate from per-attempt billing metadata.
+A resumed DPO run with no recoverable reference is rejected rather than
+snapshotting a different policy. DPO replays deterministic rendering/reference
+cache order while skipping optimizer updates for already consumed batches, both
+in epoch zero and in later cached epochs. Final export is retried even when the
+restored cursor has no remaining batches.
+
+`TrainingCheckpoints.resume(..., restore_optimizer=False)` always honors the
+explicit checkpoint as a weights-only initialization and resets recipe step
+and cursor, even when current-run preference is enabled. For HF/PEFT adapter
+weights with a fresh optimizer, use `warm_start_from_adapter` on supported
+(non-serverless) recipes.
 
 ---
 

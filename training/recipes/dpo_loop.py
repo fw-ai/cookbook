@@ -93,6 +93,7 @@ from training.utils.streaming import (
     raise_rendered_dataset_errors,
 )
 from training.utils.serverless import setup_serverless_training
+from training.utils.runner import UserConfigError
 from training.utils.runner_state import write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
@@ -196,6 +197,10 @@ class Config:
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
+    prefer_current_run_checkpoint: bool = False
+    """Prefer this run's checkpoints over a previous-attempt reference on resume.
+    Opt-in for managed continuation; explicit initialization otherwise wins."""
+
     init_from_checkpoint: str | None = None
     warm_start_from_adapter: str | None = None
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
@@ -475,6 +480,8 @@ async def _train_loop(
         )
     )
     step = step_offset
+    resume_consumed = cursor.value
+    replay_steps_seen = 0
     rough_pairs_per_epoch = (
         min(len(pair_dataset), cfg.max_pairs)
         if cfg.max_pairs is not None
@@ -593,7 +600,7 @@ async def _train_loop(
 
     # -- Epoch 0: stream render → ref forward → training -----------------------
 
-    pbar = tqdm(total=total_steps, desc="DPO training", unit="step")
+    pbar = tqdm(total=total_steps, initial=step_offset, desc="DPO training", unit="step")
     # Default path: stable file order (shuffle=False) so the ref cache producer
     # order is reproducible. Length-grouped path: bucket by the byte-length
     # proxy and shuffle batch *order* with a FIXED seed -- still fully
@@ -630,13 +637,17 @@ async def _train_loop(
             data_consumed: int,
         ) -> None:
             nonlocal pairs_per_epoch
+            if not multi_epoch and data_consumed <= resume_consumed:
+                pairs_per_epoch += len(chunk)
+                await pipe.put((chunk, data_consumed))
+                return
             enriched = await _ref_forward_batch(
                 chunk, reference, sem, cfg.ref_cache_batch_size,
             )
             pairs_per_epoch += len(enriched)
             if multi_epoch:
                 for pair in enriched:
-                    ref_cache_log.append(pair)
+                    ref_cache_log.append({**pair, "_raw_data_consumed": data_consumed})
             await pipe.put((enriched, data_consumed))
 
         while True:
@@ -647,7 +658,7 @@ async def _train_loop(
             batches_consumed += 1
             delta = min(batch_size, total_raw_rows - raw_rows_consumed)
             raw_rows_consumed += delta
-            cursor.record(delta)
+            cursor.resume(max(resume_consumed, raw_rows_consumed))
             if (
                 total_raw_rows > 0
                 and (
@@ -674,21 +685,30 @@ async def _train_loop(
             while len(pending_pairs) >= batch_size:
                 await _emit_enriched(
                     pending_pairs[:batch_size],
-                    data_consumed=cursor.value,
+                    # Keep the final partial batch distinct from the preceding
+                    # full batch, even when both come from one loader batch.
+                    data_consumed=raw_rows_consumed - (len(pending_pairs) - batch_size),
                 )
                 pending_pairs = pending_pairs[batch_size:]
             if cfg.max_pairs is not None and pairs_per_epoch + len(pending_pairs) >= cfg.max_pairs:
                 break
         if pending_pairs:
-            await _emit_enriched(pending_pairs, data_consumed=cursor.value)
+            await _emit_enriched(pending_pairs, data_consumed=raw_rows_consumed)
         await pipe.put(_DONE)
 
     async def _trainer() -> None:
+        nonlocal replay_steps_seen
         while True:
             item = await pipe.get()
             if item is _DONE:
                 break
             step_pairs, data_consumed = item
+            replay_steps_seen += 1
+            # Older DPO checkpoints recorded later-epoch cursor progress only
+            # at epoch boundaries. Their recipe step still identifies completed
+            # deterministic batches, so retain that recovery compatibility.
+            if data_consumed <= resume_consumed or (resume_consumed > 0 and replay_steps_seen <= step_offset):
+                continue
             await asyncio.to_thread(
                 _run_train_step,
                 0,
@@ -732,14 +752,22 @@ async def _train_loop(
             for pair in ref_cache_log:
                 chunk.append(pair)
                 if len(chunk) == batch_size:
-                    _run_train_step(epoch, chunk)
-                    pbar.update(1)
+                    data_consumed = epoch * total_raw_rows + chunk[-1]["_raw_data_consumed"]
+                    replay_steps_seen += 1
+                    if data_consumed > resume_consumed and not (resume_consumed > 0 and replay_steps_seen <= step_offset):
+                        cursor.resume(max(cursor.value, data_consumed))
+                        _run_train_step(epoch, chunk, data_consumed=data_consumed)
+                        pbar.update(1)
                     chunk = []
             if chunk:
-                _run_train_step(epoch, chunk)
-                pbar.update(1)
+                data_consumed = epoch * total_raw_rows + chunk[-1]["_raw_data_consumed"]
+                replay_steps_seen += 1
+                if data_consumed > resume_consumed and not (resume_consumed > 0 and replay_steps_seen <= step_offset):
+                    cursor.resume(max(cursor.value, data_consumed))
+                    _run_train_step(epoch, chunk, data_consumed=data_consumed)
+                    pbar.update(1)
             # Replay re-consumes source rows; cache holds only post-filter pairs.
-            cursor.record(total_raw_rows)
+            cursor.resume(max(cursor.value, (epoch + 1) * total_raw_rows))
 
     pbar.close()
     return step
@@ -755,8 +783,8 @@ def main(
 ):
     cfg = config
     _validate_dpo_beta(cfg.beta)
-    if cfg.serverless and (cfg.init_from_checkpoint or cfg.warm_start_from_adapter):
-        raise ValueError("serverless DPO does not support warm starts or resume")
+    if cfg.serverless and cfg.warm_start_from_adapter:
+        raise ValueError("serverless DPO does not support warm starts")
     # Internal shape validation can request a resumable-only live handoff
     # without expanding the public cookbook/control-plane Config contract.
     final_checkpoint_promotable = getattr(cfg, "_save_final_checkpoint_promotable", True)
@@ -834,8 +862,15 @@ def main(
             runner.set_accelerator_info(None, None, profile=None)
             runner.mark_serverless()
             # Snapshot before the first update: fresh LoRA has zero adapter effect.
-            # Keep this exact identity for the entire job; never resnapshot the policy.
-            reference_path = policy.save_weights_for_sampler("dpo-reference").path
+            # A resumed job reuses the reference recorded on the previous attempt
+            # so policy restoration cannot become the frozen reference.
+            reference_path = runner.persisted_reference_checkpoint()
+            if not reference_path and cfg.init_from_checkpoint:
+                raise UserConfigError(
+                    "serverless DPO resume requires the persisted frozen reference"
+                )
+            if not reference_path:
+                reference_path = policy.save_weights_for_sampler("dpo-reference").path
             if not reference_path:
                 raise RuntimeError("reference snapshot returned no path")
             sampler = service.create_sampling_client(model_path=reference_path)
@@ -906,12 +941,11 @@ def main(
                 lora_rank=cfg.lora_rank,
             )
 
-        resume_info = None
-        if not cfg.serverless:
-            resume_info = ckpt.resume(
-                init_from_checkpoint=cfg.init_from_checkpoint,
-                warm_start_from_adapter=cfg.warm_start_from_adapter,
-            )
+        resume_info = ckpt.resume(
+            init_from_checkpoint=cfg.init_from_checkpoint,
+            warm_start_from_adapter=cfg.warm_start_from_adapter,
+            prefer_current_run=cfg.prefer_current_run_checkpoint,
+        )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
         adam_kwargs = dict(DEFAULT_ADAM)
@@ -1002,7 +1036,7 @@ def main(
 
         # -- Final checkpoint --------------------------------------------------
 
-        if cfg.save_final_checkpoint and step > step_offset:
+        if cfg.save_final_checkpoint and (step > step_offset or (cfg.serverless and cfg.output_model_id and resume_info)):
             cp_name = f"step-{step}"
             ckpt.save(
                 cp_name,

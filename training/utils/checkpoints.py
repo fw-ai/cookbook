@@ -13,7 +13,8 @@ The helpers centralize checkpoint naming and resume metadata handling.
 Keep in sync: ``dataloader.json`` has readers outside this repo's unit tests.
 ``train-firetitan-py/e2e_tests/training_shape_validate/test_shape_e2e.py``
 resolves resume/gate checkpoints from it in shape CI; any schema change here
-must update that reader (both schemas) in the same change.
+must update that reader (both schemas) in the same change. Managed serverless
+job resume also reads the versioned manifest to select complete recovery pairs.
 
 
 Usage::
@@ -512,6 +513,7 @@ class TrainingCheckpoints:
         init_from_checkpoint: str | None = None,
         warm_start_from_adapter: str | None = None,
         restore_optimizer: bool = True,
+        prefer_current_run: bool = False,
     ) -> ResumeInfo | None:
         """Determine resume state and load weights into the live client.
 
@@ -520,12 +522,17 @@ class TrainingCheckpoints:
         1. ``init_from_checkpoint`` — explicit DCP load. A dedicated
            current-job-qualified ref or serverless current-run ref resumes the
            recipe step/cursor; dedicated bare/path/cross-job and serverless
-           cross-run refs restore trainer state but reset the recipe position.
+           cross-run refs restore trainer state. Serverless cross-run refs also
+           restore the recipe cursor when committed client state is present.
            Set ``restore_optimizer=False`` for a weights-only warm start; this
            always resets the recipe position as well.
         2. Newest resumable row on the control plane — auto-resume.
         3. ``warm_start_from_adapter`` — HF PEFT adapter (weights only).
         4. Fresh start (returns ``None``).
+
+        ``prefer_current_run=True`` opts managed continuation into using newer
+        current-run recovery points instead of its previous-attempt reference.
+        It has no effect on weights-only initialization.
         """
         validate_warm_start_config(
             warm_start_from_adapter=warm_start_from_adapter,
@@ -533,12 +540,33 @@ class TrainingCheckpoints:
             lora_rank=self._lora_rank,
         )
 
-        if init_from_checkpoint:
-            ref = _parse_explicit_checkpoint_ref(
+        explicit_ref = (
+            _parse_explicit_checkpoint_ref(
                 init_from_checkpoint,
                 serverless=self._serverless,
                 trainer_id=self._trainer_id,
             )
+            if init_from_checkpoint else None
+        )
+        if (
+            self._serverless
+            and prefer_current_run
+            and restore_optimizer
+            and init_from_checkpoint
+            and "/" in init_from_checkpoint
+        ):
+            # A replacement run should continue from its own checkpoints once
+            # any exist. The explicit cross-run ref is only the previous attempt.
+            client_states, manifest_is_versioned = self._read_all_dataloader()
+            latest = self._latest_resumable(
+                committed_names=set(client_states) if manifest_is_versioned else None,
+                raise_if_uncommitted=False,
+            )
+            if latest:
+                explicit_ref = None
+
+        if explicit_ref:
+            ref = explicit_ref
             if ref.restore_recipe_state and restore_optimizer:
                 state, manifest_is_versioned = self._read_dataloader(
                     ref.checkpoint_name
@@ -571,18 +599,40 @@ class TrainingCheckpoints:
                 ref.checkpoint_name,
                 source_job_id=ref.source_job_id,
             )
-            logger.info(
-                "Initializing trainer state from %s (weights restored; optimizer %s; "
-                "recipe step and dataset cursor reset to 0)",
-                path,
-                "restored" if restore_optimizer else "reset",
-            )
+            logical_name = ref.checkpoint_name.rsplit("/", 1)[-1]
+            carried_state = None
+            if self._serverless and "/" in ref.checkpoint_name and restore_optimizer:
+                carried_state, manifest_is_versioned = self._read_dataloader(logical_name)
+                if carried_state is None and manifest_is_versioned:
+                    raise UserConfigError(
+                        f"Checkpoint {ref.checkpoint_name!r} has no committed client "
+                        "recovery state. Choose a checkpoint present in dataloader.json "
+                        "or use a weights-only initialization."
+                    )
+            if carried_state is not None:
+                logger.info(
+                    "Resuming trainer and recipe state from cross-run checkpoint: %s",
+                    ref.checkpoint_name,
+                )
+            else:
+                logger.info(
+                    "Initializing trainer state from %s (weights restored; optimizer %s; "
+                    "recipe step and dataset cursor reset to 0)",
+                    path,
+                    "restored" if restore_optimizer else "reset",
+                )
             t0 = time.time()
             if restore_optimizer:
                 self._client.load_state_with_optimizer(path)
             else:
                 self._client.load_state(path)
             logger.info("Checkpoint loaded (%.1fs)", time.time() - t0)
+            if carried_state is not None:
+                return ResumeInfo(
+                    step=carried_state.step,
+                    data_consumed=carried_state.data_consumed,
+                    source_job_id=None,
+                )
             return ResumeInfo(
                 step=0,
                 data_consumed=0,
@@ -814,7 +864,8 @@ class TrainingCheckpoints:
         return None
 
     def _latest_resumable(
-        self, *, committed_names: set[str] | None = None
+        self, *, committed_names: set[str] | None = None,
+        raise_if_uncommitted: bool = True,
     ) -> dict | None:
         try:
             rows = [
@@ -837,7 +888,7 @@ class TrainingCheckpoints:
                 if self._trainer_logical_name(_short_name(row.get("name", "")))
                 in committed_names
             ]
-            if rows and not committed_rows:
+            if rows and not committed_rows and raise_if_uncommitted:
                 raise UserConfigError(
                     "Resumable DCP checkpoints exist, but none has committed "
                     "client recovery state in dataloader.json. The latest save "

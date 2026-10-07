@@ -781,6 +781,10 @@ class Config:
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
 
+    prefer_current_run_checkpoint: bool = False
+    """Prefer this run's checkpoints over a previous-attempt reference on resume.
+    Opt-in for managed continuation; explicit initialization otherwise wins."""
+
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
     format ``"job_id:checkpoint_name"``."""
@@ -1190,6 +1194,7 @@ def main(
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
+            prefer_current_run=cfg.prefer_current_run_checkpoint,
         )
         step = resume_info.step if resume_info else 0
         total_raw_rows = training_count * cfg.epochs

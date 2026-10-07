@@ -37,6 +37,7 @@ File formats:
 from __future__ import annotations
 
 import errno
+import json
 import logging
 import os
 import time
@@ -171,6 +172,7 @@ class RunnerConfig:
     metadata_file: str | None = None
     metrics_file: str | None = None
     output_model_path: str | None = None
+    reference_checkpoint_file: str | None = None
 
     def resolve(self) -> RunnerConfig:
         """Return a copy with env-var fallbacks applied."""
@@ -181,6 +183,7 @@ class RunnerConfig:
             metrics_file=self.metrics_file or os.environ.get("COOKBOOK_METRICS_FILE"),
             output_model_path=self.output_model_path
             or os.environ.get("COOKBOOK_OUTPUT_MODEL_PATH"),
+            reference_checkpoint_file=self.reference_checkpoint_file,
         )
 
     @property
@@ -192,6 +195,7 @@ class RunnerConfig:
                 self.metadata_file,
                 self.metrics_file,
                 self.output_model_path,
+                self.reference_checkpoint_file,
             ]
         )
 
@@ -212,6 +216,7 @@ class RunnerIO:
         self._metadata_file = cfg.metadata_file
         self._metrics_file = cfg.metrics_file
         self._output_model_path = cfg.output_model_path
+        self._reference_checkpoint_file = cfg.reference_checkpoint_file
 
         self._tokens_processed: int = 0
         self._training_start: float | None = None
@@ -346,10 +351,45 @@ class RunnerIO:
         """Mark training start for accelerator-seconds calculation."""
         self._training_start = time.monotonic()
 
+    def persisted_reference_checkpoint(self) -> str | None:
+        """Return the fixed DPO reference already written for this job, if any."""
+        if self._reference_checkpoint:
+            return self._reference_checkpoint
+        if self._reference_checkpoint_file:
+            raw = fileio.read_text(self._reference_checkpoint_file)
+            if raw:
+                try:
+                    value = json.loads(raw).get("reference_checkpoint")
+                except (json.JSONDecodeError, AttributeError) as exc:
+                    raise UserConfigError("Frozen reference recovery state is corrupt") from exc
+                if not isinstance(value, str) or not value:
+                    raise UserConfigError("Frozen reference recovery state is malformed")
+                self._reference_checkpoint = value
+                return value
+        if not self._metadata_file:
+            return None
+        raw = fileio.read_text(self._metadata_file)
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        value = metadata.get("reference_checkpoint") if isinstance(metadata, dict) else None
+        if isinstance(value, str) and value:
+            self._reference_checkpoint = value
+            return value
+        return None
+
     def set_reference_checkpoint(self, path: str) -> None:
         """Record the fixed DPO reference identity in managed metadata."""
         if self._reference_checkpoint is not None and self._reference_checkpoint != path:
             raise ValueError("reference checkpoint must remain fixed during a run")
+        if self._reference_checkpoint_file:
+            # This is recovery state, not best-effort billing telemetry. Do not
+            # train until the fixed reference identity is durably recorded.
+            fileio.write_json(self._reference_checkpoint_file, {"reference_checkpoint": path})
         self._reference_checkpoint = path
 
     def write_metadata(self) -> None:

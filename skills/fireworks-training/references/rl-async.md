@@ -383,9 +383,11 @@ dataset cursor past uncommitted training data.
 `dcp_save_interval=0` disables resumable checkpoints. Set a positive interval
 when resume is required. A serverless bare checkpoint name resumes trainer
 state and the dataset cursor for the current run; a dedicated explicit full
-resume uses `<current_job_id>:<checkpoint>`. Dedicated bare/path/cross-job and
-serverless cross-run references restore trainer weights and optimizer state but
-reset the cookbook-owned recipe step and dataset cursor.
+resume uses `<current_job_id>:<checkpoint>`. Dedicated bare/cross-job references
+restore trainer weights and optimizer state but reset the recipe step and
+cursor. Serverless cross-run references also restore matching committed client
+state when the same `log_path` is retained; versioned manifests reject missing
+cursor entries. See [checkpoint recovery](sdk-checkpoints.md#cross-run-resume).
 
 ## Metrics and tuning
 
