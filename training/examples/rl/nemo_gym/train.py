@@ -12,27 +12,18 @@ Architecture:
     that drives real multi-turn tool-calling rollouts, and the model server --
     plus the dataset and task orchestration. All genuinely NeMo Gym's, via a
     live `gym env start` process.
-  - Fireworks' ``training.recipes.async_rl_loop.main()`` (or, with
-    ``--serverless``, ``training.recipes.experiment.async_rl_loop_serverless
-    .main()``) owns trainer/deployment lifecycle, rollout fan-out/admission,
-    GRPO group assembly, forward/backward, the optimizer, sampler hotload, and
-    checkpointing -- the same framework ``harbor_rl_opencode`` uses, not a
-    hand-rolled loop. Both recipes share the same ``RolloutSetup``/sampler
-    contract (``training.examples.rl.vanilla_sampler.build_deployment_sampler``
-    returns whichever sampler the active recipe injected), so the rollout
-    factory and proxy below are unchanged between the two modes -- only the
-    top-level ``Config``/``main()`` selected in ``run()`` differs.
+  - Fireworks' ``training.recipes.async_rl_loop.main()`` owns trainer/deployment
+    lifecycle, rollout fan-out/admission, GRPO group assembly,
+    forward/backward, the optimizer, sampler hotload, and checkpointing -- the
+    same framework ``harbor_rl_opencode`` uses, not a hand-rolled loop.
   - ``rollout_fn`` (one call per individual sample, per the recipe's contract)
     makes a single direct HTTP POST to the harness's ``/run`` endpoint, setting
     NeMo Gym's own ``_ng_task_index``/``_ng_rollout_index`` correlation fields
     itself. The harness's model calls route through RecordingProxy
-    (proxy.py), which samples from the active recipe's sampler (Dedicated
-    ``DeploymentSampler`` by default, or ``ServerlessSampler`` under
-    ``--serverless`` -- the same retry/timeout-wrapped interface either way)
-    and records exact token ids/logprobs per turn via content-hash prefix
-    matching (``TrainingSessionTree`` + ``turn_matching``), keyed by that same
-    correlation id (propagated through the `user` field -- see the patch in
-    responses_api_models/inference_provider/app.py).
+    (proxy.py), which samples from the recipe's Dedicated ``DeploymentSampler``
+    and records exact token ids/logprobs per turn (``TrainingSessionTree``),
+    keyed by that same correlation id (propagated through the `user` field via
+    NeMo Gym's ``correlate_via_user_field`` -- NVIDIA-NeMo/Gym#3783).
 
 Run:
   export FIREWORKS_API_KEY=fw_...
@@ -40,9 +31,6 @@ Run:
   # against a different NeMo Gym env:
   python -m training.examples.rl.nemo_gym.train \\
       --resources-server my_env --agent-name my_env_simple_agent
-  # against the Fireworks serverless training/sampling pool instead of a
-  # Dedicated deployment -- no trainer/deployment provisioned, LoRA-only:
-  python -m training.examples.rl.nemo_gym.train --serverless
 """
 
 from __future__ import annotations
@@ -66,7 +54,6 @@ from training.renderer.tokenizer import get_tokenizer
 from training.examples.rl.nemo_gym.proxy import RecordingProxy
 from training.examples.rl.vanilla_sampler import build_deployment_sampler
 from training.recipes.async_rl_loop import Config, RolloutSetup, main
-from training.recipes.experiment import async_rl_loop_serverless
 from training.utils import DeployConfig, TrainerConfig, WandBConfig
 from training.utils.rl.rollout import RolloutRun
 
@@ -86,15 +73,10 @@ NEMO_GYM_DIR = Path(os.environ.get("NEMO_GYM_DIR", HERE.parents[4] / "nemo-gym")
 DEFAULT_RESOURCES_SERVER = "example_multi_step"
 DEFAULT_AGENT_NAME = "example_multi_step_simple_agent"
 
-# Dedicated needs a provisionable training shape for --base-model, so its
-# default is pinned to a model/shape pair known to work (see
-# --training-shape-id below). Serverless has no shape catalog to match against
-# -- these are async_rl_loop_serverless.Config's own defaults, i.e. the model
-# pair Fireworks' serverless LoRA RL pool is known to support.
-DEFAULT_DEDICATED_BASE_MODEL = "accounts/fireworks/models/qwen3p5-27b"
-DEFAULT_DEDICATED_TOKENIZER_MODEL = "Qwen/Qwen3.5-27B"
-DEFAULT_SERVERLESS_BASE_MODEL = async_rl_loop_serverless.Config.base_model
-DEFAULT_SERVERLESS_TOKENIZER_MODEL = async_rl_loop_serverless.Config.tokenizer_model
+# A provisionable training shape is needed for --base-model, so the default is
+# pinned to a model/shape pair known to work (see --training-shape-id below).
+DEFAULT_BASE_MODEL = "accounts/fireworks/models/qwen3p5-27b"
+DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3.5-27B"
 
 
 def _default_dataset_path(resources_server: str) -> Path:
@@ -343,30 +325,9 @@ def build_rollout_fn_factory(
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="NeMo Gym multi-step async RL (Dedicated or --serverless)")
-    p.add_argument(
-        "--serverless",
-        action="store_true",
-        help=(
-            "Train against the Fireworks serverless training/sampling pool "
-            "(training.recipes.experiment.async_rl_loop_serverless) instead "
-            "of a provisioned Dedicated deployment. No trainer/deployment is "
-            "created; LoRA-only, and --training-shape-id/--replica-count are "
-            "ignored."
-        ),
-    )
-    p.add_argument(
-        "--base-model",
-        default=None,
-        help=f"Defaults to {DEFAULT_DEDICATED_BASE_MODEL!r} "
-        f"({DEFAULT_SERVERLESS_BASE_MODEL!r} under --serverless).",
-    )
-    p.add_argument(
-        "--tokenizer-model",
-        default=None,
-        help=f"Defaults to {DEFAULT_DEDICATED_TOKENIZER_MODEL!r} "
-        f"({DEFAULT_SERVERLESS_TOKENIZER_MODEL!r} under --serverless).",
-    )
+    p = argparse.ArgumentParser(description="NeMo Gym multi-step async RL (Dedicated deployment)")
+    p.add_argument("--base-model", default=DEFAULT_BASE_MODEL)
+    p.add_argument("--tokenizer-model", default=DEFAULT_TOKENIZER_MODEL)
     p.add_argument("--renderer-name", default="")
     p.add_argument(
         "--resources-server",
@@ -439,12 +400,6 @@ def run() -> None:
     if "FIREWORKS_API_KEY" not in os.environ:
         raise SystemExit("FIREWORKS_API_KEY is required")
     args = parse_args()
-    if args.base_model is None:
-        args.base_model = DEFAULT_SERVERLESS_BASE_MODEL if args.serverless else DEFAULT_DEDICATED_BASE_MODEL
-    if args.tokenizer_model is None:
-        args.tokenizer_model = (
-            DEFAULT_SERVERLESS_TOKENIZER_MODEL if args.serverless else DEFAULT_DEDICATED_TOKENIZER_MODEL
-        )
     dataset_path = Path(args.dataset_path) if args.dataset_path else _default_dataset_path(args.resources_server)
 
     rows = _load_rows(dataset_path)[: args.max_rows]
@@ -479,64 +434,32 @@ def run() -> None:
             agent_url=agent_url,
             run_timeout_s=args.run_timeout_s,
         )
-        run_name = args.wandb_run_name or (
-            f"nemo-gym-multistep-{'serverless-' if args.serverless else ''}{int(time.time()) % 100000}"
-        )
-        if args.serverless:
-            # No log_path/output_model_id/trainer/deployment fields here --
-            # the serverless recipe provisions no trainer or inference
-            # deployment, so those Dedicated-only concepts don't apply.
-            # --training-shape-id/--replica-count are silently unused.
-            cfg = async_rl_loop_serverless.Config(
-                base_model=args.base_model,
+        run_name = args.wandb_run_name or f"nemo-gym-multistep-{int(time.time()) % 100000}"
+        cfg = Config(
+            log_path=args.log_path,
+            base_model=args.base_model,
+            learning_rate=args.learning_rate,
+            completions_per_prompt=args.completions_per_prompt,
+            max_completion_tokens=args.max_completion_tokens,
+            temperature=args.temperature,
+            epochs=args.epochs,
+            max_rows=args.max_rows,
+            lora_rank=args.lora_rank,
+            prompt_groups_per_step=args.prompt_groups_per_step,
+            max_concurrency_rollout_sample=args.max_concurrency_rollout_sample,
+            output_model_id=args.output_model_id,
+            trainer=TrainerConfig(training_shape_id=args.training_shape_id),
+            deployment=DeployConfig(
                 tokenizer_model=args.tokenizer_model,
-                learning_rate=args.learning_rate,
-                completions_per_prompt=args.completions_per_prompt,
-                max_completion_tokens=args.max_completion_tokens,
-                temperature=args.temperature,
-                epochs=args.epochs,
-                max_rows=args.max_rows,
-                lora_rank=args.lora_rank,
-                prompt_groups_per_step=args.prompt_groups_per_step,
-                max_concurrency_rollout_sample=args.max_concurrency_rollout_sample,
-                # Config's own default (8) exceeds a small --completions-per-prompt
-                # and fails validation ("min_group_size must be in
-                # [1, completions_per_prompt]"); require a full group by default.
-                min_group_size=min(8, args.completions_per_prompt),
-                snapshot_prefix=run_name,
-                wandb=WandBConfig(
-                    entity=args.wandb_entity,
-                    project=args.wandb_project,
-                    run_name=run_name,
-                ),
-            )
-            async_rl_loop_serverless.main(cfg, rollout_fn_factory=make_rollout_fn, rows=rows, rollout_extras={})
-        else:
-            cfg = Config(
-                log_path=args.log_path,
-                base_model=args.base_model,
-                learning_rate=args.learning_rate,
-                completions_per_prompt=args.completions_per_prompt,
-                max_completion_tokens=args.max_completion_tokens,
-                temperature=args.temperature,
-                epochs=args.epochs,
-                max_rows=args.max_rows,
-                lora_rank=args.lora_rank,
-                prompt_groups_per_step=args.prompt_groups_per_step,
-                max_concurrency_rollout_sample=args.max_concurrency_rollout_sample,
-                output_model_id=args.output_model_id,
-                trainer=TrainerConfig(training_shape_id=args.training_shape_id),
-                deployment=DeployConfig(
-                    tokenizer_model=args.tokenizer_model,
-                    replica_count=args.replica_count,
-                ),
-                wandb=WandBConfig(
-                    entity=args.wandb_entity,
-                    project=args.wandb_project,
-                    run_name=run_name,
-                ),
-            )
-            main(cfg, rollout_fn_factory=make_rollout_fn, rows=rows, rollout_extras={})
+                replica_count=args.replica_count,
+            ),
+            wandb=WandBConfig(
+                entity=args.wandb_entity,
+                project=args.wandb_project,
+                run_name=run_name,
+            ),
+        )
+        main(cfg, rollout_fn_factory=make_rollout_fn, rows=rows, rollout_extras={})
     finally:
         stop_gym_env(gym_proc)
         proxy_thread.stop()

@@ -1,8 +1,7 @@
 # NeMo Gym async RL on Fireworks
 
 Trains a policy on a [NeMo Gym](https://github.com/NVIDIA-NeMo/Gym) environment
-(multi-turn tool use) using Fireworks' `async_rl_loop` (Dedicated deployment, or
-`--serverless`). NeMo Gym owns the environment, agent, and reward; Fireworks
+(multi-turn tool use) using Fireworks' `async_rl_loop` (Dedicated deployment). NeMo Gym owns the environment, agent, and reward; Fireworks
 owns sampling, GRPO, and hotloading.
 
 ```
@@ -24,8 +23,7 @@ async_rl_loop ── rollout_fn ──POST /run──▶ NeMo Gym agent ──�
 ## Run
 
 ```bash
-python -m training.examples.rl.nemo_gym.train                  # Dedicated deployment
-python -m training.examples.rl.nemo_gym.train --serverless     # serverless LoRA pool
+python -m training.examples.rl.nemo_gym.train
 python -m training.examples.rl.nemo_gym.train \
     --resources-server workplace_assistant --agent-name workplace_assistant_simple_agent
 ```
