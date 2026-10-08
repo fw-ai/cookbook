@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """NeMo Gym (any resources server + agent) -> Fireworks async RL.
 
-Verified end-to-end against ``example_multi_step`` (real multi-turn tool use);
-see ASYNC_RL_LOOP_STATUS.md in the repo root for the full bug-by-bug history.
+Verified end-to-end against ``example_multi_step`` (real multi-turn tool use).
 ``--resources-server``/``--agent-name``/``--dataset-path`` point this at a
 different NeMo Gym environment -- everything else (proxy, trajectory
 tracking, Fireworks-side training) is environment-agnostic.
@@ -18,8 +17,8 @@ Architecture:
     same framework ``harbor_rl_opencode`` uses, not a hand-rolled loop.
   - ``rollout_fn`` (one call per individual sample, per the recipe's contract)
     makes a single direct HTTP POST to the harness's ``/run`` endpoint, setting
-    NeMo Gym's own ``_ng_task_index``/``_ng_rollout_index`` correlation fields
-    itself. The harness's model calls route through RecordingProxy
+    NeMo Gym's own ``_ng_task_index``/``_ng_rollout_index`` fields and a unique
+    ``_ng_rollout_id`` itself. The harness's model calls route through RecordingChatProxy
     (proxy.py), which samples from the recipe's Dedicated ``DeploymentSampler``
     and records exact token ids/logprobs per turn (``TrainingSessionTree``),
     keyed by that same correlation id (propagated through the `user` field via
@@ -40,10 +39,12 @@ import asyncio
 import json
 import logging
 import os
-import re
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +52,7 @@ import aiohttp
 from training.renderer.model_info import get_recommended_renderer_name
 from training.renderer.tokenizer import get_tokenizer
 
-from training.examples.rl.nemo_gym.proxy import RecordingProxy
+from training.examples.rl.nemo_gym.proxy import RecordingChatProxy
 from training.examples.rl.vanilla_sampler import build_deployment_sampler
 from training.recipes.async_rl_loop import Config, RolloutSetup, main
 from training.utils import DeployConfig, TrainerConfig, WandBConfig
@@ -78,15 +79,13 @@ DEFAULT_AGENT_NAME = "example_multi_step_simple_agent"
 DEFAULT_BASE_MODEL = "accounts/fireworks/models/qwen3p5-27b"
 DEFAULT_TOKENIZER_MODEL = "Qwen/Qwen3.5-27B"
 
+# NeMo Gym's head server (nemo_gym.global_config.DEFAULT_HEAD_SERVER_PORT) lists
+# every server it started, with its URL, at GET /server_instances.
+GYM_HEAD_SERVER_URL = "http://127.0.0.1:11000"
+
 
 def _default_dataset_path(resources_server: str) -> Path:
     return NEMO_GYM_DIR / "resources_servers" / resources_server / "data" / "example.jsonl"
-
-
-def _agent_url_pattern(agent_name: str) -> re.Pattern:
-    return re.compile(
-        rf"\({re.escape(agent_name)}\) INFO:\s+Uvicorn running on (http://\S+?)(?:\s|$)"
-    )
 
 
 def _load_rows(path: Path) -> list[dict]:
@@ -100,7 +99,7 @@ def _load_rows(path: Path) -> list[dict]:
 
 
 class ProxyThread:
-    """Runs RecordingProxy on a dedicated, persistent event loop.
+    """Runs RecordingChatProxy on a dedicated, persistent event loop.
 
     A background aiohttp server must outlive whatever call started it --
     ``asyncio.run()`` inside the rollout factory would tear its loop down
@@ -108,7 +107,7 @@ class ProxyThread:
     loop, on its own thread, alive for the whole process.
     """
 
-    def __init__(self, proxy: RecordingProxy) -> None:
+    def __init__(self, proxy: RecordingChatProxy) -> None:
         self.proxy = proxy
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
@@ -118,9 +117,11 @@ class ProxyThread:
         fut = asyncio.run_coroutine_threadsafe(self.proxy.start(port), self._loop)
         return fut.result(timeout=30)
 
-    def set_sampler(self, sampler: Any) -> None:
+    def set_sampler(self, sampler: Any, sample_kwargs: dict[str, Any] | None = None) -> None:
+        # The proxy awaits this sampler on this thread's loop, not the recipe's
+        # -- see RecordingChatProxy.set_sampler for the constraint that implies.
         async def _set() -> None:
-            self.proxy.set_sampler(sampler)
+            self.proxy.set_sampler(sampler, sample_kwargs)
 
         asyncio.run_coroutine_threadsafe(_set(), self._loop).result(timeout=30)
 
@@ -131,7 +132,7 @@ class ProxyThread:
         # own cleanup_on_exit) -- don't let a stuck HTTP retry hang the process.
         try:
             asyncio.run_coroutine_threadsafe(self.proxy.close(), self._loop).result(timeout=10)
-        except (TimeoutError, Exception):
+        except Exception:
             logger.warning("proxy shutdown did not complete cleanly within 10s; forcing loop stop")
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=10)
@@ -167,33 +168,31 @@ def write_nemo_gym_config(*, proxy_port: int) -> None:
         # Responses<->chat converter silently drops the model's
         # `reasoning_content` on every round trip (default is False), which
         # both discards real reasoning from NeMo Gym's own trajectory history
-        # and made the proxy's turn-continuation hash mismatch on nearly every
-        # turn that involved thinking (confirmed live on workplace_assistant).
+        # and breaks the proxy's turn continuation on turns that involved thinking.
         "policy_model:\n"
         "  responses_api_models:\n"
         "    inference_provider:\n"
         "      uses_reasoning_parser: true\n"
         # correlate_via_user_field is the NeMo Gym-side opt-in for exactly the
-        # `user`-field propagation this proxy keys sessions on -- see
-        # https://github.com/NVIDIA-NeMo/Gym/pull/3783 (built on #3374,
-        # already merged). Requires #3783 merged in your installed NeMo Gym
-        # version; on an older install this key is unrecognized by
-        # InferenceProviderConfig -- if `gym env start` fails validating
-        # env.yaml, drop this line and apply #3783's diff locally instead.
+        # `user`-field propagation this proxy keys sessions on
+        # (NVIDIA-NeMo/Gym#3783, merged 2026-10-08). On an older NeMo Gym this
+        # key is rejected when `gym env start` validates env.yaml -- update it.
         "      correlate_via_user_field: true\n"
     )
     logger.info("wrote env.yaml pointing at the proxy (port %d)", proxy_port)
 
 
-def start_gym_env(*, resources_server: str, agent_name: str, timeout_s: float) -> tuple[subprocess.Popen, str]:
+def start_gym_env(
+    *, resources_server: str, agent_name: str, timeout_s: float, log_dir: Path
+) -> tuple[subprocess.Popen, str]:
     """Launch `gym env start` and return (process, agent_base_url)."""
-    agent_url_re = _agent_url_pattern(agent_name)
-    log_path = HERE / "gym_env_start.log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "gym_env_start.log"
     with log_path.open("w") as log_file:
         proc = _launch_gym_env(resources_server, log_file)
-    logger.info("gym env start launched (pid=%d), waiting for readiness...", proc.pid)
+    logger.info("gym env start launched (pid=%d, log=%s), waiting for readiness...", proc.pid, log_path)
     try:
-        return _wait_for_gym_env(proc, agent_url_re, log_path, timeout_s)
+        return _wait_for_gym_env(proc, agent_name, log_path, timeout_s)
     except BaseException:
         # Don't leak the gym process (and its ray cluster) if startup fails.
         stop_gym_env(proc)
@@ -223,31 +222,46 @@ def _launch_gym_env(resources_server: str, log_file: Any) -> subprocess.Popen:
     )
 
 
-_ALL_READY_RE = re.compile(r"All (\d+) / (\d+) servers ready")
+def _http_up(url: str, timeout_s: float = 3.0) -> bool:
+    """True if anything answers HTTP at ``url``, whatever the status.
+
+    This is NeMo Gym's own readiness probe: a server is up once it responds at
+    its base URL, even with a 404 (there may be no route at ``/``).
+    """
+    try:
+        urllib.request.urlopen(url, timeout=timeout_s).close()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
 
 
-def _all_servers_ready(text: str) -> bool:
-    return any(a == b for a, b in _ALL_READY_RE.findall(text))
+def _gym_server_urls(head_url: str) -> dict[str, str | None]:
+    """``{server process name: base url}`` from the head server, or ``{}`` if it isn't up yet."""
+    try:
+        with urllib.request.urlopen(f"{head_url}/server_instances", timeout=3.0) as resp:
+            instances = json.load(resp)
+    except (urllib.error.URLError, OSError, ValueError):
+        return {}
+    return {i.get("process_name"): i.get("url") for i in instances if i.get("process_name")}
 
 
 def _wait_for_gym_env(
-    proc: subprocess.Popen, agent_url_re: re.Pattern, log_path: Path, timeout_s: float
+    proc: subprocess.Popen, agent_name: str, log_path: Path, timeout_s: float
 ) -> tuple[subprocess.Popen, str]:
-    deadline = time.time() + timeout_s
-    agent_url: str | None = None
-    while time.time() < deadline:
-        text = log_path.read_text(errors="replace")
-        if agent_url is None:
-            match = agent_url_re.search(text)
-            if match:
-                agent_url = match.group(1)
-        if _all_servers_ready(text):
-            if agent_url is None:
-                raise RuntimeError(f"servers ready but agent URL not found in {log_path}")
-            logger.info("nemo gym servers ready; agent at %s", agent_url)
-            return proc, agent_url
+    """Poll the head server until every NeMo Gym server answers HTTP; return the agent's URL."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise RuntimeError(f"gym env start exited early; see {log_path}")
+        urls = _gym_server_urls(GYM_HEAD_SERVER_URL)
+        if urls and all(urls.values()) and all(_http_up(u) for u in urls.values()):
+            agent_url = urls.get(agent_name)
+            if agent_url is None:
+                raise RuntimeError(f"agent {agent_name!r} is not among NeMo Gym's servers {sorted(urls)}")
+            logger.info("nemo gym servers ready (%d); agent at %s", len(urls), agent_url)
+            return proc, agent_url
         time.sleep(2)
     raise TimeoutError(f"gym env start did not become ready within {timeout_s:.0f}s; see {log_path}")
 
@@ -269,7 +283,9 @@ def build_rollout_fn_factory(
 ):
     def make_rollout_fn(setup: "RolloutSetup"):
         sampler = build_deployment_sampler(setup)
-        proxy_thread.set_sampler(sampler)
+        # RolloutSetup.sample_kwargs carries the recipe's on-policy sampling settings
+        # (temperature, top_p=1.0, top_k=0, ...); the proxy must sample with the same ones.
+        proxy_thread.set_sampler(sampler, setup.sample_kwargs)
         run_url = f"{agent_url.rstrip('/')}/run"
 
         async def rollout_fn(
@@ -278,7 +294,10 @@ def build_rollout_fn_factory(
             cursor_index: int,
             rollout_idx: int,
         ) -> RolloutRun | None:
-            rollout_id = f"{cursor_index}-{rollout_idx}"
+            # An explicit, unique id per call: NeMo Gym uses it verbatim (instead of
+            # deriving "{task}-{rollout}[-a{n}]" itself), and a retry with the same
+            # indices can never append onto a stale session.
+            rollout_id = f"{cursor_index}-{rollout_idx}-{uuid.uuid4().hex[:8]}"
             # Pass the whole dataset row through (matches rollout_collection.py's
             # own `json=row` pattern) rather than hand-picking fields -- the
             # row's own `id` (and any other agent-specific fields) are required
@@ -287,6 +306,7 @@ def build_rollout_fn_factory(
                 **sample_prompt,
                 "_ng_task_index": cursor_index,
                 "_ng_rollout_index": rollout_idx,
+                "_ng_rollout_id": rollout_id,
             }
             t0 = time.monotonic()
             try:
@@ -385,11 +405,14 @@ def parse_args() -> argparse.Namespace:
         # up to 10x "not ready" + 7x transient-5xx retries after a fresh
         # hotload) -- a short outer timeout here cuts that budget off from
         # outside and looks like a rollout failure even though the sampler
-        # would have succeeded given time. Confirmed live: 60s wasn't enough
-        # to survive the post-hotload warm-up window twice in a row.
+        # would have succeeded given time (e.g. the post-hotload warm-up window).
         help="Per-rollout HTTP timeout to the NeMo Gym agent's /run endpoint.",
     )
-    p.add_argument("--log-path", default="./nemo_gym_logs")
+    p.add_argument(
+        "--log-path",
+        default="./nemo_gym_logs",
+        help="Directory for the recipe's logs and for gym_env_start.log (NeMo Gym's startup output).",
+    )
     p.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
     p.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", "nemo-gym-multistep"))
     p.add_argument("--wandb-run-name", default=None)
@@ -410,7 +433,7 @@ def run() -> None:
     tokenizer = get_tokenizer(args.tokenizer_model)
     renderer_name = args.renderer_name or get_recommended_renderer_name(args.tokenizer_model)
 
-    proxy = RecordingProxy(
+    proxy = RecordingChatProxy(
         tokenizer=tokenizer,
         renderer_name=renderer_name,
         max_sample_tokens=args.max_completion_tokens,
@@ -426,6 +449,7 @@ def run() -> None:
         resources_server=args.resources_server,
         agent_name=args.agent_name,
         timeout_s=args.gym_start_timeout_s,
+        log_dir=Path(args.log_path),
     )
 
     try:

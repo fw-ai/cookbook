@@ -8,7 +8,7 @@ of Fireworks' public API. Each request is forwarded to the setup's sampler
 optimizer batch -- this proxy makes no snapshot/version calls itself) and the
 exact prompt/completion token ids + logprobs are recorded per turn, keyed by
 NeMo Gym's own per-rollout correlation id (propagated via the standard OpenAI
-``user`` field -- see the patch in responses_api_models/inference_provider/app.py).
+``user`` field, enabled by NeMo Gym's ``correlate_via_user_field`` -- NVIDIA-NeMo/Gym#3783).
 
 Per-session trajectory bookkeeping does NOT use ``training.utils.rl.rollout.MessageTrajectoryAssembler``'s
 exact-dict-equality checkpointing. ``simple_agent``-based harnesses drive NeMo
@@ -104,8 +104,7 @@ def _fix_tool_calls_for_openai(message: dict[str, Any]) -> None:
     and ``function.arguments`` as a parsed dict, not a JSON string -- NeMo
     Gym's own ``NeMoGymChatCompletion`` validates strictly against the real
     OpenAI spec (non-null string id, JSON-string arguments) and 500s on every
-    single tool call otherwise. Confirmed live: this silently killed every
-    tool-calling turn.
+    single tool call otherwise.
     """
     tool_calls = message.get("tool_calls")
     if not tool_calls:
@@ -147,7 +146,7 @@ class RolloutSession:
         return samples
 
 
-class RecordingProxy:
+class RecordingChatProxy:
     """A local OpenAI endpoint backed by a live Fireworks deployment sampler.
 
     The sampler (``DeploymentSampler``, built once by the rollout factory via
@@ -173,6 +172,7 @@ class RecordingProxy:
         self._max_sample_tokens = int(max_sample_tokens)
         self._temperature = float(temperature)
         self._exclude_user_simulator = bool(exclude_user_simulator)
+        self._sample_kwargs: dict[str, Any] = {}
         self._sessions: dict[str, RolloutSession] = {}
 
         self.app = web.Application()
@@ -183,15 +183,28 @@ class RecordingProxy:
 
     # --- lifecycle -----------------------------------------------------------
 
-    def set_sampler(self, sampler: Any) -> None:
+    def set_sampler(self, sampler: Any, sample_kwargs: dict[str, Any] | None = None) -> None:
         """Bind the deployment-backed sampler once ``RolloutSetup`` is available.
 
         Called exactly once by the rollout factory (``build_deployment_sampler``
         needs ``setup``, which only exists after the recipe's Dedicated
         trainer/deployment are up). No per-step calls after that -- the recipe
         hotloads new weights into this same deployment underneath.
+
+        ``sample_kwargs`` should be the recipe's ``RolloutSetup.sample_kwargs``.
+        It carries the on-policy sampling settings (``temperature``, ``top_p=1.0``,
+        ``top_k=0``, ``max_seq_len``, ``http_timeout``, ...); without ``top_p``/
+        ``top_k`` the serving stack applies the model's generation_config
+        defaults, which truncate rollouts and bias the policy-gradient estimate.
+
+        Threading: the proxy awaits this sampler on its own event loop/thread,
+        not the recipe's loop. That is only safe while the recipe does not drive
+        the same sampler object concurrently from its own loop for these rollouts
+        (true for the ``rollout_fn`` contract used here). If that ever changes,
+        give the proxy its own sampler instance instead of sharing this one.
         """
         self._sampler = sampler
+        self._sample_kwargs = dict(sample_kwargs or {})
 
     async def start(self, port: int = 0) -> int:
         self._runner = web.AppRunner(self.app, access_log=None)
@@ -267,27 +280,24 @@ class RecordingProxy:
 
             is_user_sim = self._exclude_user_simulator and _is_user_simulator_call(tools)
             prompt_ids = self._renderer.prompt_tokens(messages=messages, tools=tools, system_prompt=system_prompt)
-            # Sampling temperature is fixed by the run config: the trainer's
-            # importance ratios assume the rollout policy sampled at that
-            # temperature, so a per-request override would silently skew GRPO.
+            # Sampling settings come from the recipe (RolloutSetup.sample_kwargs),
+            # not the request: the trainer's importance ratios assume the rollout
+            # policy sampled at exactly those settings (temperature, top_p, top_k),
+            # so a per-request override would silently skew GRPO. A request's
             # max_tokens may only tighten the configured cap, never raise it.
+            sample_kwargs = {"max_tokens": self._max_sample_tokens, "temperature": self._temperature}
+            sample_kwargs.update(self._sample_kwargs)
+            cap = int(sample_kwargs["max_tokens"])
             requested = body.get("max_tokens") or body.get("max_completion_tokens")
-            max_tokens = min(int(requested), self._max_sample_tokens) if requested else self._max_sample_tokens
+            sample_kwargs["max_tokens"] = min(int(requested), cap) if requested else cap
+            # Without logprobs=True, SampledCompletion.sampling_logprobs is None.
+            sample_kwargs.update(n=1, stop=self._renderer.stop_sequences(), logprobs=True)
 
             logger.info(
                 "proxy: rollout_id=%s prompt=%d tokens, calling sampler (+%.1fs)",
                 rollout_id, len(prompt_ids), time.monotonic() - t0,
             )
-            completions = await session.training.sample_with_prompt_tokens(
-                self._sampler,
-                prompt_ids,
-                n=1,
-                max_tokens=max_tokens,
-                temperature=self._temperature,
-                stop=self._renderer.stop_sequences(),
-                # Without this, SampledCompletion.sampling_logprobs is None.
-                logprobs=True,
-            )
+            completions = await session.training.sample_with_prompt_tokens(self._sampler, prompt_ids, **sample_kwargs)
             if not completions:
                 raise web.HTTPServiceUnavailable(text="sampler returned no completions")
             completion = completions[0]
@@ -325,10 +335,12 @@ class RecordingProxy:
                 session.turn_count += 1
 
         logger.info("proxy: rollout_id=%s turn=%d served in %.1fs", rollout_id, session.turn_count, time.monotonic() - t0)
-        return web.json_response(self._completion_payload(parsed_message, output_tokens, finish_reason))
+        return web.json_response(self._completion_payload(parsed_message, len(prompt_ids), output_tokens, finish_reason))
 
     @staticmethod
-    def _completion_payload(message: dict[str, Any], output_tokens: list[int], finish_reason: str) -> dict[str, Any]:
+    def _completion_payload(
+        message: dict[str, Any], prompt_len: int, output_tokens: list[int], finish_reason: str
+    ) -> dict[str, Any]:
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex}",
             "object": "chat.completion",
@@ -342,11 +354,11 @@ class RecordingProxy:
                 }
             ],
             "usage": {
-                "prompt_tokens": 0,
+                "prompt_tokens": prompt_len,
                 "completion_tokens": len(output_tokens),
-                "total_tokens": len(output_tokens),
+                "total_tokens": prompt_len + len(output_tokens),
             },
         }
 
 
-__all__ = ["RolloutSession", "RecordingProxy"]
+__all__ = ["RolloutSession", "RecordingChatProxy"]

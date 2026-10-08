@@ -9,7 +9,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from training.examples.rl.nemo_gym.proxy import (
-    RecordingProxy,
+    RecordingChatProxy,
     RolloutSession,
     _finish_reason,
     _fix_tool_calls_for_openai,
@@ -49,8 +49,8 @@ class _StubSampler:
         ]
 
 
-def _proxy(sampler, **kwargs) -> RecordingProxy:
-    proxy = RecordingProxy.__new__(RecordingProxy)
+def _proxy(sampler, **kwargs) -> RecordingChatProxy:
+    proxy = RecordingChatProxy.__new__(RecordingChatProxy)
     # Bypass __init__ so no tokenizer/renderer build is needed.
     from aiohttp import web
 
@@ -59,6 +59,7 @@ def _proxy(sampler, **kwargs) -> RecordingProxy:
     proxy._max_sample_tokens = 64
     proxy._temperature = 0.7
     proxy._exclude_user_simulator = kwargs.get("exclude_user_simulator", False)
+    proxy._sample_kwargs = kwargs.get("sample_kwargs", {})
     proxy._sessions = {}
     proxy.app = web.Application()
     proxy.app.router.add_post("/v1/chat/completions", proxy._chat_completions)
@@ -176,3 +177,27 @@ def test_response_content_is_string_when_renderer_returns_parts():
 
     payload = asyncio.run(run())
     assert payload["choices"][0]["message"]["content"] == "hi"
+
+
+def test_recipe_sample_kwargs_are_forwarded_and_not_overridable():
+    sampler = _StubSampler()
+    recipe = {"max_tokens": 32, "temperature": 0.9, "top_p": 1.0, "top_k": 0, "http_timeout": 120}
+    proxy = _proxy(sampler, sample_kwargs=recipe)
+    resp = asyncio.run(_post(proxy, _body(user="3-0", temperature=0.0, top_p=0.1, max_tokens=999)))
+    assert resp.status == 200
+    call = sampler.calls[0]
+    assert (call["temperature"], call["top_p"], call["top_k"], call["http_timeout"]) == (0.9, 1.0, 0, 120)
+    assert call["max_tokens"] == 32  # request cannot raise the recipe's cap
+    assert call["logprobs"] is True and call["n"] == 1
+
+
+def test_usage_reports_prompt_tokens():
+    proxy = _proxy(_StubSampler())
+
+    async def run():
+        async with TestClient(TestServer(proxy.app)) as client:
+            return await (await client.post("/v1/chat/completions", json=_body(user="4-0"))).json()
+
+    usage = asyncio.run(run())["usage"]
+    assert usage["prompt_tokens"] > 0
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
