@@ -5,7 +5,7 @@ Trains a policy on a [NeMo Gym](https://github.com/NVIDIA-NeMo/Gym) environment
 owns sampling, GRPO, and hotloading.
 
 ```
-async_rl_loop ── rollout_fn ──POST /run──▶ NeMo Gym agent ──▶ RecordingProxy ──▶ Fireworks sampler
+async_rl_loop ── rollout_fn ──POST /run──▶ NeMo Gym agent ──▶ RecordingChatProxy ──▶ Fireworks sampler
                      ▲                                             │ records exact token ids + logprobs
                      └──────── RolloutRun(segments) ◀──────────────┘ keyed by rollout id
 ```
@@ -13,10 +13,11 @@ async_rl_loop ── rollout_fn ──POST /run──▶ NeMo Gym agent ──�
 ## Requirements
 
 - `FIREWORKS_API_KEY` set.
-- A NeMo Gym checkout with its venv (`$NEMO_GYM_DIR`, default `<repo>/../nemo-gym`),
-  **including [NVIDIA-NeMo/Gym#3783](https://github.com/NVIDIA-NeMo/Gym/pull/3783)**
-  (`correlate_via_user_field`). Until it is merged, apply its diff to your checkout.
-  Without it the proxy returns HTTP 400 on every call (no `user` field to correlate on).
+- A NeMo Gym checkout with its venv (`$NEMO_GYM_DIR`, default `<repo>/../nemo-gym`) that
+  includes [NVIDIA-NeMo/Gym#3783](https://github.com/NVIDIA-NeMo/Gym/pull/3783)
+  (`correlate_via_user_field`, merged to `main` on 2026-10-08), so any `main` from that
+  date on. On an older checkout Gym rejects the `env.yaml` key this example writes.
+  Without the option the proxy returns HTTP 400 on every call (no `user` field to correlate on).
 - This example **writes `$NEMO_GYM_DIR/env.yaml`**. It refuses to overwrite an
   `env.yaml` it did not generate.
 
@@ -38,8 +39,13 @@ calls are not trained on as policy actions.
 - **Segments:** when a turn's prompt is not a token-prefix of the previous turn, the
   rollout becomes multiple training segments; all are returned. The per-rollout log
   line reports turns, segments, and trained tokens.
-- **Sampling is pinned to the run config:** per-request `temperature` is ignored and
-  `max_tokens` can only lower `--max-completion-tokens`.
+- **Sampling follows the recipe, not the request.** The proxy samples with the recipe's
+  `RolloutSetup.sample_kwargs` (temperature, `top_p=1.0`, `top_k=0`, ...). A per-request
+  `temperature`/`top_p` is ignored, and a request's `max_tokens` can only lower the
+  configured `--max-completion-tokens`.
+- **Rollout ids are explicit and unique per call** (`_ng_rollout_id`), so a retry never
+  appends onto a stale session.
+- **Logs:** `gym_env_start.log` (NeMo Gym's startup output) is written under `--log-path`.
 
 ## Tests
 
