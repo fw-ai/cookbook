@@ -76,6 +76,7 @@ packages = [
     "training.case-studies.grpo_countdown",
     "training.case-studies.multilora_fleet",
     "training.case-studies.reasoning_rl.grpo_math_evaluator",
+    "training.case-studies.sft_bfcl_toolcalls",
     "training.examples",
     "training.examples.distillation.gsm8k_privileged",
     "training.examples.distillation.routed_mopd",
