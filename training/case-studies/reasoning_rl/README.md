@@ -12,9 +12,10 @@ In this example we'll improve a model's step-by-step problem solving using reinf
 
 **The technique.** This is **GRPO**, a reinforcement fine-tuning method with a simple right/wrong reward. RL is the right tool here because we can *check* answers but can't hand the model gold reasoning to imitate.
 
-**What we'll do.** Pick a notebook and measure accuracy on held-out problems before and after:
+**What we'll do.** Measure accuracy on held-out problems before and after:
 
 - `training/examples/rl/deepmath/` — **preferred**: Training API GRPO on math with an inline reward.
 - `rft_grpo_math.ipynb` — **deprecated** managed RFT via the Python SDK (`client.reinforcement_fine_tuning_jobs.create`). New creates are rejected. Keep this notebook only to read historical jobs.
+- For the hands-on **serverless** GRPO loop (you write `forward_backward` / `optim_step` yourself), see [`grpo_countdown`](../grpo_countdown/).
 
 The training cells cost GPU.

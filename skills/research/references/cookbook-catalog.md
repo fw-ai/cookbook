@@ -19,6 +19,7 @@ End-to-end notebooks with eval. See `case-studies.md` for slugs and match rules.
 | `embedding_support_search` | embedding | RAG retrieval / policy match |
 | `agentic_rl_text2sql` | GRPO / serverless RL | Tool-calling SQL agent with multi-turn rollouts |
 | `multilora_fleet` | LoRA SFT | Many tenants/locales; per-tenant adapters on one deployment |
+| `grpo_countdown` | GRPO / serverless RL | Single-turn verifiable GRPO (Countdown); dedicated as config swap |
 
 ## Tier 2 — Examples (`training/examples/`)
 
