@@ -265,6 +265,15 @@ def _format_argument(value: Any, escape_keys: bool = True) -> str:
     return str(value)
 
 
+def _jinja_upper(value: Any) -> str:
+    """Mirror Jinja's ``upper`` filter, which stringifies before upper-casing.
+
+    JSON Schema allows a list ``type`` (e.g. ``["string", "null"]``); the
+    template renders it as ``['STRING', 'NULL']`` rather than failing.
+    """
+    return str(value).upper()
+
+
 def _format_array_items(items: dict) -> str:
     """Render the ``items:{...}`` body of an ARRAY property (jinja's inner loop)."""
     parts: list[str] = ["items:{"]
@@ -325,7 +334,7 @@ def _format_property(key: str, value: dict) -> str:
         parts.append(f'description:{_STRING_DELIM}{value["description"]}{_STRING_DELIM}')
         armed = True
 
-    type_upper = (value.get("type") or "").upper()
+    type_upper = _jinja_upper(value.get("type", ""))
     if type_upper == "STRING":
         if value.get("enum"):
             parts.append(f"{comma()}enum:{_format_argument(value['enum'])}")
@@ -401,7 +410,7 @@ def _format_function_declaration(tool: dict) -> str:
                 parts.append(f"{_STRING_DELIM}{item}{_STRING_DELIM}")
             parts.append("],")
         if params.get("type"):
-            parts.append(f"type:{_STRING_DELIM}{params['type'].upper()}{_STRING_DELIM}}}")
+            parts.append(f"type:{_STRING_DELIM}{_jinja_upper(params['type'])}{_STRING_DELIM}}}")
     if "response" in fn:
         # Faithful but minimal port of the response branch — only the cases
         # that the template itself emits (description + OBJECT-typed response).
@@ -409,8 +418,9 @@ def _format_function_declaration(tool: dict) -> str:
         parts.append(",response:{")
         if resp.get("description"):
             parts.append(f"description:{_STRING_DELIM}{resp['description']}{_STRING_DELIM},")
-        if (resp.get("type") or "").upper() == "OBJECT":
-            parts.append(f"type:{_STRING_DELIM}{resp['type'].upper()}{_STRING_DELIM}}}")
+        resp_type_upper = _jinja_upper(resp.get("type", ""))
+        if resp_type_upper == "OBJECT":
+            parts.append(f"type:{_STRING_DELIM}{resp_type_upper}{_STRING_DELIM}}}")
     parts.append("}")
     return "".join(parts)
 
