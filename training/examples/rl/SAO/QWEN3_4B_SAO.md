@@ -13,11 +13,10 @@ built-in arithmetic prompts are a small end-to-end check, not a math benchmark.
   `accounts/fireworks/trainingShapes/qwen3-4b-minimum-lora` for the actor.
   Override it with `--training-shape` or `FIREWORKS_TRAINING_SHAPE`.
 - For a new critic, supply `--critic-training-shape` or
-  `FIREWORKS_CRITIC_TRAINING_SHAPE` with a
-  validated Qwen3-4B LoRA shape that already configures a one-dimensional
-  critic projection head. The SDK selects the model-handle dimension; it does
-  not configure trainer topology through launch overrides. Obtain the shape
-  from your training administrator before running the example.
+  `FIREWORKS_CRITIC_TRAINING_SHAPE` with any compatible validated Qwen3-4B LoRA
+  shape. The positive `critic_projection_head_dim` trainer setting creates the
+  critic projection head, so no special head-bearing shape is required. Obtain
+  the shape from your training administrator before running the example.
 - To reattach an existing critic, provide `--critic-job-id`; its trainer must
   already have the one-dimensional critic head. A new critic shape is optional.
 

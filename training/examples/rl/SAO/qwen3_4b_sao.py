@@ -63,7 +63,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--critic-training-shape",
         default=critic_shape,
-        help="Validated Qwen3-4B LoRA shape configured with a one-dimensional critic head",
+        help=(
+            "Compatible validated Qwen3-4B LoRA shape; "
+            "critic_projection_head_dim configures the critic head"
+        ),
     )
     parser.add_argument(
         "--task",

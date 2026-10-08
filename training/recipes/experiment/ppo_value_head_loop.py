@@ -189,8 +189,9 @@ class Config:
             training_shape_id=QWEN3_4B_LORA_SHAPE,
         )
     )
-    # Supply a validated shape configured with the requested projection head,
-    # or reattach a critic trainer that already has that topology.
+    # Any compatible validated shape can provision the critic; the positive
+    # critic_projection_head_dim trainer setting creates its projection head.
+    # A reattached trainer must already have the same head dimension.
     critic_trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(
         default_factory=lambda: DeployConfig(
@@ -1317,9 +1318,9 @@ def main(
         raise ValueError("deployment.tokenizer_model is required.")
     if not (cfg.critic_trainer.training_shape_id or cfg.critic_trainer.job_id):
         raise ValueError(
-            "critic_trainer.training_shape_id must identify a validated shape "
-            "configured with critic_projection_head_dim, or set critic_trainer.job_id "
-            "to reattach a trainer with that topology."
+            "critic_trainer.training_shape_id must identify a compatible validated "
+            "shape, or set critic_trainer.job_id to reattach a trainer created with "
+            "the requested critic_projection_head_dim."
         )
 
     def _signal_handler(signum, _):
