@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from types import SimpleNamespace
 
+import aiohttp
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from training.examples.rl.nemo_gym.proxy import (
@@ -16,6 +19,7 @@ from training.examples.rl.nemo_gym.proxy import (
     _flatten_message_content,
     _is_user_simulator_call,
 )
+from training.examples.rl.nemo_gym import train as nemo_train
 from training.utils.rl.agent.trajectory import TurnRecord
 
 
@@ -201,3 +205,91 @@ def test_usage_reports_prompt_tokens():
     usage = asyncio.run(run())["usage"]
     assert usage["prompt_tokens"] > 0
     assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+
+
+# --- train.py's rollout_fn: session lifecycle against a fake NeMo Gym /run endpoint ---
+
+
+def _run_rollout(mode, *, run_timeout_s=5.0):
+    """Drive one ``rollout_fn`` call against a fake agent ``/run`` endpoint.
+
+    The fake agent plays the proxy's role too: it records a session under the
+    rollout id the caller sent, as the real proxy would on the first model call,
+    then behaves per ``mode``. Returns ``(outcome, proxy, bodies)``.
+    """
+    proxy = _proxy(_StubSampler())
+    bodies: list[dict] = []
+    recorded_sampler: list = []
+    proxy_thread = SimpleNamespace(proxy=proxy, set_sampler=lambda *a: recorded_sampler.append(a))
+
+    async def run_handler(request: web.Request) -> web.Response:
+        body = await request.json()
+        bodies.append(body)
+        session = proxy.get_or_create_session(body["_ng_rollout_id"])
+        if mode == "ok":
+            tree = session.training.tree
+            first = tree.add_turn(
+                TurnRecord(prompt_ids=[1, 2], output_ids=[3], finish_reason="stop", output_log_probs=[-0.5])
+            )
+            leaf = tree.add_turn(
+                TurnRecord(prompt_ids=[9, 9, 9], output_ids=[4], finish_reason="stop", output_log_probs=[-0.5]),
+                parent_id=first.node_id,
+            )
+            session.leaf_id = leaf.node_id
+            return web.json_response({"reward": 1.0})
+        if mode == "http_error":
+            return web.Response(status=500, text="boom")
+        if mode == "hang":
+            await asyncio.sleep(30)
+        if mode == "no_reward":
+            return web.json_response({})
+        raise AssertionError(mode)
+
+    async def run():
+        app = web.Application()
+        app.router.add_post("/run", run_handler)
+        async with TestServer(app) as server:
+            make_rollout_fn = nemo_train.build_rollout_fn_factory(
+                proxy_thread=proxy_thread, agent_url=str(server.make_url("")), run_timeout_s=run_timeout_s
+            )
+            setup = SimpleNamespace(sampler=object(), sample_kwargs={"top_p": 1.0, "top_k": 0})
+            rollout_fn = make_rollout_fn(setup)
+            assert recorded_sampler[0][1] == {"top_p": 1.0, "top_k": 0}  # recipe settings reach the proxy
+            try:
+                return await rollout_fn({"id": "row"}, cursor_index=2, rollout_idx=1)
+            except BaseException as exc:  # noqa: BLE001 - the tests assert on the exact type
+                return exc
+
+    return asyncio.run(run()), proxy, bodies
+
+
+def test_rollout_fn_releases_session_when_run_returns_http_error():
+    outcome, proxy, bodies = _run_rollout("http_error")
+    assert isinstance(outcome, aiohttp.ClientResponseError) and outcome.status == 500
+    assert len(bodies) == 1 and proxy.active_rollout_ids() == []
+
+
+def test_rollout_fn_releases_session_when_run_times_out():
+    outcome, proxy, bodies = _run_rollout("hang", run_timeout_s=0.3)
+    assert isinstance(outcome, (asyncio.TimeoutError, TimeoutError))
+    assert len(bodies) == 1 and proxy.active_rollout_ids() == []
+
+
+def test_rollout_fn_releases_session_when_reward_is_missing():
+    outcome, proxy, bodies = _run_rollout("no_reward")
+    assert isinstance(outcome, KeyError)
+    assert len(bodies) == 1 and proxy.active_rollout_ids() == []
+
+
+def test_rollout_fn_success_returns_every_segment_and_releases_session():
+    outcome, proxy, _ = _run_rollout("ok")
+    assert len(outcome.segments) >= 2 and all(s.reward == 1.0 for s in outcome.segments)
+    assert proxy.active_rollout_ids() == []
+
+
+def test_rollout_fn_sends_unique_explicit_rollout_ids():
+    _, _, first = _run_rollout("ok")
+    _, _, second = _run_rollout("ok")
+    ids = [first[0]["_ng_rollout_id"], second[0]["_ng_rollout_id"]]
+    assert all(re.fullmatch(r"2-1-[0-9a-f]{8}", i) for i in ids) and ids[0] != ids[1]
+    assert first[0]["_ng_task_index"] == 2 and first[0]["_ng_rollout_index"] == 1
