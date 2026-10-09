@@ -58,7 +58,7 @@ uv pip install -e .
 ```
 
 > **Training uses the 1.x SDK.** This cookbook requires
-> `fireworks-ai[training]>=1.2.18,<2`, which is available as a stable release;
+> `fireworks-ai[training]>=1.2.21,<2`, which is available as a stable release;
 > `--pre` is not required. The legacy `0.19.20` package has no
 > `fireworks.training` module. Install the cookbook dependencies above before
 > running recipes.
