@@ -1,0 +1,295 @@
+"""Unit tests for the NeMo Gym example's recording proxy (no network / deployment)."""
+
+from __future__ import annotations
+
+import asyncio
+import re
+from types import SimpleNamespace
+
+import aiohttp
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from training.examples.rl.nemo_gym.proxy import (
+    RecordingChatProxy,
+    RolloutSession,
+    _finish_reason,
+    _fix_tool_calls_for_openai,
+    _flatten_message_content,
+    _is_user_simulator_call,
+)
+from training.examples.rl.nemo_gym import train as nemo_train
+from training.utils.rl.agent.trajectory import TurnRecord
+
+
+class _StubRenderer:
+    def prompt_tokens(self, *, messages, tools, system_prompt):
+        return [1, 2, 3] + [len(messages)] * len(messages)
+
+    def stop_sequences(self):
+        return []
+
+    def parse_completion(self, tokens):
+        return {"role": "assistant", "content": "ok"}
+
+
+class _StubSampler:
+    def __init__(self, finish_reason=None):
+        self.calls = []
+        self._finish_reason = finish_reason
+
+    async def sample_with_prompt_tokens(self, prompt_ids, **kwargs):
+        self.calls.append(kwargs)
+        out = [7, 8]
+        return [
+            SimpleNamespace(
+                prompt_len=len(prompt_ids),
+                full_tokens=[*prompt_ids, *out],
+                sampling_logprobs=[-0.1, -0.2],
+                logprobs_echoed=False,
+                finish_reason=self._finish_reason,
+            )
+        ]
+
+
+def _proxy(sampler, **kwargs) -> RecordingChatProxy:
+    proxy = RecordingChatProxy.__new__(RecordingChatProxy)
+    # Bypass __init__ so no tokenizer/renderer build is needed.
+    from aiohttp import web
+
+    proxy._sampler = sampler
+    proxy._renderer = _StubRenderer()
+    proxy._max_sample_tokens = 64
+    proxy._temperature = 0.7
+    proxy._exclude_user_simulator = kwargs.get("exclude_user_simulator", False)
+    proxy._sample_kwargs = kwargs.get("sample_kwargs", {})
+    proxy._sessions = {}
+    proxy.app = web.Application()
+    proxy.app.router.add_post("/v1/chat/completions", proxy._chat_completions)
+    return proxy
+
+
+async def _post(proxy, body):
+    async with TestClient(TestServer(proxy.app)) as client:
+        return await client.post("/v1/chat/completions", json=body)
+
+
+def _body(**extra):
+    return {"messages": [{"role": "user", "content": "hi"}], "tools": [{"type": "function"}], **extra}
+
+
+def test_missing_user_field_is_rejected_not_shared():
+    proxy = _proxy(_StubSampler())
+    resp = asyncio.run(_post(proxy, _body()))
+    assert resp.status == 400
+    assert proxy.active_rollout_ids() == []
+
+
+def test_request_cannot_override_temperature_or_raise_max_tokens():
+    sampler = _StubSampler()
+    proxy = _proxy(sampler)
+    resp = asyncio.run(_post(proxy, _body(user="0-0", temperature=0.0, max_tokens=10_000)))
+    assert resp.status == 200
+    assert sampler.calls[0]["temperature"] == 0.7
+    assert sampler.calls[0]["max_tokens"] == 64
+    assert sampler.calls[0]["user"]  # session affinity key forwarded
+
+
+def test_finish_reason_length_is_reported():
+    assert _finish_reason(SimpleNamespace(finish_reason="length"), {}) == "length"
+    assert _finish_reason(SimpleNamespace(finish_reason="stop"), {"tool_calls": [1]}) == "tool_calls"
+    assert _finish_reason(SimpleNamespace(), {}) == "stop"
+
+
+def test_turns_chain_append_only_and_session_pops():
+    sampler = _StubSampler()
+    proxy = _proxy(sampler)
+
+    async def run():
+        async with TestClient(TestServer(proxy.app)) as client:
+            for _ in range(2):
+                assert (await client.post("/v1/chat/completions", json=_body(user="1-0"))).status == 200
+
+    asyncio.run(run())
+    session = proxy.pop_session("1-0")
+    assert session is not None and session.turn_count == 2
+    assert proxy.pop_session("1-0") is None
+
+
+def test_to_samples_keeps_every_segment():
+    session = RolloutSession(rollout_id="x")
+    tree = session.training.tree
+    # Second prompt is NOT a token-prefix of turn 1's prompt+output -> two segments.
+    n0 = tree.add_turn(TurnRecord(prompt_ids=[1, 2], output_ids=[3], finish_reason="stop", output_log_probs=[-0.5]))
+    n1 = tree.add_turn(
+        TurnRecord(prompt_ids=[9, 9, 9], output_ids=[4], finish_reason="stop", output_log_probs=[-0.5]),
+        parent_id=n0.node_id,
+    )
+    session.leaf_id = n1.node_id
+    samples = session.to_samples(reward=1.0)
+    assert len(samples) >= 2
+    assert all(any(s.loss_mask) and s.reward == 1.0 for s in samples)
+    assert RolloutSession(rollout_id="empty").to_samples(reward=1.0) == []
+
+
+def test_user_simulator_filter_is_opt_in():
+    no_tools = {"messages": [{"role": "user", "content": "hi"}], "user": "2-0"}
+    off = _proxy(_StubSampler())
+    asyncio.run(_post(off, no_tools))
+    assert off.pop_session("2-0").turn_count == 1  # tool-less agent turn is trained on
+
+    on = _proxy(_StubSampler(), exclude_user_simulator=True)
+    asyncio.run(_post(on, no_tools))
+    assert on.pop_session("2-0").turn_count == 0
+    assert _is_user_simulator_call([])
+    assert _is_user_simulator_call([{"function": {"name": "end_conversation"}}])
+    assert not _is_user_simulator_call([{"function": {"name": "a"}}, {"function": {"name": "b"}}])
+
+
+def test_tool_calls_coerced_to_openai_shape():
+    msg = {"tool_calls": [{"id": None, "function": {"name": "f", "arguments": {"a": 1}}}]}
+    _fix_tool_calls_for_openai(msg)
+    call = msg["tool_calls"][0]
+    assert call["id"].startswith("call_") and call["function"]["arguments"] == '{"a": 1}'
+
+
+def test_typed_content_parts_are_flattened_to_a_string():
+    msg = {"role": "assistant", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
+    _flatten_message_content(msg)
+    assert msg["content"] == "ab"
+    already = {"role": "assistant", "content": "x"}
+    _flatten_message_content(already)
+    assert already["content"] == "x"
+    none = {"role": "assistant", "content": None, "tool_calls": [1]}
+    _flatten_message_content(none)
+    assert none["content"] is None
+
+
+def test_response_content_is_string_when_renderer_returns_parts():
+    class _PartsRenderer(_StubRenderer):
+        def parse_completion(self, tokens):
+            return {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
+
+    proxy = _proxy(_StubSampler())
+    proxy._renderer = _PartsRenderer()
+
+    async def run():
+        async with TestClient(TestServer(proxy.app)) as client:
+            resp = await client.post("/v1/chat/completions", json=_body(user="9-0"))
+            return await resp.json()
+
+    payload = asyncio.run(run())
+    assert payload["choices"][0]["message"]["content"] == "hi"
+
+
+def test_recipe_sample_kwargs_are_forwarded_and_not_overridable():
+    sampler = _StubSampler()
+    recipe = {"max_tokens": 32, "temperature": 0.9, "top_p": 1.0, "top_k": 0, "http_timeout": 120}
+    proxy = _proxy(sampler, sample_kwargs=recipe)
+    resp = asyncio.run(_post(proxy, _body(user="3-0", temperature=0.0, top_p=0.1, max_tokens=999)))
+    assert resp.status == 200
+    call = sampler.calls[0]
+    assert (call["temperature"], call["top_p"], call["top_k"], call["http_timeout"]) == (0.9, 1.0, 0, 120)
+    assert call["max_tokens"] == 32  # request cannot raise the recipe's cap
+    assert call["logprobs"] is True and call["n"] == 1
+
+
+def test_usage_reports_prompt_tokens():
+    proxy = _proxy(_StubSampler())
+
+    async def run():
+        async with TestClient(TestServer(proxy.app)) as client:
+            return await (await client.post("/v1/chat/completions", json=_body(user="4-0"))).json()
+
+    usage = asyncio.run(run())["usage"]
+    assert usage["prompt_tokens"] > 0
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+
+
+# --- train.py's rollout_fn: session lifecycle against a fake NeMo Gym /run endpoint ---
+
+
+def _run_rollout(mode, *, run_timeout_s=5.0):
+    """Drive one ``rollout_fn`` call against a fake agent ``/run`` endpoint.
+
+    The fake agent plays the proxy's role too: it records a session under the
+    rollout id the caller sent, as the real proxy would on the first model call,
+    then behaves per ``mode``. Returns ``(outcome, proxy, bodies)``.
+    """
+    proxy = _proxy(_StubSampler())
+    bodies: list[dict] = []
+    recorded_sampler: list = []
+    proxy_thread = SimpleNamespace(proxy=proxy, set_sampler=lambda *a: recorded_sampler.append(a))
+
+    async def run_handler(request: web.Request) -> web.Response:
+        body = await request.json()
+        bodies.append(body)
+        session = proxy.get_or_create_session(body["_ng_rollout_id"])
+        if mode == "ok":
+            tree = session.training.tree
+            first = tree.add_turn(
+                TurnRecord(prompt_ids=[1, 2], output_ids=[3], finish_reason="stop", output_log_probs=[-0.5])
+            )
+            leaf = tree.add_turn(
+                TurnRecord(prompt_ids=[9, 9, 9], output_ids=[4], finish_reason="stop", output_log_probs=[-0.5]),
+                parent_id=first.node_id,
+            )
+            session.leaf_id = leaf.node_id
+            return web.json_response({"reward": 1.0})
+        if mode == "http_error":
+            return web.Response(status=500, text="boom")
+        if mode == "hang":
+            await asyncio.sleep(30)
+        if mode == "no_reward":
+            return web.json_response({})
+        raise AssertionError(mode)
+
+    async def run():
+        app = web.Application()
+        app.router.add_post("/run", run_handler)
+        async with TestServer(app) as server:
+            make_rollout_fn = nemo_train.build_rollout_fn_factory(
+                proxy_thread=proxy_thread, agent_url=str(server.make_url("")), run_timeout_s=run_timeout_s
+            )
+            setup = SimpleNamespace(sampler=object(), sample_kwargs={"top_p": 1.0, "top_k": 0})
+            rollout_fn = make_rollout_fn(setup)
+            assert recorded_sampler[0][1] == {"top_p": 1.0, "top_k": 0}  # recipe settings reach the proxy
+            try:
+                return await rollout_fn({"id": "row"}, cursor_index=2, rollout_idx=1)
+            except BaseException as exc:  # noqa: BLE001 - the tests assert on the exact type
+                return exc
+
+    return asyncio.run(run()), proxy, bodies
+
+
+def test_rollout_fn_releases_session_when_run_returns_http_error():
+    outcome, proxy, bodies = _run_rollout("http_error")
+    assert isinstance(outcome, aiohttp.ClientResponseError) and outcome.status == 500
+    assert len(bodies) == 1 and proxy.active_rollout_ids() == []
+
+
+def test_rollout_fn_releases_session_when_run_times_out():
+    outcome, proxy, bodies = _run_rollout("hang", run_timeout_s=0.3)
+    assert isinstance(outcome, (asyncio.TimeoutError, TimeoutError))
+    assert len(bodies) == 1 and proxy.active_rollout_ids() == []
+
+
+def test_rollout_fn_releases_session_when_reward_is_missing():
+    outcome, proxy, bodies = _run_rollout("no_reward")
+    assert isinstance(outcome, KeyError)
+    assert len(bodies) == 1 and proxy.active_rollout_ids() == []
+
+
+def test_rollout_fn_success_returns_every_segment_and_releases_session():
+    outcome, proxy, _ = _run_rollout("ok")
+    assert len(outcome.segments) >= 2 and all(s.reward == 1.0 for s in outcome.segments)
+    assert proxy.active_rollout_ids() == []
+
+
+def test_rollout_fn_sends_unique_explicit_rollout_ids():
+    _, _, first = _run_rollout("ok")
+    _, _, second = _run_rollout("ok")
+    ids = [first[0]["_ng_rollout_id"], second[0]["_ng_rollout_id"]]
+    assert all(re.fullmatch(r"2-1-[0-9a-f]{8}", i) for i in ids) and ids[0] != ids[1]
+    assert first[0]["_ng_task_index"] == 2 and first[0]["_ng_rollout_index"] == 1
