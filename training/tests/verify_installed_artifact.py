@@ -18,8 +18,12 @@ import training
 CHECKOUT_PACKAGE = Path(__file__).resolve().parents[1]
 INSTALLED_PACKAGE = Path(training.__file__).resolve().parent
 
-# This adapter intentionally requires the optional ``eval`` dependency group.
-OPTIONAL_MODULES = {"training.utils.rl.rollout.eval_protocol"}
+# These modules intentionally require optional dependency groups (``eval``,
+# ``sdft``) that are not installed by the base ``pip install .`` smoke.
+OPTIONAL_MODULES = {
+    "training.utils.rl.rollout.eval_protocol",
+    "training.recipes.sdft_loop",
+}
 
 
 def _checkout_modules(package_dir: Path) -> list[str]:
@@ -46,10 +50,10 @@ def main() -> None:
     for module_name in modules:
         module = importlib.import_module(module_name)
         module_path = getattr(module, "__file__", None)
-        if module_path and Path(module_path).resolve().is_relative_to(
-            CHECKOUT_PACKAGE
-        ):
-            raise RuntimeError(f"Imported {module_name} from the checkout: {module_path}")
+        if module_path and Path(module_path).resolve().is_relative_to(CHECKOUT_PACKAGE):
+            raise RuntimeError(
+                f"Imported {module_name} from the checkout: {module_path}"
+            )
 
     print(f"cookbook: {version('fireworks-training-cookbook')} ({INSTALLED_PACKAGE})")
     print(f"fireworks-ai: {version('fireworks-ai')}")
