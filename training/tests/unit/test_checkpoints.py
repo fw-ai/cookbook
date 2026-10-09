@@ -635,6 +635,29 @@ class TestSave:
         client.save_state.assert_called_once_with("step-1")
         client.save_weights_for_sampler.assert_called_once()
 
+    def test_repeat_resumable_name_skips_dcp_save(self, log_dir):
+        ckpt, client, _ = _make(log_dir, serverless=True)
+        ckpt.save("step-60", resumable=True, promotable=False, data_consumed=100)
+        ckpt.save("step-60", resumable=True, promotable=True, data_consumed=120)
+
+        client.save_state.assert_called_once_with("step-60")
+        client.save_weights_for_sampler.assert_called_once_with(
+            "step-60", checkpoint_type="base"
+        )
+        assert _read_checkpoint_states(log_dir) == {
+            "step-60": {"step": 60, "data_consumed": 120}
+        }
+
+    def test_repeat_name_refreshes_server_renamed_dataloader_key(self, log_dir):
+        ckpt, client, _ = _make(log_dir, save_state_renames_to="step-0")
+        ckpt.save("step-5", resumable=True, promotable=False, data_consumed=50)
+        ckpt.save("step-5", resumable=True, promotable=False, data_consumed=55)
+
+        client.save_state.assert_called_once_with("step-5")
+        assert _read_checkpoint_states(log_dir) == {
+            "step-0": {"step": 5, "data_consumed": 55}
+        }
+
     def test_neither_raises(self, log_dir):
         ckpt, _, _ = _make(log_dir)
         with pytest.raises(ValueError, match="at least one"):

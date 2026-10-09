@@ -408,6 +408,8 @@ class TrainingCheckpoints:
         self._save_appear_timeout_s = save_appear_timeout_s
         self._save_stabilize_s = save_stabilize_s
         self._save_poll_s = save_poll_s
+        # Caller DCP name -> name keyed in dataloader.json.
+        self._saved_dcp_names: dict[str, str] = {}
 
     # -- Save --------------------------------------------------------------
 
@@ -421,7 +423,8 @@ class TrainingCheckpoints:
     ) -> None:
         """Save a checkpoint with the requested capabilities.
 
-        ``resumable=True`` writes a DCP checkpoint (weights + optimizer).
+        ``resumable=True`` writes a DCP checkpoint (weights + optimizer),
+        unless this instance already saved a DCP checkpoint named ``name``.
         ``promotable=True`` writes a sampler checkpoint. The sampler write is
         skipped if a row with the same name already exists on the control
         plane with ``promotable=True`` (e.g. produced earlier by
@@ -436,7 +439,23 @@ class TrainingCheckpoints:
             raise ValueError("save() requires at least one of resumable/promotable")
 
         t0 = time.time()
-        if resumable:
+        if resumable and name in self._saved_dcp_names:
+            # Recipes name DCP saves by optimizer step, so a repeat name in the
+            # same run (periodic save landing on the final step) is the same
+            # state. Serverless multi-session LoRA rejects same-name overwrites.
+            logger.info(
+                "DCP checkpoint '%s' already saved by this run — skipping redundant save.",
+                name,
+            )
+            if data_consumed is not None:
+                self._write_dataloader(
+                    self._saved_dcp_names[name],
+                    CheckpointClientState(
+                        step=_step_from_name(name),
+                        data_consumed=data_consumed,
+                    ),
+                )
+        elif resumable:
             if data_consumed is not None:
                 # Write/migrate the versioned manifest before starting the DCP
                 # save. If the process dies after the DCP becomes visible but
@@ -453,6 +472,7 @@ class TrainingCheckpoints:
             logger.info("Saving DCP checkpoint '%s'...", name)
             self._client.save_state(name)
             logger.info("DCP checkpoint '%s' saved (%.1fs)", name, time.time() - t0)
+            self._saved_dcp_names[name] = name
             if data_consumed is not None:
                 actual_name = self._resolve_cp_name_after_save(
                     fallback=name,
@@ -461,6 +481,7 @@ class TrainingCheckpoints:
                     stabilize_s=self._save_stabilize_s,
                     poll_s=self._save_poll_s,
                 )
+                self._saved_dcp_names[name] = actual_name
                 self._write_dataloader(
                     actual_name,
                     CheckpointClientState(
