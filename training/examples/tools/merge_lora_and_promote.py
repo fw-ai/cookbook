@@ -102,13 +102,6 @@ class MergeConfig:
     promote_poll_timeout_s: float
 
 
-def _training_quant_extra_args(export_precision: str) -> list[str]:
-    # The exporter owns conversion precision. Keep the temporary trainer in
-    # source precision for every target so explicit conversion does not inflate
-    # the live model to bf16 before the layerwise merge begins.
-    return []
-
-
 def parse_args() -> MergeConfig:
     parser = argparse.ArgumentParser(
         description="Merge a LoRA adapter into its base and promote a merged HF base model.",
@@ -310,10 +303,6 @@ def main() -> None:
             training_shape_id=cfg.training_shape or None,
             region=cfg.region,
             timeout_s=cfg.trainer_timeout_s,
-            # Keep the live model in source precision for both source and
-            # explicit targets; the exporter converts one merged projection at
-            # a time instead of inflating the temporary trainer to full bf16.
-            extra_args=_training_quant_extra_args(cfg.export_precision),
         ),
         cleanup_trainer_on_close=not cfg.keep_trainer,
     )

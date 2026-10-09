@@ -15,7 +15,7 @@ def _load_module(monkeypatch):
     return importlib.reload(module)
 
 
-def test_parse_args_parses_extra_values(monkeypatch):
+def test_parse_args_parses_core_fields(monkeypatch):
     module = _load_module(monkeypatch)
     monkeypatch.setattr(
         sys,
@@ -30,9 +30,6 @@ def test_parse_args_parses_extra_values(monkeypatch):
             "/tmp/deepmath.jsonl",
             "--training-shape",
             "ts-qwen3-4b-smoke-v1",
-            "--deployment-extra-values",
-            "priorityClass=deployment",
-            "featureFlag=on",
             "--output-model-id",
             "out-model",
         ],
@@ -44,22 +41,14 @@ def test_parse_args_parses_extra_values(monkeypatch):
     assert args.tokenizer_model == "Qwen/Qwen3-4B"
     assert args.dataset_path == "/tmp/deepmath.jsonl"
     assert args.training_shape == "ts-qwen3-4b-smoke-v1"
-    assert args.deployment_extra_values == {
-        "priorityClass": "deployment",
-        "featureFlag": "on",
-    }
 
 
-def test_parse_args_rejects_invalid_extra_values(monkeypatch):
+def test_parse_args_rejects_removed_deployment_extra_values(monkeypatch):
     module = _load_module(monkeypatch)
     monkeypatch.setattr(
         sys,
         "argv",
-        [
-            "train_deepmath.py",
-            "--deployment-extra-values",
-            "priorityClass",
-        ],
+        ["train_deepmath.py", "--deployment-extra-values", "testValue=test-value"],
     )
 
     with pytest.raises(SystemExit):

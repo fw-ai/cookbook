@@ -8,7 +8,7 @@ with deployment creation:
     create trainer -> wait for trainer healthz -> create deployment -> wait ready
 
 Waiting gives the trainer first claim on available capacity, but it is not a
-placement policy. Use ``--bypass-reservation`` to opt both resources out of
+placement policy. Use ``--bypass-reservation`` to opt the trainer out of
 account reservation defaulting.
 
 Usage:
@@ -85,10 +85,6 @@ def create_trainer_then_deployment(
     )
 
     # No deployment API call occurs before wait_for_ready() returns above.
-    deployment_extra_values = None
-    if bypass_reservation:
-        deployment_extra_values = {"bypass_reservation": "true"}
-
     deployment_config = DeploymentConfig.from_training_profile(
         deployment_id=deployment_id,
         base_model=base_model,
@@ -97,7 +93,6 @@ def create_trainer_then_deployment(
         max_replica_count=1,
         hot_load_trainer_job=trainer_endpoint.job_name,
         for_training=True,
-        extra_values=deployment_extra_values,
     )
 
     logger.info("[3/4] Trainer is ready; creating deployment %s", deployment_id)
@@ -135,7 +130,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bypass-reservation",
         action="store_true",
-        help="Set trainer use_reservation=false and deployment bypass_reservation=true.",
+        help="Set trainer use_reservation=false.",
     )
     parser.add_argument(
         "--trainer-ready-timeout-s",

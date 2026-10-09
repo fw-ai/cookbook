@@ -20,7 +20,7 @@ Usage:
 
 Config args:
     base_model       Fireworks model ID (default: qwen3-235b-a22b-instruct-2507)
-    dataset          Path to preference JSONL file
+    dataset          Path to preference JSONL file (or directory of .jsonl shards)
     tokenizer_model  HuggingFace model name for client-side tokenization
     tokenizer_revision Optional HuggingFace revision for client-side tokenization
     orpo_lambda      Weight for odds-ratio loss term (default: 1.0)
@@ -52,6 +52,7 @@ from fireworks.training.sdk.training_spec import (
     normalize_lr_scheduler_spec,
 )
 
+from training.utils.termination import TerminatedBySignal
 from training.utils import (
     DEFAULT_ADAM,
     DatasetError,
@@ -259,7 +260,7 @@ def main(
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
         logger.warning("Received %s — raising SystemExit for cleanup", name)
-        raise SystemExit(f"Terminated by {name}")
+        raise TerminatedBySignal(name)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)

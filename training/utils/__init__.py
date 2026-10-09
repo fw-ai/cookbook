@@ -50,7 +50,9 @@ __all__ = [
     "ConcurrencyConfig",
     "InfraConfig",
     "TrainerConfig",
+    "GcsJsonlRenderDataset",
     "JsonlRenderDataset",
+    "resolve_jsonl_shards",
     "MemTracer",
     "ReconnectableClient",
     "RewardFn",
@@ -198,10 +200,12 @@ from training.utils.service import (
 from training.utils.streaming import (
     DEFAULT_PREFETCH_FACTOR,
     DEFAULT_RENDER_WORKERS,
+    GcsJsonlRenderDataset,
     JSONL_ROW_INDEX_KEY,
     AppendOnlyPickleLog,
     JsonlRenderDataset,
     make_render_dataloader,
+    resolve_jsonl_shards,
 )
 from training.utils.supervised import (
     RenderedChunkSpan,

@@ -302,3 +302,6 @@ verify_logs/
 # dev scripts
 *_dev.sh
 *_dev.py
+
+# BFCL raw-data cache left by running bfcl_data.py with cwd=training/; regenerate by re-running.
+/training/bfcl_data/

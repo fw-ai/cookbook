@@ -490,6 +490,49 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
     assert service.closed
 
 
+def test_rollout_setup_model_follows_the_published_snapshot(monkeypatch) -> None:
+    service = _Service()
+    _patch_runtime(monkeypatch, service)
+    captured = {}
+
+    def factory(setup):
+        captured["setup"] = setup
+
+        async def rollout(_row, *, sample_index: int, **_context) -> RolloutRun:
+            return RolloutRun(
+                segments=[
+                    RolloutSample(
+                        tokens=[10, 11, 12],
+                        logprobs=[0.0, -0.1, -0.2],
+                        raw_logprobs=[0.0, -0.3, -0.4],
+                        loss_mask=[0, 1, 1],
+                        reward=float(sample_index),
+                    )
+                ],
+                run_id=f"run-{sample_index}",
+            )
+
+        return rollout
+
+    loop.main(
+        loop.Config(
+            completions_per_prompt=2,
+            prompt_groups_per_step=2,
+            pipeline_chunks_per_step=2,
+            max_completion_tokens=2,
+            max_seq_len=8,
+            max_rows=2,
+            min_group_size=2,
+            max_incomplete_group_retries=0,
+        ),
+        rollout_fn_factory=factory,
+        rows=[{"id": "a"}, {"id": "b"}],
+    )
+
+    assert service.training_client.saved == ["async-rl-step-0", "async-rl-step-1"]
+    assert captured["setup"].model == "snapshot-1"
+
+
 def test_evaluation_overlaps_training_and_finishes_before_snapshot_replacement(
     monkeypatch,
 ) -> None:

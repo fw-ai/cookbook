@@ -21,6 +21,7 @@ import pytest
 RECIPE_MODULES = [
     "training.recipes.sft_loop",
     "training.recipes.rl_loop",
+    "training.recipes.experiment.ppo_value_head_loop",
     "training.recipes.distillation_loop",
     "training.recipes.dpo_loop",
     "training.recipes.orpo_loop",
@@ -185,6 +186,14 @@ def test_rl_config_defaults():
 
     cfg = Config(log_path="/tmp/test")
     assert cfg.base_model
+
+
+def test_ppo_value_head_config_defaults():
+    from training.recipes.experiment.ppo_value_head_loop import Config
+
+    cfg = Config(log_path="/tmp/test")
+    assert cfg.actor_base_model == cfg.critic_base_model
+    assert cfg.critic_projection_head_dim == 1
 
 
 def test_dpo_config_defaults():

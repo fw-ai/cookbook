@@ -1,6 +1,6 @@
 # RL: weight sync (hotload) during training
 
-RL is the main consumer of hotload: the recipe saves sampler checkpoints mid-training and pushes them to the serving deployment so new rollouts come from the updated policy. SFT / DPO / ORPO don't typically hotload — they save once at the end and call it a day.
+RL is the main consumer of hotload: the recipe publishes updated weights to the serving deployment so new rollouts come from the updated policy. Publication uses negotiated RDMA or a sampler checkpoint followed by FILE hotload. SFT / DPO / ORPO don't typically hotload — they save once at the end and call it a day.
 
 `training/recipes/rl_loop.py` is always strict on-policy: it performs an
 initial hotload and another hotload after every optimizer step. It intentionally
@@ -10,6 +10,55 @@ is controlled by `max_head_offpolicy_versions`, not by delaying weight sync.
 GCS bucket) is set on `DeployConfig.weight_sync_scope`.
 
 For the current user-facing lifecycle, see [Dedicated Training](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md). This file is the deep scope-mismatch and recovery reference.
+
+## Transport negotiation
+
+The managed SDK selects RDMA automatically only for eligible dedicated
+full-parameter training when the trainer and every inference replica advertise
+`supports_rdma_weight_sync=true`. The advertisements come from the existing
+create-model and hotload-status responses. Missing or unknown values mean
+unsupported; LoRA always uses save → FILE hotload.
+
+Deployments using gateway shard fan-out stay on FILE: its existing aggregated
+status identifies that path, and its publication responses do not carry the
+RDMA completion protocol. Do not choose a predecessor from its concatenated
+shard ledgers.
+
+Generic trainer/deployment overrides are opaque, opt-in testing interfaces;
+leave them unset in recipes and provision configs.
+
+RDMA resources are configured by the platform/shape. Do not add `extra_args`,
+`extra_values`, or their deployment variants to enable it: these require a
+superuser API key. The normal SDK/cookbook path sends none of these overrides;
+unconfigured runtimes keep FILE. Experimental trainer topology belongs in the
+training shape; public model-handle options do not add launch overrides.
+
+Recipes use `make_weight_sync`, which reads the negotiated
+`policy.supports_rdma_weight_sync` property. An older installed SDK without
+that property keeps the FILE path. Create this callback once after attaching the
+policy and reuse it before the first rollout and after optimizer steps. Its RDMA
+branch calls `policy.weight_sync()`; its FILE branch calls
+`saved = policy.save_weights_for_sampler(name)` followed by
+`service.hotload_sampler_snapshot(saved.path)`. The cookbook wrapper waits for
+completion. The [training README](../../../training/README.md) shows this usage.
+The compatibility option
+`weight_sync_transport="RDMA"` does not override capability checks. Do not
+infer support from an image tag or retry an RDMA transfer failure as FILE.
+The SDK's `weight_sync()` rechecks inference support before each publication
+and uses the existing save/hotload operations when support disappears. Callers
+do not reconnect or implement transport fallback. Reused deployments keep their
+existing RDMA enablement setting. Errors after RDMA publication is accepted
+are surfaced rather than retried as FILE.
+
+Each completed recipe publication logs `Weight sync completed: RDMA` or
+`Weight sync completed: FILE`. Use this result to identify the transport that
+actually completed; an initial RDMA capability advertisement alone does not
+prove a later publication used RDMA.
+
+RDMA publications are temporary and do not create promotable sampler
+checkpoints. Keep explicit resumable/promotable checkpoint saves enabled when
+needed. The bucket scopes and incremental snapshot chain below describe FILE
+publication and durable sampler checkpoints.
 
 ## Weight sync scope: PER_TRAINER vs PER_DEPLOYMENT
 
@@ -109,10 +158,10 @@ and recomputes it under the new weights mid-generation.
 
 ## Incremental snapshots ARC2
 
-For full-parameter training, the first sampler save is `base` (full weights, ~16 GB for 8B). Subsequent saves are `delta` (XOR diff, ~10× smaller). The SDK-managed sampler backend records this chain automatically — users don't pick per-step.
+For full-parameter FILE weight sync, the first sampler save is `base` (full weights, ~16 GB for 8B). Subsequent saves are `delta` (XOR diff, ~10× smaller). The SDK-managed sampler backend records this chain automatically — users don't pick per-step.
 
 - LoRA always saves the full adapter regardless of `checkpoint_type` — every LoRA sampler checkpoint is promotable.
-- Full-param `delta` saves are **not** promotable. Only `base` saves are. The cookbook's `TrainingCheckpoints.save(promotable=True)` always emits a `base` save, so periodic promotables stay promotable. Recipe weight sync switches to `delta` after the first call — those rows are still visible in `list_checkpoints`, while `promote_latest` picks the most-recent **promotable** row.
+- Full-param `delta` saves are **not** promotable. Only `base` saves are. The cookbook's `TrainingCheckpoints.save(promotable=True)` always emits a `base` save, so periodic promotables stay promotable. Recipe FILE weight sync switches to `delta` after the first call — those rows are still visible in `list_checkpoints`, while `promote_latest` picks the most-recent **promotable** row.
 
 ## `dcp_save_interval` for resume
 

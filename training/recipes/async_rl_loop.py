@@ -46,6 +46,7 @@ from fireworks.training.sdk.training_spec import (
     normalize_lr_scheduler_spec,
 )
 
+from training.utils.termination import TerminatedBySignal
 from training.utils.client import GradAccNormalization
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
@@ -700,7 +701,7 @@ def main(
 
     def _signal_handler(signum, _):
         name = signal.Signals(signum).name
-        raise SystemExit(f"Terminated by {name}")
+        raise TerminatedBySignal(name)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
@@ -764,18 +765,6 @@ def main(
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
-    router_replay_enabled = resolve_router_replay_enabled(
-        requested=cfg.router_replay,
-        api_key=api_key,
-        base_url=base_url,
-        additional_headers=additional_headers,
-        base_model=cfg.base_model,
-    )
-    if cfg.router_replay and not router_replay_enabled:
-        logger.info("Router Replay skipped for dense model %s", cfg.base_model)
-    if router_replay_enabled:
-        warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
-
     with ExitStack() as stack:
         tokenizer = load_deployment_tokenizer(cfg.deployment)
         service = build_service_client(
@@ -804,6 +793,21 @@ def main(
             lora_rank=cfg.lora_rank,
             lora_alpha=cfg.lora_alpha,
         )
+        # Decide R3 after the trainer is bound: its create_model response is
+        # the authoritative MoE signal, so no GET model is needed (private
+        # early-access base models reject that with 403).
+        router_replay_enabled = resolve_router_replay_enabled(
+            requested=cfg.router_replay,
+            api_key=api_key,
+            base_url=base_url,
+            additional_headers=additional_headers,
+            base_model=cfg.base_model,
+            training_client=training_client,
+        )
+        if cfg.router_replay and not router_replay_enabled:
+            logger.info("Router Replay skipped for dense model %s", cfg.base_model)
+        if router_replay_enabled:
+            warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
         sampler = service.create_deployment_sampler(tokenizer=tokenizer)
         stack.callback(sampler.close)
         rollout_model = sampler.model

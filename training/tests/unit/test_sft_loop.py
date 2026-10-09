@@ -11,7 +11,8 @@ import tinker
 import training.recipes.sft_loop as module
 from training.utils import supervised as supervised_utils
 from training.utils.checkpoints import TrainingCheckpoints
-from training.utils.runner import UserConfigError
+from training.utils.runner import DatasetError, RunnerConfig, UserConfigError
+from training.utils.streaming import JSONL_ROW_INDEX_KEY
 
 
 class _StopAfterProvisioning(RuntimeError):
@@ -579,6 +580,130 @@ def test_main_requests_cleanup_for_sdk_created_trainer(tmp_path, monkeypatch):
     assert calls[0]["cleanup_trainer_on_close"] is True
 
 
+class _ResolvedFuture:
+    def __init__(self, value):
+        self._value = value
+
+    def result(self, timeout=None):
+        return self._value
+
+
+def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info):
+    """Run ``main`` for one epoch of 4 rows (batch_size=2) against a fake trainer.
+
+    Returns the ordered train/eval events and the eval rows of metrics.jsonl.
+    """
+    events = []
+    rows = [
+        {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": "a"}]}
+        for i in range(4)
+    ]
+    dataset_path = _write_dataset(tmp_path, rows)
+    eval_path = tmp_path / "eval.jsonl"
+    eval_path.write_text(json.dumps(rows[0]))
+    metrics_path = tmp_path / "metrics.jsonl"
+
+    class FakeClient:
+        def submit_forward_backward(self, batch, loss_fn):
+            events.append("train")
+            return _ResolvedFuture(SimpleNamespace(metrics={"loss:sum": 1.0}))
+
+        def submit_optim_step(self, adam_params):
+            return _ResolvedFuture(SimpleNamespace(metrics={}))
+
+    class FakeService:
+        accelerator_type = None
+        accelerator_count = None
+        training_profile = None
+        trainer_job_id = "trainer-1"
+        max_context_length = 32
+
+        def create_training_client(self, *args, **kwargs):
+            return object()
+
+        def close(self):
+            pass
+
+    class FakeCheckpoints:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def resume(self, **kwargs):
+            return resume_info
+
+    def fake_run_eval(*, eval_data, client, batch_size, step, epoch):
+        events.append(f"eval(step={step}, epoch={epoch})")
+        return 0.5
+
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    monkeypatch.setattr(module, "_worker_state", {})
+    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "_resolved_renderer_name", lambda **kwargs: "qwen3")
+    monkeypatch.setattr(module, "build_service_client", lambda **kwargs: FakeService())
+    monkeypatch.setattr(
+        module,
+        "ReconnectableClient",
+        SimpleNamespace(from_training_client=lambda *args, **kwargs: FakeClient()),
+    )
+    monkeypatch.setattr(module, "TrainingCheckpoints", FakeCheckpoints)
+    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
+    monkeypatch.setattr(
+        module,
+        "render_messages_to_datums",
+        lambda messages, **kwargs: [
+            SimpleNamespace(token_ids=[1, 2, 3], token_weights=[0.0, 1.0, 1.0], datum=_test_datum("row"))
+        ],
+    )
+    monkeypatch.setattr(module, "run_eval", fake_run_eval)
+
+    module.main(
+        module.Config(
+            log_path=str(tmp_path / "logs"),
+            dataset=str(dataset_path),
+            evaluation_dataset=str(eval_path),
+            tokenizer_model="Qwen/Qwen3-1.7B",
+            max_seq_len=32,
+            epochs=1,
+            batch_size=2,
+            render_workers=1,
+            save_final_checkpoint=False,
+            runner=RunnerConfig(metrics_file=str(metrics_path)),
+        )
+    )
+
+    records = [json.loads(line) for line in metrics_path.read_text().splitlines()]
+    return events, [record for record in records if "eval/loss" in record]
+
+
+@pytest.mark.parametrize(
+    "resume_info",
+    [None, SimpleNamespace(step=0, data_consumed=0)],
+    ids=["fresh", "warm_start"],
+)
+def test_main_runs_baseline_eval_before_first_train_step(tmp_path, monkeypatch, resume_info):
+    events, eval_records = _run_main_with_fake_trainer(tmp_path, monkeypatch, resume_info=resume_info)
+
+    assert events == [
+        "eval(step=0, epoch=None)",
+        "train",
+        "train",
+        "eval(step=2, epoch=0)",
+    ]
+    assert [record["step"] for record in eval_records] == [0, 2]
+
+
+def test_main_skips_baseline_eval_on_mid_run_resume(tmp_path, monkeypatch):
+    events, eval_records = _run_main_with_fake_trainer(
+        tmp_path,
+        monkeypatch,
+        resume_info=SimpleNamespace(step=1, data_consumed=2),
+    )
+
+    assert events == ["train", "eval(step=2, epoch=0)"]
+    assert [record["step"] for record in eval_records] == [2]
+
+
 def test_render_one_worker_uses_per_example_mean_reduction(monkeypatch):
     captured = {}
     datum = _test_datum("train")
@@ -806,3 +931,58 @@ class TestPrepareDatasets:
         assert eval_data == []
         assert len(train_ds) == 1
         assert "too small for auto carve-out" in caplog.text
+
+
+def test_render_worker_returns_dataset_error_for_the_parent(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise DatasetError("Image aspect ratio 630.0 exceeds the maximum of 200")
+
+    monkeypatch.setattr(module, "render_messages_to_datums", _boom)
+    module._worker_state["renderer"] = object()
+    module._worker_state["train_on_what"] = "all_assistant_messages"
+    try:
+        error = module._render_one_worker(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                JSONL_ROW_INDEX_KEY: 175,
+            }
+        )
+    finally:
+        module._worker_state.pop("renderer", None)
+        module._worker_state.pop("train_on_what", None)
+    assert isinstance(error, DatasetError)
+    assert str(error).startswith("row 175: Image aspect ratio 630.0")
+    with pytest.raises(DatasetError, match="row 175"):
+        module._flatten_rendered_batch([error])
+
+
+# ---------------------------------------------------------------------------
+# Multi-shard (staged directory) datasets -- FIR2-2500
+# ---------------------------------------------------------------------------
+
+
+def _write_shard_dataset(root):
+    import os
+
+    def msg(content):
+        return {"messages": [{"role": "user", "content": content}]}
+
+    root = str(root)
+    os.makedirs(os.path.join(root, "sub"), exist_ok=True)
+    for rel, rows in (("b.jsonl", [msg("b")]), ("a.jsonl", [msg("a0"), msg("a1")]), ("sub/c.jsonl", [msg("c0"), msg("c1")])):
+        with open(os.path.join(root, rel), "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+    return root
+
+
+def test_prepare_datasets_accepts_multi_shard_directory(tmp_path):
+    """SFT's ``_prepare_datasets`` accepts a staged multi-shard directory."""
+    cfg = module.Config(log_path="", dataset=_write_shard_dataset(tmp_path), eval_auto_carveout=False)
+    training_ds, eval_data = module._prepare_datasets(cfg)
+    # All rows from all shards, in deterministic shard order. (Row bodies are
+    # checked by the streaming-suite tests; here we pin the count and the
+    # raw-file-order property the carve-out math depends on.)
+    assert len(training_ds) == 5
+    assert training_ds.num_underlying_rows == 5
+    assert eval_data == []

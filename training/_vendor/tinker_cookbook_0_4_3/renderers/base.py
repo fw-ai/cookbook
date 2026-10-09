@@ -31,6 +31,7 @@ from PIL import Image
 
 from training._vendor.tinker_cookbook_0_4_3.exceptions import RendererError
 from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
+from training.image_geometry import reject_qwen_vl_aspect_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -1846,6 +1847,9 @@ def image_to_chunk(
     if pil_image.mode in ("RGBA", "LA", "P"):
         pil_image = pil_image.convert("RGB")
 
+    width, height = pil_image.size
+    reject_qwen_vl_aspect_ratio(image_processor, width=width, height=height)
+
     img_byte_arr = io.BytesIO()
     pil_image.save(img_byte_arr, format="JPEG")
     image_data = img_byte_arr.getvalue()
@@ -1853,7 +1857,6 @@ def image_to_chunk(
     # Get the number of expected tokens for the image. The way to do this is not consistent between
     # image processors (qwen3vl supports get_number_of_image_patches, kimi2.5 doesn't but has get_resize_config)
     if hasattr(image_processor, "get_number_of_image_patches"):
-        width, height = pil_image.size
         num_image_tokens = (
             image_processor.get_number_of_image_patches(height, width, images_kwargs={})
             // image_processor.merge_size**2

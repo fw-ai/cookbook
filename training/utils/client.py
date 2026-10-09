@@ -145,6 +145,12 @@ class ReconnectableClient:
             timeout=self._default_timeout,
         )
 
+    def forward_projection(self, data):
+        """Forward-only raw projection-head outputs (no gradient accumulation)."""
+        return self._client.forward_projection(data).result(
+            timeout=self._default_timeout,
+        )
+
     def forward_backward(self, data, loss_fn: str = "cross_entropy", loss_fn_config=None):
         return self._client.forward_backward(data, loss_fn, loss_fn_config=loss_fn_config).result(
             timeout=self._default_timeout,
@@ -261,8 +267,12 @@ class ReconnectableClient:
             kwargs["emit_grad_norm_metrics"] = emit_grad_norm_metrics
         return self._require_client().optim_step(params, **kwargs)
 
+    @property
+    def supports_rdma_weight_sync(self) -> bool:
+        return getattr(self._require_client(), "supports_rdma_weight_sync", False) is True
+
     def weight_sync(self):
-        """Wait for one complete RDMA weight sync."""
+        """Wait for SDK-managed weight sync, including runtime capability fallback."""
         return self._require_client().weight_sync().result(timeout=self._default_timeout)
 
     def save_state(self, name: str, timeout: int = DCP_TIMEOUT_S):

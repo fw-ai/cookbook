@@ -1524,6 +1524,14 @@ def test_resolve_renderer_name_prefers_upstream_nemotron3() -> None:
     """Nemotron models use Tinker's upstream renderer with parse normalization."""
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-3-Super-120B") == "nemotron3"
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16") == "nemotron3_ultra"
+    assert (
+        resolve_renderer_name("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16")
+        == "nemotron3_ultra"
+    )
+    assert (
+        resolve_renderer_name("accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b")
+        == "nemotron3_ultra"
+    )
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-H-8B") == "nemotron3"
 
 

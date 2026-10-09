@@ -392,9 +392,12 @@ _CAPABILITIES: tuple[ThinkingTraceModelCapability, ...] = (
                 # Ultra shares Super/Nano's tokenizer and
                 # truncate_history_thinking switch, but not the think wrapping:
                 # Super is ``<think>\\n{t}\\n</think>\\n{content}``;
-                # Ultra is ``<think>\\n{t}</think>{content}``.
+                # Ultra and 3.5 Lightning are
+                # ``<think>\\n{t}</think>{content}``.
                 "nvidia/nvidia-nemotron-3-ultra-550b-a55b-bf16",
                 "nvidia/nvidia-nemotron-3-ultra-550b-a55b-nvfp4",
+                "nvidia/nvidia-nemotron-3.5-lightning-30b-a3b-bf16",
+                "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
             }
         ),
         plans=(

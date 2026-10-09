@@ -460,13 +460,82 @@ class TestResume:
 
     def test_init_from_checkpoint_serverless_allows_cross_run(self, log_dir):
         # The trainer resolves this logical name inside the caller's account.
-        # Trainer weights and optimizer resume, while cookbook-owned step and
-        # cursor intentionally begin a new recipe run.
+        # Without committed dataloader state, trainer weights resume and the
+        # recipe cursor starts over.
         ckpt, client, _ = _make(log_dir, serverless=True)  # session == "job-1"
         ref = "test-account-id/run-0123456789abcdef0123456789abcdef/step-5"
         info = ckpt.resume(init_from_checkpoint=ref)
         assert info == ResumeInfo(step=0, data_consumed=0, source_job_id=None)
         client.resolve_checkpoint_path.assert_called_once_with(ref, source_job_id=None)
+        client.load_state_with_optimizer.assert_called_once_with(f"path://self/{ref}")
+
+    def test_init_from_checkpoint_serverless_cross_run_restores_recipe_cursor(self, log_dir):
+        os.makedirs(log_dir, exist_ok=True)
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"step-5": 40}, f)
+        ckpt, client, _ = _make(log_dir, serverless=True)
+        ref = "test-account-id/run-0123456789abcdef0123456789abcdef/step-5"
+        info = ckpt.resume(init_from_checkpoint=ref)
+        assert info == ResumeInfo(step=5, data_consumed=40, source_job_id=None)
+        client.load_state_with_optimizer.assert_called_once_with(f"path://self/{ref}")
+
+    def test_cross_run_checkpoint_requires_committed_cursor(self, log_dir):
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"schema_version": 1, "checkpoints": {
+                "step-4": {"step": 4, "data_consumed": 32},
+            }}, f)
+        ckpt, client, _ = _make(log_dir, serverless=True)
+        ref = "test-account-id/run-0123456789abcdef0123456789abcdef/step-5"
+        with pytest.raises(UserConfigError, match="no committed client"):
+            ckpt.resume(init_from_checkpoint=ref)
+        client.load_state_with_optimizer.assert_not_called()
+
+    @pytest.mark.parametrize("prefer_current_run", [False, True])
+    def test_cross_run_weights_only_keeps_explicit_reference(self, log_dir, prefer_current_run):
+        run_id = "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        rows = [_row(f"{run_id}-step-9", ctype="CHECKPOINT_TYPE_TRAINING_LORA",
+                     promotable=False, create_time="2026-04-02T00:00:00Z")]
+        ckpt, client, fw = _make(log_dir, fw_rows=rows, serverless=True, current_run_id=run_id)
+        ref = "test-account-id/run-0123456789abcdef0123456789abcdef/step-5"
+        info = ckpt.resume(init_from_checkpoint=ref, restore_optimizer=False,
+                           prefer_current_run=prefer_current_run)
+        assert info == ResumeInfo()
+        client.load_state.assert_called_once_with(f"path://self/{ref}")
+        client.load_state_with_optimizer.assert_not_called()
+        fw.list_checkpoints.assert_not_called()
+
+    @pytest.mark.parametrize("prefer_current_run", [False, True])
+    def test_cross_run_auto_resume_preference_is_opt_in(self, log_dir, prefer_current_run):
+        run_id = "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        rows = [_row(f"{run_id}-step-9", ctype="CHECKPOINT_TYPE_TRAINING_LORA",
+                     promotable=False, create_time="2026-04-02T00:00:00Z")]
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"schema_version": 1, "checkpoints": {
+                "step-5": {"step": 5, "data_consumed": 40},
+                "step-9": {"step": 9, "data_consumed": 72},
+            }}, f)
+        ckpt, client, fw = _make(log_dir, fw_rows=rows, serverless=True, current_run_id=run_id)
+        ref = "test-account-id/run-0123456789abcdef0123456789abcdef/step-5"
+        info = ckpt.resume(init_from_checkpoint=ref, prefer_current_run=prefer_current_run)
+        expected = "step-9" if prefer_current_run else ref
+        client.load_state_with_optimizer.assert_called_once_with(f"path://self/{expected}")
+        assert info == ResumeInfo(step=9 if prefer_current_run else 5,
+                                  data_consumed=72 if prefer_current_run else 40)
+        if not prefer_current_run:
+            fw.list_checkpoints.assert_not_called()
+
+    def test_managed_cross_run_resume_ignores_uncommitted_current_save(self, log_dir):
+        run_id = "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        rows = [_row(f"{run_id}-step-6", ctype="CHECKPOINT_TYPE_TRAINING_LORA",
+                     promotable=False, create_time="2026-04-02T00:00:00Z")]
+        with open(os.path.join(log_dir, DATALOADER_BASE_NAME), "w") as f:
+            json.dump({"schema_version": 1, "checkpoints": {
+                "step-5": {"step": 5, "data_consumed": 40},
+            }}, f)
+        ckpt, client, _ = _make(log_dir, fw_rows=rows, serverless=True, current_run_id=run_id)
+        ref = "test-account-id/run-0123456789abcdef0123456789abcdef/step-5"
+        info = ckpt.resume(init_from_checkpoint=ref, prefer_current_run=True)
+        assert info == ResumeInfo(step=5, data_consumed=40)
         client.load_state_with_optimizer.assert_called_once_with(f"path://self/{ref}")
 
     def test_init_from_checkpoint_serverless_bare_name_stays_current_run(self, log_dir):
@@ -565,6 +634,29 @@ class TestSave:
         ckpt.save("step-1", resumable=True, promotable=True, data_consumed=42)
         client.save_state.assert_called_once_with("step-1")
         client.save_weights_for_sampler.assert_called_once()
+
+    def test_repeat_resumable_name_skips_dcp_save(self, log_dir):
+        ckpt, client, _ = _make(log_dir, serverless=True)
+        ckpt.save("step-60", resumable=True, promotable=False, data_consumed=100)
+        ckpt.save("step-60", resumable=True, promotable=True, data_consumed=120)
+
+        client.save_state.assert_called_once_with("step-60")
+        client.save_weights_for_sampler.assert_called_once_with(
+            "step-60", checkpoint_type="base"
+        )
+        assert _read_checkpoint_states(log_dir) == {
+            "step-60": {"step": 60, "data_consumed": 120}
+        }
+
+    def test_repeat_name_refreshes_server_renamed_dataloader_key(self, log_dir):
+        ckpt, client, _ = _make(log_dir, save_state_renames_to="step-0")
+        ckpt.save("step-5", resumable=True, promotable=False, data_consumed=50)
+        ckpt.save("step-5", resumable=True, promotable=False, data_consumed=55)
+
+        client.save_state.assert_called_once_with("step-5")
+        assert _read_checkpoint_states(log_dir) == {
+            "step-0": {"step": 5, "data_consumed": 55}
+        }
 
     def test_neither_raises(self, log_dir):
         ckpt, _, _ = _make(log_dir)

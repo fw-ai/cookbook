@@ -27,8 +27,9 @@ maps to a JSON label with five fields: `route` (small/big model), `complexity` (
 `math` / `code` / `reasoning` flags. The routing target follows a deterministic rule baked into
 the data — `complexity >= 3 OR code OR math -> big model` — so there's a crisp boundary to learn.
 
-**The model.** `qwen3p5-9b` base (small, tunable, non-reasoning with `/no_think`; change it in
-the CONFIG cell). Both notebooks fine-tune a LoRA adapter on it.
+**The model.** `qwen3p8-27b` (Qwen 3.8 27B) base, with thinking disabled via `/no_think` (change it in
+the CONFIG cell). Both notebooks fine-tune a LoRA adapter on it. The dedicated notebook uses
+the validated B200 shape `accounts/fireworks/deploymentShapes/qwen3p8-27b-rft-b200-bf16-w2-p1`.
 
 **The technique.** Supervised fine-tuning (SFT): the model learns to emit the exact JSON label.
 For a **fair** comparison we prompt-engineer the *base* model (the routing rule is spelled out in
@@ -47,26 +48,32 @@ provisioned and served.
 | Training | managed `supervised_fine_tuning_jobs.create(...)` + poll | your own `forward_backward("cross_entropy")` + `optim_step` loop |
 | Provisioning | SDK provisions a trainer job **and** an inference deployment | none — attach to a shared pooled trainer |
 | Eval / sampling | deploy the model on-demand, score, delete | in-session `create_sampling_client(snapshot)` — no deployment |
-| Training wall-clock* | ~12–25 min (dominated by provisioning + queue) | ~2 min (warm pool, no provisioning) |
 | Billing | per GPU-hour while the trainer/deployment are up | per token (prefill / sample / train); no idle cost |
 | Best for | reserved capacity, full-parameter training, sustained/production serving | fast iteration, first runs, small-to-mid LoRA experiments |
 
-\* Both run the identical 51 optimizer steps; the difference is provisioning, not compute. The
-dedicated wall-clock varies run to run (we measured 12 min and 25 min) because it is spin-up /
-queue bound; serverless is ~2 min every time because there is nothing to provision.
+The previous `qwen3p5-9b` runs took about 12–25 minutes on the dedicated path and about 2 minutes
+serverless, across 51 optimizer steps. Those times have not been remeasured on `qwen3p8-27b`.
 
-**Same result either way.** Both paths land at essentially the same quality on the 60-row
-holdout — the fine-tune teaches the routing policy so the tuned model (lean prompt) matches or
-beats the prompt-engineered base (rich prompt):
+**Holdout on `qwen3p8-27b` (60 rows).** The fine-tune teaches the routing policy, so the tuned
+model (lean prompt) beats the prompt-engineered base (rich prompt) on both paths. Headline is
+`route`; the largest lift is `reasoning`.
 
-| Metric | Base (rich prompt) | Tuned (lean prompt) |
+| Metric | Dedicated base → tuned | Serverless base → tuned |
 | --- | --- | --- |
-| `route` accuracy (the decision) | 90.0% | ~97–98% |
-| exact-match (all 5 fields) | ~25% | 71.7% |
+| `route` accuracy (the decision) | 93.3% → 98.3% (+5.0%) | 91.7% → 95.0% (+3.3%) |
+| exact-match (all 5 fields) | 41.7% → 66.7% (+25.0%) | 40.0% → 73.3% (+33.3%) |
 
-So the choice between paths is about **workflow and cost model**, not accuracy: reach for
-serverless to move fast with nothing to manage, and the dedicated path when you need reserved
-capacity, full-parameter training, or to keep the tuned model served.
+| Field | Dedicated base | Dedicated tuned | Serverless base | Serverless tuned |
+| --- | --- | --- | --- | --- |
+| `complexity` | 68% | 70% | 68% | 77% |
+| `math` | 95% | 97% | 95% | 97% |
+| `code` | 98% | 100% | 97% | 100% |
+| `reasoning` | 62% | 93% | 60% | 100% |
+| `route` | 93.3% | 98.3% | 91.7% | 95.0% |
+
+So the choice between paths is about **workflow and cost model**: reach for serverless to move
+fast with nothing to manage, and the dedicated path when you need reserved capacity,
+full-parameter training, or to keep the tuned model served.
 
 > **What we'll do (either notebook).** Run it top to bottom: build data → evaluate the base model
 > → LoRA SFT → evaluate again and compare. Training cells spend real compute; defaults are

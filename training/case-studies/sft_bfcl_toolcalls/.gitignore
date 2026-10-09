@@ -1,0 +1,10 @@
+# Generated locally by the notebook; regenerate with build_bfcl_sft.py.
+# The 8-row sample.jsonl ships as a format reference instead.
+bfcl_sft_train.jsonl
+
+# BFCL V4 raw data downloaded by bfcl_data.py.
+bfcl_data/
+
+# Eval outputs and per-run logs.
+bfcl_run/
+logs_*/

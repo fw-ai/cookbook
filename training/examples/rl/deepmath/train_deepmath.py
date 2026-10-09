@@ -158,7 +158,6 @@ class TrainArgs:
     lora_rank: int = 0
     """LoRA rank (0 = full-param).  Backend trainer creation selects a
     LoRA-capable shape; LoRA references reuse the policy trainer (no extra GPUs)."""
-    deployment_extra_values: dict[str, str] | None = None
     wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
     wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
     skip_cleanup: bool = False
@@ -210,13 +209,6 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--lora-rank", type=int,
                         help="LoRA rank (0 = full-param, e.g. 64 or 128 for LoRA)")
 
-    parser.add_argument(
-        "--deployment-extra-values",
-        nargs="*",
-        default=None,
-        help="Extra Helm values for the deployment as key=value pairs "
-             "(e.g. --deployment-extra-values priorityClass=deployment)",
-    )
     parser.add_argument("--wandb-entity")
     parser.add_argument("--wandb-project")
     parser.add_argument("--skip-cleanup", action="store_true",
@@ -229,18 +221,6 @@ def parse_args() -> TrainArgs:
                         help="Promote final checkpoint to this model ID")
 
     parsed = parser.parse_args(namespace=defaults)
-    # Convert --deployment-extra-values key=value pairs to a dict.
-    raw = getattr(parsed, "deployment_extra_values", None)
-    if raw:
-        ev = {}
-        for item in raw:
-            k, _, v = item.partition("=")
-            if not v:
-                parser.error(f"--deployment-extra-values: expected key=value, got '{item}'")
-            ev[k] = v
-        parsed.deployment_extra_values = ev
-    else:
-        parsed.deployment_extra_values = None
     return cast(TrainArgs, parsed)
 
 
@@ -383,7 +363,6 @@ def main():
             replica_count=args.deployment_replica_count,
             tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
-            extra_values=args.deployment_extra_values,
         ),
         weight_sync_timeout=600,
         dcp_save_interval=20,

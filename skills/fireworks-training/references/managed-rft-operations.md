@@ -19,56 +19,28 @@ Before any upload or create:
 - Probe the evaluator on at least five rows and require non-identical scores.
 - Check authentication, account, billing readiness, and `firectl quota list`.
 - Use full resource names such as `accounts/fireworks/models/<id>`.
-- Run `firectl rftj create --help` and resolve every user-set or defaulted value
-  before the confirmation gate in `../../configure/SKILL.md`.
+- Do not run `firectl rftj create`. New creates are rejected. Use get/list/cancel/resume on jobs that already exist.
 
 ## Launch surfaces
 
 | Surface | When | Entry |
 |---|---|---|
-| Eval Protocol | Reproducible evaluator and dataset workflow | `eval-protocol create rft ...` |
-| `firectl` | Direct managed API and advanced flags | `firectl rftj create ...` |
-| Dashboard | Human-guided exploratory launch | Fine-Tuning, then Reinforcement |
+| Training API | New RL work | `references/training-api.md` and `training/examples/rl/deepmath/` |
+| `firectl` | Existing jobs only | `firectl rftj get/list/cancel/resume` |
+| Dashboard | Existing jobs only | Fine-Tuning reinforcement tab (create is gone) |
 
-### Eval Protocol workflow
+### Eval Protocol / create workflow
 
-```bash
-pip install eval-protocol
-export FIREWORKS_API_KEY=...
+`eval-protocol create rft` and `firectl rftj create` are rejected for new jobs. Do not use them. New RL goes through the Training API.
 
-cd evaluator_directory
-ep local-test
-
-eval-protocol create rft \
-  --base-model accounts/fireworks/models/qwen3-4b \
-  --output-model my-rft-output
-```
-
-The create command uploads changed evaluator and dataset artifacts, creates the job, and prints dashboard links. Treat upload and create as protected work under the confirmation gate.
-
-### `firectl` alternative
+### `firectl` for existing jobs
 
 ```bash
-firectl rftj create \
-  --base-model accounts/fireworks/models/qwen3-4b \
-  --dataset accounts/<acct>/datasets/<id> \
-  --evaluator accounts/<acct>/evaluators/<id> \
-  --output-model accounts/<acct>/models/<out>
+firectl rftj list
+firectl rftj get <job-id> -o json
+firectl rftj cancel <job-id>
+firectl rftj resume <job-id>
 ```
-
-Run `firectl rftj create --help` for the authoritative checkpoint, rollout, W&B, and sampling flags.
-
-### Warm start
-
-Continue from a promoted or uploaded LoRA without also passing `--base-model`:
-
-```bash
-eval-protocol create rft \
-  --warm-start-from accounts/<acct>/models/<sft-model-id> \
-  --output-model <rft-model-id>
-```
-
-If the API reports that an `HF_PEFT_ADDON` is not a base model, remove `--base-model`.
 
 ## Parameter policy
 

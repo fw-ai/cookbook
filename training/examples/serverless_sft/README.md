@@ -18,7 +18,10 @@ shared, already-running pooled trainer through the gateway and get back a
 Tinker-compatible `FiretitanServiceClient`:
 
 ```python
+from training.utils.serverless import enable_serverless_supervised_409_retry
+
 service = FiretitanServiceClient(base_url=".../training/v1/serverless")
+enable_serverless_supervised_409_retry(service)
 training_client = service.create_lora_training_client(base_model, rank)
 for step in range(steps):
     # prompt tokens weighted 0, response tokens weighted 1

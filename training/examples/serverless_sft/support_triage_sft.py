@@ -70,6 +70,7 @@ except ImportError:
     pass
 
 from training.renderer.tokenizer import get_tokenizer
+from training.utils.serverless import enable_serverless_supervised_409_retry
 from training.utils.supervised import (
     build_renderer,
     render_messages_to_datum,
@@ -241,6 +242,7 @@ class ServerlessTriageSFT:
             api_key=cfg.api_key,
             base_url=_serverless_base_url(cfg.api_base_url),
         )
+        enable_serverless_supervised_409_retry(self.service)
 
         # Resume vs fresh start. Resuming derives base_model / lora_rank /
         # train_* from the checkpoint itself, so a resumed run cannot silently

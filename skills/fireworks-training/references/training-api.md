@@ -49,7 +49,7 @@ from eval_protocol import reward, EvaluationRow          # write the reward as c
 def category_match(row: EvaluationRow) -> float:
     return 1.0 if parse(row.output).get("category") == row.ground_truth else 0.0
 ```
-Running the eval-protocol `pytest` flow **auto-registers** the reward as an eval3 evaluator + the dataset with Fireworks. Treat that command as protected registration and run it only after approval; offline tests should import and call the reward directly without authentication. After registration, run `firectl rftj create --base-model <m> --dataset <ds> --evaluator accounts/<acct>/evaluators/<id>`. The flow is fully code-drivable via eval-protocol. If the current account role cannot register it, an admin registers it once and the scoped agent continues with the evaluator resource.
+Running the eval-protocol `pytest` flow **auto-registers** the reward as an eval3 evaluator + the dataset with Fireworks. Treat that command as protected registration and run it only after approval; offline tests should import and call the reward directly without authentication. Do **not** follow it with `firectl rftj create` — managed RFT create is rejected. Use the Training API rollout/reward path above for new work. If you are only inspecting an existing evaluator on an existing job, keep using its resource ID.
 
 **Observed authorization behavior on 2026-07-15:** eval3 creation is a multi-RPC flow (`CreateEvaluatorV2` → `GetEvaluatorUploadEndpoint` → upload → `ValidateEvaluatorUpload` → e2b build). An admin-role identity authored the evaluator with a plain `fw_` API key, while a user-role identity received **`403: admin role required to call CreateEvaluatorV2`**. Treat live docs and current API behavior as authoritative because scoped permissions may change. Do not broaden credentials or work around a 403. Ask an admin to register the evaluator once, then launch managed RFT with its resource ID.
 
@@ -74,17 +74,18 @@ Whichever RFT route you use, the reward can come from three places:
 
 Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw-ai/cookbook`:
 - `training/recipes/` — loop scripts (e.g. `async_rl_loop`)
-- `training/recipes/experiment/` — experimental infrastructure variants, including async serverless RL
+- `training/recipes/experiment/` — experimental infrastructure variants, including async serverless RL and SAO/PPO
 - `training/examples/` — worked RL / SFT / DPO / ORPO
 - `training/utils/` — config, data loading, losses, metrics
 
-Recipes cover SFT, DPO/ORPO, and RL (GRPO, DAPO, GSPO, CISPO).
+Recipes cover SFT, DPO/ORPO, and RL (GRPO, SAO/PPO, DAPO, GSPO, CISPO).
 
 ## Core SDK primitives
 
 - `forward_backward` — built-in losses by id (e.g. `"cross_entropy"`), no extra forward pass.
 - `forward_backward_custom(datums, loss_fn)` — your Python loss; returns per-token logprobs with gradients. **Loss runs locally; forward/backward run on remote GPUs.**
 - `forward` — forward-only (e.g. reference-model logprobs); optional `loss_fn_config={"top_k": K}` returns per-token top-K logprobs/indices — see below.
+- `forward_projection(datums)` — forward-only raw projection-head outputs (`loss_fn_outputs[i]["projection"]`, shape `[tokens, projection_head_dim]`) for a trainer created with a positive `projection_head_dim`. Any compatible validated training shape can be used; the trainer setting configures the head dimension. Accumulates no gradients; train the head with `forward_backward_custom(..., output="projection")`. See `recipes/experiment/ppo_value_head_loop.py`.
 - `optim_step(...)` — optimizer update after gradient accumulation.
 - `save_weights_for_sampler()` + `create_sampling_client()` — export a checkpoint + stand up a sampler (weight sync for eval/rollouts).
 
@@ -95,6 +96,24 @@ def loss_fn(data, logprobs_list):   # logprobs_list: per-token, requires_grad
     # return (scalar differentiable loss, {metrics for logging})
     ...
 ```
+
+### Gradient norm metrics (SFT and RL)
+
+Telemetry defaults to off. Enable it on each optimizer update:
+
+```python
+result = training_client.optim_step(
+    params, emit_grad_norm_metrics=True,
+).result()
+print(result.metrics)
+```
+
+Log `result.metrics` with the optimizer step. `True` emits global L2
+`grad_norm` and `grad_norm_rms`; `"detailed"` adds parameter-bucket norms.
+`grad_norm` is after accumulation normalization and before clipping; preserve
+the run's normalization setting. Keys may have a `:last` suffix.
+For `async_rl_loop`, set `Config(grad_norm_metrics="basic")` (or `"detailed"`).
+Verify the first step's logs; missing metrics do not mean zero gradients.
 
 ### Top-K logprobs from `forward` (entropy / distributional KL)
 

@@ -629,3 +629,22 @@ def test_fixed_reference_checkpoint_metadata(tmp_path):
     assert json.loads(open(path).read())["metadata"]["reference_checkpoint"] == "snapshot://fixed"
     with pytest.raises(ValueError, match="remain fixed"):
         runner.set_reference_checkpoint("snapshot://updated-policy")
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_frozen_reference_survives_billing_metadata_rotation(tmp_path, corrupt):
+    stable = str(tmp_path / "dpo-reference.json")
+    original = RunnerIO(RunnerConfig(metadata_file=str(tmp_path / "metadata-A.json"), reference_checkpoint_file=stable))
+    original.set_reference_checkpoint("account/run-original/dpo-reference")
+    original.write_metadata()
+    if corrupt:
+        (tmp_path / "dpo-reference.json").write_text("{")
+    resumed = RunnerIO(RunnerConfig(metadata_file=str(tmp_path / "metadata-B.json"), reference_checkpoint_file=stable))
+    if corrupt:
+        from training.utils.runner import UserConfigError
+        with pytest.raises(UserConfigError, match="corrupt"):
+            resumed.persisted_reference_checkpoint()
+    else:
+        assert resumed.persisted_reference_checkpoint() == "account/run-original/dpo-reference"
+        resumed.write_metadata()
+        assert json.loads((tmp_path / "metadata-B.json").read_text())["metadata"]["reference_checkpoint"] == "account/run-original/dpo-reference"

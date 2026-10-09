@@ -158,3 +158,13 @@ the reference cannot accidentally be reanchored to an already-trained policy.
 The snapshot is internal reference state, not the final trained output. Policy
 training and sampler scoring have separate usage paths; do not quote the
 reference as free or included in training-token usage. ORPO remains unchanged.
+
+### Capacity-409 retries for serverless SFT/DPO
+
+The shared serverless SFT/DPO recipe setup and the standalone serverless SFT/DPO
+examples opt in to SDK capacity/recovery-409 retries before creating or resuming
+a training client. Only opted-in serverless future-retrieve requests receive
+this policy; terminal and unrecognized explicit conflicts still fail fast. It
+does not change trainer placement or opt RFT/RL clients in. Older supported SDK
+releases without the optional hook retain their existing retry behavior; the
+cookbook does not require an unpublished SDK release just to start training.

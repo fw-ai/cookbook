@@ -303,3 +303,35 @@ def test_nested_orpo_lr_scheduler_uses_shared_scheduler():
     assert scheduler.type == "cosine"
     assert scheduler.warmup_ratio == pytest.approx(0.2)
     assert scheduler.min_lr_ratio == pytest.approx(0.1)
+
+
+# ---------------------------------------------------------------------------
+# Multi-shard (staged directory) datasets -- FIR2-2500
+# ---------------------------------------------------------------------------
+
+
+def test_orpo_preference_loader_accepts_multi_shard_directory(tmp_path):
+    """ORPO's ``main`` loads ``cfg.dataset`` via ``load_preference_dataset``.
+
+    A staged multi-shard directory (managed ``stage_gcs_dataset`` output) must
+    load in deterministic sorted shard order instead of raising
+    ``IsADirectoryError`` after GPUs are provisioned.
+    """
+    import json
+
+    def pair(chosen, rejected):
+        return {"chosen": {"messages": [{"role": "assistant", "content": chosen}]},
+                "rejected": {"messages": [{"role": "assistant", "content": rejected}]}}
+
+    for rel, rows in (("a.jsonl", [pair("a0", "a0r"), pair("a1", "a1r")]), ("b.jsonl", [pair("b0", "b0r")])):
+        with open(tmp_path / rel, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row) + "\n")
+
+    from training.utils.data import load_preference_dataset
+
+    capped = load_preference_dataset(str(tmp_path), max_pairs=2)
+    assert [p["chosen"]["messages"][0]["content"] for p in capped] == ["a0", "a1"]
+
+    full = load_preference_dataset(str(tmp_path))
+    assert [p["chosen"]["messages"][0]["content"] for p in full] == ["a0", "a1", "b0"]

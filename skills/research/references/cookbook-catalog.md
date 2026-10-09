@@ -19,6 +19,7 @@ End-to-end notebooks with eval. See `case-studies.md` for slugs and match rules.
 | `embedding_support_search` | embedding | RAG retrieval / policy match |
 | `agentic_rl_text2sql` | GRPO / serverless RL | Tool-calling SQL agent with multi-turn rollouts |
 | `multilora_fleet` | LoRA SFT | Many tenants/locales; per-tenant adapters on one deployment |
+| `grpo_countdown` | GRPO / serverless RL | Single-turn verifiable GRPO (Countdown); dedicated as config swap |
 
 ## Tier 2 — Examples (`training/examples/`)
 
@@ -32,6 +33,7 @@ Minimal scripts; often the best match for novel domains.
 | `orpo/ifeval/train_ifeval_orpo.py` | ORPO | Instruction preferences | prepared IFEval data |
 | `serverless_rl/countdown_rl.py` | RFT | Serverless RL smoke | bundled countdown data |
 | `serverless_dpo/ultrafeedback_dpo.py` | DPO | Serverless preference tuning | prepared UltraFeedback data |
+| `rl/SAO/qwen3_4b_sao.py` | SAO / PPO (experimental) | Token-level actor-critic math RL | built-in smoke rows or local JSONL |
 | `rl/deepmath/train_deepmath.py` | RFT | Verifiable math | prepared data |
 | `rl/frozen_lake/train_frozen_lake.py` | RFT | Toy multi-turn environment | prepared seeds |
 | `rl/eval_protocol_chat/train.py` | RFT | Eval-protocol chat RL | prepared data |
@@ -51,8 +53,10 @@ Training API loops when the customer needs a custom harness.
 | `orpo_loop.py` | ORPO |
 | `rl_loop.py` | GRPO (sync RL) |
 | `async_rl_loop.py` | GRPO (async) |
+| `experiment/ppo_value_head_loop.py` | SAO / token-level PPO (experimental) |
 | `igpo_loop.py` | IGPO multi-turn |
 | `distillation_loop.py` | Distillation / OPD |
+| `sdft_loop.py` | SDFT on serverless (needs the `sdft` extra) |
 | `embedding_loop.py` | Embedding / contrastive |
 
 ## Match priority

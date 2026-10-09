@@ -54,10 +54,12 @@ from fireworks.training.sdk.training_spec import (
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
+from training.utils.termination import TerminatedBySignal
 from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
     DatasetError,
+    GcsJsonlRenderDataset,
     NO_VALID_TRAINING_EXAMPLES_MESSAGE,
     TrainerConfig,
     JSONL_ROW_INDEX_KEY,
@@ -87,6 +89,10 @@ from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.serverless import setup_serverless_training
 from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
 from training.utils.resource_autosizing import select_render_worker_count
+from training.utils.streaming import (
+    dataset_error_for_rendered_row,
+    raise_rendered_dataset_errors,
+)
 from training.utils.runner_state import start_running, write_completed, write_running_step
 from training.utils.timer import flush_timing, timer
 
@@ -102,6 +108,12 @@ _worker_state: dict = {}
 RENDER_SAMPLE_LIMIT_ENV = "FIRETITAN_SFT_RENDER_SAMPLES_LIMIT"
 DEFAULT_RENDER_SAMPLE_LIMIT = 20
 MAX_VISION_RENDER_SAMPLE_RESERVE = 5
+DATASET_LOADING_MODE_STAGE = "stage"
+DATASET_LOADING_MODE_STREAM = "stream"
+SUPPORTED_DATASET_LOADING_MODES = {
+    DATASET_LOADING_MODE_STAGE,
+    DATASET_LOADING_MODE_STREAM,
+}
 
 
 def _parse_render_samples_limit(value: str) -> int | None:
@@ -487,24 +499,32 @@ def _resolved_renderer_name(
     )
 
 
-def _render_one_worker(row: dict) -> tinker.Datum | list[tinker.Datum] | None:
+def _render_one_worker(
+    row: dict,
+) -> tinker.Datum | list[tinker.Datum] | DatasetError | None:
     """Render a chat row to one or more Datums, dropping empty / long sequences.
 
     Reads renderer / train_on_what / max_seq_len from the per-process
     ``_worker_state`` populated by ``_init_render_worker``. Top-level
     so spawn workers can pickle it as the DataLoader's render_fn.
+
+    Dataset errors are returned, not raised, so the parent process can
+    re-raise them with the original public message.
     """
     messages = row.get("messages", [])
     if not messages:
         return None
     tools = row.get("tools")
-    rendered_examples = render_messages_to_datums(
-        messages,
-        renderer=_worker_state["renderer"],
-        train_on_what=_worker_state["train_on_what"],
-        tools=tools,
-        reduction="mean",
-    )
+    try:
+        rendered_examples = render_messages_to_datums(
+            messages,
+            renderer=_worker_state["renderer"],
+            train_on_what=_worker_state["train_on_what"],
+            tools=tools,
+            reduction="mean",
+        )
+    except DatasetError as exc:
+        return dataset_error_for_rendered_row(row, exc)
     if not isinstance(rendered_examples, list):
         rendered_examples = [rendered_examples]
     valid_rendered_examples = [
@@ -541,12 +561,16 @@ def compute_eval_carveout(
     return 0 if carveout >= total_samples else carveout
 
 
-def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
+def _render_eagerly(
+    ds: JsonlRenderDataset | GcsJsonlRenderDataset,
+    n: int,
+) -> List[tinker.Datum]:
     """Render the first ``n`` rows of ``ds`` in-process, dropping Nones."""
     datums: List[tinker.Datum] = []
     for item in (ds[i] for i in range(n)):
         if item is None:
             continue
+        raise_rendered_dataset_errors([item])
         if isinstance(item, list):
             datums.extend(item)
         else:
@@ -554,9 +578,51 @@ def _render_eagerly(ds: JsonlRenderDataset, n: int) -> List[tinker.Datum]:
     return datums
 
 
+def _normalize_dataset_loading_mode(mode: str) -> str:
+    normalized = mode.strip().lower().replace("-", "_")
+    if normalized not in SUPPORTED_DATASET_LOADING_MODES:
+        raise DatasetError(
+            f"Unsupported dataset_loading_mode {mode!r}; expected 'stage' or 'stream'."
+        )
+    return normalized
+
+
+def _make_jsonl_dataset(
+    *,
+    path: str,
+    render_fn: Any,
+    cfg: "Config",
+    max_examples: int | None = None,
+) -> JsonlRenderDataset | GcsJsonlRenderDataset:
+    mode = _normalize_dataset_loading_mode(cfg.dataset_loading_mode)
+    if mode == DATASET_LOADING_MODE_STAGE:
+        return JsonlRenderDataset(
+            path,
+            render_fn,
+            max_examples=max_examples,
+            row_index_key=JSONL_ROW_INDEX_KEY,
+        )
+    if not path.startswith("gs://"):
+        raise DatasetError(
+            "dataset_loading_mode='stream' requires a gs:// dataset path; "
+            f"got {path!r}."
+        )
+    if cfg.group_by_length:
+        raise DatasetError(
+            "dataset_loading_mode='stream' does not support group_by_length yet."
+        )
+    return GcsJsonlRenderDataset(
+        path,
+        render_fn,
+        max_examples=max_examples,
+        row_index_key=JSONL_ROW_INDEX_KEY,
+    )
+
+
 def _flatten_rendered_batch(
-    batch: list[tinker.Datum | list[tinker.Datum]],
+    batch: list[tinker.Datum | list[tinker.Datum] | DatasetError],
 ) -> list[tinker.Datum]:
+    raise_rendered_dataset_errors(batch)
     datums: list[tinker.Datum] = []
     for item in batch:
         if isinstance(item, list):
@@ -568,7 +634,7 @@ def _flatten_rendered_batch(
 
 def _prepare_datasets(
     cfg: "Config",
-) -> tuple[JsonlRenderDataset, List[tinker.Datum]]:
+) -> tuple[JsonlRenderDataset | GcsJsonlRenderDataset, List[tinker.Datum]]:
     """Build the training dataset and (optional) eval set.
 
     Eval can come from an explicit ``cfg.evaluation_dataset`` or be
@@ -577,20 +643,20 @@ def _prepare_datasets(
     rows but otherwise preserves raw-file order; the training loader
     still does its own per-epoch shuffling.
     """
-    training_ds = JsonlRenderDataset(
-        cfg.dataset,
-        _render_one_worker,
+    training_ds = _make_jsonl_dataset(
+        path=cfg.dataset,
+        render_fn=_render_one_worker,
+        cfg=cfg,
         max_examples=cfg.max_examples,
-        row_index_key=JSONL_ROW_INDEX_KEY,
     )
     if len(training_ds) == 0:
         raise DatasetError(f"No examples found in {cfg.dataset}")
 
     if cfg.evaluation_dataset:
-        eval_ds = JsonlRenderDataset(
-            cfg.evaluation_dataset,
-            _render_one_worker,
-            row_index_key=JSONL_ROW_INDEX_KEY,
+        eval_ds = _make_jsonl_dataset(
+            path=cfg.evaluation_dataset,
+            render_fn=_render_one_worker,
+            cfg=cfg,
         )
         eval_data = _render_eagerly(eval_ds, len(eval_ds))
         logger.info(
@@ -651,6 +717,11 @@ class Config:
 
     base_model: str = "accounts/fireworks/models/qwen3-8b"
     dataset: str = ""
+    """Path to the training dataset: a JSONL file or a directory of .jsonl shards."""
+    dataset_loading_mode: str = DATASET_LOADING_MODE_STAGE
+    """How to load ``dataset``. ``stage`` reads a local/staged JSONL path.
+    ``stream`` reads plaintext ``gs://`` JSONL shards through bounded GCS range
+    requests and avoids a full local payload copy."""
     tokenizer_model: str = ""  # HuggingFace model name for chat template, e.g. "Qwen/Qwen3-1.7B"
     tokenizer_revision: str = ""  # Optional HuggingFace revision for client-side tokenization
     tokenizer_trust_remote_code: bool | None = None
@@ -709,6 +780,10 @@ class Config:
     dcp_save_interval: int = 0  # save DCP checkpoint every N steps (0 = off)
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
+
+    prefer_current_run_checkpoint: bool = False
+    """Prefer this run's checkpoints over a previous-attempt reference on resume.
+    Opt-in for managed continuation; explicit initialization otherwise wins."""
 
     init_from_checkpoint: str | None = None
     """Load pretrained DCP weights on a fresh dataset. Supports cross-job
@@ -770,7 +845,8 @@ class Config:
     Defaults to 4 to overlap server-side preparation with GPU compute."""
 
     evaluation_dataset: str = ""
-    """Path to an explicit eval dataset (JSONL).  When set, auto-carveout
+    """Path to an explicit eval dataset (JSONL file or directory of .jsonl
+    shards).  When set, auto-carveout
     is skipped and this dataset is used for evaluation instead."""
 
     eval_auto_carveout: bool = False
@@ -834,14 +910,15 @@ def run_eval(
     client: ReconnectableClient,
     batch_size: int,
     step: int,
-    epoch: int,
+    epoch: int | None,
 ) -> float | None:
     """Run evaluation without affecting model weights or optimizer state.
 
     Uses forward (no backward) so weights, gradient state, and Adam moments
     are untouched. Logprobs come back from the server; the training loss
     function is invoked client-side purely to compute metrics, and the
-    returned loss tensor is discarded.
+    returned loss tensor is discarded. ``epoch=None`` marks the
+    pre-training baseline eval.
     """
     if not eval_data:
         return None
@@ -880,8 +957,8 @@ def run_eval(
     eval_ppl = perplexity_from_nll(eval_loss)
 
     logger.info(
-        "[Eval] Epoch %d | Loss: %.4f | PPL: %.2f | Tokens: %d",
-        epoch + 1,
+        "[Eval] %s | Loss: %.4f | PPL: %.2f | Tokens: %d",
+        "Pre-training" if epoch is None else f"Epoch {epoch + 1}",
         eval_loss,
         eval_ppl,
         eval_resp_tokens,
@@ -909,7 +986,7 @@ def main(
     def _signal_handler(signum, frame):
         name = signal.Signals(signum).name
         logger.warning("Received %s — raising SystemExit for cleanup", name)
-        raise SystemExit(f"Terminated by {name}")
+        raise TerminatedBySignal(name)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
@@ -1117,6 +1194,7 @@ def main(
         resume_info = ckpt.resume(
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
+            prefer_current_run=cfg.prefer_current_run_checkpoint,
         )
         step = resume_info.step if resume_info else 0
         total_raw_rows = training_count * cfg.epochs
@@ -1146,6 +1224,31 @@ def main(
         start_batch = rows_into_current_epoch // effective_batch_size
         remaining_raw_rows = max(0, total_raw_rows - cursor.value)
         total_steps_estimate = step + ((remaining_raw_rows + effective_batch_size - 1) // effective_batch_size)
+
+        def _eval_and_record(step: int, epoch: int | None) -> None:
+            try:
+                eval_loss = run_eval(
+                    eval_data=eval_data,
+                    client=client,
+                    batch_size=cfg.batch_size,
+                    step=step,
+                    epoch=epoch,
+                )
+                if eval_loss is not None:
+                    runner.append_metrics(
+                        step,
+                        {"eval/loss": eval_loss, "eval/ppl": perplexity_from_nll(eval_loss)},
+                    )
+            except Exception as e:
+                phase = "pre-training" if epoch is None else f"epoch {epoch + 1}"
+                logger.warning("Eval failed at %s, continuing: %s", phase, e)
+
+        start_running(runner, total_steps=total_steps_estimate)
+
+        # Pre-training baseline (skipped on resume). Must run before
+        # pipe_started so it does not dilute train/tokens_per_sec.
+        if eval_data and step == 0:
+            _eval_and_record(step=step, epoch=None)
 
         # Always-on intra-step async + optional inter-step pipelining
         in_flight: deque = deque()
@@ -1289,8 +1392,6 @@ def main(
                 except Exception as e:
                     logger.warning("pipeline drain: %s", e)
 
-        start_running(runner, total_steps=total_steps_estimate)
-
         try:
             for epoch in range(completed_epochs, cfg.epochs):
                 loader_generator.manual_seed(cfg.seed + epoch)
@@ -1351,21 +1452,7 @@ def main(
 
                 # Run eval after each epoch
                 if eval_data:
-                    try:
-                        eval_loss = run_eval(
-                            eval_data=eval_data,
-                            client=client,
-                            batch_size=cfg.batch_size,
-                            step=step,
-                            epoch=epoch,
-                        )
-                        if eval_loss is not None:
-                            runner.append_metrics(
-                                step,
-                                {"eval/loss": eval_loss, "eval/ppl": perplexity_from_nll(eval_loss)},
-                            )
-                    except Exception as e:
-                        logger.warning("Eval failed at epoch %d, continuing: %s", epoch + 1, e)
+                    _eval_and_record(step=step, epoch=epoch)
         finally:
             # Drain in-flight ops on exit (incl. SIGTERM) to avoid leaking partial batches.
             _pipe_drain_safe()

@@ -78,6 +78,13 @@ algorithm still belongs in an explicit recipe fork.
 
 ## Multimodal datum contract
 
+The synchronous `rl_loop` default rollout supports both text and image messages
+through `service.create_deployment_sampler(...)`. It sends the renderer's image
+payloads with the token prompt and preserves the same image chunks for training;
+Shape CI uses this default path too. R3 format negotiation stays in the SDK:
+it selects Parquet when the trainer and inference advertise a shared R3 store.
+Do not construct an unbound sampler or force an R3 format in the recipe.
+
 Vision RL uses the canonical Tinker expanded sequence coordinates. For an
 unshifted sequence of length `N`, including every image slot:
 

@@ -83,7 +83,13 @@ class GLM52TITORenderer:
         self,
         messages: Sequence[Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
-        return _normalize_template_messages(messages)
+        normalized = _normalize_template_messages(messages)
+        for message in normalized:
+            if message.get("role") == "assistant" and message.get("content") is None:
+                # GLM's template stringifies null as "None". OpenAI tool-only
+                # assistant messages use null to mean no visible content.
+                message["content"] = ""
+        return normalized
 
     def _template_inputs(
         self,

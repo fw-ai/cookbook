@@ -10,6 +10,7 @@ Each recipe is a single Python file you can fork and customize.
 | Recipe | File | Description |
 | --- | --- | --- |
 | GRPO | `recipes/rl_loop.py` | Opinionated synchronous RL using group-normalized advantages and a direct client-side GRPO loss. |
+| SAO / PPO + value head (experimental) | `recipes/experiment/ppo_value_head_loop.py` | Token-level PPO with separate actor and critic trainers and an independent critic projection head; `sao_config()` switches to SAO (DIS, adaptive GAE, faster critic updates, value pretraining). Not validated for every model. |
 | Async GRPO | `recipes/async_rl_loop.py` | The same client-side GRPO update with rollout/train overlap and bounded off-policy staleness. |
 | IGPO (multi-turn turn-level Information Gain) | `recipes/igpo_loop.py` | GRPO + per-turn IG rewards for agent trajectories (Wang et al., ICLR 2026). |
 | Distillation / OPD | `recipes/distillation_loop.py` | Sampled-token on-policy distillation. The student rolls out on policy, one or more teachers score those same tokens, and training uses the server-side importance-sampling loss. |
@@ -27,12 +28,14 @@ Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each 
 | [sft_prompt_router](case-studies/sft_prompt_router) | Text SFT / classification (Python SDK), dedicated + serverless | Prompt-Routing-Dataset | Route prompts to a small vs big model (multi-field classifier) | dedicated [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_dedicated.ipynb) · serverless [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_serverless.ipynb) |
 | [sft_cord_receipts](case-studies/sft_cord_receipts) | Vision SFT (Python SDK) | CORD receipts | Teach the model a new structured-output task | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_cord_receipts/cord_receipt_sft_sdk.ipynb) |
 | [dpo_style](case-studies/dpo_style) | DPO (Python SDK) | HelpSteer3 | "Write the way we write" (style/quality preferences) | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/dpo_style/dpo_helpsteer3_sdk.ipynb) |
-| [reasoning_rl](case-studies/reasoning_rl) | GRPO via managed RFT (Python SDK) | GSM8K | Improve step-by-step reasoning | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/reasoning_rl/rft_grpo_math.ipynb) |
+| [reasoning_rl](case-studies/reasoning_rl) | GRPO via Training API (legacy managed RFT notebook is deprecated) | GSM8K | Improve step-by-step reasoning | [deepmath](examples/rl/deepmath/) |
 | [embedding_support_search](case-studies/embedding_support_search) | Contrastive embedding fine-tuning (`embedding_loop` recipe) | Airbnb Help Center scenarios | Retrieve the help article that *governs* a situation, not the one that sounds like it | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/embedding_support_search/airbnb_policy_embedding.ipynb) |
 | [agentic_rl_text2sql](case-studies/agentic_rl_text2sql) | Serverless tool-calling GRPO (Training API SDK) | BIRD text-to-SQL | Train a multi-turn tool-calling SQL agent; evaluate on unseen (out-of-distribution) databases | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/agentic_rl_text2sql/sql_agent_rl_loop.ipynb) |
+| [sft_bfcl_toolcalls](case-studies/sft_bfcl_toolcalls) | SFT on the Training API: serverless, dedicated, and managed compared (Python SDK) | xLAM function-calling-60k + xlam-irrelevance-7.5k, scored on BFCL V4 non-live | Fix tool-call emission/abstention on a public benchmark, not a metric we invented | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_bfcl_toolcalls/bfcl_toolcall_sft.ipynb) |
 | [multilora_fleet](case-studies/multilora_fleet) | LoRA SFT + multi-LoRA serving (Python SDK) | MASSIVE (51 locales) | One deployment, a per-tenant specialist for every locale | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/multilora_fleet/multilora_fleet.ipynb) |
+| [grpo_countdown](case-studies/grpo_countdown) | Serverless non-agentic GRPO (Training API SDK) | TinyZero Countdown | Own the single-turn GRPO loop on serverless; same algorithm as a dedicated config swap | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/grpo_countdown/countdown_grpo.ipynb) |
 
-**Setup.** These are independent of the cookbook install above — just `pip install fireworks-ai eval-protocol` (a couple add extras, noted in their own READMEs) and a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
+**Setup.** Most are independent of the cookbook install above — just `pip install fireworks-ai eval-protocol` (a couple add extras, noted in their own READMEs) and a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). Exceptions: case studies that import the cookbook's `training.*` modules — currently `grpo_countdown` (imports `examples/serverless_rl`) — need the cookbook training install (`uv pip install -e .`, which pulls `tinker`). Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
 
 ## Getting started
 
@@ -55,7 +58,7 @@ uv pip install -e .
 ```
 
 > **Training uses the 1.x SDK.** This cookbook requires
-> `fireworks-ai[training]>=1.2.11,<2`, which is available as a stable release;
+> `fireworks-ai[training]>=1.2.21,<2`, which is available as a stable release;
 > `--pre` is not required. The legacy `0.19.20` package has no
 > `fireworks.training` module. Install the cookbook dependencies above before
 > running recipes.
@@ -118,6 +121,70 @@ the two.
 
 The synchronous recipe always hotloads before the first rollout and after
 every optimizer step. It has no sampler-refresh cadence knob.
+
+**SAO / PPO with an independent value head** (experimental;
+`recipes/experiment/ppo_value_head_loop.py`) trains two models from the same base model:
+
+- the actor samples responses and learns from token-level advantages;
+- the critic predicts one value per token through a separate projection head;
+- actor and critic checkpoints are saved independently.
+
+The default `critic_projection_head_dim=1` produces one raw scalar per token.
+For a categorical critic, set a dimension greater than one and provide an
+equally sized `critic_value_support`; the recipe decodes the value as the
+softmax expectation over that support.
+
+Set `critic_projection_head_dim` to a positive value to create the critic's
+projection head. `critic_trainer.training_shape_id` can identify any compatible
+validated training shape; the shape does not configure the head. Alternatively,
+set `critic_trainer.job_id` to reattach a trainer created with the same head
+dimension.
+
+The default `Config` is that reference-PPO baseline. `sao_config(log_path,
+**overrides)` applies the SAO settings (`SAO_SETTINGS`; SAO is Single-rollout
+Asynchronous Optimization, arXiv 2607.07508):
+
+- DIS actor loss against rollout logprobs;
+- response-length-adaptive GAE;
+- two critic updates per rollout batch and post-update actor advantages;
+- MLP-only critic LoRA;
+- optional value pretraining with held-out checkpoint selection.
+
+See the [Qwen3-4B SAO example](examples/rl/SAO/QWEN3_4B_SAO.md) for a runnable
+four-prompt smoke test and a DeepMath starting point.
+
+Weight sync automatically uses RDMA for dedicated full-parameter training when
+the trainer and every inference replica advertise RDMA support. LoRA and older
+images use save-weights followed by file hotload. Missing capability fields
+mean unsupported; setting `weight_sync_transport="RDMA"` does not bypass this
+check. The negotiated result is available as `policy.supports_rdma_weight_sync`.
+Errors during an RDMA transfer are surfaced instead of retrying with files.
+Deployments using gateway shard fan-out also use FILE hotload.
+
+Recipes create the publication callback once, after attaching the policy client:
+
+```python
+from training.utils.service import make_weight_sync
+
+# policy is the cookbook's ReconnectableClient; service owns the deployment.
+publish_weights = make_weight_sync(policy, service, cfg.deployment)
+
+# Before the first rollout and after each optimizer step:
+publish_weights(f"step-{step}")
+```
+
+The `if` is centralized in [`make_weight_sync`](utils/service.py):
+
+| Negotiated capability at setup | Publication calls |
+| --- | --- |
+| `supports_rdma_weight_sync is True` | `policy.weight_sync()` |
+| False or missing, including LoRA and older SDKs | `saved = policy.save_weights_for_sampler(name)`, then `service.hotload_sampler_snapshot(saved.path)` |
+
+These cookbook calls wait for completion. Keep using the same callback throughout
+the run: the SDK's `weight_sync()` rechecks runtime support and performs the two
+FILE steps itself if support disappears. Recipes do not need another `if` inside
+the training loop. See the [RL recipe](recipes/rl_loop.py) and
+[FrozenLake example](examples/rl/frozen_lake/train_frozen_lake.py).
 
 **Distillation / OPD** (`recipes/distillation_loop.py`) -- also requires:
 
@@ -219,12 +286,13 @@ For detailed guides, configuration reference, and examples, see the official doc
 
 ```
 recipes/                                Training loop scripts (fork these)
-recipes/experiment/                     Experimental recipe variants, including async serverless RL
+recipes/experiment/                     Experimental recipe variants, including async serverless RL and SAO/PPO
 utils/                                  Shared config, data loading, loss functions, metrics
 examples/sft/                           Worked example: SFT getting started
 examples/embedding/                     Worked example: embedding (retrieval) fine-tuning
 examples/dpo/                           Worked example: DPO
 examples/orpo/ifeval/                   Worked example: IFEval with ORPO
+examples/rl/SAO/                        Experimental Qwen3-4B SAO/PPO example
 examples/rl/deepmath/                   GRPO on DeepMath (rl_loop)
 examples/rl/frozen_lake/                Frozen Lake tool-use RL (custom loop)
 examples/rl/single_turn_token_in/       Async RL single-turn, token-in rollout

@@ -12,6 +12,7 @@ Runnable end-to-end notebooks in `training/case-studies/`. Each README has an
 | `embedding_support_search` | Contrastive embedding | RAG returns adjacent but wrong article; policy structure not in base model | `airbnb_policy_embedding.ipynb` | Training API `embedding_loop` |
 | `agentic_rl_text2sql` | GRPO / serverless RL | Tool-calling agent (SQL, APIs); multi-turn rollouts with verifiable rewards | `sql_agent_rl_loop.ipynb` | serverless Training API |
 | `multilora_fleet` | LoRA SFT / multi-LoRA serving | Many tenants or locales sharing one base model; per-tenant adapters served from a single deployment | `multilora_fleet.ipynb` | managed SDK |
+| `grpo_countdown` | GRPO / serverless RL | Single-turn graded answers; own the GRPO loop on serverless (Countdown) | `countdown_grpo.ipynb` | serverless (+ dedicated config-swap section) |
 
 Cookbook table: [`training/README.md`](https://github.com/fw-ai/cookbook/blob/main/training/README.md#case-studies).
 
@@ -26,6 +27,7 @@ Cookbook table: [`training/README.md`](https://github.com/fw-ai/cookbook/blob/ma
 | `embedding_support_search` | embedding fine-tune | Training API dedicated |
 | `agentic_rl_text2sql` | RL (GRPO) | serverless Training API |
 | `multilora_fleet` | SFT (LoRA) | managed SDK |
+| `grpo_countdown` | RL (GRPO) | serverless Training API |
 
 ## Match rules
 

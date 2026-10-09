@@ -27,6 +27,7 @@ Quick commands::
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pytest
 import transformers
@@ -37,6 +38,9 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 
 from training.renderer.gemma4 import (
     Gemma4Renderer,
+    _format_function_declaration,
+    _format_property,
+    _format_tool_block,
     _get_reasoning_text,
     _split_thinking_and_text,
 )
@@ -48,6 +52,46 @@ from training.utils.supervised import (
 )
 
 _MODEL_PATH_ENV = "GEMMA4_MODEL_PATH"
+
+
+@pytest.mark.parametrize(
+    ("schema", "expected"),
+    [
+        ({"type": ["string", "null"]}, "arg:{type:<|\"|>['STRING', 'NULL']<|\"|>}"),
+        ({"type": ["integer", "number"]}, "arg:{type:<|\"|>['INTEGER', 'NUMBER']<|\"|>}"),
+        ({"type": ["string"]}, "arg:{type:<|\"|>['STRING']<|\"|>}"),
+        (
+            {"type": ["string", "null"], "description": "Optional", "nullable": True},
+            "arg:{description:<|\"|>Optional<|\"|>,nullable:true,type:<|\"|>['STRING', 'NULL']<|\"|>}",
+        ),
+        (
+            {"type": "object", "properties": {"name": {"type": ["string", "null"]}}},
+            "arg:{properties:{name:{type:<|\"|>['STRING', 'NULL']<|\"|>}},type:<|\"|>OBJECT<|\"|>}",
+        ),
+        (
+            {"type": "array", "items": {"type": ["string", "null"]}},
+            'arg:{items:{type:[<|"|>STRING<|"|>,<|"|>NULL<|"|>]},type:<|"|>ARRAY<|"|>}',
+        ),
+        ({"type": "string", "enum": ["a"]}, 'arg:{enum:[<|"|>a<|"|>],type:<|"|>STRING<|"|>}'),
+        ({}, 'arg:{type:<|"|><|"|>}'),
+    ],
+)
+def test_schema_type_rendering_without_checkpoint(schema: dict[str, Any], expected: str) -> None:
+    """List types follow Jinja's string coercion; array items retain list formatting."""
+    assert _format_property("arg", schema) == expected
+
+
+def test_function_schema_list_types_without_checkpoint() -> None:
+    assert _format_function_declaration(
+        {
+            "name": "lookup",
+            "parameters": {"type": ["object", "null"]},
+            "response": {"type": ["object", "null"], "description": "Result"},
+        }
+    ) == (
+        'declaration:lookup{description:<|"|><|"|>,parameters:{'
+        "type:<|\"|>['OBJECT', 'NULL']<|\"|>},response:{description:<|\"|>Result<|\"|>,}"
+    )
 
 
 def _resolve_model_path() -> str:
@@ -730,6 +774,25 @@ _NESTED_TOOL = {
     },
 }
 
+_UNION_TYPE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "lookup",
+        "description": "Lookup",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "note": {"type": ["string", "null"], "description": "n"},
+                "ids": {
+                    "type": ["array", "null"],
+                    "items": {"type": ["integer", "null"]},
+                },
+            },
+            "required": ["note"],
+        },
+    },
+}
+
 _NO_PROPS_TOOLS = [
     {"type": "function", "function": {"name": "a", "description": "d1",
      "parameters": {"type": "object", "properties": {}, "required": []}}},
@@ -779,12 +842,17 @@ def _renderer_tokens_with_tools(renderer, messages, tools, *, system_prompt: str
             [{"role": "user", "content": "go"}],
             _NO_PROPS_TOOLS,
         ),
+        (
+            [{"role": "user", "content": "go"}],
+            [_UNION_TYPE_TOOL],
+        ),
     ],
     ids=[
         "single_tool_user_only",
         "single_tool_with_system",
         "nested_tool_def",
         "two_tools_no_props",
+        "union_type_tool_def",
     ],
 )
 def test_tool_definitions_parity(tokenizer, renderer, messages, tools):
@@ -793,6 +861,100 @@ def test_tool_definitions_parity(tokenizer, renderer, messages, tools):
     hf = _hf_tokens(tokenizer, messages, tools=tools)
     ours = _renderer_tokens_with_tools(renderer, messages, tools)
     _assert_match(tokenizer, hf, ours)
+
+
+@pytest.mark.parametrize("renderer_class", [Gemma4Renderer, Gemma4SplitRenderer])
+@pytest.mark.parametrize("enable_thinking", [False, True])
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": ["string", "null"], "description": "Optional name", "enum": ["Alice"]},
+        {"type": ["integer", "number"]},
+        {"type": ["array", "null"], "items": {"type": "string"}},
+        {
+            "type": "object",
+            "properties": {"name": {"type": ["string", "null"]}},
+            "required": ["name"],
+        },
+        {"type": "array", "items": {"type": ["string", "null"]}},
+        {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"name": {"type": ["string", "null"]}},
+                "required": ["name"],
+            },
+        },
+    ],
+    ids=["nullable_string", "numeric_union", "nullable_array", "nested_object", "union_items", "nested_items"],
+)
+def test_sft_tool_schema_list_types_match_hf(
+    tokenizer: transformers.PreTrainedTokenizerBase,
+    renderer_class: type[Gemma4Renderer],
+    enable_thinking: bool,
+    schema: dict[str, Any],
+) -> None:
+    """Exercise the SFT eval-row path with realistic, synthetic union schemas."""
+    renderer = renderer_class(tokenizer, enable_thinking=enable_thinking)
+    messages = [
+        {"role": "system", "content": "Be helpful."},
+        {"role": "user", "content": "Look up Alice."},
+        {"role": "assistant", "content": "Alice found."},
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Look up a name",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"arg": schema},
+                    "required": ["arg"],
+                },
+            },
+        }
+    ]
+    rendered = render_messages_to_datums(messages, renderer=renderer, tools=tools)
+    assert len(rendered) == 1
+    _assert_match(
+        tokenizer,
+        _hf_tokens(tokenizer, messages, tools=tools, add_generation_prompt=False, enable_thinking=enable_thinking),
+        rendered[0].token_ids,
+    )
+
+
+def test_union_type_tool_declaration_matches_jinja_upper():
+    """JSON Schema list ``type`` values render the way Jinja's ``upper`` filter
+    stringifies them, instead of raising on ``list.upper()``. Expected output
+    was captured from the official template; no tokenizer needed."""
+    q = '<|"|>'
+    expected = (
+        f"<|tool>declaration:lookup{{description:{q}Lookup{q},parameters:{{properties:{{"
+        f"ids:{{type:{q}['ARRAY', 'NULL']{q}}},"
+        f"note:{{description:{q}n{q},type:{q}['STRING', 'NULL']{q}}}}},"
+        f"required:[{q}note{q}],type:{q}OBJECT{q}}}}}<tool|>"
+    )
+    assert _format_tool_block([_UNION_TYPE_TOOL]) == expected
+
+
+def test_union_type_top_level_and_response_match_jinja_upper():
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "f",
+            "description": "d",
+            "parameters": {"type": ["object", "null"], "properties": {"a": {"type": None}}},
+            "response": {"type": ["object"], "description": "r"},
+        },
+    }
+    q = '<|"|>'
+    expected = (
+        f"<|tool>declaration:f{{description:{q}d{q},parameters:{{properties:{{"
+        f"a:{{type:{q}NONE{q}}}}},type:{q}['OBJECT', 'NULL']{q}}},"
+        f"response:{{description:{q}r{q},}}<tool|>"
+    )
+    assert _format_tool_block([tool]) == expected
 
 
 @pytest.mark.parametrize(

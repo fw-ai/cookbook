@@ -11,7 +11,10 @@ Tinker-compatible client. The frozen DPO reference model is just a sampler
 bound to a snapshot of your step-0 weights:
 
 ```python
+from training.utils.serverless import enable_serverless_supervised_409_retry
+
 service = FiretitanServiceClient(base_url=".../training/v1/serverless")
+enable_serverless_supervised_409_retry(service)
 training_client = service.create_lora_training_client(base_model, rank)
 
 # Reference = frozen step-0 snapshot (zero-init LoRA == base model).

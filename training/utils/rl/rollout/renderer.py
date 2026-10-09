@@ -593,8 +593,9 @@ def sampled_completion_to_rollout_run(
     completion: Any,
     *,
     reward: float,
+    prompt_model_input: tinker.ModelInput | None = None,
 ) -> RolloutRun | None:
-    """Pack one SDK ``SampledCompletion`` into the neutral rollout contract."""
+    """Pack an SDK completion, preserving the rendered prompt for image inputs."""
     prompt_len = int(completion.prompt_len)
     full_tokens = list(completion.full_tokens)
     completion_tokens = full_tokens[prompt_len:]
@@ -619,6 +620,17 @@ def sampled_completion_to_rollout_run(
         source="raw inference logprobs",
         required=False,
     )
+    if prompt_model_input is not None:
+        return _build_multimodal_rollout_sample(
+            prompt_model_input=prompt_model_input,
+            completion_tokens=completion_tokens,
+            completion_logprobs=completion_logprobs,
+            raw_completion_logprobs=raw_completion_logprobs,
+            routing_matrices=getattr(completion, "routing_matrices", None),
+            reward=reward,
+            finish_reason=getattr(completion, "finish_reason", "stop"),
+            text=getattr(completion, "text", ""),
+        )
     return _build_text_only_rollout_sample(
         prompt_token_ids=full_tokens[:prompt_len],
         completion_tokens=completion_tokens,

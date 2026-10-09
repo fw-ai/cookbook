@@ -27,6 +27,11 @@ from training.renderer.tito.muse_glimmer import (
     MUSE_GLIMMER_RENDERER_NAME,
     MuseGlimmerTITORenderer,
 )
+from training.renderer.tito.qwen35 import (
+    QWEN35_RENDERER_NAME,
+    QWEN35_TOKENIZER_FINGERPRINT,
+    Qwen35TITORenderer,
+)
 from training.renderer.tito.qwen38 import QWEN38_RENDERER_NAME, Qwen38TITORenderer
 from training.renderer.tito.shared import TITORendererCertification
 
@@ -52,6 +57,13 @@ def _build_muse_glimmer_tito_renderer(
     return MuseGlimmerTITORenderer(tokenizer, certification=certification)
 
 
+def _build_qwen35_tito_renderer(
+    tokenizer: Any,
+    certification: TITORendererCertification,
+) -> TITORenderer:
+    return Qwen35TITORenderer(tokenizer, certification=certification)
+
+
 def _build_qwen38_tito_renderer(
     tokenizer: Any,
     certification: TITORendererCertification,
@@ -61,7 +73,7 @@ def _build_qwen38_tito_renderer(
 
 _TITO_RENDERER_CERTIFICATIONS = (
     TITORendererCertification(
-        certification_id="glm-5.3-preserved@935644c0-experimental-r3",
+        certification_id="glm-5.3-preserved@935644c0-experimental-r4",
         renderer_names=frozenset({GLM53_RENDERER_NAME}),
         tokenizer_fingerprint=(
             "354d31d912584b016d9777f7b384cd552989bfb6080ed37c0d71a50c53c2ab77"
@@ -69,7 +81,7 @@ _TITO_RENDERER_CERTIFICATIONS = (
         renderer_factory=_build_glm53_tito_renderer,
     ),
     TITORendererCertification(
-        certification_id="glm-5.2-preserved@b4734de4-v7",
+        certification_id="glm-5.2-preserved@b4734de4-v8",
         renderer_names=frozenset({GLM52_RENDERER_NAME}),
         tokenizer_fingerprint=(
             "5591741bd28d5acb92d4b7d735e0084d4d76d9ce50e2afe99aec6b01e1ef3ef0"
@@ -83,6 +95,12 @@ _TITO_RENDERER_CERTIFICATIONS = (
             "2fec80a849b8cb52120e297e001ce675c0ee1b0de067aed449d7f1e756b04e3a"
         ),
         renderer_factory=_build_muse_glimmer_tito_renderer,
+    ),
+    TITORendererCertification(
+        certification_id="qwen3.5-35b-a3b-fp8@5a3b7d66-v1",
+        renderer_names=frozenset({QWEN35_RENDERER_NAME}),
+        tokenizer_fingerprint=QWEN35_TOKENIZER_FINGERPRINT,
+        renderer_factory=_build_qwen35_tito_renderer,
     ),
     TITORendererCertification(
         certification_id="qwen3.8-27b-preserved@1d4bf0f2-v2",

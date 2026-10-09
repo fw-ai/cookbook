@@ -19,7 +19,6 @@ deployments:
     replica_count: 1
     sample_timeout: 600
     disable_speculative_decoding: false
-    extra_values: null
 
 trainers:
   policy:
@@ -33,7 +32,6 @@ trainers:
     region: null           # optional explicit trainer region; prefer leaving unset
     timeout_s: 3600       # trainer startup/readiness timeout, not per-step timeout
     inactivity_timeout: null # optional idle cleanup timeout, maximum 3h
-    extra_args: null
     skip_validations: false
 
 recipe:

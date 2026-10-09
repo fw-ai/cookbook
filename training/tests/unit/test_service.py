@@ -14,6 +14,48 @@ from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 from training.utils.service import build_service_client, resolve_router_replay_enabled
 
 
+@pytest.mark.parametrize("capability", [None, False, True])
+@pytest.mark.parametrize("configured_rdma", [False, True])
+@pytest.mark.parametrize("extended", [False, True])
+def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, extended, caplog):
+    from unittest.mock import Mock
+
+    policy = SimpleNamespace(
+        weight_sync=Mock(return_value=SimpleNamespace(optimizer_version=0)),
+        save_weights_for_sampler=Mock(return_value=SimpleNamespace(path="saved")),
+        save_weights_for_sampler_ext=Mock(return_value=SimpleNamespace(snapshot_name="saved")),
+    )
+    if capability is not None:
+        policy.supports_rdma_weight_sync = capability
+    managed_service = SimpleNamespace(hotload_sampler_snapshot=Mock())
+    deployment = DeployConfig(weight_sync_transport="RDMA" if configured_rdma else None)
+    sync = service.make_weight_sync(policy, managed_service, deployment, extended=extended)
+    with caplog.at_level("INFO", logger=service.__name__):
+        sync("step-1", checkpoint_type="base")
+    assert f"Weight sync completed: {'RDMA' if capability is True else 'FILE'}" in caplog.text
+    if capability is True:
+        policy.weight_sync.assert_called_once_with()
+        policy.save_weights_for_sampler.assert_not_called()
+        policy.save_weights_for_sampler_ext.assert_not_called()
+        managed_service.hotload_sampler_snapshot.assert_not_called()
+    else:
+        save = policy.save_weights_for_sampler_ext if extended else policy.save_weights_for_sampler
+        save.assert_called_once_with("step-1", checkpoint_type="base")
+        managed_service.hotload_sampler_snapshot.assert_called_once_with("saved")
+        policy.weight_sync.assert_not_called()
+
+
+def test_weight_sync_logs_file_when_sdk_falls_back(caplog):
+    from unittest.mock import Mock
+
+    result = SimpleNamespace(optimizer_version=None)
+    policy = SimpleNamespace(supports_rdma_weight_sync=True, weight_sync=Mock(return_value=result))
+    sync = service.make_weight_sync(policy, None, DeployConfig())
+    with caplog.at_level("INFO", logger=service.__name__):
+        assert sync("step-1") is result
+    assert "Weight sync completed: FILE" in caplog.text
+
+
 def _trainer_config(**overrides) -> TrainerConfig:
     fields = dict(
         training_shape_id="ts-x",
@@ -25,7 +67,7 @@ def _trainer_config(**overrides) -> TrainerConfig:
         region="US_OHIO_1",
         node_count=2,
         custom_image_tag="0.0.0-dev",
-        extra_args=["--foo"],
+        extra_args=["--test-flag"],
         replica_count=4,
         timeout_s=1800,
         pending_timeout_s=172800,
@@ -40,12 +82,38 @@ def _trainer_config(**overrides) -> TrainerConfig:
     return TrainerConfig(**fields)
 
 
+@pytest.mark.parametrize("max_lora_rank", [0, 8])
+@pytest.mark.parametrize("transport", [None, "RDMA"])
+def test_weight_sync_config_does_not_inject_admin_overrides(max_lora_rank, transport):
+    config = dict(
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=max_lora_rank,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(training_shape_id="ts-policy"),
+        deployment=DeployConfig(deployment_shape="ds-policy", weight_sync_transport=transport),
+    )
+    if transport is not None and "weight_sync_transport" not in inspect.signature(
+        service.FiretitanProvisioningConfig
+    ).parameters:
+        # The minimum supported SDK predates the explicit RDMA hint. Automatic
+        # mode must still work, while an unsupported explicit hint stays loud.
+        with pytest.raises(RuntimeError, match="has no 'weight_sync_transport' field"):
+            service._firetitan_service_kwargs(**config)
+        return
+    kwargs = service._firetitan_service_kwargs(**config)
+
+    for key in ("extra_args", "extra_values", "deployment_extra_args", "deployment_extra_values"):
+        assert kwargs.get(key) is None
+
+
 def _deployment_config(**overrides) -> DeployConfig:
     fields = dict(
         deployment_shape="ds-x",
         deployment_id="dep-1",
-        deployment_extra_args=["--enable-moe-stats"],
-        extra_values={"devShmSize": "200Gi"},
+        deployment_extra_args=["--test-flag"],
+        extra_values={"testValue": "test-value"},
         deployment_timeout_s=5400,
         replica_count=3,
         disable_speculative_decoding=True,
@@ -104,6 +172,236 @@ def test_router_replay_follows_model_architecture(monkeypatch, is_moe):
     )
 
 
+@pytest.mark.parametrize("advertised", [False, True])
+def test_router_replay_uses_trainer_capability_without_model_lookup(
+    monkeypatch, advertised
+):
+    # Trainer-authoritative: no GET model at all, so a private early-access
+    # base model (GET model -> 403) no longer breaks the R3 decision.
+    monkeypatch.setattr(
+        service,
+        "FireworksClient",
+        lambda **_kwargs: pytest.fail("model lookup should not run"),
+    )
+    training_client = SimpleNamespace(supports_router_replay=advertised)
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/fireworks/models/private",
+            training_client=training_client,
+        )
+        is advertised
+    )
+
+
+def test_router_replay_not_requested_ignores_trainer_capability(monkeypatch):
+    monkeypatch.setattr(
+        service,
+        "FireworksClient",
+        lambda **_kwargs: pytest.fail("model lookup should not run"),
+    )
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=False,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+            training_client=SimpleNamespace(supports_router_replay=True),
+        )
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "training_client",
+    [
+        None,  # recipe did not pass a client (pre-change callers)
+        SimpleNamespace(),  # older SDK: attribute absent
+        SimpleNamespace(supports_router_replay=None),  # older trainer: unknown
+    ],
+)
+def test_router_replay_falls_back_to_model_probe_when_capability_unknown(
+    monkeypatch, training_client
+):
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def model_is_moe(self, model):
+            assert model == "accounts/acct/models/base"
+            return True
+
+    monkeypatch.setattr(service, "FireworksClient", FakeClient)
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+            training_client=training_client,
+        )
+        is True
+    )
+
+
+# The last-resort path needs the SDK's typed ModelDetailsUnavailableError; on
+# an older SDK the placeholder is never raised and a 403 propagates as before.
+_TYPED_PROBE_ERROR = hasattr(
+    __import__("fireworks.training.sdk", fromlist=["x"]),
+    "ModelDetailsUnavailableError",
+)
+requires_typed_probe_error = pytest.mark.skipif(
+    not _TYPED_PROBE_ERROR,
+    reason="SDK predates ModelDetailsUnavailableError (last resort disabled)",
+)
+
+
+def _probe_raising(exc):
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def model_is_moe(self, model):
+            raise exc
+
+    return FakeClient
+
+
+@requires_typed_probe_error
+@pytest.mark.parametrize("status", [403, 404])
+def test_router_replay_last_resort_honors_user_flag_when_model_not_visible(
+    monkeypatch, caplog, status
+):
+    # Last resort: trainer did not report and the model record is not visible
+    # to this caller (private early-access base model). Honor the user's
+    # router_replay=True, with a warning, instead of crashing the recipe.
+    monkeypatch.setattr(
+        service,
+        "FireworksClient",
+        _probe_raising(
+            service.ModelDetailsUnavailableError(
+                f"Failed to fetch model details (HTTP {status})", status_code=status
+            )
+        ),
+    )
+
+    with caplog.at_level("WARNING"):
+        enabled = resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/fireworks/models/private",
+            training_client=SimpleNamespace(supports_router_replay=None),
+        )
+
+    assert enabled is True
+    assert "honoring router_replay=True" in caplog.text
+
+
+def test_router_replay_last_resort_still_off_when_user_disabled(monkeypatch):
+    # The user flag can only keep R3 on; it never turns it on by itself.
+    monkeypatch.setattr(
+        service,
+        "FireworksClient",
+        lambda **_kwargs: pytest.fail("model lookup should not run"),
+    )
+
+    assert (
+        resolve_router_replay_enabled(
+            requested=False,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/fireworks/models/private",
+        )
+        is False
+    )
+
+
+@requires_typed_probe_error
+@pytest.mark.parametrize(
+    "exc",
+    [
+        # A real control-plane failure is not "not visible": keep raising.
+        pytest.param(
+            "server-error",
+            id="http-500",
+        ),
+        # A readable record with no MoE flag: capability is genuinely unknown.
+        pytest.param("missing-flag", id="missing-moe-flag"),
+    ],
+)
+def test_router_replay_real_probe_failures_still_raise(monkeypatch, exc):
+    err = (
+        service.ModelDetailsUnavailableError(
+            "Failed to fetch model details (HTTP 500)", status_code=500
+        )
+        if exc == "server-error"
+        else ValueError("Base model is missing baseModelDetails.moe")
+    )
+    monkeypatch.setattr(service, "FireworksClient", _probe_raising(err))
+
+    with pytest.raises(type(err)):
+        resolve_router_replay_enabled(
+            requested=True,
+            api_key="k",
+            base_url="https://api",
+            additional_headers=None,
+            base_model="accounts/acct/models/base",
+        )
+
+
+def test_router_replay_clear_dense_answer_overrides_user_flag(monkeypatch):
+    # A clear "dense" answer wins over router_replay=True from either source.
+    class DenseProbe:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def model_is_moe(self, model):
+            return False
+
+    monkeypatch.setattr(service, "FireworksClient", DenseProbe)
+    for training_client in (None, SimpleNamespace(supports_router_replay=False)):
+        assert (
+            resolve_router_replay_enabled(
+                requested=True,
+                api_key="k",
+                base_url="https://api",
+                additional_headers=None,
+                base_model="accounts/acct/models/dense",
+                training_client=training_client,
+            )
+            is False
+        )
+
+
 def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
     calls: list[dict] = []
 
@@ -155,7 +453,7 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "gradient_accumulation_steps": None,
             "node_count": 2,
             "custom_image_tag": "0.0.0-dev",
-            "extra_args": ["--foo"],
+            "extra_args": ["--test-flag"],
             "trainer_replica_count": 4,
             "trainer_timeout_s": 1800,
             "trainer_pending_timeout_s": 172800,
@@ -172,8 +470,8 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "hotload_timeout_s": 600,
             "deployment_shape": "ds-x",
             "deployment_id": "dep-1",
-            "deployment_extra_args": ["--enable-moe-stats"],
-            "deployment_extra_values": {"devShmSize": "200Gi"},
+            "deployment_extra_args": ["--test-flag"],
+            "deployment_extra_values": {"testValue": "test-value"},
             "deployment_timeout_s": 5400,
             "replica_count": 3,
             "disable_speculative_decoding": True,

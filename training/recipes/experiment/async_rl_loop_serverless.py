@@ -43,6 +43,7 @@ from training.recipes.async_rl_loop import (
     make_evaluation_rollout_fn,
 )
 from training.train_loop import DynamicFilterFn
+from training.utils.termination import TerminatedBySignal
 from training.utils import (
     DEFAULT_ADAM,
     WandBConfig,
@@ -427,13 +428,16 @@ def _rollout_setup(
     )
 
 
-def _router_replay_enabled(cfg: Config, *, api_key: str, base_url: str) -> bool:
+def _router_replay_enabled(
+    cfg: Config, *, api_key: str, base_url: str, training_client: Any | None = None
+) -> bool:
     enabled = resolve_router_replay_enabled(
         requested=cfg.router_replay,
         api_key=api_key,
         base_url=base_url,
         additional_headers=read_api_extra_headers_env(),
         base_model=cfg.base_model,
+        training_client=training_client,
     )
     if enabled:
         warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
@@ -484,6 +488,7 @@ def run_sampling_preflight(
                 cfg,
                 api_key=api_key,
                 base_url=base_url,
+                training_client=training_client,
             ),
         )
         rollout_fn = rollout_fn_factory(setup)
@@ -582,7 +587,7 @@ def main(
 
     def _signal_handler(signum, _frame):
         name = signal.Signals(signum).name
-        raise SystemExit(f"Terminated by {name}")
+        raise TerminatedBySignal(name)
 
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
@@ -619,17 +624,17 @@ def main(
             cfg,
             api_key=api_key,
             base_url=base_url,
+            training_client=training_client,
         )
-        rollout_fn = rollout_fn_factory(
-            _rollout_setup(
-                cfg,
-                tokenizer=tokenizer,
-                sampler=sampler,
-                api_key=api_key,
-                extras=rollout_extras,
-                router_replay_enabled=router_replay_enabled,
-            )
+        rollout_setup = _rollout_setup(
+            cfg,
+            tokenizer=tokenizer,
+            sampler=sampler,
+            api_key=api_key,
+            extras=rollout_extras,
+            router_replay_enabled=router_replay_enabled,
         )
+        rollout_fn = rollout_fn_factory(rollout_setup)
         rollout_context_names = _rollout_context_param_names(rollout_fn)
         evaluation_rollout_fn = make_evaluation_rollout_fn(rollout_fn)
         if rows is None:
@@ -916,6 +921,9 @@ def main(
                                     optimizer_batch=batch,
                                 )
                                 await sampler.replace(next_client)
+                                # Sidecar harnesses (Harbor TITO) read setup.model when
+                                # each trial launches, not the live sampler.
+                                rollout_setup.model = sampler.model
                             published = coordinator.publish(batch)
                             telemetry.finish_step(
                                 batch=batch,
