@@ -31,6 +31,7 @@ from typing import Callable, List
 
 import tinker
 from fireworks.training.sdk.routing import (
+    RoutingReferences,
     routing_model_input_kwargs,
 )
 
@@ -100,6 +101,10 @@ class RolloutSample:
     """Sampler top-k token ids aligned with ``tokens``; prompt/context rows are empty."""
     inference_topk_logprobs: List[List[float]] | None = None
     """Sampler top-k logprobs aligned with ``inference_topk_token_ids``."""
+    top_sampling_references: RoutingReferences | None = None
+    """Parquet references to the sampler's top-K distribution over model-input
+    positions (``tokens[:-1]``): position ``t`` holds the distribution that
+    produced ``tokens[t + 1]``; positions without a sampled token are gaps."""
 
 
 @dataclass
@@ -283,6 +288,13 @@ def _validate_segment(
                     f"row {position} is misaligned ({len(ids)} / {len(lps)})."
                 )
 
+    top_sampling = segment.top_sampling_references
+    if top_sampling is not None and not isinstance(top_sampling, RoutingReferences):
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: top_sampling_references "
+            "must be Parquet RoutingReferences."
+        )
+
     if segment.prompt_model_input is not None:
         n = len(segment.tokens)
         if len(segment.logprobs) != n or len(segment.loss_mask) != n:
@@ -291,6 +303,17 @@ def _validate_segment(
                 "tokens/logprobs/loss_mask mismatch "
                 f"({n} / {len(segment.logprobs)} / {len(segment.loss_mask)})."
             )
+        if top_sampling is not None:
+            prompt_text_len = sum(
+                len(chunk.tokens) for chunk in segment.prompt_model_input.chunks
+                if isinstance(chunk, tinker.types.EncodedTextChunk)
+            )
+            expected = segment.prompt_model_input.length + n - prompt_text_len - 1
+            if len(top_sampling) != expected:
+                raise ValueError(
+                    f"Run {run_index} segment {segment_index}: top-K sampling "
+                    f"references must cover multimodal model-input positions ({len(top_sampling)} / {expected})."
+                )
         _validate_optional_logprobs(segment.raw_logprobs, n=n)
         _validate_topk(n=n)
         if n < 2:
@@ -323,6 +346,11 @@ def _validate_segment(
     if n < 2:
         raise ValueError(
             f"Run {run_index} segment {segment_index}: tokens must have length >= 2.",
+        )
+    if top_sampling is not None and len(top_sampling) != n - 1:
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: top-K sampling references "
+            f"must cover model-input positions ({len(top_sampling)} / {n - 1})."
         )
     if not any(mask_value > 0 for mask_value in segment.loss_mask):
         raise ValueError(
@@ -393,6 +421,7 @@ def rollout_to_prompt_group(
     raw_inf_logprobs_aligned: List[List[float]] = []
     inference_topk_token_ids_aligned: List[List[List[int]]] = []
     inference_topk_logprobs_aligned: List[List[List[float]]] = []
+    top_sampling_references: List[RoutingReferences | None] = []
     completion_lens: List[int] = []
     truncated: List[bool] = []
     per_sample_prompt_lens: List[int] = []
@@ -490,6 +519,7 @@ def rollout_to_prompt_group(
                 raw_inf_logprobs_aligned.append(target_raw_logprobs)
                 inference_topk_token_ids_aligned.append([])
                 inference_topk_logprobs_aligned.append([])
+                top_sampling_references.append(s.top_sampling_references)
                 completion_lens.append(sum(1 for w in target_mask if w > 0))
                 truncated.append(s.finish_reason == "length")
                 continue
@@ -577,6 +607,7 @@ def rollout_to_prompt_group(
             raw_inf_logprobs_aligned.append(target_raw_logprobs)
             inference_topk_token_ids_aligned.append(target_topk_token_ids)
             inference_topk_logprobs_aligned.append(target_topk_logprobs)
+            top_sampling_references.append(s.top_sampling_references)
             completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
             truncated.append(s.finish_reason == "length")
 
@@ -593,6 +624,7 @@ def rollout_to_prompt_group(
         raw_inf_logprobs=raw_inf_logprobs_aligned,
         inference_topk_token_ids=inference_topk_token_ids_aligned,
         inference_topk_logprobs=inference_topk_logprobs_aligned,
+        top_sampling_references=top_sampling_references,
         completion_lens=completion_lens,
         truncated=truncated,
         prompt=None,

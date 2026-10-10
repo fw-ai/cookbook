@@ -1,8 +1,7 @@
-"""Rollout batch types and explicit built-in GRPO datum preparation.
+"""Rollout batches and built-in policy datum preparation.
 
-The generic sync and async recipes call ``make_grpo_loss_fn`` directly. Recipe
-forks that intentionally switch to the trainer's built-in PPO kernel can use
-``build_grpo_datums``. There is no registry or runtime loss dispatch here.
+Recipes select their objective in ``algorithm``. This module combines rollout
+groups and prepares token-aligned advantages, denominators, and response masks.
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ from dataclasses import field, dataclass
 
 import tinker
 import torch
+from fireworks.training.sdk.routing import RoutingReferences
 
 from training.utils.rl.common import (
     _coerce_response_logprobs,
@@ -47,6 +47,8 @@ class PromptGroup:
     """Per-datum sampler top-k token ids in shifted target coordinates."""
     inference_topk_logprobs: List[List[List[float]]] = field(default_factory=list)
     """Per-datum sampler top-k logprobs aligned with ``inference_topk_token_ids``."""
+    top_sampling_references: List[RoutingReferences | None] = field(default_factory=list)
+    """Per-datum Parquet top-K sampling references over model-input positions."""
     completion_lens: List[int] = field(default_factory=list)
     """Per-sample completion lengths in tokens."""
     truncated: List[bool] = field(default_factory=list)
@@ -78,12 +80,14 @@ def combine_prompt_groups(
     *,
     include_raw: bool = False,
     include_topk: bool = False,
+    include_top_sampling_references: bool = False,
 ):
     """Flatten a list of PromptGroups into combined arrays for a fwd_bwd call.
 
     Returns ``(data, advantages, ref_logprobs, prompt_lens, inf_logprobs)``.
     ``include_raw`` appends observability-only ``raw_inf_logprobs``.
     ``include_topk`` appends sampler top-k token IDs and logprobs.
+    ``include_top_sampling_references`` appends Parquet top-K references.
     """
     data: List[tinker.Datum] = []
     advantages: List[float] = []
@@ -93,6 +97,7 @@ def combine_prompt_groups(
     raw_inf_logprobs: List[List[float]] = []
     inference_topk_token_ids: List[List[List[int]]] = []
     inference_topk_logprobs: List[List[List[float]]] = []
+    top_sampling_references: List[RoutingReferences | None] = []
 
     for pg in groups:
         data.extend(pg.data)
@@ -116,12 +121,18 @@ def combine_prompt_groups(
             inference_topk_logprobs.extend(
                 pg.inference_topk_logprobs or [[] for _ in pg.data]
             )
+        if include_top_sampling_references:
+            top_sampling_references.extend(
+                pg.top_sampling_references or [None for _ in pg.data]
+            )
 
     result = (data, advantages, ref_logprobs, prompt_lens, inf_logprobs)
     if include_raw:
         result += (raw_inf_logprobs,)
     if include_topk:
         result += (inference_topk_token_ids, inference_topk_logprobs)
+    if include_top_sampling_references:
+        result += (top_sampling_references,)
     return result
 
 

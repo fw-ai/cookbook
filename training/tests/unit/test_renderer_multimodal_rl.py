@@ -68,6 +68,48 @@ def test_sampled_completion_to_rollout_run_packs_neutral_contract() -> None:
     assert sample.finish_reason == "length"
 
 
+def _topk_completion(**overrides) -> SampledCompletion:
+    fields = dict(
+        text="answer",
+        full_tokens=[10, 20, 30, 40],
+        prompt_len=2,
+        inference_logprobs=[-0.3, -0.4],
+        sampling_logprobs=[-0.31, -0.41],
+        inference_topk_token_ids=[[30, 31], [40, 41]],
+        inference_topk_logprobs=[[-0.3, -1.5], [-0.4, -1.6]],
+    )
+    return SampledCompletion(**(fields | overrides))
+
+
+def test_sampled_completion_to_rollout_run_carries_sampler_top_k() -> None:
+    sample = sampled_completion_to_rollout_run(_topk_completion(), reward=1.0).segments[0]
+
+    assert sample.inference_topk_token_ids == [[], [], [30, 31], [40, 41]]
+    assert sample.inference_topk_logprobs == [[], [], [-0.3, -1.5], [-0.4, -1.6]]
+
+
+def test_sampler_top_k_drops_echoed_prompt_rows_and_misaligned_rows() -> None:
+    echoed = _topk_completion(
+        logprobs_echoed=True,
+        inference_logprobs=[-9.0, -0.3, -0.4],
+        sampling_logprobs=[-9.0, -0.31, -0.41],
+        inference_topk_token_ids=[[1, 2], [30, 31], [40, 41]],
+        inference_topk_logprobs=[[-9.0, -9.0], [-0.3, -1.5], [-0.4, -1.6]],
+    )
+    assert sampled_completion_to_rollout_run(echoed, reward=1.0).segments[0].inference_topk_token_ids == [
+        [],
+        [],
+        [30, 31],
+        [40, 41],
+    ]
+
+    short = _topk_completion(inference_topk_token_ids=[[30, 31]], inference_topk_logprobs=[[-0.3, -1.5]])
+    sample = sampled_completion_to_rollout_run(short, reward=1.0).segments[0]
+    assert sample.inference_topk_token_ids is None and sample.inference_topk_logprobs is None
+    no_topk = _topk_completion(inference_topk_token_ids=None, inference_topk_logprobs=None)
+    assert sampled_completion_to_rollout_run(no_topk, reward=1.0).segments[0].inference_topk_token_ids is None
+
+
 def _multimodal_prompt(*, image_location: str = _BASE64_PNG) -> tinker.ModelInput:
     return tinker.ModelInput(
         chunks=[
@@ -762,3 +804,36 @@ async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision()
     assert captured["images"] == [_BASE64_PNG]
     tokenizer.apply_chat_template.assert_not_called()
     assert run.segments[0].tokens[-2:] == [99, 100]
+
+
+def test_multimodal_sampling_support_survives_expanded_image_positions():
+    from fireworks.training.sdk.routing import RoutingReferences
+    from training.utils.rl.sampling_support import attach_top_sampling_references
+
+    references = RoutingReferences.from_dict({
+        "format": "parquet_v1", "length": 2,
+        "files": [{"path": "support.parquet", "format": "parquet_v1", "row_count": 9, "top_k": 32}],
+        "spans": [{"input_token_start": 0, "file_index": 0, "file_row_start": 7, "count": 2}],
+    })
+    run = sampled_completion_to_rollout_run(
+        SampledCompletion(
+            text="answer", full_tokens=[10, 11, 12, 30, 40], prompt_len=3,
+            inference_logprobs=[-0.3, -0.4], sampling_logprobs=[-0.31, -0.41],
+            top_sampling_references=references,
+        ), reward=1.0, prompt_model_input=_multimodal_prompt(),
+    )
+    assert run is not None
+    group = rollout_to_prompt_group(Rollout(runs=[run]), advantage_fn=lambda rewards: rewards)
+    assert group is not None
+    (datum,) = attach_top_sampling_references(
+        build_grpo_datums(
+            group.data, group.advantages, group.inf_logprobs, group.prompt_lens,
+            include_response_mask=True,
+        ), group.top_sampling_references,
+    )
+    aligned = RoutingReferences.from_dict(datum.model_input.top_sampling_references)
+    assert len(aligned) == datum.model_input.length == 8
+    assert aligned.files == references.files
+    covered = [s for s in aligned.spans if "file_index" in s]
+    assert covered == [{"input_token_start": 6, "file_index": 0, "file_row_start": 7, "count": 2}]
+    assert datum.loss_fn_inputs["response_mask"].data == [0] * 6 + [1, 1]

@@ -640,9 +640,14 @@ def _logprob_output(rows):
     )
 
 
-def _run_train_chunk(monkeypatch, cfg, group, policy):
+def _run_train_chunk(monkeypatch, cfg, group, policy, setups=None):
     """Drive ``main`` until its first ``train_chunk`` returns."""
     outputs = []
+
+    def rollout_fn_factory(setup):
+        if setups is not None:
+            setups.append(setup)
+        return lambda _sample: None
 
     class FakeService:
         trainer_job_id = "trainer"
@@ -727,11 +732,7 @@ def _run_train_chunk(monkeypatch, cfg, group, policy):
         lambda *_a, **_k: policy,
     )
     with pytest.raises(_StopAfterTrainChunk):
-        async_rl_loop.main(
-            cfg,
-            rows=[],
-            rollout_fn_factory=lambda _setup: lambda _sample: None,
-        )
+        async_rl_loop.main(cfg, rows=[], rollout_fn_factory=rollout_fn_factory)
     return outputs[0]["fwd_bwd_result"]
 
 
@@ -873,3 +874,164 @@ def test_client_score_centering_runs_its_own_expanded_forward(monkeypatch) -> No
 
     assert events == [("forward", (3, 6)), "custom"]
     assert result.metrics["custom_forward_reused"] == 0.0
+
+
+def _support_references(length: int = 3):
+    from fireworks.training.sdk.routing import RoutingReferences
+
+    return RoutingReferences(
+        length,
+        (
+            {
+                "store_id": "test-store",
+                "path": "rollout.parquet",
+                "format": "parquet_v1",
+                "row_count": length - 1,
+            },
+        ),
+        (
+            {"input_token_start": 0, "count": 1},
+            {
+                "input_token_start": 1,
+                "count": length - 1,
+                "file_index": 0,
+                "file_row_start": 0,
+            },
+        ),
+    )
+
+
+@pytest.mark.parametrize("objective, builtin_name, ratio_metric", [("grpo", "ppo", "ppo_ratio_mean"), ("gspo", "gspo", "gspo_seq_ratio_mean")])
+def test_sampling_support_records_and_replays_top_p_support(monkeypatch, objective, builtin_name, ratio_metric) -> None:
+    from dataclasses import replace
+
+    references = _support_references()
+    group = replace(_policy_group(), top_sampling_references=[references])
+    setups = []
+    calls = []
+
+    class FakePolicy:
+        def forward_backward(self, data, loss_fn, loss_fn_config=None):
+            calls.append((data, loss_fn, loss_fn_config))
+            return SimpleNamespace(
+                metrics={},
+                loss_fn_outputs=_logprob_output([[-0.4, -0.2, -0.1]]).loss_fn_outputs,
+            )
+
+    result = _run_train_chunk(
+        monkeypatch,
+        _config(
+            policy_loss=objective,
+            loss_execution="builtin",
+            anchor_logp="rollout",
+            top_p=0.9,
+            top_sampling_logprobs=32,
+            target_logprob_support="sampling_support",
+        ),
+        group,
+        FakePolicy(),
+        setups,
+    )
+
+    (setup,) = setups
+    assert setup.sample_kwargs["top_p"] == 0.9
+    assert setup.sample_kwargs["top_k"] == 0
+    assert setup.sample_kwargs["top_sampling_logprobs"] == 32
+    assert setup.sample_kwargs["top_sampling_format"] == "parquet_v1"
+    ((datum,), loss_fn, loss_config), = calls
+    assert loss_fn == builtin_name
+    assert loss_config["target_logprob_support"] == "sampling_support"
+    assert datum.model_input.top_sampling_references == references.to_dict()
+    assert datum.loss_fn_inputs["logprobs"].data == pytest.approx([0.0, -0.3, -0.1])
+    assert datum.loss_fn_inputs["response_mask"].data == [0, 1, 1]
+
+
+    assert "inference_k1" not in result.metrics
+    assert "inference_k3" not in result.metrics
+    assert "raw_inference_logprob_coverage" not in result.metrics
+    assert ratio_metric in result.metrics
+
+
+def test_full_vocabulary_neither_records_nor_sends_support(monkeypatch) -> None:
+    from dataclasses import replace
+
+    group = replace(_policy_group(), top_sampling_references=[_support_references()])
+    setups = []
+    calls = []
+
+    class FakePolicy:
+        def forward_backward(self, data, loss_fn, loss_fn_config=None):
+            calls.append((data, loss_fn_config))
+            return SimpleNamespace(
+                metrics={},
+                loss_fn_outputs=_logprob_output([[-0.4, -0.2, -0.1]]).loss_fn_outputs,
+            )
+
+    _run_train_chunk(
+        monkeypatch,
+        _config(loss_execution="builtin", anchor_logp="rollout"),
+        group,
+        FakePolicy(),
+        setups,
+    )
+
+    assert "top_sampling_logprobs" not in setups[0].sample_kwargs
+    ((datum,), loss_config), = calls
+    assert "target_logprob_support" not in loss_config
+    assert datum.model_input.top_sampling_references is None
+
+
+@pytest.mark.parametrize(
+    "overrides, error",
+    [
+        (
+            {"target_logprob_support": "sampling_support", "top_sampling_logprobs": 8},
+            "requires loss_execution='builtin'",
+        ),
+        (
+            {
+                "loss_execution": "builtin",
+                "target_logprob_support": "sampling_support",
+                "top_sampling_logprobs": 8,
+            },
+            "requires anchor_logp='rollout'",
+        ),
+        (
+            {
+                "loss_execution": "builtin",
+                "anchor_logp": "rollout",
+                "target_logprob_support": "sampling_support",
+            },
+            "top_sampling_logprobs is required by",
+        ),
+        ({"top_sampling_logprobs": 8}, "top_sampling_logprobs is required by"),
+        ({"top_sampling_logprobs": 0}, "positive integer"),
+        ({"top_p": 0.0}, "top_p must be in"),
+        ({"target_logprob_support": "support"}, "target_logprob_support must be"),
+    ],
+)
+def test_main_rejects_invalid_sampling_support(overrides, error) -> None:
+    cfg = async_rl_loop.Config(log_path="gs://logs", **{"kl_beta": 0, **overrides})
+
+    with pytest.raises(ValueError, match=error):
+        async_rl_loop.main(
+            cfg,
+            rows=[],
+            rollout_fn_factory=lambda _setup: lambda _sample: None,
+        )
+
+
+def test_objectives_without_an_anchor_accept_sampling_support() -> None:
+    loss = async_rl_loop.resolve_recipe_policy_loss(
+        async_rl_loop.Config(
+            log_path="gs://logs",
+            kl_beta=0,
+            policy_loss="importance_sampling",
+            loss_execution="builtin",
+            target_logprob_support="sampling_support",
+            top_sampling_logprobs=8,
+        )
+    )
+
+    assert loss.anchor == "rollout"
+    assert loss.loss_fn_config == {"target_logprob_support": "sampling_support"}

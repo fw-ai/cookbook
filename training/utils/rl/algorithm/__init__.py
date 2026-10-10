@@ -8,7 +8,7 @@ the resolved definition and never branch on algorithm names again.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
-from typing import Any, Dict, get_args
+from typing import Any, Dict, Literal, get_args
 
 from training.utils.rl.algorithm.base import (
     ClientObjective,
@@ -34,6 +34,7 @@ __all__ = [
     "PolicyLoss",
     "PolicyLossInputs",
     "ResolvedPolicyLoss",
+    "TargetLogprobSupport",
     "resolve_policy_loss",
     "supported_builtin_loss_fns",
 ]
@@ -51,6 +52,10 @@ POLICY_LOSSES: Dict[str, PolicyLoss] = {
         SCORE_CENTERING,
     )
 }
+
+
+TargetLogprobSupport = Literal["full_vocabulary", "sampling_support"]
+"""Vocabulary over which the trainer normalizes target-policy logprobs."""
 
 
 def supported_builtin_loss_fns() -> frozenset[str]:
@@ -73,6 +78,7 @@ class ResolvedPolicyLoss:
     normalization: Any
     loss_fn_config: Dict[str, Any] | None
     """Built-in trainer settings; ``None`` for client execution."""
+    target_logprob_support: TargetLogprobSupport = "full_vocabulary"
 
     @property
     def sampling_kwargs(self) -> Dict[str, Any]:
@@ -98,6 +104,7 @@ class ResolvedPolicyLoss:
             "loss_execution": self.execution,
             "policy_loss": self.definition.name,
             "anchor_logp": self.anchor,
+            "target_logprob_support": self.target_logprob_support,
             "loss_fn_config": self.loss_fn_config,
             **{
                 name: options if name == self.definition.name else None
@@ -114,6 +121,7 @@ def resolve_policy_loss(
     anchor: str,
     kl_beta: float,
     grad_accumulation_normalization: Any = None,
+    target_logprob_support: str = "full_vocabulary",
 ) -> ResolvedPolicyLoss:
     """Validate one objective and its execution path before any trainer call."""
     if name not in POLICY_LOSSES:
@@ -125,6 +133,11 @@ def resolve_policy_loss(
         raise ValueError("loss_execution must be 'client' or 'builtin'")
     if anchor not in {"old_policy", "rollout"}:
         raise ValueError("anchor_logp must be 'old_policy' or 'rollout'")
+    if target_logprob_support not in get_args(TargetLogprobSupport):
+        raise ValueError(
+            "target_logprob_support must be 'full_vocabulary' or 'sampling_support'"
+        )
+    anchor = anchor if definition.uses_anchor else "rollout"
     if definition.validate is not None:
         definition.validate(options)
     if kl_beta != 0 and not definition.allows_kl:
@@ -142,6 +155,17 @@ def resolve_policy_loss(
         if kl_beta != 0:
             raise ValueError("loss_execution='builtin' requires kl_beta=0.")
         loss_fn_config = definition.loss_fn_config(options)
+    if target_logprob_support == "sampling_support":
+        if execution != "builtin":
+            raise ValueError(
+                "target_logprob_support='sampling_support' requires loss_execution='builtin'"
+            )
+        if anchor != "rollout":
+            # A snapshot forward is normalized over the full vocabulary.
+            raise ValueError(
+                "target_logprob_support='sampling_support' requires anchor_logp='rollout'"
+            )
+        loss_fn_config = {**loss_fn_config, "target_logprob_support": target_logprob_support}
 
     normalization = grad_accumulation_normalization
     if definition.normalization is not None:
@@ -157,7 +181,8 @@ def resolve_policy_loss(
         definition=definition,
         options=options,
         execution=execution,
-        anchor=anchor if definition.uses_anchor else "rollout",
+        anchor=anchor,
         normalization=normalization,
         loss_fn_config=loss_fn_config,
+        target_logprob_support=target_logprob_support,
     )

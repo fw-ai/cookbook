@@ -43,6 +43,48 @@ closure, and the built-in `loss_fn_config` translation. `resolve_policy_loss`
 validates the choice once at startup; the recipe then calls
 `forward`/`forward_backward`/`forward_backward_custom` itself.
 
+### Sampling support (top-p mask replay)
+
+With `top_p < 1`, rollouts sample from a truncated, renormalized distribution.
+To train against the same support, set:
+
+```python
+Config(
+    loss_execution="builtin",
+    anchor_logp="rollout",
+    top_p=0.95,
+    top_sampling_logprobs=4096,  # Capacity; must cover every trained token's support
+    target_logprob_support="sampling_support",
+    kl_beta=0,
+)
+```
+
+The sampler writes each completion token's top-K support to trainer-shared
+storage and returns `SampledCompletion.top_sampling_references`. Rollout
+assembly aligns them with model-input positions (prompt and tool tokens are
+gaps); the recipe attaches them to built-in datums as
+`model_input.top_sampling_references`, and the trainer normalizes target
+logprobs over that support. It rejects incomplete support at trained response
+positions, including zero-advantage responses. `top_sampling_logprobs` is only
+accepted with `sampling_support`; `top_p < 1` with `full_vocabulary` logs a warning.
+
+`full_vocabulary` is the default and requests no sampling-support recording or
+transfer. On a compatible deployment with trainer-shared storage, this is a
+per-request choice; it requires no separate replay startup flag. The recorded
+support must be complete: the current trainer supports at most 20,000 candidates
+per token, and some distributions exceed that limit even with `top_p < 1`.
+Increasing K changes recording cost; it does not change the sampling threshold.
+Support replay preserves references through text/image rollouts and agent/TITO
+materialization. Built-in PPO/GSPO ratio and clipping diagnostics remain available;
+inference-drift metrics are omitted because replay normalizes over a different
+support from raw full-vocabulary inference logprobs.
+
+Use an SDK release that supports Parquet sampling references when enabling it.
+The serving image must support `top_sampling_format="parquet_v1"`; an existing
+training profile can pin an older serving image even when the trainer is current.
+Replay preserves existing trainer limits: GSPO is currently unsupported with
+`global_rolling` batching.
+
 Removing external TIS weights changes the estimator when rollout and trainer
 policies differ, even with the snapshot anchor restored. Existing trainer images
 still accept the same built-in

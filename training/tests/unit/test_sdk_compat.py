@@ -183,3 +183,41 @@ def test_to_deployment_config_forwards_deployment_shape():
     )
     # Accelerator selection is owned by the shape (the SDK may resolve it
     # server-side); the cookbook never hand-sets it.
+
+def test_sampling_support_request_keeps_references_and_choice_on_wire():
+    import tinker
+    from tinker.lib._pydantic_conv import to_pydantic_input
+    from tinker.types.forward_backward_input import ForwardBackwardInput
+
+    from fireworks.training.sdk.routing import RoutingReferences
+    from training.utils.rl.losses import build_grpo_datums
+    from training.utils.rl.sampling_support import attach_top_sampling_references
+
+    datum = tinker.Datum(
+        model_input=tinker.ModelInput.from_ints([10, 11]),
+        loss_fn_inputs={
+            "target_tokens": tinker.TensorData(data=[11, 12], dtype="int64", shape=[2]),
+            "weights": tinker.TensorData(data=[0, 1], dtype="int64", shape=[2]),
+        },
+    )
+    references = RoutingReferences(2, (), ({"input_token_start": 0, "count": 2},))
+    data = attach_top_sampling_references(
+        build_grpo_datums(
+            [datum], [3.0], [[0.0, -0.2]], [1], include_response_mask=True
+        ),
+        [references],
+    )
+    request = ForwardBackwardInput(
+        data=data,
+        loss_fn="ppo",
+        loss_fn_config={"target_logprob_support": "sampling_support"},
+    )
+
+    body = to_pydantic_input(request).model_dump(mode="json")
+
+    assert body["loss_fn_config"] == {"target_logprob_support": "sampling_support"}
+    assert body["data"][0]["loss_fn_inputs"]["advantages"]["data"] == [0.0, 3.0]
+    assert (
+        body["data"][0]["model_input"]["top_sampling_references"]
+        == references.to_dict()
+    )

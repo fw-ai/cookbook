@@ -93,6 +93,7 @@ from training.utils.rl.algorithm.gspo import GSPOConfig
 from training.utils.rl.algorithm.score_centering import ScoreCenteringConfig
 from training.utils.rl.anchor import anchor_logprobs
 from training.utils.rl.losses import build_grpo_datums, combine_prompt_groups
+from training.utils.rl.sampling_support import attach_top_sampling_references
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
@@ -128,6 +129,12 @@ class Config:
     completions_per_prompt: int = 4
     max_completion_tokens: int = 1024
     temperature: float = 1.0
+    top_p: float = 1.0
+    """Sampler nucleus threshold. ``1.0`` samples the full distribution."""
+    top_sampling_logprobs: int | None = None
+    """Record the sampler's top-K support per completion token in trainer-shared
+    storage. Required by, and only used for, ``target_logprob_support=
+    "sampling_support"``; ``K`` must cover the largest truncated support."""
     epochs: int = 1
     shuffle: bool = True
     seed: int = 0
@@ -195,6 +202,13 @@ class Config:
     """``"client"`` runs the portable custom loss; ``"builtin"`` runs the
     trainer's objective. Built-in objectives have no reference-KL input and
     require ``kl_beta=0``."""
+    target_logprob_support: Literal["full_vocabulary", "sampling_support"] = (
+        "full_vocabulary"
+    )
+    """Normalize target-policy logprobs over the full vocabulary, or over the
+    recorded sampling support (top-p mask replay). ``"sampling_support"``
+    requires ``loss_execution="builtin"``, ``anchor_logp="rollout"`` and
+    ``top_sampling_logprobs``."""
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     """GSPO sequence-ratio clipping configuration."""
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
@@ -363,7 +377,33 @@ def resolve_recipe_policy_loss(config: Config) -> ResolvedPolicyLoss:
         anchor=config.anchor_logp,
         kl_beta=config.kl_beta,
         grad_accumulation_normalization=config.grad_accumulation_normalization,
+        target_logprob_support=config.target_logprob_support,
     )
+
+
+def sampling_support_kwargs(config: Config) -> dict[str, Any]:
+    """Sampler kwargs that record top-K support for the trainer to replay."""
+    if not 0 < config.top_p <= 1:
+        raise ValueError(f"top_p must be in (0, 1]; got {config.top_p!r}")
+    count = config.top_sampling_logprobs
+    if count is not None and (type(count) is not int or count < 1):
+        raise ValueError("top_sampling_logprobs must be a positive integer")
+    replay = config.target_logprob_support == "sampling_support"
+    if replay != (count is not None):
+        raise ValueError(
+            "top_sampling_logprobs is required by, and only used for, "
+            "target_logprob_support='sampling_support'"
+        )
+    if config.top_p < 1 and not replay:
+        logger.warning(
+            "top_p=%g truncates rollouts while the trainer normalizes over the "
+            "full vocabulary; set target_logprob_support='sampling_support' to "
+            "replay the sampling support.",
+            config.top_p,
+        )
+    if not replay:
+        return {}
+    return {"top_sampling_logprobs": count, "top_sampling_format": "parquet_v1"}
 
 
 def policy_loss_metadata(config: Config) -> dict[str, Any]:
@@ -425,6 +465,7 @@ def main(
         reference_job_id=cfg.trainer.reference_job_id,
     )
     loss = resolve_recipe_policy_loss(cfg)
+    support_sample_kwargs = sampling_support_kwargs(cfg)
     if cfg.grad_norm_metrics not in {"off", "basic", "detailed"}:
         raise ValueError(
             "grad_norm_metrics must be 'off', 'basic', or 'detailed'; got "
@@ -630,11 +671,11 @@ def main(
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
-            # Full-distribution on-policy sampling. Without explicit top_p/top_k
-            # the serving stack applies the model's generation_config.json
-            # defaults (e.g. Qwen3.5: top_k=20/top_p=0.95), which truncate
-            # rollouts and bias the policy-gradient estimator.
-            top_p=1.0,
+            # Explicit top_p/top_k. Otherwise the serving stack applies the
+            # model's generation_config.json defaults (e.g. Qwen3.5:
+            # top_k=20/top_p=0.95), which silently truncate rollouts. Truncate
+            # with top_p only when the trainer replays the sampling support.
+            top_p=cfg.top_p,
             top_k=0,
             # Single total prompt-plus-output limit. Direct sampler rollouts use
             # it for preflight/post-completion guards; TITO uses the same value
@@ -650,6 +691,7 @@ def main(
                 echo=not cfg.router_replay_completion_only,
             )
         sample_kwargs.update(loss.sampling_kwargs)
+        sample_kwargs.update(support_sample_kwargs)
 
         rollout_setup = RolloutSetup(
             tokenizer=tokenizer,
@@ -771,10 +813,12 @@ def main(
                 raw_inf_lp,
                 sampler_topk_token_ids,
                 sampler_topk_logprobs,
+                top_sampling_references,
             ) = combine_prompt_groups(
                 prompt_groups,
                 include_raw=True,
                 include_topk=True,
+                include_top_sampling_references=True,
             )
             if len(rollout_lp) != len(data) or any(not row for row in rollout_lp):
                 raise ValueError(
@@ -798,7 +842,11 @@ def main(
                 prompt_lens=prompt_lens,
                 rollout_logprobs=rollout_lp,
                 anchor_logprobs=anchor_lp,
-                raw_inference_logprobs=raw_inf_lp,
+                # Support-normalized target logprobs cannot measure drift against
+                # full-vocabulary inference logprobs. Keep policy-ratio metrics.
+                raw_inference_logprobs=(
+                    raw_inf_lp if loss.target_logprob_support == "full_vocabulary" else None
+                ),
                 sampler_topk_token_ids=sampler_topk_token_ids,
                 sampler_topk_logprobs=sampler_topk_logprobs,
             )
@@ -811,6 +859,10 @@ def main(
                     include_response_mask=True,
                     old_policy_logprobs=anchor_lp,
                 )
+                if loss.target_logprob_support == "sampling_support":
+                    builtin_data = attach_top_sampling_references(
+                        builtin_data, top_sampling_references
+                    )
                 # Match the SDK call boundary: submission through decoded result.
                 with elapsed_timer("fwd_bwd"):
                     result = policy.forward_backward(
