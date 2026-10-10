@@ -92,9 +92,9 @@ class RolloutSample:
     """Optional raw model logprobs aligned with ``tokens`` for observability.
 
     ``logprobs`` remains the rollout/sampling logprob source used by loss
-    ratios and TIS. When present, ``raw_logprobs`` is packed into
+    ratios. When present, ``raw_logprobs`` is packed into
     ``PromptGroup.raw_inf_logprobs`` for optional train/inference drift metrics.
-    It never replaces behavior logprobs in the loss or TIS.
+    It never replaces behavior logprobs in the loss.
     """
     inference_topk_token_ids: List[List[int]] | None = None
     """Sampler top-k token ids aligned with ``tokens``; prompt/context rows are empty."""
@@ -205,7 +205,7 @@ def _align_multimodal_inf_logprobs(
     Canonical multimodal datums use one shared shifted coordinate space for
     ``target_tokens``, weights, forward logprobs, and built-in loss inputs.
     Samplers return completion-only logprobs, so scatter those values onto the
-    trained positions and fill prompt/image positions with zeros. GRPO/TIS can
+    trained positions and fill prompt/image positions with zeros. GRPO can
     then slice the result with ``prompt_lens`` without changing coordinates.
     """
     active_indices = [i for i, w in enumerate(shifted_weights) if w > 0]
@@ -442,7 +442,7 @@ def rollout_to_prompt_group(
                 # ``run_loss_loop`` uses ``response_start = prompt_len - 1`` on
                 # shifted datum weights.  The text path records the first active
                 # index in the *unshifted* loss_mask; map shifted weights the
-                # same way (+1) so multimodal GRPO/TIS slices align.
+                # same way (+1) so multimodal GRPO slices align.
                 shifted_first_active = next(
                     (i for i, w in enumerate(target_mask) if w > 0),
                     0,

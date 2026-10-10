@@ -4,7 +4,7 @@
 EXPERIMENTAL -- under active development.  API surface (``Config`` field
 names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is intentionally minimal-surface: the
 only thing most users need to write is the rollout function; everything
-else (gate, advantage, optional reference KL, weight sync, TIS, pipeline chunking,
+else (gate, advantage, optional reference KL, weight sync, pipeline chunking,
 checkpoints) is handled by ``main()``.  See
 ``skills/fireworks-training/references/rl-async.md`` for the full contract.
 
@@ -79,6 +79,7 @@ from training.utils.rl.async_rl import (
     TrainingChunk,
     RolloutRow,
 )
+from training.utils.rl.anchor import prepare_policy_anchor, validate_anchor
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.cispo import (
     CISPOConfig,
@@ -117,7 +118,6 @@ from training.utils.rl.observability import (
     compute_server_gspo_observability_metrics,
 )
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
-from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
@@ -197,13 +197,14 @@ class Config:
     """Lower/upper PPO clip epsilon used by the GRPO update."""
     eps_clip_high: float | None = None
     """Optional asymmetric upper clip epsilon; defaults to ``eps_clip``."""
+    anchor_logp: str = "old_policy"
+    """Fixed clipping anchor: trainer snapshot or recorded rollout logprobs."""
     server_side_grpo: bool = False
     """Use the trainer's built-in PPO kernel for the GRPO policy update.
 
     This is a narrow execution-path opt-in, not an algorithm selector. It
     requires ``kl_beta=0`` because the built-in kernel has no reference-KL
-    input. Group-relative advantages, PPO anchoring, and TIS remain recipe
-    owned.
+    input. Group-relative advantages and response masking remain recipe owned.
     """
     policy_loss: Literal[
         "grpo", "gspo", "dapo", "dro", "cispo", "dppo", "score_centering"
@@ -239,15 +240,6 @@ class Config:
 
     The scheduler creates balanced chunk targets and exposes the batch once its
     first target is full. Later chunks can fill while the trainer is active.
-    """
-    tis: TISConfig = field(default_factory=TISConfig)
-    """TIS (Train-Inference IS) weight correction config."""
-    anchor_logp: Literal["old_policy", "rollout"] = "old_policy"
-    """PPO anchor source.
-
-    ``"old_policy"`` snapshots trainer logprobs and applies TIS against the
-    rollout behavior policy. ``"rollout"`` skips that forward, anchors PPO on
-    rollout logprobs, and makes the TIS ratio identity.
     """
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -304,7 +296,6 @@ class RolloutSetup:
 RolloutFn = Callable[..., Awaitable[RolloutRun | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
 RolloutEvaluationFn = Callable[[int, RolloutFn], Awaitable[dict[str, Any] | None]]
-
 
 _ROLLOUT_CONTEXT_KWARGS = frozenset(
     {
@@ -386,19 +377,18 @@ def _run_server_side_policy_loss(
     prompt_lens,
     rollout_logprobs,
     raw_inference_logprobs,
-    old_policy_logprobs,
     config: Config,
+    old_policy_logprobs=None,
 ):
     """Run a built-in policy kernel with recipe-owned group preparation."""
     use_gspo = config.policy_loss == "gspo"
     server_data = build_grpo_datums(
         data,
         advantages,
-        old_policy_logprobs,
         rollout_logprobs,
         prompt_lens,
-        config.tis,
         include_response_mask=use_gspo,
+        old_policy_logprobs=old_policy_logprobs,
     )
     if use_gspo:
         loss_fn = "gspo"
@@ -433,7 +423,11 @@ def _run_server_side_policy_loss(
         observability = compute_server_gspo_observability_metrics(
             data,
             policy_logprobs,
-            old_policy_logprobs,
+            (
+                old_policy_logprobs
+                if old_policy_logprobs is not None
+                else rollout_logprobs
+            ),
             raw_inference_logprobs,
             prompt_lens,
             clip_ratio_low=config.gspo.clip_ratio_low,
@@ -444,7 +438,11 @@ def _run_server_side_policy_loss(
         observability = compute_server_grpo_observability_metrics(
             data,
             policy_logprobs,
-            old_policy_logprobs,
+            (
+                old_policy_logprobs
+                if old_policy_logprobs is not None
+                else rollout_logprobs
+            ),
             raw_inference_logprobs,
             prompt_lens,
             eps_clip=config.eps_clip,
@@ -479,6 +477,7 @@ def policy_loss_metadata(config: Config) -> dict[str, Any]:
         "trainer_loss": _trainer_loss_label(config),
         "server_side_grpo": config.server_side_grpo,
         "policy_loss": config.policy_loss,
+        "anchor_logp": config.anchor_logp,
         "gspo": (
             {
                 "clip_ratio_low": config.gspo.clip_ratio_low,
@@ -500,11 +499,7 @@ def policy_loss_metadata(config: Config) -> dict[str, Any]:
             if config.policy_loss == "dapo"
             else None
         ),
-        "dro": (
-            {"beta": config.dro.beta}
-            if config.policy_loss == "dro"
-            else None
-        ),
+        "dro": ({"beta": config.dro.beta} if config.policy_loss == "dro" else None),
         "cispo": (
             {
                 "eps_low": config.cispo.eps_low,
@@ -560,9 +555,9 @@ def _run_two_pass_gspo(
     ref_logprobs,
     prompt_lens,
     rollout_logprobs,
-    old_policy_logprobs,
     precomputed_forward,
     config: Config,
+    old_policy_logprobs=None,
 ):
     """Run the local GSPO loss against trainer-returned sequence logprobs."""
 
@@ -571,9 +566,8 @@ def _run_two_pass_gspo(
         ref_logprobs=ref_logprobs,
         inf_logprobs=rollout_logprobs,
         prompt_len=prompt_lens,
-        old_policy_logprobs=old_policy_logprobs,
         gspo_config=config.gspo,
-        tis_config=config.tis,
+        old_policy_logprobs=old_policy_logprobs,
     )
     with elapsed_timer("fwd_bwd"):
         return policy.forward_backward_custom(
@@ -610,6 +604,7 @@ def main(
     Tinker path.
     """
     cfg = config
+    validate_anchor(cfg.anchor_logp)
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be >= 1")
     validate_grpo_config(
@@ -618,7 +613,6 @@ def main(
         eps_clip_high=cfg.eps_clip_high,
         reference_training_shape_id=cfg.trainer.reference_training_shape_id,
         reference_job_id=cfg.trainer.reference_job_id,
-        anchor_logp=cfg.anchor_logp,
     )
     if cfg.policy_loss not in {
         "grpo",
@@ -753,7 +747,6 @@ def main(
             "algorithm": "grpo",
             **policy_loss_metadata(cfg),
             "kl_beta": cfg.kl_beta,
-            "anchor_logp": cfg.anchor_logp,
             "grad_clip_norm": cfg.grad_clip_norm,
             "grad_norm_metrics": cfg.grad_norm_metrics,
             "lr": cfg.learning_rate,
@@ -1027,8 +1020,8 @@ def main(
             prompt_lens,
             inf_lp,
             raw_inf_lp,
-            old_policy_logprobs,
             precomputed_forward,
+            old_policy_logprobs,
             sampler_topk_token_ids,
             sampler_topk_logprobs,
         ):
@@ -1062,9 +1055,9 @@ def main(
                     ref_logprobs=ref_lp,
                     prompt_lens=prompt_lens,
                     rollout_logprobs=inf_lp,
-                    old_policy_logprobs=old_policy_logprobs,
                     precomputed_forward=precomputed_forward,
                     config=cfg,
+                    old_policy_logprobs=old_policy_logprobs,
                 )
 
             if cfg.server_side_grpo:
@@ -1075,8 +1068,8 @@ def main(
                     prompt_lens=prompt_lens,
                     rollout_logprobs=inf_lp,
                     raw_inference_logprobs=raw_inf_lp,
-                    old_policy_logprobs=old_policy_logprobs,
                     config=cfg,
+                    old_policy_logprobs=old_policy_logprobs,
                 )
 
             common_loss_kwargs = {
@@ -1085,7 +1078,6 @@ def main(
                 "prompt_len": prompt_lens,
                 "inf_logprobs": inf_lp,
                 "old_policy_logprobs": old_policy_logprobs,
-                "tis_config": cfg.tis,
             }
             if cfg.policy_loss == "dapo":
                 loss_fn = make_dapo_loss_fn(
@@ -1108,8 +1100,8 @@ def main(
                     ref_logprobs=ref_lp,
                     inf_logprobs=inf_lp,
                     prompt_len=prompt_lens,
-                    old_policy_logprobs=old_policy_logprobs,
                     dppo_config=cfg.dppo,
+                    old_policy_logprobs=old_policy_logprobs,
                 )
             else:
                 loss_fn = make_grpo_loss_fn(
@@ -1148,26 +1140,12 @@ def main(
                 include_raw=True,
                 include_topk=True,
             )
-            precomputed_forward = None
-            if cfg.anchor_logp == "old_policy":
-                with elapsed_timer("old_policy_forward"):
-                    old_policy_fwd = policy.forward(data, "cross_entropy")
-                    old_policy_logprobs = [
-                        old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
-                        for i in range(len(data))
-                    ]
-                precomputed_forward = old_policy_fwd
-            else:
-                if len(inf_lp) != len(data):
-                    raise ValueError(
-                        "anchor_logp='rollout' requires one rollout_logprobs "
-                        f"row per datum; got {len(inf_lp)} rows for {len(data)} datums."
-                    )
-                if any(not row for row in inf_lp):
-                    raise ValueError(
-                        "anchor_logp='rollout' requires non-empty rollout_logprobs."
-                    )
-                old_policy_logprobs = inf_lp
+            old_policy_logprobs, precomputed_forward = prepare_policy_anchor(
+                policy,
+                data,
+                inf_lp,
+                "rollout" if cfg.policy_loss == "score_centering" else cfg.anchor_logp,
+            )
 
             fwd_bwd_result = fwd_bwd_batch(
                 data,
@@ -1176,8 +1154,8 @@ def main(
                 prompt_lens,
                 inf_lp,
                 raw_inf_lp,
-                old_policy_logprobs,
                 precomputed_forward,
+                old_policy_logprobs,
                 sampler_topk_token_ids,
                 sampler_topk_logprobs,
             )

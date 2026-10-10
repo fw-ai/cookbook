@@ -25,7 +25,11 @@ from typing import Any, Dict, List, Tuple
 import tinker
 import torch
 
-from training.utils.rl.common import _get_loss_mask
+from training.utils.rl.common import (
+    _coerce_response_logprobs,
+    _get_loss_mask,
+    validate_inference_logprobs_for_sample,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -278,18 +282,21 @@ def make_igpo_loss_fn(
     ref_logprobs: List[List[float]],
     prompt_lens: List[int],
     inf_logprobs: List[List[float]],
-    old_policy_logprobs: List[List[float]] | None = None,
     kl_beta: float = 0.001,
     eps_clip: float = 0.2,
+    *,
+    old_policy_logprobs: List[List[float]] | None = None,
 ):
     """GRPO-style clipped surrogate loss with per-token advantages.
 
     Compatible with ``policy.forward_backward_custom(data, loss_fn)``.
 
-    When ``old_policy_logprobs`` is ``None``, the current forward-pass logprobs
-    are used as the old-policy baseline (ratio=1, clipping is a no-op).
+    The clipped ratio uses the supplied fixed anchor, or the rollout when omitted.
     """
     validate_igpo_config(kl_beta=kl_beta, eps_clip=eps_clip)
+
+    if old_policy_logprobs is not None and len(old_policy_logprobs) != len(per_token_advantages):
+        raise ValueError("old_policy_logprobs must have one row per datum")
 
     def loss_fn(
         data: List[tinker.Datum],
@@ -330,26 +337,15 @@ def make_igpo_loss_fn(
                 device=resp_pi.device,
             )
 
-            if old_policy_logprobs is not None:
-                old_policy_lp = old_policy_logprobs[i] if i < len(old_policy_logprobs) else []
-                resp_old_policy = torch.tensor(
-                    [
-                        old_policy_lp[response_start + j]
-                        if (response_start + j) < len(old_policy_lp)
-                        else 0.0
-                        for j in range(resp_len)
-                    ],
-                    dtype=resp_pi.dtype,
-                    device=resp_pi.device,
-                )
-            else:
-                resp_old_policy = resp_pi.detach()
-
             inf_lp = inf_logprobs[i] if i < len(inf_logprobs) else []
+            validate_inference_logprobs_for_sample(
+                "igpo", i, inf_lp, response_start + resp_len,
+            )
             resp_inf = torch.tensor(
-                inf_lp[response_start : response_start + resp_len]
-                if len(inf_lp) > response_start
-                else [0.0] * resp_len,
+                _coerce_response_logprobs(
+                    inf_lp[response_start : response_start + resp_len], active,
+                    policy_loss="igpo", sample_idx=i, source="rollout_logprobs",
+                ),
                 dtype=resp_pi.dtype,
                 device=resp_pi.device,
             )
@@ -368,23 +364,37 @@ def make_igpo_loss_fn(
                 device=resp_pi.device,
             )
 
+            anchor = resp_inf
+            if old_policy_logprobs is not None:
+                old_lp = old_policy_logprobs[i]
+                validate_inference_logprobs_for_sample(
+                    "igpo",
+                    i,
+                    old_lp,
+                    response_start + resp_len,
+                    source="old_policy_logprobs",
+                )
+                anchor = torch.tensor(
+                    _coerce_response_logprobs(
+                        old_lp[response_start : response_start + resp_len],
+                        active,
+                        policy_loss="igpo",
+                        sample_idx=i,
+                        source="old_policy_logprobs",
+                    ),
+                    dtype=resp_pi.dtype,
+                    device=resp_pi.device,
+                )
             log_ratio = torch.clamp(
-                resp_pi - resp_old_policy, min=-_SAFETY_CLAMP, max=_SAFETY_CLAMP
+                resp_pi - anchor, min=-_SAFETY_CLAMP, max=_SAFETY_CLAMP
             )
             ratio = torch.exp(log_ratio)
             clipped = torch.clamp(ratio, min=1.0 - eps_clip, max=1.0 + eps_clip)
 
-            tis_log = torch.clamp(
-                resp_old_policy.detach() - resp_inf, min=-_SAFETY_CLAMP, max=_SAFETY_CLAMP
-            )
-            tis_weight = torch.exp(tis_log)
-
             surr1 = -ratio * resp_adv
             surr2 = -clipped * resp_adv
             kl_penalty = kl_beta * (resp_pi.detach() - resp_ref)
-            per_token_loss = (
-                torch.maximum(surr1, surr2) * tis_weight + kl_penalty
-            ) * resp_mask
+            per_token_loss = (torch.maximum(surr1, surr2) + kl_penalty) * resp_mask
 
             total_loss = total_loss + per_token_loss.sum()
             total_kl += ((resp_pi.detach() - resp_ref) * resp_mask).sum().item()

@@ -24,7 +24,7 @@ import os
 import re
 import signal
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 import tinker
 from fireworks.training.sdk import FiretitanServiceClient
@@ -64,12 +64,12 @@ from training.utils.rl.async_rl import (
     RolloutRow,
     TrainingChunk,
 )
+from training.utils.rl.anchor import prepare_policy_anchor, validate_anchor
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import datum_target_len
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
-from training.utils.rl.tis import TISConfig
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
 logger = logging.getLogger(__name__)
@@ -134,8 +134,8 @@ class Config:
     grad_clip_norm: float = 0.0
     eps_clip: float = 0.2
     eps_clip_high: float | None = None
-    tis: TISConfig = field(default_factory=TISConfig)
-    anchor_logp: Literal["old_policy", "rollout"] = "old_policy"
+    anchor_logp: str = "old_policy"
+    """Fixed clipping anchor: trainer snapshot or recorded rollout logprobs."""
     sample_timeout: float = 2400.0
     snapshot_prefix: str = "async-rl"
     metrics_file: str | None = None
@@ -236,7 +236,6 @@ def _validate_config(cfg: Config) -> None:
         kl_beta=cfg.kl_beta,
         eps_clip=cfg.eps_clip,
         eps_clip_high=cfg.eps_clip_high,
-        anchor_logp=cfg.anchor_logp,
     )
     if cfg.kl_beta != 0:
         raise ValueError(
@@ -385,10 +384,6 @@ def _wandb_config(cfg: Config, *, mode: str) -> dict[str, Any]:
         "kl_beta": cfg.kl_beta,
         "eps_clip": cfg.eps_clip,
         "eps_clip_high": cfg.eps_clip_high,
-        "tis_cap": cfg.tis.cap,
-        "tis_level": cfg.tis.level,
-        "tis_icepop_threshold": cfg.tis.icepop_threshold,
-        "anchor_logp": cfg.anchor_logp,
     }
 
 
@@ -454,6 +449,7 @@ def run_sampling_preflight(
     """Evaluate a zero-update LoRA snapshot without mutating training state."""
 
     cfg = config
+    validate_anchor(cfg.anchor_logp)
     _validate_config(cfg)
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -718,25 +714,12 @@ def main(
                 raw_inference_logprobs,
                 source="raw inference logprob",
             )
-            precomputed_forward = None
-            if cfg.anchor_logp == "old_policy":
-                with elapsed_timer("old_policy_forward"):
-                    old_policy_result = training_client.forward(
-                        data,
-                        "cross_entropy",
-                    ).result()
-                old_policy_logprobs = [
-                    output["logprobs"].data
-                    for output in old_policy_result.loss_fn_outputs
-                ]
-                _require_aligned_logprobs(
-                    data,
-                    old_policy_logprobs,
-                    source="old-policy logprob",
-                )
-                precomputed_forward = old_policy_result
-            else:
-                old_policy_logprobs = rollout_logprobs
+            old_policy_logprobs, precomputed_forward = prepare_policy_anchor(
+                training_client,
+                data,
+                rollout_logprobs,
+                cfg.anchor_logp,
+            )
             with elapsed_timer("fwd_bwd"):
                 result = training_client.forward_backward_custom(
                     data,
@@ -749,7 +732,6 @@ def main(
                         kl_beta=cfg.kl_beta,
                         eps_clip=cfg.eps_clip,
                         eps_clip_high=cfg.eps_clip_high,
-                        tis_config=cfg.tis,
                         raw_inf_logprobs=raw_inference_logprobs,
                     ),
                     precomputed_forward=precomputed_forward,

@@ -77,12 +77,11 @@ from training.examples.rl.visual_toolbench.reward import (
 )
 from training.recipes.async_rl_loop import RolloutSetup
 from training.utils import GradAccNormalization
+from training.utils.rl.anchor import prepare_policy_anchor, validate_anchor
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.metrics import add_optimizer_metrics
 from training.utils.rl.rollout import Rollout, rollout_to_prompt_group
-from training.utils.rl.tis import TISConfig
 from training.utils.service import resolve_router_replay_enabled
-
 
 EXAMPLE_DIR = Path(__file__).resolve().parents[1] / "rl" / "visual_toolbench"
 DEFAULT_DATASET = EXAMPLE_DIR / "train.jsonl"
@@ -220,6 +219,7 @@ class Config:
     kl_beta: float = 0.0
     eps_clip: float = 0.2
     eps_clip_high: float | None = None
+    anchor_logp: str = "old_policy"
     grad_accumulation_normalization: GradAccNormalization = (
         GradAccNormalization.NUM_LOSS_TOKENS
     )
@@ -324,7 +324,7 @@ def _inference_kld(
     ``training/utils/rl/observability.py``: ``raw_inf_lp[response_start:...]``).
 
     This intentionally uses ``PromptGroup.raw_inf_logprobs``. Sampling
-    logprobs are the behavior-policy stream used by PPO/TIS and can include
+    logprobs are the behavior-policy stream used by PPO and can include
     sampling transformations; substituting them into this diagnostic measures
     a different quantity.
     """
@@ -539,13 +539,13 @@ class ServerlessVisualToolbenchRL:
             raise ValueError("--eval-dataset is required when evaluation is enabled")
         _validate_checkpoint_prefix(cfg.checkpoint_name, "checkpoint_name")
         _validate_checkpoint_prefix(cfg.final_checkpoint_name, "final_checkpoint_name")
+        validate_anchor(cfg.anchor_logp)
         validate_grpo_config(
             kl_beta=cfg.kl_beta,
             eps_clip=cfg.eps_clip,
             eps_clip_high=cfg.eps_clip_high,
             reference_training_shape_id=None,
             reference_job_id=None,
-            anchor_logp="old_policy",
         )
         self.rows = _load_rows(
             Path(cfg.dataset),
@@ -1069,7 +1069,7 @@ class ServerlessVisualToolbenchRL:
         #    advantage, no learning signal).
         all_data: list[Any] = []
         all_advantages: list[float] = []
-        # Sampling logprobs drive PPO/TIS. Raw inference logprobs are a
+        # Sampling logprobs drive PPO. Raw inference logprobs are a
         # separate stream used only for trainer-vs-inference KLD.
         all_inf_logprobs: list[list[float]] = []
         all_raw_inf_logprobs: list[list[float]] = []
@@ -1146,34 +1146,33 @@ class ServerlessVisualToolbenchRL:
         kld_values: list[float] = []
         train_diagnostics: dict[str, float] = {}
         if all_data:
-            # Cross-entropy forward yields the pre-update policy logprobs used
-            # by the client-side GRPO closure.
-            old_fwd = self.training_client.forward(all_data, "cross_entropy")
-            if hasattr(old_fwd, "result"):
-                old_fwd = old_fwd.result()
-            old_policy_lp = _extract_output_logprobs(old_fwd)
+            anchor, forward = prepare_policy_anchor(
+                self.training_client, all_data, all_inf_logprobs, cfg.anchor_logp
+            )
             loss_fn = make_grpo_loss_fn(
                 advantages=all_advantages,
-                ref_logprobs=old_policy_lp,  # kl_beta=0 disables the ref term
+                ref_logprobs=[],  # kl_beta=0 disables the ref term
                 prompt_len=all_prompt_lens,
                 inf_logprobs=all_inf_logprobs,
-                old_policy_logprobs=old_policy_lp,
                 kl_beta=cfg.kl_beta,
                 eps_clip=cfg.eps_clip,
                 eps_clip_high=cfg.eps_clip_high,
-                tis_config=TISConfig(),
                 raw_inf_logprobs=all_raw_inf_logprobs,
+                old_policy_logprobs=anchor,
             )
-            fb = self.training_client.forward_backward_custom(all_data, loss_fn=loss_fn)
+            fb = self.training_client.forward_backward_custom(
+                all_data, loss_fn=loss_fn, precomputed_forward=forward
+            )
             if hasattr(fb, "result"):
                 fb = fb.result()
             trained = True
             loss = _mean_loss(fb)
             train_diagnostics.update(_extract_train_diagnostics(fb))
+            policy_logprobs = _extract_output_logprobs(fb)
             # Compare the trainer's pre-update logits with the sampler's raw
-            # logits. The behavior stream above remains reserved for PPO/TIS.
+            # logits. The behavior stream above remains reserved for PPO.
             for policy_lps, raw_inference_lps, plen in zip(
-                old_policy_lp, all_raw_inf_logprobs, all_prompt_lens
+                policy_logprobs, all_raw_inf_logprobs, all_prompt_lens
             ):
                 kld_values.extend(
                     _inference_kld(

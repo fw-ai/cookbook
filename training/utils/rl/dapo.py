@@ -1,7 +1,7 @@
 """DAPO (Dynamic Advantage Policy Optimization) loss for GRPO training.
 
 Uses PPO-style clipped surrogate objective with asymmetric clipping bounds
-and behavioral TIS weight correction.  The PPO ratio is computed against
+and rollout-policy ratio correction.  The PPO ratio is computed against
 pre-computed old-policy logprobs.
 
 Reference: https://arxiv.org/abs/2503.14476
@@ -16,7 +16,6 @@ import torch
 import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
-from training.utils.rl.tis import TISConfig
 
 
 @dataclass
@@ -54,16 +53,14 @@ def make_dapo_loss_fn(
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
-    old_policy_logprobs: List[List[float]],
     dapo_config: DAPOConfig | None = None,
-    tis_config: TISConfig | None = None,
+    *,
+    old_policy_logprobs: List[List[float]] | None = None,
 ) -> ...:
-    """Build a DAPO loss closure with PPO-clipped ratio and behavioral TIS weight."""
+    """Build a DAPO loss closure with PPO-clipped ratio."""
     if dapo_config is None:
         dapo_config = DAPOConfig()
     validate_dapo_config(dapo_config)
-    if tis_config is None:
-        tis_config = TISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
 
     def policy_fn(ctx):
@@ -88,7 +85,7 @@ def make_dapo_loss_fn(
         else:
             per_token_loss = clipped_surrogate
 
-        per_token_loss = per_token_loss * ctx.tis_weight * ctx.resp_mask
+        per_token_loss = per_token_loss * ctx.resp_mask
         return per_token_loss, {"clip_frac": clip_frac, "ratio_mean": ratio_mean}
 
     def loss_fn(
@@ -96,8 +93,15 @@ def make_dapo_loss_fn(
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
-            advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            old_policy_logprobs, tis_config, data, logprobs_list, "dapo", policy_fn,
+            advantages,
+            ref_logprobs,
+            inf_logprobs,
+            prompt_lens,
+            data,
+            logprobs_list,
+            "dapo",
+            policy_fn,
+            old_policy_logprobs=old_policy_logprobs,
         )
         metrics = dict(result.base_metrics)
         ns = result.n_samples

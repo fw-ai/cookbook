@@ -1,11 +1,4 @@
-"""GRPO (Group Relative Policy Optimization) loss for RL training.
-
-Uses PPO-style clipped surrogate objective with behavioral TIS weight
-correction.  The PPO ratio is computed against pre-computed old-policy
-logprobs (from a forward pass before training), and the TIS weight
-corrects for the train-inference gap. Optional reference regularization uses
-the differentiable k3 KL estimator.
-"""
+"""PPO-clipped GRPO with an explicit fixed policy anchor."""
 
 from __future__ import annotations
 
@@ -16,7 +9,7 @@ import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
 from training.utils.rl.observability import compute_inference_observability_metrics
-from training.utils.rl.tis import SAFETY_CLAMP, TISConfig
+from training.utils.rl.common import SAFETY_CLAMP
 
 
 def validate_grpo_config(
@@ -27,7 +20,6 @@ def validate_grpo_config(
     reference_training_shape_id: str | None = None,
     reference_job_id: str | None = None,
     reference_configured: bool = False,
-    anchor_logp: str | None = None,
 ) -> None:
     """Validate GRPO loss and recipe settings before provisioning or training."""
     if kl_beta < 0:
@@ -42,11 +34,6 @@ def validate_grpo_config(
         )
     if eps_clip < 0 or (eps_clip_high is not None and eps_clip_high < 0):
         raise ValueError("eps_clip and eps_clip_high must be non-negative.")
-    if anchor_logp is not None and anchor_logp not in {"old_policy", "rollout"}:
-        raise ValueError(
-            "anchor_logp must be 'old_policy' or 'rollout', got "
-            f"{anchor_logp!r}."
-        )
 
 
 def make_grpo_loss_fn(
@@ -54,32 +41,26 @@ def make_grpo_loss_fn(
     ref_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
     inf_logprobs: List[List[float]],
-    old_policy_logprobs: List[List[float]],
     kl_beta: float = 0.001,
     eps_clip: float = 0.2,
     eps_clip_high: float | None = None,
-    tis_config: TISConfig | None = None,
     raw_inf_logprobs: List[List[float]] | None = None,
+    *,
+    old_policy_logprobs: List[List[float]] | None = None,
 ) -> ...:
-    """GRPO loss with PPO-clipped ratio and behavioral TIS weight.
-
-    ``old_policy_logprobs`` are pre-computed by a forward pass before training.
-    The PPO ratio ``exp(pi_theta - old_policy)`` is clipped by ``eps_clip``.
-    The TIS weight ``exp(old_policy - inf)`` corrects for train-inference mismatch.
-    Reference KL uses ``exp(ref - pi) - (ref - pi) - 1``.
-    """
+    """Clip against the fixed anchor; default to rollout logprobs when omitted."""
     validate_grpo_config(
         kl_beta=kl_beta,
         eps_clip=eps_clip,
         eps_clip_high=eps_clip_high,
     )
-    if tis_config is None:
-        tis_config = TISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
     _eps_high = eps_clip if eps_clip_high is None else eps_clip_high
 
     def policy_fn(ctx):
-        log_ratio = torch.clamp(ctx.resp_pi - ctx.resp_old_policy, min=-SAFETY_CLAMP, max=SAFETY_CLAMP)
+        log_ratio = torch.clamp(
+            ctx.resp_pi - ctx.resp_old_policy, min=-SAFETY_CLAMP, max=SAFETY_CLAMP
+        )
         ratio = torch.exp(log_ratio)
         clipped_ratio = torch.clamp(ratio, min=1.0 - eps_clip, max=1.0 + _eps_high)
 
@@ -89,10 +70,10 @@ def make_grpo_loss_fn(
 
         surr1 = -ratio * ctx.adv
         surr2 = -clipped_ratio * ctx.adv
-        per_token_loss = torch.maximum(surr1, surr2) * ctx.tis_weight
+        per_token_loss = torch.maximum(surr1, surr2)
 
         # Mean coefficient multiplying d(log pi) for this datum, including
-        # PPO clipping and TIS. This is an inexpensive variance proxy across
+        # PPO clipping. This is an inexpensive variance proxy across
         # samples, not per-parameter gradient covariance.
         unclipped_selected = surr1 >= surr2
         clipped_has_gradient = (ratio >= 1.0 - eps_clip) & (ratio <= 1.0 + _eps_high)
@@ -101,9 +82,7 @@ def make_grpo_loss_fn(
             ratio,
             torch.zeros_like(ratio),
         )
-        pg_coefficient = (
-            -ctx.adv * ratio_with_gradient * ctx.tis_weight * ctx.resp_mask
-        )[active]
+        pg_coefficient = (-ctx.adv * ratio_with_gradient * ctx.resp_mask)[active]
         pg_datum_coefficient = pg_coefficient.detach().float().mean()
         extra = {
             "clip_frac": clip_frac,
@@ -128,8 +107,15 @@ def make_grpo_loss_fn(
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
-            advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            old_policy_logprobs, tis_config, data, logprobs_list, "grpo", policy_fn,
+            advantages,
+            ref_logprobs,
+            inf_logprobs,
+            prompt_lens,
+            data,
+            logprobs_list,
+            "grpo",
+            policy_fn,
+            old_policy_logprobs=old_policy_logprobs,
         )
         ns = result.n_samples
         nt = result.num_tokens

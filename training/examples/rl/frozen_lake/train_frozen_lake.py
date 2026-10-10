@@ -72,7 +72,6 @@ from training.utils.rl.rollout import (
 )
 from training.utils.rl.grpo import make_grpo_loss_fn
 from training.utils.rl.losses import combine_prompt_groups
-from training.utils.rl.tis import TISConfig
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.timer import flush_timing, wall_timer
@@ -127,8 +126,6 @@ class FrozenLakeConfig:
     """PPO clip epsilon for the client-side GRPO objective."""
     eps_clip_high: float | None = None
     """Asymmetric upper clip bound for the client-side GRPO objective."""
-    tis: TISConfig = field(default_factory=TISConfig)
-    """TIS (Train-Inference IS) weight correction config."""
 
     seed_jsonl_path: str = field(
         default_factory=lambda: os.path.join(os.path.dirname(__file__), "seeds.jsonl")
@@ -673,11 +670,6 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
-                old_policy_fwd = policy.forward(data, "cross_entropy")
-                old_policy_lp = [
-                    old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
-                    for i in range(len(data))
-                ]
                 return policy.forward_backward_custom(
                     data,
                     make_grpo_loss_fn(
@@ -685,11 +677,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         ref_lp,
                         prompt_lens,
                         inf_logprobs=inf_lp,
-                        old_policy_logprobs=old_policy_lp,
                         kl_beta=cfg.kl_beta,
                         eps_clip=cfg.eps_clip,
                         eps_clip_high=cfg.eps_clip_high,
-                        tis_config=cfg.tis,
                     ),
                 )
 

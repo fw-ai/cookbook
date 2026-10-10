@@ -312,7 +312,7 @@ are only characterized offline fail closed before a trial starts. The recipe
 otherwise fixes the audited defaults: rank-64 LoRA, LR
 `3e-5`, a 524,288-token inference window and training-retention limit, 32,768
 tokens per OpenCode turn, 8 completions x 8 groups, two client-GRPO
-forward/backward chunks with default token-level TIS, one optimizer mutation,
+forward/backward chunks with token-level PPO ratios, one optimizer mutation,
 zero off-policy versions, completion-only Router Replay, `num_loss_tokens`
 gradient normalization, and three full-rollout retries before discard. Rollout
 admission stays on the coordinator's adaptive default. Independently, the

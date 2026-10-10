@@ -3,12 +3,11 @@
 Implements the binary trust-region approximations from
 https://arxiv.org/abs/2602.04879. Unlike PPO ratio clipping, DPPO masks an
 advantage-improving token update only after its direct policy divergence from
-the rollout behavior policy exceeds a configured threshold.
+the fixed anchor policy exceeds a configured threshold.
 """
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Literal, Tuple, Union
 
@@ -20,7 +19,6 @@ from training.utils.rl.common import (
     masked_mean,
     run_loss_loop,
 )
-from training.utils.rl.tis import TISConfig
 
 _DEFAULT_THRESHOLD = {
     "binary_tv": 0.15,
@@ -76,22 +74,14 @@ def make_dppo_loss_fn(
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
-    old_policy_logprobs: List[List[float]],
     dppo_config: DPPOConfig | None = None,
-    tis_config: TISConfig | None = None,
+    *,
+    old_policy_logprobs: List[List[float]] | None = None,
 ) -> ...:
     """Build DPPO with a binary-TV/KL divergence trust-region mask."""
     if dppo_config is None:
         dppo_config = DPPOConfig()
     validate_dppo_config(dppo_config)
-    if tis_config is not None:
-        warnings.warn(
-            "DPPO ignores tis_config because truncated importance sampling "
-            "is not part of its objective.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-    assert dppo_config.threshold is not None
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
 
     def policy_fn(ctx):
@@ -139,20 +129,13 @@ def make_dppo_loss_fn(
             ref_logprobs,
             inf_logprobs,
             prompt_lens,
-            old_policy_logprobs,
-            # The shared loop requires a TIS config, but DPPO intentionally
-            # ignores its computed weight; infinity also disables truncation.
-            TISConfig(cap=float("inf")),
             data,
             logprobs_list,
             "dppo",
             policy_fn,
+            old_policy_logprobs=old_policy_logprobs,
         )
-        metrics = {
-            key: value
-            for key, value in result.base_metrics.items()
-            if not key.startswith("tis/")
-        }
+        metrics = dict(result.base_metrics)
         ns = result.n_samples
         metrics["dppo_mask_frac"] = (
             result.extra_sums.get("mask_frac", 0.0) / ns

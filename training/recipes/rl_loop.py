@@ -29,7 +29,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 import tinker
 from fireworks.training.sdk.training_spec import (
@@ -67,6 +67,7 @@ from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.client import GradAccNormalization
 from training.utils.dataloader import CursorDataLoader
 from training.utils.rl import PromptGroup
+from training.utils.rl.anchor import prepare_policy_anchor, validate_anchor
 from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
@@ -79,7 +80,6 @@ from training.utils.rl.rollout import (
     sampled_completion_to_rollout_run,
 )
 from training.utils.rl.sync_batch import collect_prompt_groups
-from training.utils.rl.tis import TISConfig
 from training.utils.supervised import has_non_text_chunks
 from training.utils.timer import elapsed_timer, flush_timing
 
@@ -138,9 +138,8 @@ class Config:
     grad_clip_norm: float = 0.0
     eps_clip: float = 0.2
     eps_clip_high: float | None = None
-    tis: TISConfig = field(default_factory=TISConfig)
-    anchor_logp: Literal["old_policy", "rollout"] = "old_policy"
-    """PPO anchor source; matches ``async_rl_loop.Config.anchor_logp``."""
+    anchor_logp: str = "old_policy"
+    """Fixed clipping anchor: trainer snapshot or recorded rollout logprobs."""
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -204,13 +203,13 @@ def main(
     ``None`` for a recoverable row-level drop.
     """
     cfg = config
+    validate_anchor(cfg.anchor_logp)
     validate_grpo_config(
         kl_beta=cfg.kl_beta,
         eps_clip=cfg.eps_clip,
         eps_clip_high=cfg.eps_clip_high,
         reference_training_shape_id=cfg.trainer.reference_training_shape_id,
         reference_job_id=cfg.trainer.reference_job_id,
-        anchor_logp=cfg.anchor_logp,
     )
     if cfg.completions_per_prompt < 2:
         raise ValueError("completions_per_prompt must be >= 2 for GRPO.")
@@ -250,7 +249,6 @@ def main(
             "algorithm": "grpo",
             "trainer_loss": "client",
             "kl_beta": cfg.kl_beta,
-            "anchor_logp": cfg.anchor_logp,
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
         },
@@ -518,24 +516,12 @@ def main(
                     raw_inference_logprobs,
                 ) = combine_prompt_groups(prompt_groups, include_raw=True)
 
-                precomputed_forward = None
-                if cfg.anchor_logp == "old_policy":
-                    with elapsed_timer("old_policy_forward"):
-                        old_policy_result = policy.forward(data, "cross_entropy")
-                        old_policy_logprobs = [
-                            output["logprobs"].data
-                            for output in old_policy_result.loss_fn_outputs
-                        ]
-                        precomputed_forward = old_policy_result
-                else:
-                    if len(rollout_logprobs) != len(data) or any(
-                        not row for row in rollout_logprobs
-                    ):
-                        raise ValueError(
-                            "anchor_logp='rollout' requires one non-empty "
-                            "rollout_logprobs row per training datum."
-                        )
-                    old_policy_logprobs = rollout_logprobs
+                old_policy_logprobs, precomputed_forward = prepare_policy_anchor(
+                    policy,
+                    data,
+                    rollout_logprobs,
+                    cfg.anchor_logp,
+                )
 
                 # 2. One GRPO forward/backward.
                 # To switch to built-in PPO or another loss, replace this
@@ -553,7 +539,6 @@ def main(
                             kl_beta=cfg.kl_beta,
                             eps_clip=cfg.eps_clip,
                             eps_clip_high=cfg.eps_clip_high,
-                            tis_config=cfg.tis,
                             raw_inf_logprobs=raw_inference_logprobs,
                         ),
                         precomputed_forward=precomputed_forward,

@@ -2,7 +2,7 @@
 
 Implements PPO-style clipping with a **sequence-level importance ratio**
 (geometric mean of per-token ratios) against pre-computed old-policy
-logprobs, with behavioral TIS weight correction.
+logprobs. The default anchor is the rollout when no snapshot is supplied.
 
 Example::
 
@@ -19,7 +19,6 @@ import torch
 import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, masked_mean, run_loss_loop
-from training.utils.rl.tis import TISConfig
 
 
 @dataclass
@@ -53,16 +52,14 @@ def make_gspo_loss_fn(
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
-    old_policy_logprobs: List[List[float]],
     gspo_config: GSPOConfig | None = None,
-    tis_config: TISConfig | None = None,
+    *,
+    old_policy_logprobs: List[List[float]] | None = None,
 ) -> ...:
-    """Build a GSPO loss closure with sequence-level PPO ratio and behavioral TIS weight."""
+    """Build a GSPO loss closure with sequence-level PPO ratio."""
     if gspo_config is None:
         gspo_config = GSPOConfig()
     validate_gspo_config(gspo_config)
-    if tis_config is None:
-        tis_config = TISConfig()
     clip_low = gspo_config.clip_ratio_low
     clip_high = gspo_config.clip_ratio_high
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
@@ -70,8 +67,8 @@ def make_gspo_loss_fn(
     def policy_fn(ctx):
         # The geometric-mean ratio is a sequence statistic shared by every
         # token, so masked positions must be excluded from the average: their
-        # old-policy logprobs are padded zeros and would corrupt the ratio for
-        # the whole response (matches the TIS filtering in run_loss_loop).
+        # sampling logprobs are padded zeros and would corrupt the ratio for
+        # the whole response.
         log_ratio = ctx.resp_pi - ctx.resp_old_policy
         seq_log_ratio = masked_mean(log_ratio, ctx.resp_mask)
         log_seq_ratio = ctx.resp_pi - ctx.resp_pi.detach() + seq_log_ratio.detach()
@@ -84,11 +81,7 @@ def make_gspo_loss_fn(
 
         surr1 = -seq_ratio * ctx.adv
         surr2 = -clipped_seq_ratio * ctx.adv
-        per_token_loss = (
-            torch.maximum(surr1, surr2)
-            * ctx.tis_weight
-            * ctx.resp_mask
-        )
+        per_token_loss = torch.maximum(surr1, surr2) * ctx.resp_mask
         # The paper-aligned default gives every response equal weight. The
         # token-sum ablation intentionally scales each response by its active
         # length before optim_step(num_sequences) normalizes the batch.
@@ -102,8 +95,15 @@ def make_gspo_loss_fn(
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
-            advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            old_policy_logprobs, tis_config, data, logprobs_list, "gspo", policy_fn,
+            advantages,
+            ref_logprobs,
+            inf_logprobs,
+            prompt_lens,
+            data,
+            logprobs_list,
+            "gspo",
+            policy_fn,
+            old_policy_logprobs=old_policy_logprobs,
         )
         metrics = dict(result.base_metrics)
         ns = result.n_samples

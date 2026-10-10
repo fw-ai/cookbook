@@ -25,7 +25,6 @@ def _group_loss_inputs() -> dict:
         "ref_logprobs": [],
         "inf_logprobs": [],
         "prompt_len": [],
-        "old_policy_logprobs": [],
     }
 
 
@@ -54,7 +53,6 @@ def test_grpo_builder_validates_config(kwargs, message) -> None:
     ("kwargs", "message"),
     [
         ({"reference_job_id": "ref"}, "require kl_beta > 0"),
-        ({"anchor_logp": "latest"}, "anchor_logp"),
     ],
 )
 def test_grpo_recipe_validation(kwargs, message) -> None:

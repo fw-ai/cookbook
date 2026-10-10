@@ -18,7 +18,6 @@ from training.utils.rl.common import (
     _get_loss_mask,
     validate_inference_logprobs_for_sample,
 )
-from training.utils.rl.tis import TISConfig, compute_tis_weight
 
 
 @dataclass
@@ -36,13 +35,13 @@ class PromptGroup:
     """``rollout_logprobs`` aligned to ``target_tokens``.
 
     These are sampled-token logprobs after rollout temperature and sampling masks.
-    They feed direct rollout-logprob reuse and TIS denominators.
+    They feed direct rollout-logprob reuse denominators.
     """
     raw_inf_logprobs: List[List[float]] = field(default_factory=list)
     """Raw model logprobs aligned to ``target_tokens`` for observability only.
 
     The direct client GRPO builder uses them only for drift metrics. They must
-    never replace behavior logprobs in TIS.
+    never replace sampling logprobs in the policy ratio.
     """
     inference_topk_token_ids: List[List[List[int]]] = field(default_factory=list)
     """Per-datum sampler top-k token ids in shifted target coordinates."""
@@ -129,29 +128,24 @@ def combine_prompt_groups(
 def build_grpo_datums(
     data: List[tinker.Datum],
     advantages: List[float],
-    old_policy_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_lens: List[int],
-    tis_config: TISConfig | None = None,
     *,
     include_response_mask: bool = False,
+    old_policy_logprobs: List[List[float]] | None = None,
 ) -> List[tinker.Datum]:
-    """Build strictly aligned datums for an explicit server-side GRPO fork.
+    """Build masked advantages and a fixed denominator for built-in losses.
 
-    Folds the TIS weight ``exp(old_policy - behavior)`` into per-token
-    advantages so the server only sees ``logprobs`` (= old_policy_lp) and
-    ``advantages`` (= advantage * tis_weight * loss_mask).
-
-    Uses ``compute_tis_weight`` for behavioral TIS correction and
-    ``_get_loss_mask`` for multi-turn tool-call masking.
+    The denominator defaults to rollout probabilities; clipped objectives can
+    supply a separate snapshot anchor. Advantages are never preweighted.
     """
-    if tis_config is None:
-        tis_config = TISConfig()
-
     n = len(data)
+    denominator_logprobs = (
+        inf_logprobs if old_policy_logprobs is None else old_policy_logprobs
+    )
     aligned = {
+        "anchor_logprobs": len(denominator_logprobs),
         "advantages": len(advantages),
-        "old_policy_logprobs": len(old_policy_logprobs),
         "rollout_logprobs": len(inf_logprobs),
         "prompt_lens": len(prompt_lens),
     }
@@ -163,11 +157,10 @@ def build_grpo_datums(
         )
 
     result: List[tinker.Datum] = []
-    for i, (datum, advantage, old_policy_row, rollout_row, prompt_len) in enumerate(
+    for i, (datum, advantage, rollout_row, prompt_len) in enumerate(
         zip(
             data,
             advantages,
-            old_policy_logprobs,
             inf_logprobs,
             prompt_lens,
             strict=True,
@@ -186,13 +179,12 @@ def build_grpo_datums(
                 "GRPO prompt_len exceeds the datum sequence for sample "
                 f"{i}: prompt_len={prompt_len}, target_tokens={n_tokens}."
             )
-        old_policy_lp = list(old_policy_row)
         inf_lp = list(rollout_row)
 
-        if len(old_policy_lp) != n_tokens:
+        if len(inf_lp) != n_tokens:
             raise ValueError(
-                "GRPO old_policy_logprobs must align exactly with target_tokens "
-                f"for sample {i}: expected {n_tokens}, got {len(old_policy_lp)}."
+                "GRPO rollout_logprobs must align exactly with target_tokens "
+                f"for sample {i}: expected {n_tokens}, got {len(inf_lp)}."
             )
 
         resp_len = max(0, n_tokens - response_start)
@@ -203,9 +195,8 @@ def build_grpo_datums(
             dtype=torch.float32,
             device=torch.device("cpu"),
         )
-        active_count = int((loss_mask > 0.5).sum().item())
 
-        if resp_len > 0 and active_count > 0:
+        if resp_len > 0:
             validate_inference_logprobs_for_sample(
                 "grpo",
                 i,
@@ -213,12 +204,6 @@ def build_grpo_datums(
                 response_start + resp_len,
                 source="rollout_logprobs",
             )
-            resp_old_policy = torch.tensor(
-                old_policy_lp[response_start : response_start + resp_len],
-                dtype=torch.float32,
-            )
-            # Active-only filter mirrors common.py: keep masked bridge tokens
-            # out of the sequence-level TIS weight.
             active = loss_mask > 0.5
             resp_inf_values = _coerce_response_logprobs(
                 inf_lp[response_start : response_start + resp_len],
@@ -227,23 +212,29 @@ def build_grpo_datums(
                 sample_idx=i,
                 source="rollout_logprobs",
             )
-            resp_inf = torch.tensor(resp_inf_values, dtype=torch.float32)
-            tis_weight_active, _ = compute_tis_weight(
-                resp_old_policy[active],
-                resp_inf[active],
-                tis_config,
-            )
-            tis_weight = torch.ones(resp_len, dtype=torch.float32)
-            tis_weight[active] = tis_weight_active.to(torch.float32)
-        else:
-            tis_weight = torch.ones(resp_len, dtype=torch.float32)
-
+            inf_lp[response_start:] = resp_inf_values
+        inf_lp[:response_start] = [
+            0.0 if value is None else float(value) for value in inf_lp[:response_start]
+        ]
+        anchor_lp = inf_lp
+        if old_policy_logprobs is not None:
+            anchor_lp = list(denominator_logprobs[i])
+            if len(anchor_lp) != n_tokens:
+                raise ValueError(
+                    "old_policy_logprobs must align exactly with target_tokens"
+                )
+            anchor_lp[:response_start] = [0.0] * response_start
+            if resp_len:
+                anchor_lp[response_start:] = _coerce_response_logprobs(
+                    anchor_lp[response_start:],
+                    loss_mask > 0.5,
+                    policy_loss="grpo",
+                    sample_idx=i,
+                    source="old_policy_logprobs",
+                )
         per_token_adv = [0.0] * response_start
         # Bulk extraction avoids per-token tensor calls while retaining Python-float arithmetic.
-        per_token_adv.extend(
-            float(advantage * weight * mask)
-            for weight, mask in zip(tis_weight.tolist(), loss_mask.tolist(), strict=True)
-        )
+        per_token_adv.extend(float(advantage * mask) for mask in loss_mask.tolist())
 
         loss_fn_inputs = {
             "target_tokens": tinker.TensorData(
@@ -252,7 +243,7 @@ def build_grpo_datums(
                 shape=[n_tokens],
             ),
             "logprobs": tinker.TensorData(
-                data=old_policy_lp,
+                data=anchor_lp,
                 dtype="float32",
                 shape=[n_tokens],
             ),

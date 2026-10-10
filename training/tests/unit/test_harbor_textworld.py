@@ -201,7 +201,7 @@ def test_textworld_pi_recipe_uses_e2b_and_managed_server_grpo(tmp_path):
     assert config.prompt_groups_per_step == 8
     assert config.epochs == 1
     assert config.max_head_offpolicy_versions == 2
-    assert config.anchor_logp == "rollout"
+    assert config.anchor_logp == "old_policy"
     assert config.server_side_grpo is True
     assert config.grad_norm_metrics == "basic"
     assert config.grad_clip_norm == 0.0

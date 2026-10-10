@@ -335,12 +335,9 @@ def _build_config(
         grad_clip_norm=args.grad_clip_norm,
         grad_norm_metrics=args.grad_norm_metrics,
         eps_clip=0.2,
-        anchor_logp="rollout",
         server_side_grpo=args.policy_loss == "grpo",
         policy_loss=args.policy_loss,
-        gspo_execution=(
-            "two_pass" if args.policy_loss == "gspo" else "builtin"
-        ),
+        gspo_execution=("two_pass" if args.policy_loss == "gspo" else "builtin"),
         gspo=GSPOConfig(
             clip_ratio_low=args.gspo_clip_ratio_low,
             clip_ratio_high=args.gspo_clip_ratio_high,

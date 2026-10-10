@@ -12,7 +12,7 @@ import torch
 import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
-from training.utils.rl.tis import SAFETY_CLAMP, TISConfig
+from training.utils.rl.common import SAFETY_CLAMP
 
 
 def validate_reinforce_config(*, kl_beta: float) -> None:
@@ -26,9 +26,7 @@ def make_reinforce_loss_fn(
     ref_logprobs: List[List[float]],
     prompt_lens: Union[int, List[int]],
     inf_logprobs: List[List[float]],
-    old_policy_logprobs: List[List[float]],
     kl_beta: float = 0.0,
-    tis_config: TISConfig | None = None,
 ):
     """REINFORCE loss with direct IS ratio ``p_theta / q``.
 
@@ -42,13 +40,9 @@ def make_reinforce_loss_fn(
         ref_logprobs: Per-sample reference log-probability sequences.
         prompt_lens: Prompt token length(s); scalar broadcasts to all samples.
         inf_logprobs: Per-sample ``rollout_logprobs``.
-        old_policy_logprobs: Per-sample old-policy forward-pass log-probabilities.
         kl_beta: KL penalty coefficient (0 disables KL term).
-        tis_config: TIS weight configuration.
     """
     validate_reinforce_config(kl_beta=kl_beta)
-    if tis_config is None:
-        tis_config = TISConfig()
     prompt_lens_list = _normalize_prompt_lens(prompt_lens, len(advantages))
 
     def policy_fn(ctx):
@@ -80,8 +74,6 @@ def make_reinforce_loss_fn(
             ref_logprobs,
             inf_logprobs,
             prompt_lens_list,
-            old_policy_logprobs,
-            tis_config,
             data,
             logprobs_list,
             "reinforce",

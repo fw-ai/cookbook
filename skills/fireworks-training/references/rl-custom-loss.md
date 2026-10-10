@@ -11,10 +11,9 @@ recipes:
 
 1. Compute group-normalized advantages from rollout rewards.
 2. When `kl_beta > 0`, provision a reference and collect reference logprobs.
-3. Snapshot old-policy logprobs on the trainer.
-4. Call `make_grpo_loss_fn(...)` directly with advantages, reference and
-   rollout logprobs, prompt boundaries, `kl_beta`, PPO clipping, and `TISConfig`.
-5. Pass that closure to `policy.forward_backward_custom(...)`.
+3. Call `make_grpo_loss_fn(...)` directly with advantages, reference and
+   rollout logprobs, prompt boundaries, `kl_beta`, and PPO clipping.
+4. Pass that closure to `policy.forward_backward_custom(...)`.
 
 Keep the public algorithm knobs shallow:
 
@@ -23,7 +22,6 @@ Config(
     kl_beta=0.001,
     eps_clip=0.2,
     eps_clip_high=None,
-    tis=TISConfig(cap=5.0, level="token"),
 )
 ```
 
@@ -32,15 +30,10 @@ reference-trainer settings when KL is disabled instead of ignoring them. The
 client GRPO builder applies a differentiable k3 reference-KL penalty; `ref_kl`
 is not only a logging estimator.
 
-Both recipes expose the PPO anchor explicitly:
-
-```python
-Config(anchor_logp="old_policy")  # trainer snapshot + active TIS
-Config(anchor_logp="rollout")     # skip snapshot; TIS ratio is identity
-```
-
-Treat this as an estimator choice, not a performance-only switch. Validate
-rollout-anchor rows against `target_tokens` exactly.
+Policy ratios use the recorded sampling-policy logprobs directly. There is no
+old-trainer snapshot or external advantage preweighting. PPO clipping and GSPO's
+sequence ratio still belong to their respective objectives. This changes the
+estimator from the former old/new-trainer plus TIS decomposition.
 
 ## Use the trainer built-in for dedicated async GRPO
 
@@ -55,10 +48,8 @@ eps_high = cfg.eps_clip if cfg.eps_clip_high is None else cfg.eps_clip_high
 grpo_datums = build_grpo_datums(
     data,
     advantages,
-    old_policy_logprobs,
     rollout_logprobs,
     prompt_lens,
-    cfg.tis,
 )
 result = policy.forward_backward(
     grpo_datums,
@@ -70,9 +61,8 @@ result = policy.forward_backward(
 )
 ```
 
-The option does not silently fall back. It is the only built-in loss exposed by
-the recipe; add a different research loss in a recipe fork rather than growing
-a selector or registry.
+The option does not silently fall back. The async recipe also supports GSPO explicitly. Custom research losses remain
+ordinary closures.
 
 ## Add a research algorithm
 
@@ -114,10 +104,11 @@ live beside it (`dapo.py`, `dro.py`, `gspo.py`, `cispo.py`, and so on).
 
 - Import loss builders at module scope.
 - Require exact datum, prompt-boundary, and logprob alignment.
-- Apply TIS only on active loss-mask positions.
-- Keep rollout logprobs as the TIS behavior-policy denominator.
+- Keep sampling probabilities separate from the fixed clipping anchor. Use
+  `old_policy_logprobs` for snapshot clipping, and rollout probabilities for IS.
+- Keep advantages unweighted; the chosen objective owns any weighting.
 - Keep raw inference logprobs observability-only; report drift metrics without
-  feeding them into PPO or TIS.
+  feeding them into the policy ratio.
 - Provision and run a reference only when the selected loss consumes it.
 - Raise on incompatible configuration; never ignore or downgrade it.
 - Test the direct builder and the recipe boundary. Delete tests that only

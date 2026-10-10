@@ -2,9 +2,9 @@
 
 Matches the Tinker kernel formula::
 
-    loss = -(lp * adv - 0.5 * beta * (lp - old_policy)^2).sum()
+    loss = -(lp * adv - 0.5 * beta * (lp - rollout)^2).sum()
 
-The quadratic penalty ``0.5 * beta * (lp - old_policy)^2`` constrains the policy
+The quadratic penalty ``0.5 * beta * (lp - rollout)^2`` constrains the policy
 at *all* positions (including where ``adv=0``) to stay close to the
 old-policy snapshot.  This differs from PPO-style clipping by providing a
 smooth, continuous penalty rather than a hard clip boundary.
@@ -19,7 +19,6 @@ import torch
 import tinker
 
 from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
-from training.utils.rl.tis import TISConfig
 
 
 @dataclass
@@ -43,23 +42,21 @@ def make_dro_loss_fn(
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_len: Union[int, List[int]],
-    old_policy_logprobs: List[List[float]],
     dro_config: DROConfig | None = None,
-    tis_config: TISConfig | None = None,
+    *,
+    old_policy_logprobs: List[List[float]] | None = None,
 ) -> ...:
     """Build a DRO loss closure with quadratic old-policy penalty."""
     if dro_config is None:
         dro_config = DROConfig()
     validate_dro_config(dro_config)
-    if tis_config is None:
-        tis_config = TISConfig()
     prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
 
     def policy_fn(ctx):
         quad = (ctx.resp_pi - ctx.resp_old_policy) ** 2
         resp_active = ctx.adv != 0
         gated_quad = torch.where(resp_active, quad, torch.zeros_like(quad))
-        linear_term = ctx.resp_pi * ctx.adv * ctx.tis_weight
+        linear_term = ctx.resp_pi * ctx.adv
         quad_term = 0.5 * dro_config.beta * gated_quad
         per_token_loss = -(linear_term - quad_term) * ctx.resp_mask
 
@@ -72,8 +69,15 @@ def make_dro_loss_fn(
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(
-            advantages, ref_logprobs, inf_logprobs, prompt_lens,
-            old_policy_logprobs, tis_config, data, logprobs_list, "dro", policy_fn,
+            advantages,
+            ref_logprobs,
+            inf_logprobs,
+            prompt_lens,
+            data,
+            logprobs_list,
+            "dro",
+            policy_fn,
+            old_policy_logprobs=old_policy_logprobs,
         )
         metrics = dict(result.base_metrics)
         nt = result.num_tokens

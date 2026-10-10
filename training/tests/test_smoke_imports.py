@@ -53,7 +53,6 @@ UTIL_MODULES = [
     "training.utils.rl.dapo",
     "training.utils.rl.grpo",
     "training.utils.rl.gspo",
-    "training.utils.rl.tis",
     "training.utils.rl.is_loss",
     "training.utils.rl.losses",
     "training.utils.rl.metrics",

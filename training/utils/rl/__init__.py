@@ -1,4 +1,4 @@
-"""RL utilities: losses, training loop, TIS, router replay."""
+"""RL utilities: losses, training loop and router replay."""
 
 __all__ = [
     # Losses & algorithms
@@ -7,7 +7,6 @@ __all__ = [
     "DPPOConfig",
     "DROConfig",
     "ScoreCenteringConfig",
-    "TISConfig",
     "GSPOConfig",
     "PromptGroup",
     "build_r3_routing_matrices",
@@ -80,7 +79,6 @@ from training.utils.rl.metrics import (
     add_train_perf_metrics,
 )
 from training.utils.rl.router_replay import build_r3_routing_matrices
-from training.utils.rl.tis import TISConfig
 from training.utils.rl.igpo import (
     IGPOTurnScorer,
     compute_turn_advantages,

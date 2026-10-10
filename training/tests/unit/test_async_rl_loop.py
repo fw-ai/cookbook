@@ -111,7 +111,6 @@ class TestConfigDefaults:
         assert cfg.kl_beta == 0.001
         assert cfg.eps_clip == 0.2
         assert cfg.eps_clip_high is None
-        assert cfg.anchor_logp == "old_policy"
         assert cfg.server_side_grpo is False
         assert cfg.policy_loss == "grpo"
         assert cfg.gspo.clip_ratio_low == 3e-4
@@ -195,7 +194,6 @@ def test_server_side_grpo_calls_only_builtin_ppo_and_emits_kld() -> None:
         prompt_lens=[2],
         rollout_logprobs=[[-0.4, -0.3, -0.1]],
         raw_inference_logprobs=[[-0.4, -0.4, -0.2]],
-        old_policy_logprobs=[[-0.4, -0.3, -0.1]],
         config=async_rl_loop.Config(
             log_path="gs://logs",
             kl_beta=0,
@@ -266,7 +264,6 @@ def test_server_side_gspo_preserves_zero_advantage_response_membership() -> None
         prompt_lens=[2],
         rollout_logprobs=[[-0.4, -0.3, -0.1]],
         raw_inference_logprobs=[[-0.4, -0.4, -0.2]],
-        old_policy_logprobs=[[-0.4, -0.3, -0.1]],
         config=config,
     )
 
@@ -325,7 +322,6 @@ def test_two_pass_gspo_uses_local_loss_without_builtin_dispatch(monkeypatch) -> 
         ref_logprobs=[[]],
         prompt_lens=[2],
         rollout_logprobs=[[-0.4, -0.3]],
-        old_policy_logprobs=[[-0.4, -0.3]],
         precomputed_forward="forward",
         config=config,
     )
@@ -337,9 +333,8 @@ def test_two_pass_gspo_uses_local_loss_without_builtin_dispatch(monkeypatch) -> 
         "ref_logprobs": [[]],
         "inf_logprobs": [[-0.4, -0.3]],
         "prompt_len": [2],
-        "old_policy_logprobs": [[-0.4, -0.3]],
         "gspo_config": config.gspo,
-        "tis_config": config.tis,
+        "old_policy_logprobs": None,
     }
     assert (
         async_rl_loop._effective_grad_accumulation_normalization(config)
@@ -473,17 +468,6 @@ def test_main_rejects_invalid_grpo_config(config_overrides) -> None:
     cfg = async_rl_loop.Config(log_path="gs://logs", **config_overrides)
 
     with pytest.raises(ValueError, match="must be non-negative"):
-        async_rl_loop.main(
-            cfg,
-            rows=[],
-            rollout_fn_factory=lambda _setup: lambda _sample: None,
-        )
-
-
-def test_main_rejects_unknown_anchor_logp() -> None:
-    cfg = async_rl_loop.Config(log_path="gs://logs", anchor_logp="unknown")
-
-    with pytest.raises(ValueError, match="anchor_logp must be"):
         async_rl_loop.main(
             cfg,
             rows=[],

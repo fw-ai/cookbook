@@ -1,7 +1,7 @@
 """Firetitan Cookbook -- training recipes and utilities.
 
 Recipes (fork and customise):
-  - recipes/rl_loop.py: opinionated client-side GRPO training with TIS and
+  - recipes/rl_loop.py: opinionated client-side GRPO training with rollout ratios and
     optional reference KL; fork its documented direct loss call to customize
   - recipes/dpo_loop.py:  DPO (preference) training
   - recipes/orpo_loop.py: ORPO (preference) training -- no reference model

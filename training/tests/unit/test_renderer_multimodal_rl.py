@@ -449,7 +449,6 @@ def test_multimodal_client_grpo_preserves_expanded_coordinates():
         [[0.0] * n for n in target_lengths],
         pg.prompt_lens,
         inf_logprobs=pg.inf_logprobs,
-        old_policy_logprobs=pg.inf_logprobs,
         kl_beta=0.0,
     )
     forward_logprobs = [
@@ -497,7 +496,6 @@ def test_multimodal_builtin_loss_datums_use_expanded_coordinates():
     builtin_datums = build_grpo_datums(
         data=pg.data,
         advantages=pg.advantages,
-        old_policy_logprobs=pg.inf_logprobs,
         inf_logprobs=pg.inf_logprobs,
         prompt_lens=pg.prompt_lens,
     )

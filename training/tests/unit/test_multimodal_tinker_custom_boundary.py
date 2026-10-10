@@ -121,7 +121,6 @@ def test_tinker_custom_grpo_keeps_expanded_multimodal_wire_coordinates() -> None
         [[0.0] * 6],
         [5],
         inf_logprobs=[list(expanded_forward_logprobs)],
-        old_policy_logprobs=[list(expanded_forward_logprobs)],
         kl_beta=0.0,
     )
     observed_logprobs: list[torch.Tensor] = []

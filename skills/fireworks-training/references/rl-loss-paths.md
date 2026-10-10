@@ -1,21 +1,18 @@
 # RL loss execution
 
-`training/recipes/rl_loop.py` defaults to client-side GRPO.
-`training/recipes/async_rl_loop.py` has the same default plus one narrow
-`server_side_grpo=True` opt-in for the trainer's built-in PPO kernel. Both
-paths still compute group-normalized advantages in the recipe.
+Recipes compute group-relative advantages and keep them unweighted. PPO and
+GSPO clip against a fixed trainer snapshot by default (`anchor_logp="old_policy"`).
+Set `anchor_logp="rollout"` to use recorded sampling probabilities instead.
+There is no TIS config or separate advantage correction.
 
-There is no generic loss selector, registry, runtime import, or fallback. The
-server opt-in is GRPO-only and requires `kl_beta=0`. The public algorithm knobs
-remain `kl_beta`, `eps_clip`, `eps_clip_high`, and `tis`; the two recipes also
-share `anchor_logp="old_policy" | "rollout"`.
+## Client path
 
-## Default client path
-
-The recipe performs an optional reference forward when `kl_beta > 0`, snapshots
-old-policy logprobs, and calls:
+`rl_loop` uses `forward_backward_custom` and an ordinary loss closure. The SDK
+reuses the snapshot forward for the differentiable callback. Optional reference KL remains controlled by
+`kl_beta`; raw inference logprobs are used only for drift diagnostics.
 
 ```python
+anchor, forward = prepare_policy_anchor(policy, data, rollout_logprobs, cfg.anchor_logp)
 policy.forward_backward_custom(
     data,
     make_grpo_loss_fn(
@@ -23,58 +20,31 @@ policy.forward_backward_custom(
         ref_logprobs=ref_logprobs,
         prompt_len=prompt_lens,
         inf_logprobs=rollout_logprobs,
-        old_policy_logprobs=old_policy_logprobs,
+        old_policy_logprobs=anchor,
         kl_beta=cfg.kl_beta,
         eps_clip=cfg.eps_clip,
         eps_clip_high=cfg.eps_clip_high,
-        tis_config=cfg.tis,
     ),
-    precomputed_forward=old_policy_result,
+    precomputed_forward=forward,
 )
 ```
 
-This one closure owns PPO clipping, behavioral TIS, and optional reference KL.
-Set `kl_beta=0` to skip reference provisioning.
+## Built-in path
 
-Both recipes default to `anchor_logp="old_policy"`: snapshot trainer logprobs for the
-PPO anchor and compute TIS against rollout behavior logprobs. Setting
-`anchor_logp="rollout"` skips the snapshot, anchors PPO directly on rollout
-logprobs, and makes the TIS ratio identity.
+The async recipe's `server_side_grpo=True` uses built-in PPO, or GSPO when
+selected explicitly. These paths require `kl_beta=0`. Datum preparation sends
+the selected anchor, masked raw advantages, and independent response membership.
+Returned trainer logprobs supply diagnostics without another forward.
 
-The sync, dedicated async, and serverless async client-loss recipes reuse the
-old-policy forward result to construct the custom-loss gradients. The trainer
-still performs the differentiable forward/backward recomputation; only the
-duplicate standalone custom-loss forward is removed. Because the reused
-old-policy logprobs are exactly the PPO anchor, this makes
-`train/ppo_ratio_mean=1` and `train/ppo_clip_frac=0` for that update instead of
-values differing from identity only by a redundant forward's numerical noise.
+Removing external TIS weights changes the estimator when rollout and trainer
+policies differ, even with the snapshot anchor restored. Existing trainer images
+still accept the same built-in
+and custom-loss protocols. New trainer-only features require their advertised
+capabilities.
 
-This is only a compute-path optimization. Train/inference K1 and K3 retain
-their historical definition: mean active-token drift within each sequence,
-mean across sequences within a trainer chunk, then mean across reported chunks
-at the optimizer step.
-
-## Dedicated async built-in path
-
-With `Config(server_side_grpo=True, kl_beta=0)`, the async recipe prepares the
-built-in datum contract with `build_grpo_datums(...)` and calls
-`forward_backward(..., "ppo")`. `anchor_logp="rollout"` skips the old-policy
-forward; `anchor_logp="old_policy"` retains it and folds TIS into per-token
-advantages. The exact trainer logprobs returned by the built-in call produce
-the same inference K1/K3 and PPO ratio/clip diagnostics without another
-forward pass.
-
-This path requires a trainer topology that supports built-in RL losses. It is
-not added to the sync or experimental serverless recipes.
-
-## Switching or adding another loss
-
-Fork the recipe at its documented direct `forward_backward_custom` call.
-For the exact built-in switch and new-algorithm workflow, read
-[`rl-custom-loss.md`](rl-custom-loss.md).
-
-Do not generalize `server_side_grpo` into a loss selector. A different
-algorithm still belongs in an explicit recipe fork.
+For research losses, replace the direct closure described in
+[`rl-custom-loss.md`](rl-custom-loss.md). Keep optimizer normalization, masks,
+checkpointing and weight synchronization explicit.
 
 ## Multimodal datum contract
 
