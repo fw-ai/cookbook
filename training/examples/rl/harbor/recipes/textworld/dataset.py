@@ -33,7 +33,6 @@ CALIBRATED_COOKING_SETTINGS: dict[str, Any] = {
     "split": "test",
 }
 
-
 _CLI = r'''#!/usr/bin/env python3
 """Persistent shell interface for the frozen TextWorld game."""
 
@@ -51,7 +50,6 @@ ACTIONS = Path(
 )
 MAX_ACTIONS = 1000
 
-
 def load_actions():
     if not ACTIONS.exists():
         return []
@@ -61,7 +59,6 @@ def load_actions():
     if len(value) > MAX_ACTIONS:
         raise ValueError("action history is too long")
     return value
-
 
 def save_actions(actions):
     fd, temporary = tempfile.mkstemp(dir=ACTIONS.parent, prefix=".textworld-actions-")
@@ -74,18 +71,15 @@ def save_actions(actions):
         if os.path.exists(temporary):
             os.unlink(temporary)
 
-
 def start():
     # The oracle-bearing game.json sidecar is verifier-only. The compiled
     # interpreter still provides all observations needed by the agent.
     environment = textworld.start(GAME)
     return environment, environment.reset()
 
-
 def finished(state):
     feedback = state.feedback or ""
     return "*** The End ***" in feedback or "*** You lost! ***" in feedback
-
 
 def main():
     if len(sys.argv) < 2:
@@ -119,7 +113,6 @@ def main():
     print(f"[finished={done or finished(state)}]")
     environment.close()
 
-
 if __name__ == "__main__":
     main()
 '''
@@ -150,7 +143,6 @@ REWARD = Path(
 )
 METADATA = Path(os.environ.get("TEXTWORLD_METADATA", "/tests/game.json"))
 
-
 def grade():
     actions = json.loads(ACTIONS.read_text(encoding="utf-8"))
     if not isinstance(actions, list) or not actions or len(actions) > 1000:
@@ -171,7 +163,6 @@ def grade():
                 break
         environment.close()
         return 1.0 if done and bool(state.won) else 0.0
-
 
 try:
     reward = grade()

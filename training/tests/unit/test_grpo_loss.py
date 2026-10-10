@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
 from training.utils.rl.observability import compute_inference_observability_metrics
 
 
@@ -20,13 +20,12 @@ class TestGRPOMetrics:
             ref_logprobs=[],
             prompt_len=[1, 1],
             inf_logprobs=[[-1.0, -1.0], [-1.0, -1.0]],
-            old_policy_logprobs=[[-1.0, -1.0], [-1.0, -1.0]],
             kl_beta=0.0,
         )
 
         _, metrics = fn([], pi_rows)
 
-        # At ratio=TIS=1, the two datum coefficients are -1 and +1.
+        # At ratio=1, the two datum coefficients are -1 and +1.
         assert metrics["policy_gradient/coefficient_variance_proxy"] == pytest.approx(
             2.0
         )
@@ -46,7 +45,6 @@ class TestGRPOMetrics:
             ref_logprobs=[ref_vals],
             prompt_len=1,
             inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
             kl_beta=0.0,
         )
 
@@ -68,7 +66,6 @@ class TestGRPOMetrics:
             ref_logprobs=[],
             prompt_len=1,
             inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
             kl_beta=0.0,
         )
 
@@ -89,7 +86,6 @@ class TestGRPOMetrics:
             ref_logprobs=[ref_vals],
             prompt_len=1,
             inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
             kl_beta=beta,
         )
 
@@ -115,7 +111,6 @@ class TestGRPOMetrics:
             ref_logprobs=[],
             prompt_len=1,
             inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
             kl_beta=0.0,
             raw_inf_logprobs=[raw_inf_vals],
         )
@@ -142,7 +137,6 @@ class TestGRPOMetrics:
             ref_logprobs=[],
             prompt_len=1,
             inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
             kl_beta=0.0,
             raw_inf_logprobs=[[]],
         )
@@ -163,7 +157,6 @@ class TestGRPOMetrics:
                 ref_logprobs=[],
                 prompt_len=1,
                 inf_logprobs=[pi_vals],
-                old_policy_logprobs=[pi_vals],
                 kl_beta=0.0,
                 raw_inf_logprobs=[raw_inf_vals],
             )

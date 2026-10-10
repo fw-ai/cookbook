@@ -25,7 +25,6 @@ from training.utils.rl.common import (
 )
 from training.utils.rl.losses import build_grpo_datums
 from training.utils.rl.observability import compute_server_grpo_observability_metrics
-from training.utils.rl.tis import TISConfig, compute_tis_weight
 from training.utils.supervised import build_datum_from_token_mask
 
 
@@ -246,7 +245,6 @@ class TestBuildGRPODatums:
         datum = build_grpo_datums(
             data=[self._datum()],
             advantages=[1.0],
-            old_policy_logprobs=[[-0.1, -0.2, -0.3]],
             inf_logprobs=[[-0.1, -0.2, -0.3]],
             prompt_lens=[2],
         )[0]
@@ -264,7 +262,6 @@ class TestBuildGRPODatums:
         ("field", "kwargs"),
         [
             ("advantages", {"advantages": []}),
-            ("old_policy_logprobs", {"old_policy_logprobs": []}),
             ("rollout_logprobs", {"inf_logprobs": []}),
             ("prompt_lens", {"prompt_lens": []}),
         ],
@@ -273,7 +270,6 @@ class TestBuildGRPODatums:
         inputs = {
             "data": [self._datum()],
             "advantages": [1.0],
-            "old_policy_logprobs": [[-0.1, -0.2, -0.3]],
             "inf_logprobs": [[-0.1, -0.2, -0.3]],
             "prompt_lens": [2],
         }
@@ -282,13 +278,12 @@ class TestBuildGRPODatums:
         with pytest.raises(ValueError, match=field):
             build_grpo_datums(**inputs)
 
-    def test_rejects_short_old_policy_row_instead_of_padding(self):
+    def test_rejects_short_rollout_row_instead_of_padding(self):
         with pytest.raises(ValueError, match="expected 3, got 2"):
             build_grpo_datums(
                 data=[self._datum()],
                 advantages=[1.0],
-                old_policy_logprobs=[[-0.1, -0.2]],
-                inf_logprobs=[[-0.1, -0.2, -0.3]],
+                inf_logprobs=[[-0.1, -0.2]],
                 prompt_lens=[2],
             )
 
@@ -298,32 +293,21 @@ class TestBuildGRPODatums:
             build_grpo_datums(
                 data=[self._datum()],
                 advantages=[1.0],
-                old_policy_logprobs=[[-0.1, -0.2, -0.3]],
                 inf_logprobs=[[-0.1, -0.2, -0.3]],
                 prompt_lens=[prompt_len],
             )
 
-    def test_folds_tis_weight_into_response_advantages(self):
+    def test_keeps_response_advantages_unweighted(self):
         datum = build_grpo_datums(
             data=[self._datum()],
             advantages=[2.0],
-            old_policy_logprobs=[[0.0, 0.0, 0.0]],
             inf_logprobs=[[-1.0, -1.0, -1.0]],
             prompt_lens=[2],
-            tis_config=TISConfig(cap=1.5),
         )[0]
 
-        assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.0, 3.0, 3.0])
+        assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.0, 2.0, 2.0])
 
     @pytest.mark.parametrize("advantage", [0.0, -0.0, 1.0 / 3, -1.23456789])
-    @pytest.mark.parametrize(
-        "tis_config",
-        [
-            TISConfig(),
-            TISConfig(cap=1.5, level="sequence"),
-            TISConfig(cap=2.0, icepop_threshold=2.0),
-        ],
-    )
     @pytest.mark.parametrize(
         ("prefix", "response_len", "all_masked"),
         [(0, 0, False), (4, 0, False), (0, 17, False), (3, 17, True), (5, 4097, False)],
@@ -331,7 +315,6 @@ class TestBuildGRPODatums:
     def test_preserves_scalar_advantage_arithmetic_exactly(
         self,
         advantage: float,
-        tis_config: TISConfig,
         prefix: int,
         response_len: int,
         all_masked: bool,
@@ -355,26 +338,15 @@ class TestBuildGRPODatums:
             None if mask <= 0.5 else old_lp[prefix + i] - [-3.0, -0.3, 0.7, 3.0][i % 4] for i, mask in enumerate(masks)
         ]
         tensor_mask = torch.tensor(masks, dtype=torch.float32)
-        weights = torch.ones(response_len, dtype=torch.float32)
-        active = tensor_mask > 0.5
-        if active.any():
-            active_old = torch.tensor(old_lp[prefix:], dtype=torch.float32)[active]
-            active_rollout = torch.tensor(
-                [value for value, mask in zip(rollout_lp[prefix:], masks) if mask > 0.5],
-                dtype=torch.float32,
-            )
-            weights[active], _ = compute_tis_weight(active_old, active_rollout, tis_config)
         expected = [0.0] * prefix + [
-            float(advantage * weights[i].item() * tensor_mask[i].item()) for i in range(response_len)
+            float(advantage * tensor_mask[i].item()) for i in range(response_len)
         ]
 
         result = build_grpo_datums(
             [source],
             [advantage],
-            [old_lp],
             [rollout_lp],
             [prefix + 1],
-            tis_config,
         )[0]
 
         actual = result.loss_fn_inputs["advantages"]
@@ -383,7 +355,10 @@ class TestBuildGRPODatums:
         assert struct.pack(f"{count}f", *actual.data) == struct.pack(f"{count}f", *expected)
         assert result.model_input is source.model_input
         assert result.loss_fn_inputs["target_tokens"].data == list(range(count))
-        assert struct.pack(f"{count}f", *result.loss_fn_inputs["logprobs"].data) == struct.pack(f"{count}f", *old_lp)
+        expected_logprobs = [0.0 if value is None else value for value in rollout_lp]
+        assert result.loss_fn_inputs["logprobs"].data == pytest.approx(
+            expected_logprobs
+        )
 
 
 class TestServerGRPOObservability:

@@ -113,7 +113,6 @@ from training.utils import (
     DeployConfig,
     TrainerConfig,
 )
-from training.utils.rl import TISConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -349,7 +348,6 @@ def main():
         max_rows=args.max_rows,
         lora_rank=args.lora_rank,
         prompt_groups_per_step=args.prompt_groups_per_step,
-        tis=TISConfig(cap=2.0),
         output_model_id=args.output_model_id,
         trainer=TrainerConfig(
             job_id=args.policy_job_id,

@@ -4,7 +4,7 @@
 EXPERIMENTAL -- under active development.  API surface (``Config`` field
 names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is intentionally minimal-surface: the
 only thing most users need to write is the rollout function; everything
-else (gate, advantage, optional reference KL, weight sync, TIS, pipeline chunking,
+else (gate, advantage, optional reference KL, weight sync, pipeline chunking,
 checkpoints) is handled by ``main()``.  See
 ``skills/fireworks-training/references/rl-async.md`` for the full contract.
 
@@ -79,45 +79,22 @@ from training.utils.rl.async_rl import (
     TrainingChunk,
     RolloutRow,
 )
-from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
-from training.utils.rl.cispo import (
-    CISPOConfig,
-    make_cispo_loss_fn,
-    validate_cispo_config,
+from training.utils.rl.algorithm import (
+    PolicyLossInputs,
+    ResolvedPolicyLoss,
+    resolve_policy_loss,
 )
-from training.utils.rl.dapo import (
-    DAPOConfig,
-    make_dapo_loss_fn,
-    validate_dapo_config,
-)
-from training.utils.rl.dppo import (
-    DPPOConfig,
-    make_dppo_loss_fn,
-    validate_dppo_config,
-)
-from training.utils.rl.dro import (
-    DROConfig,
-    make_dro_loss_fn,
-    validate_dro_config,
-)
-from training.utils.rl.gspo import (
-    GSPOConfig,
-    make_gspo_loss_fn,
-    validate_gspo_config,
-)
-from training.utils.rl.score_centering import (
-    ScoreCenteringConfig,
-    build_score_centering_datums,
-    make_score_centering_loss_fn,
-    validate_score_centering_config,
-)
+from training.utils.rl.algorithm.cispo import CISPOConfig
+from training.utils.rl.algorithm.dapo import DAPOConfig
+from training.utils.rl.algorithm.dppo import DPPOConfig
+from training.utils.rl.algorithm.dro import DROConfig
+from training.utils.rl.algorithm.grpo import GRPOConfig, validate_grpo_config
+from training.utils.rl.algorithm.gspo import GSPOConfig
+from training.utils.rl.algorithm.score_centering import ScoreCenteringConfig
+from training.utils.rl.anchor import anchor_logprobs
 from training.utils.rl.losses import build_grpo_datums, combine_prompt_groups
-from training.utils.rl.observability import (
-    compute_server_grpo_observability_metrics,
-    compute_server_gspo_observability_metrics,
-)
+from training.utils.rl.sampling_support import attach_top_sampling_references
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
-from training.utils.rl.tis import TISConfig
 from training.train_loop import DynamicFilterFn
 from training.utils.rl.rollout import RolloutRun
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
@@ -152,6 +129,12 @@ class Config:
     completions_per_prompt: int = 4
     max_completion_tokens: int = 1024
     temperature: float = 1.0
+    top_p: float = 1.0
+    """Sampler nucleus threshold. ``1.0`` samples the full distribution."""
+    top_sampling_logprobs: int | None = None
+    """Record the sampler's top-K support per completion token in trainer-shared
+    storage. Required by, and only used for, ``target_logprob_support=
+    "sampling_support"``; ``K`` must cover the largest truncated support."""
     epochs: int = 1
     shuffle: bool = True
     seed: int = 0
@@ -197,31 +180,37 @@ class Config:
     """Lower/upper PPO clip epsilon used by the GRPO update."""
     eps_clip_high: float | None = None
     """Optional asymmetric upper clip epsilon; defaults to ``eps_clip``."""
-    server_side_grpo: bool = False
-    """Use the trainer's built-in PPO kernel for the GRPO policy update.
-
-    This is a narrow execution-path opt-in, not an algorithm selector. It
-    requires ``kl_beta=0`` because the built-in kernel has no reference-KL
-    input. Group-relative advantages, PPO anchoring, and TIS remain recipe
-    owned.
-    """
+    anchor_logp: str = "old_policy"
+    """Fixed clipping anchor: trainer snapshot or recorded rollout logprobs."""
     policy_loss: Literal[
-        "grpo", "gspo", "dapo", "dro", "cispo", "dppo", "score_centering"
+        "grpo",
+        "gspo",
+        "dapo",
+        "dro",
+        "cispo",
+        "dppo",
+        "importance_sampling",
+        "score_centering",
     ] = "grpo"
     """Policy surrogate applied to group-relative advantages.
 
-    ``"grpo"`` uses token-level PPO clipping. ``"gspo"`` uses a sequence-level
-    ratio through either the built-in trainer loss or the portable two-pass
-    client loss selected by ``gspo_execution``.
+    Each objective lives in ``training.utils.rl.algorithm`` and reads only its
+    own settings: ``"grpo"`` the top-level ``eps_clip``/``eps_clip_high``/
+    ``kl_beta``, every other objective the field with its name.
     """
+    loss_execution: Literal["client", "builtin"] = "client"
+    """``"client"`` runs the portable custom loss; ``"builtin"`` runs the
+    trainer's objective. Built-in objectives have no reference-KL input and
+    require ``kl_beta=0``."""
+    target_logprob_support: Literal["full_vocabulary", "sampling_support"] = (
+        "full_vocabulary"
+    )
+    """Normalize target-policy logprobs over the full vocabulary, or over the
+    recorded sampling support (top-p mask replay). ``"sampling_support"``
+    requires ``loss_execution="builtin"``, ``anchor_logp="rollout"`` and
+    ``top_sampling_logprobs``."""
     gspo: GSPOConfig = field(default_factory=GSPOConfig)
     """GSPO sequence-ratio clipping configuration."""
-    gspo_execution: Literal["builtin", "two_pass"] = "builtin"
-    """GSPO execution path; built-in remains the cookbook default.
-
-    ``"two_pass"`` uses the public custom-loss API and works independently of
-    built-in GSPO availability.
-    """
     dapo: DAPOConfig = field(default_factory=DAPOConfig)
     """DAPO asymmetric and optional dual-clipping configuration."""
     dro: DROConfig = field(default_factory=DROConfig)
@@ -239,15 +228,6 @@ class Config:
 
     The scheduler creates balanced chunk targets and exposes the batch once its
     first target is full. Later chunks can fill while the trainer is active.
-    """
-    tis: TISConfig = field(default_factory=TISConfig)
-    """TIS (Train-Inference IS) weight correction config."""
-    anchor_logp: Literal["old_policy", "rollout"] = "old_policy"
-    """PPO anchor source.
-
-    ``"old_policy"`` snapshots trainer logprobs and applies TIS against the
-    rollout behavior policy. ``"rollout"`` skips that forward, anchors PPO on
-    rollout logprobs, and makes the TIS ratio identity.
     """
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
@@ -304,7 +284,6 @@ class RolloutSetup:
 RolloutFn = Callable[..., Awaitable[RolloutRun | None]]
 RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
 RolloutEvaluationFn = Callable[[int, RolloutFn], Awaitable[dict[str, Any] | None]]
-
 
 _ROLLOUT_CONTEXT_KWARGS = frozenset(
     {
@@ -378,160 +357,58 @@ def _save_checkpoint(
     logger.info("[%s] dcp_save: done (%.1fs)", name, span.elapsed)
 
 
-def _run_server_side_policy_loss(
-    policy: ReconnectableClient,
-    *,
-    data,
-    advantages,
-    prompt_lens,
-    rollout_logprobs,
-    raw_inference_logprobs,
-    old_policy_logprobs,
-    config: Config,
-):
-    """Run a built-in policy kernel with recipe-owned group preparation."""
-    use_gspo = config.policy_loss == "gspo"
-    server_data = build_grpo_datums(
-        data,
-        advantages,
-        old_policy_logprobs,
-        rollout_logprobs,
-        prompt_lens,
-        config.tis,
-        include_response_mask=use_gspo,
-    )
-    if use_gspo:
-        loss_fn = "gspo"
-        loss_fn_config = {
-            "clip_low_threshold": 1.0 - config.gspo.clip_ratio_low,
-            "clip_high_threshold": 1.0 + config.gspo.clip_ratio_high,
-            "seq_ratio_log_cap": config.gspo.seq_ratio_log_cap,
-        }
-    else:
-        loss_fn = "ppo"
-        eps_high = (
-            config.eps_clip
-            if config.eps_clip_high is None
-            else config.eps_clip_high
-        )
-        loss_fn_config = {
-            "clip_low_threshold": 1.0 - config.eps_clip,
-            "clip_high_threshold": 1.0 + eps_high,
-        }
-    # Match the SDK call boundary: submission through decoded result retrieval.
-    # Recipe preparation and local diagnostics do not measure trainer throughput.
-    with elapsed_timer("fwd_bwd"):
-        result = policy.forward_backward(
-            server_data,
-            loss_fn,
-            loss_fn_config=loss_fn_config,
-        )
-    policy_logprobs = [
-        output["logprobs"].to_torch() for output in result.loss_fn_outputs
-    ]
-    if use_gspo:
-        observability = compute_server_gspo_observability_metrics(
-            data,
-            policy_logprobs,
-            old_policy_logprobs,
-            raw_inference_logprobs,
-            prompt_lens,
-            clip_ratio_low=config.gspo.clip_ratio_low,
-            clip_ratio_high=config.gspo.clip_ratio_high,
-            seq_ratio_log_cap=config.gspo.seq_ratio_log_cap,
-        )
-    else:
-        observability = compute_server_grpo_observability_metrics(
-            data,
-            policy_logprobs,
-            old_policy_logprobs,
-            raw_inference_logprobs,
-            prompt_lens,
+def _policy_loss_options(config: Config) -> Any:
+    """Typed settings for the selected objective; each reads only its own."""
+    if config.policy_loss == "grpo":
+        return GRPOConfig(
             eps_clip=config.eps_clip,
             eps_clip_high=config.eps_clip_high,
+            kl_beta=config.kl_beta,
         )
-    result.metrics.update(observability)
-    return result
+    return getattr(config, config.policy_loss, None)
 
 
-def _effective_grad_accumulation_normalization(
-    config: Config,
-) -> GradAccNormalization | str | None:
-    if config.policy_loss == "gspo":
-        return "num_sequences"
-    if config.policy_loss == "score_centering":
-        return "num_loss_tokens"
-    return config.grad_accumulation_normalization
+def resolve_recipe_policy_loss(config: Config) -> ResolvedPolicyLoss:
+    """Resolve the objective, execution path and anchor once per run."""
+    return resolve_policy_loss(
+        config.policy_loss,
+        options=_policy_loss_options(config),
+        execution=config.loss_execution,
+        anchor=config.anchor_logp,
+        kl_beta=config.kl_beta,
+        grad_accumulation_normalization=config.grad_accumulation_normalization,
+        target_logprob_support=config.target_logprob_support,
+    )
 
 
-def _trainer_loss_label(config: Config) -> str:
-    if config.policy_loss == "gspo":
-        execution = "server" if config.gspo_execution == "builtin" else "client"
-        return f"{execution}_gspo"
-    if config.server_side_grpo:
-        return "server_ppo"
-    return f"client_{config.policy_loss}"
+def sampling_support_kwargs(config: Config) -> dict[str, Any]:
+    """Sampler kwargs that record top-K support for the trainer to replay."""
+    if not 0 < config.top_p <= 1:
+        raise ValueError(f"top_p must be in (0, 1]; got {config.top_p!r}")
+    count = config.top_sampling_logprobs
+    if count is not None and (type(count) is not int or count < 1):
+        raise ValueError("top_sampling_logprobs must be a positive integer")
+    replay = config.target_logprob_support == "sampling_support"
+    if replay != (count is not None):
+        raise ValueError(
+            "top_sampling_logprobs is required by, and only used for, "
+            "target_logprob_support='sampling_support'"
+        )
+    if config.top_p < 1 and not replay:
+        logger.warning(
+            "top_p=%g truncates rollouts while the trainer normalizes over the "
+            "full vocabulary; set target_logprob_support='sampling_support' to "
+            "replay the sampling support.",
+            config.top_p,
+        )
+    if not replay:
+        return {}
+    return {"top_sampling_logprobs": count, "top_sampling_format": "parquet_v1"}
 
 
 def policy_loss_metadata(config: Config) -> dict[str, Any]:
     """Return stable policy-loss metadata shared by logs and launch manifests."""
-    return {
-        "trainer_loss": _trainer_loss_label(config),
-        "server_side_grpo": config.server_side_grpo,
-        "policy_loss": config.policy_loss,
-        "gspo": (
-            {
-                "clip_ratio_low": config.gspo.clip_ratio_low,
-                "clip_ratio_high": config.gspo.clip_ratio_high,
-                "seq_ratio_log_cap": config.gspo.seq_ratio_log_cap,
-                "token_reduction": config.gspo.token_reduction,
-                "execution": config.gspo_execution,
-            }
-            if config.policy_loss == "gspo"
-            else None
-        ),
-        "dapo": (
-            {
-                "eps_clip": config.dapo.eps_clip,
-                "eps_clip_high": config.dapo.eps_clip_high,
-                "eps_clip_c": config.dapo.eps_clip_c,
-                "ratio_log_cap": config.dapo.ratio_log_cap,
-            }
-            if config.policy_loss == "dapo"
-            else None
-        ),
-        "dro": (
-            {"beta": config.dro.beta}
-            if config.policy_loss == "dro"
-            else None
-        ),
-        "cispo": (
-            {
-                "eps_low": config.cispo.eps_low,
-                "eps_high": config.cispo.eps_high,
-                "ratio_log_cap": config.cispo.ratio_log_cap,
-            }
-            if config.policy_loss == "cispo"
-            else None
-        ),
-        "dppo": (
-            {
-                "divergence": config.dppo.divergence,
-                "threshold": config.dppo.threshold,
-                "ratio_log_cap": config.dppo.ratio_log_cap,
-            }
-            if config.policy_loss == "dppo"
-            else None
-        ),
-        "score_centering": (
-            {
-                "top_k": config.score_centering.top_k,
-                "tail_mass_epsilon": config.score_centering.tail_mass_epsilon,
-            }
-            if config.policy_loss == "score_centering"
-            else None
-        ),
-    }
+    return resolve_recipe_policy_loss(config).metadata()
 
 
 def _run_optimizer_step(
@@ -539,48 +416,16 @@ def _run_optimizer_step(
     config: Config,
     *,
     learning_rate: float,
+    normalization: GradAccNormalization | str | None,
 ):
     adam_kwargs = dict(DEFAULT_ADAM)
     adam_kwargs["grad_clip_norm"] = config.grad_clip_norm
     adam_params = tinker.AdamParams(learning_rate=learning_rate, **adam_kwargs)
     return policy.optim_step(
         adam_params,
-        grad_accumulation_normalization=(
-            _effective_grad_accumulation_normalization(config)
-        ),
+        grad_accumulation_normalization=normalization,
         emit_grad_norm_metrics=config.grad_norm_metrics,
     )
-
-
-def _run_two_pass_gspo(
-    policy: ReconnectableClient,
-    *,
-    data,
-    advantages,
-    ref_logprobs,
-    prompt_lens,
-    rollout_logprobs,
-    old_policy_logprobs,
-    precomputed_forward,
-    config: Config,
-):
-    """Run the local GSPO loss against trainer-returned sequence logprobs."""
-
-    loss_fn = make_gspo_loss_fn(
-        advantages=advantages,
-        ref_logprobs=ref_logprobs,
-        inf_logprobs=rollout_logprobs,
-        prompt_len=prompt_lens,
-        old_policy_logprobs=old_policy_logprobs,
-        gspo_config=config.gspo,
-        tis_config=config.tis,
-    )
-    with elapsed_timer("fwd_bwd"):
-        return policy.forward_backward_custom(
-            data,
-            loss_fn,
-            precomputed_forward=precomputed_forward,
-        )
 
 
 def main(
@@ -618,76 +463,9 @@ def main(
         eps_clip_high=cfg.eps_clip_high,
         reference_training_shape_id=cfg.trainer.reference_training_shape_id,
         reference_job_id=cfg.trainer.reference_job_id,
-        anchor_logp=cfg.anchor_logp,
     )
-    if cfg.policy_loss not in {
-        "grpo",
-        "gspo",
-        "dapo",
-        "dro",
-        "cispo",
-        "dppo",
-        "score_centering",
-    }:
-        raise ValueError(
-            "unsupported policy_loss; expected grpo, gspo, dapo, dro, cispo, "
-            "dppo, or score_centering; got "
-            f"{cfg.policy_loss!r}."
-        )
-    if cfg.policy_loss == "gspo":
-        validate_gspo_config(cfg.gspo)
-        if cfg.gspo_execution not in {"builtin", "two_pass"}:
-            raise ValueError(
-                "gspo_execution must be 'builtin' or 'two_pass'; got "
-                f"{cfg.gspo_execution!r}."
-            )
-        if cfg.gspo_execution == "builtin" and not cfg.server_side_grpo:
-            raise ValueError(
-                "gspo_execution='builtin' requires server_side_grpo=True."
-            )
-        if (
-            cfg.gspo_execution == "builtin"
-            and cfg.gspo.token_reduction != "mean"
-        ):
-            raise ValueError(
-                "built-in GSPO supports only token_reduction='mean'; "
-                "use gspo_execution='two_pass' for token-sum."
-            )
-        normalization = getattr(
-            cfg.grad_accumulation_normalization,
-            "value",
-            cfg.grad_accumulation_normalization,
-        )
-        if normalization not in (None, "num_sequences"):
-            raise ValueError(
-                "policy_loss='gspo' requires "
-                "grad_accumulation_normalization='num_sequences'."
-            )
-    elif cfg.policy_loss == "dapo":
-        validate_dapo_config(cfg.dapo)
-    elif cfg.policy_loss == "dro":
-        validate_dro_config(cfg.dro)
-    elif cfg.policy_loss == "cispo":
-        validate_cispo_config(cfg.cispo)
-    elif cfg.policy_loss == "dppo":
-        validate_dppo_config(cfg.dppo)
-    elif cfg.policy_loss == "score_centering":
-        validate_score_centering_config(cfg.score_centering)
-    if cfg.server_side_grpo and cfg.policy_loss not in {"grpo", "gspo"}:
-        raise ValueError(
-            "server_side_grpo supports only policy_loss='grpo' or 'gspo'."
-        )
-    if cfg.kl_beta != 0:
-        if cfg.server_side_grpo:
-            raise ValueError("server_side_grpo requires kl_beta=0.")
-        if cfg.policy_loss in {
-            "dapo",
-            "dro",
-            "cispo",
-            "dppo",
-            "score_centering",
-        }:
-            raise ValueError(f"policy_loss={cfg.policy_loss!r} requires kl_beta=0.")
+    loss = resolve_recipe_policy_loss(cfg)
+    support_sample_kwargs = sampling_support_kwargs(cfg)
     if cfg.grad_norm_metrics not in {"off", "basic", "detailed"}:
         raise ValueError(
             "grad_norm_metrics must be 'off', 'basic', or 'detailed'; got "
@@ -753,7 +531,6 @@ def main(
             "algorithm": "grpo",
             **policy_loss_metadata(cfg),
             "kl_beta": cfg.kl_beta,
-            "anchor_logp": cfg.anchor_logp,
             "grad_clip_norm": cfg.grad_clip_norm,
             "grad_norm_metrics": cfg.grad_norm_metrics,
             "lr": cfg.learning_rate,
@@ -883,7 +660,7 @@ def main(
             remaining_rows / max(1, cfg.prompt_groups_per_step)
         )
 
-        trainer_loss = _trainer_loss_label(cfg)
+        trainer_loss = loss.trainer_loss
         logger.info(
             "algorithm=grpo policy_loss=%s trainer_loss=%s kl_beta=%g",
             cfg.policy_loss,
@@ -894,11 +671,11 @@ def main(
         sample_kwargs: dict = dict(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
-            # Full-distribution on-policy sampling. Without explicit top_p/top_k
-            # the serving stack applies the model's generation_config.json
-            # defaults (e.g. Qwen3.5: top_k=20/top_p=0.95), which truncate
-            # rollouts and bias the policy-gradient estimator.
-            top_p=1.0,
+            # Explicit top_p/top_k. Otherwise the serving stack applies the
+            # model's generation_config.json defaults (e.g. Qwen3.5:
+            # top_k=20/top_p=0.95), which silently truncate rollouts. Truncate
+            # with top_p only when the trainer replays the sampling support.
+            top_p=cfg.top_p,
             top_k=0,
             # Single total prompt-plus-output limit. Direct sampler rollouts use
             # it for preflight/post-completion guards; TITO uses the same value
@@ -913,8 +690,8 @@ def main(
                 include_routing_matrix=True,
                 echo=not cfg.router_replay_completion_only,
             )
-        if cfg.policy_loss == "score_centering":
-            sample_kwargs["top_logprobs"] = cfg.score_centering.top_k
+        sample_kwargs.update(loss.sampling_kwargs)
+        sample_kwargs.update(support_sample_kwargs)
 
         rollout_setup = RolloutSetup(
             tokenizer=tokenizer,
@@ -1020,115 +797,8 @@ def main(
                 ]
                 idx += n
 
-        def fwd_bwd_batch(
-            data,
-            adv,
-            ref_lp,
-            prompt_lens,
-            inf_lp,
-            raw_inf_lp,
-            old_policy_logprobs,
-            precomputed_forward,
-            sampler_topk_token_ids,
-            sampler_topk_logprobs,
-        ):
-            """Run GRPO through the configured client or built-in server path."""
-            if cfg.policy_loss == "score_centering":
-                score_data, aligned_sampler_logprobs = (
-                    build_score_centering_datums(
-                        data,
-                        sampler_topk_token_ids,
-                        sampler_topk_logprobs,
-                        cfg.score_centering,
-                    )
-                )
-                loss_fn = make_score_centering_loss_fn(
-                    advantages=adv,
-                    sampler_topk_logprobs=aligned_sampler_logprobs,
-                    config=cfg.score_centering,
-                )
-                with elapsed_timer("fwd_bwd"):
-                    score_forward = policy.forward(score_data, "cross_entropy")
-                    return policy.forward_backward_custom(
-                        score_data,
-                        loss_fn,
-                        precomputed_forward=score_forward,
-                    )
-            if cfg.policy_loss == "gspo" and cfg.gspo_execution == "two_pass":
-                return _run_two_pass_gspo(
-                    policy,
-                    data=data,
-                    advantages=adv,
-                    ref_logprobs=ref_lp,
-                    prompt_lens=prompt_lens,
-                    rollout_logprobs=inf_lp,
-                    old_policy_logprobs=old_policy_logprobs,
-                    precomputed_forward=precomputed_forward,
-                    config=cfg,
-                )
-
-            if cfg.server_side_grpo:
-                return _run_server_side_policy_loss(
-                    policy,
-                    data=data,
-                    advantages=adv,
-                    prompt_lens=prompt_lens,
-                    rollout_logprobs=inf_lp,
-                    raw_inference_logprobs=raw_inf_lp,
-                    old_policy_logprobs=old_policy_logprobs,
-                    config=cfg,
-                )
-
-            common_loss_kwargs = {
-                "advantages": adv,
-                "ref_logprobs": ref_lp,
-                "prompt_len": prompt_lens,
-                "inf_logprobs": inf_lp,
-                "old_policy_logprobs": old_policy_logprobs,
-                "tis_config": cfg.tis,
-            }
-            if cfg.policy_loss == "dapo":
-                loss_fn = make_dapo_loss_fn(
-                    **common_loss_kwargs,
-                    dapo_config=cfg.dapo,
-                )
-            elif cfg.policy_loss == "dro":
-                loss_fn = make_dro_loss_fn(
-                    **common_loss_kwargs,
-                    dro_config=cfg.dro,
-                )
-            elif cfg.policy_loss == "cispo":
-                loss_fn = make_cispo_loss_fn(
-                    **common_loss_kwargs,
-                    cispo_config=cfg.cispo,
-                )
-            elif cfg.policy_loss == "dppo":
-                loss_fn = make_dppo_loss_fn(
-                    advantages=adv,
-                    ref_logprobs=ref_lp,
-                    inf_logprobs=inf_lp,
-                    prompt_len=prompt_lens,
-                    old_policy_logprobs=old_policy_logprobs,
-                    dppo_config=cfg.dppo,
-                )
-            else:
-                loss_fn = make_grpo_loss_fn(
-                    **common_loss_kwargs,
-                    kl_beta=cfg.kl_beta,
-                    eps_clip=cfg.eps_clip,
-                    eps_clip_high=cfg.eps_clip_high,
-                    raw_inf_logprobs=raw_inf_lp,
-                )
-            # The custom-loss SDK call also owns its differentiable callback.
-            with elapsed_timer("fwd_bwd"):
-                return policy.forward_backward_custom(
-                    data,
-                    loss_fn,
-                    precomputed_forward=precomputed_forward,
-                )
-
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
-            """Run the visible GRPO forward/backward phase for one chunk."""
+            """Reference forward, fixed anchor, then one policy forward/backward."""
 
             prompt_groups = list(chunk.groups)
             with elapsed_timer("ref_forward"):
@@ -1139,57 +809,92 @@ def main(
                 adv,
                 ref_lp,
                 prompt_lens,
-                inf_lp,
+                rollout_lp,
                 raw_inf_lp,
                 sampler_topk_token_ids,
                 sampler_topk_logprobs,
+                top_sampling_references,
             ) = combine_prompt_groups(
                 prompt_groups,
                 include_raw=True,
                 include_topk=True,
+                include_top_sampling_references=True,
             )
-            precomputed_forward = None
-            if cfg.anchor_logp == "old_policy":
-                with elapsed_timer("old_policy_forward"):
-                    old_policy_fwd = policy.forward(data, "cross_entropy")
-                    old_policy_logprobs = [
-                        old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
-                        for i in range(len(data))
-                    ]
-                precomputed_forward = old_policy_fwd
-            else:
-                if len(inf_lp) != len(data):
-                    raise ValueError(
-                        "anchor_logp='rollout' requires one rollout_logprobs "
-                        f"row per datum; got {len(inf_lp)} rows for {len(data)} datums."
-                    )
-                if any(not row for row in inf_lp):
-                    raise ValueError(
-                        "anchor_logp='rollout' requires non-empty rollout_logprobs."
-                    )
-                old_policy_logprobs = inf_lp
+            if len(rollout_lp) != len(data) or any(not row for row in rollout_lp):
+                raise ValueError(
+                    "Policy loss requires one non-empty rollout_logprobs row per datum"
+                )
 
-            fwd_bwd_result = fwd_bwd_batch(
-                data,
-                adv,
-                ref_lp,
-                prompt_lens,
-                inf_lp,
-                raw_inf_lp,
-                old_policy_logprobs,
-                precomputed_forward,
-                sampler_topk_token_ids,
-                sampler_topk_logprobs,
+            # A fixed trainer snapshot; the client loss reuses its forward pass.
+            anchor_forward = None
+            anchor_lp = None
+            if loss.anchor == "old_policy":
+                with elapsed_timer("old_policy_forward"):
+                    anchor_forward = policy.forward(data, "cross_entropy")
+                    if callable(getattr(anchor_forward, "result", None)):
+                        anchor_forward = anchor_forward.result()
+                anchor_lp = anchor_logprobs(data, anchor_forward)
+
+            inputs = PolicyLossInputs(
+                data=data,
+                advantages=adv,
+                ref_logprobs=ref_lp,
+                prompt_lens=prompt_lens,
+                rollout_logprobs=rollout_lp,
+                anchor_logprobs=anchor_lp,
+                # Support-normalized target logprobs cannot measure drift against
+                # full-vocabulary inference logprobs. Keep policy-ratio metrics.
+                raw_inference_logprobs=(
+                    raw_inf_lp if loss.target_logprob_support == "full_vocabulary" else None
+                ),
+                sampler_topk_token_ids=sampler_topk_token_ids,
+                sampler_topk_logprobs=sampler_topk_logprobs,
             )
-            if not cfg.server_side_grpo or (
-                cfg.policy_loss == "gspo" and cfg.gspo_execution == "two_pass"
-            ):
-                fwd_bwd_result.metrics["custom_forward_reused"] = float(
-                    precomputed_forward is not None
+            if loss.builtin:
+                builtin_data = build_grpo_datums(
+                    data,
+                    adv,
+                    rollout_lp,
+                    prompt_lens,
+                    include_response_mask=True,
+                    old_policy_logprobs=anchor_lp,
+                )
+                if loss.target_logprob_support == "sampling_support":
+                    builtin_data = attach_top_sampling_references(
+                        builtin_data, top_sampling_references
+                    )
+                # Match the SDK call boundary: submission through decoded result.
+                with elapsed_timer("fwd_bwd"):
+                    result = policy.forward_backward(
+                        builtin_data,
+                        loss.definition.builtin_name,
+                        loss_fn_config=loss.loss_fn_config,
+                    )
+                if loss.definition.builtin_metrics is not None:
+                    trainer_lp = [
+                        output["logprobs"].to_torch()
+                        for output in result.loss_fn_outputs
+                    ]
+                    result.metrics.update(
+                        loss.definition.builtin_metrics(inputs, trainer_lp, loss.options)
+                    )
+            else:
+                objective = loss.definition.client(inputs, loss.options)
+                forward = None if objective.needs_forward else anchor_forward
+                with elapsed_timer("fwd_bwd"):
+                    if objective.needs_forward:
+                        forward = policy.forward(objective.data, "cross_entropy")
+                    result = policy.forward_backward_custom(
+                        objective.data,
+                        objective.loss_fn,
+                        precomputed_forward=forward,
+                    )
+                result.metrics["custom_forward_reused"] = float(
+                    not objective.needs_forward and anchor_forward is not None
                 )
             return {
                 "prompt_groups": prompt_groups,
-                "fwd_bwd_result": fwd_bwd_result,
+                "fwd_bwd_result": result,
             }
 
         def optimizer_step(step: int) -> dict[str, Any]:
@@ -1206,6 +911,7 @@ def main(
                     policy,
                     cfg,
                     learning_rate=step_lr,
+                    normalization=loss.normalization,
                 )
             return {
                 "result": result,

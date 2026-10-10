@@ -14,8 +14,7 @@ import pytest
 import tinker
 import torch
 
-from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
-from training.utils.rl.tis import TISConfig, compute_tis_weight
+from training.utils.rl.algorithm.gspo import GSPOConfig, make_gspo_loss_fn
 
 SEQ_RATIO_LOG_CAP = 10.0
 
@@ -47,9 +46,8 @@ def _run(old_policy: list[float], config: GSPOConfig = CONFIG):
     fn = make_gspo_loss_fn(
         advantages=[1.0],
         ref_logprobs=[],
-        inf_logprobs=[OLD_POLICY],
+        inf_logprobs=[old_policy],
         prompt_len=1,
-        old_policy_logprobs=[old_policy],
         gspo_config=config,
     )
     loss, metrics = fn([_datum(MASK)], [pi])
@@ -131,36 +129,19 @@ def baseline_gspo_loss(
     return per_sequence_loss.sum()
 
 
-def _expected_tis_weights(
-    old_policy: torch.Tensor,  # (batch, resp_len)
-    inference: torch.Tensor,  # (batch, resp_len)
-    mask: torch.Tensor,  # (batch, resp_len)
-    tis_config: TISConfig,
-) -> torch.Tensor:
-    """Rebuild run_loss_loop's per-token TIS weight: identity where inactive."""
-    weights = torch.ones_like(old_policy)
-    for row in range(old_policy.shape[0]):
-        active = mask[row] > 0.5
-        active_weights, _ = compute_tis_weight(
-            old_policy[row][active], inference[row][active], tis_config
-        )
-        weights[row][active] = active_weights
-    return weights
-
-
 @pytest.mark.parametrize("batch_size", [1, 2, 4])
 @pytest.mark.parametrize("resp_len", [16, 128])
 @pytest.mark.parametrize("prompt_len", [1, 5])
 @pytest.mark.parametrize("epsilon", [0.02, 0.05])
-@pytest.mark.parametrize("use_weights", [True, False])
-def test_matches_train_py_baseline(
+@pytest.mark.parametrize("sampling_mismatch", [True, False])
+def test_matches_independent_sequence_ratio_reference(
     batch_size: int,
     resp_len: int,
     prompt_len: int,
     epsilon: float,
-    use_weights: bool,
+    sampling_mismatch: bool,
 ) -> None:
-    """Cookbook GSPO matches built-in GSPO before optimizer normalization."""
+    """Response masks, sequence ratios, clipping and gradients match the reference equation."""
     generator = torch.Generator().manual_seed(20260912)
     response_start = prompt_len - 1
     target_len = response_start + resp_len
@@ -170,7 +151,7 @@ def test_matches_train_py_baseline(
     old_full = pi_full + 0.05 * torch.randn(shape, generator=generator)
     inference_full = (
         old_full + 0.3 * torch.randn(shape, generator=generator)
-        if use_weights
+        if sampling_mismatch
         else old_full.clone()
     )
     mask_full = torch.zeros(shape)
@@ -180,7 +161,6 @@ def test_matches_train_py_baseline(
     mask_full[:, response_start] = 1.0  # run_loss_loop skips fully masked samples
     advantages = torch.randn(batch_size, generator=generator).tolist()
 
-    tis_config = TISConfig()
     gspo_config = GSPOConfig(clip_ratio_low=epsilon, clip_ratio_high=epsilon)
     data = [_datum(mask_full[i].tolist()) for i in range(batch_size)]
 
@@ -190,9 +170,7 @@ def test_matches_train_py_baseline(
             ref_logprobs=[],
             inf_logprobs=inference_full.tolist(),
             prompt_len=prompt_len,
-            old_policy_logprobs=old_full.tolist(),
             gspo_config=gspo_config,
-            tis_config=tis_config,
         )
 
     sequence_means = []
@@ -203,9 +181,7 @@ def test_matches_train_py_baseline(
             ref_logprobs=[],
             inf_logprobs=[inference_full[i].tolist()],
             prompt_len=prompt_len,
-            old_policy_logprobs=[old_full[i].tolist()],
             gspo_config=gspo_config,
-            tis_config=tis_config,
         )
         sequence_mean, _ = loss_fn([data[i]], [pi_row])
         sequence_means.append(sequence_mean.detach())
@@ -216,28 +192,17 @@ def test_matches_train_py_baseline(
     assert batched_loss.item() == pytest.approx(
         sum(value.item() for value in sequence_means), rel=1e-6
     )
-    for key in ("ppo_kl", "gspo_clip_frac", "ppo_ratio_mean", "tis/weight_mean"):
+    for key in ("ppo_kl", "gspo_clip_frac", "ppo_ratio_mean"):
         assert key in metrics
 
     mask = mask_full[:, response_start:]
     policy_logps = pi_full[:, response_start:].clone().requires_grad_()
-    token_weights = (
-        _expected_tis_weights(
-            old_full[:, response_start:],
-            inference_full[:, response_start:],
-            mask,
-            tis_config,
-        )
-        if use_weights
-        else None
-    )
     expected = baseline_gspo_loss(
         policy_logps,
-        old_full[:, response_start:],
+        inference_full[:, response_start:],
         mask,
         torch.tensor(advantages).unsqueeze(-1),
         epsilon,
-        token_weights=token_weights,
     )
     expected.backward()
 
@@ -271,7 +236,6 @@ def test_reference_logprobs_add_kl_metrics_without_changing_loss() -> None:
             ref_logprobs=ref_logprobs,
             inf_logprobs=[old_values],
             prompt_len=3,
-            old_policy_logprobs=[old_values],
         )
         loss, metrics = loss_fn([_datum(mask)], [pi])
         loss.backward()

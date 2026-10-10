@@ -54,6 +54,8 @@ from typing import Any, Awaitable, Callable, List, Optional, Protocol, Union
 import httpx
 import tinker
 from fireworks.training.sdk.routing import (
+    RoutingReferences,
+    concat_routing,
     copy_routing,
 )
 
@@ -461,6 +463,39 @@ def _parse_vision_completions_payload(payload: dict[str, Any]) -> VisionCompleti
     )
 
 
+def _trim_echoed_prompt(values: List[Any], completion: Any, *, prompt_len: int, completion_len: int) -> List[Any]:
+    """Drop the echoed prompt entries from per-position values of an SDK completion."""
+    if bool(getattr(completion, "logprobs_echoed", False)):
+        full_len = prompt_len + completion_len
+        if len(values) == full_len:
+            return values[prompt_len:]
+        if len(values) == max(0, full_len - 1):
+            return values[max(0, prompt_len - 1):]
+    return values
+
+
+def _completion_topk_from_sampled_completion(
+    completion: Any, *, prompt_len: int, completion_len: int
+) -> tuple[List[List[int]], List[List[float]]] | None:
+    """Return completion-only sampler top-k rows, or ``None`` if not requested or misaligned."""
+    ids = getattr(completion, "inference_topk_token_ids", None)
+    logprobs = getattr(completion, "inference_topk_logprobs", None)
+    if not ids or not logprobs:
+        return None
+    ids = _trim_echoed_prompt(list(ids), completion, prompt_len=prompt_len, completion_len=completion_len)
+    logprobs = _trim_echoed_prompt(list(logprobs), completion, prompt_len=prompt_len, completion_len=completion_len)
+    if len(ids) != completion_len or len(logprobs) != completion_len:
+        logger.warning(
+            "single_turn_renderer_rollout: dropping sampler top-k with misaligned length "
+            "(got %d/%d, expected %d assistant tokens).",
+            len(ids),
+            len(logprobs),
+            completion_len,
+        )
+        return None
+    return [[int(v) for v in row] for row in ids], [[float(v) for v in row] for row in logprobs]
+
+
 def _completion_logprobs_from_sampled_completion(
     completion: Any,
     *,
@@ -481,14 +516,9 @@ def _completion_logprobs_from_sampled_completion(
             )
         return None
 
-    values = list(raw_values)
-    if bool(getattr(completion, "logprobs_echoed", False)):
-        full_len = prompt_len + completion_len
-        if len(values) == full_len:
-            values = values[prompt_len:]
-        elif len(values) == max(0, full_len - 1):
-            values = values[max(0, prompt_len - 1):]
-
+    values = _trim_echoed_prompt(
+        list(raw_values), completion, prompt_len=prompt_len, completion_len=completion_len
+    )
     if len(values) != completion_len:
         logger.warning(
             "single_turn_renderer_rollout: dropping %s logprobs with "
@@ -562,6 +592,8 @@ def _build_text_only_rollout_sample(
     completion_logprobs: List[float],
     raw_completion_logprobs: List[float] | None = None,
     routing_matrices: List[str] | None = None,
+    top_sampling_references: RoutingReferences | None = None,
+    completion_topk: tuple[List[List[int]], List[List[float]]] | None = None,
     logprobs_echoed: bool,
     reward: float,
     finish_reason: str,
@@ -580,10 +612,21 @@ def _build_text_only_rollout_sample(
         routing_matrices=(
             copy_routing(routing_matrices) if routing_matrices is not None else None
         ),
+        top_sampling_references=(
+            concat_routing([""] * max(0, len(prompt_token_ids) - 1), top_sampling_references)
+            if top_sampling_references is not None
+            else None
+        ),
         raw_logprobs=(
             [0.0] * len(prompt_token_ids) + raw_completion_logprobs
             if raw_completion_logprobs is not None
             else None
+        ),
+        inference_topk_token_ids=(
+            [[] for _ in prompt_token_ids] + completion_topk[0] if completion_topk else None
+        ),
+        inference_topk_logprobs=(
+            [[] for _ in prompt_token_ids] + completion_topk[1] if completion_topk else None
         ),
     )
     return RolloutRun(segments=[sample])
@@ -627,6 +670,7 @@ def sampled_completion_to_rollout_run(
             completion_logprobs=completion_logprobs,
             raw_completion_logprobs=raw_completion_logprobs,
             routing_matrices=getattr(completion, "routing_matrices", None),
+            top_sampling_references=getattr(completion, "top_sampling_references", None),
             reward=reward,
             finish_reason=getattr(completion, "finish_reason", "stop"),
             text=getattr(completion, "text", ""),
@@ -637,6 +681,10 @@ def sampled_completion_to_rollout_run(
         completion_logprobs=completion_logprobs,
         raw_completion_logprobs=raw_completion_logprobs,
         routing_matrices=getattr(completion, "routing_matrices", None),
+        top_sampling_references=getattr(completion, "top_sampling_references", None),
+        completion_topk=_completion_topk_from_sampled_completion(
+            completion, prompt_len=prompt_len, completion_len=len(completion_tokens)
+        ),
         logprobs_echoed=False,
         reward=reward,
         finish_reason=getattr(completion, "finish_reason", "stop"),
@@ -651,6 +699,7 @@ def _build_multimodal_rollout_sample(
     completion_logprobs: List[float],
     raw_completion_logprobs: List[float] | None = None,
     routing_matrices: List[str] | None = None,
+    top_sampling_references: RoutingReferences | None = None,
     reward: float,
     finish_reason: str,
     text: str,
@@ -676,6 +725,11 @@ def _build_multimodal_rollout_sample(
         finish_reason=finish_reason,
         text=text,
         prompt_model_input=prompt_model_input,
+        top_sampling_references=(
+            concat_routing([""] * max(0, prompt_model_input.length - 1), top_sampling_references)
+            if top_sampling_references is not None
+            else None
+        ),
         routing_matrices=(
             copy_routing(routing_matrices) if routing_matrices is not None else None
         ),
@@ -873,6 +927,7 @@ async def single_turn_renderer_rollout(
             completion_logprobs=out_logprobs,
             raw_completion_logprobs=raw_out_logprobs,
             routing_matrices=getattr(c, "routing_matrices", None),
+            top_sampling_references=getattr(c, "top_sampling_references", None),
             reward=reward,
             finish_reason=getattr(c, "finish_reason", "stop"),
             text=getattr(c, "text", ""),
@@ -920,6 +975,10 @@ async def single_turn_renderer_rollout(
         completion_logprobs=out_logprobs,
         raw_completion_logprobs=raw_out_logprobs,
         routing_matrices=getattr(c, "routing_matrices", None),
+        top_sampling_references=getattr(c, "top_sampling_references", None),
+        completion_topk=_completion_topk_from_sampled_completion(
+            c, prompt_len=prompt_len, completion_len=len(out_tokens)
+        ),
         logprobs_echoed=False,
         reward=reward,
         finish_reason=getattr(c, "finish_reason", "stop"),

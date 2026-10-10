@@ -8,8 +8,7 @@ import pytest
 import tinker
 import torch
 
-from training.utils.rl.dppo import DPPOConfig, make_dppo_loss_fn
-from training.utils.rl.tis import TISConfig
+from training.utils.rl.algorithm.dppo import DPPOConfig, make_dppo_loss_fn
 
 
 def _datum() -> tinker.Datum:
@@ -33,12 +32,10 @@ def _run(
     advantage: float,
     config: DPPOConfig | None = None,
     rollout_prob: float | None = None,
-    tis_config: TISConfig | None = None,
 ):
     policy_logprob = torch.tensor(
         [math.log(policy_prob)], requires_grad=True
     )
-    behavior_logprob = math.log(behavior_prob)
     rollout_logprob = math.log(
         behavior_prob if rollout_prob is None else rollout_prob
     )
@@ -47,9 +44,7 @@ def _run(
         ref_logprobs=[],
         inf_logprobs=[[rollout_logprob]],
         prompt_len=1,
-        old_policy_logprobs=[[behavior_logprob]],
         dppo_config=config,
-        tis_config=tis_config,
     )
     loss, metrics = loss_fn([_datum()], [policy_logprob])
     loss.backward()
@@ -138,23 +133,12 @@ def test_divergence_specific_default_thresholds() -> None:
     assert kl_loss.item() == pytest.approx(0.0)
 
 
-def test_rollout_tis_weight_is_not_applied() -> None:
-    aligned_loss, aligned_grad, aligned_metrics = _run(
+def test_sampling_policy_is_the_only_ratio_denominator() -> None:
+    loss, grad, metrics = _run(
         policy_prob=0.2,
-        behavior_prob=0.1,
-        rollout_prob=0.1,
+        behavior_prob=0.01,
         advantage=1.0,
     )
-    with pytest.warns(DeprecationWarning, match="ignores tis_config"):
-        mismatched_loss, mismatched_grad, mismatched_metrics = _run(
-            policy_prob=0.2,
-            behavior_prob=0.1,
-            rollout_prob=0.01,
-            advantage=1.0,
-            tis_config=TISConfig(cap=0.1),
-        )
-
-    assert mismatched_loss.item() == pytest.approx(aligned_loss.item())
-    assert mismatched_grad.item() == pytest.approx(aligned_grad.item())
-    assert not any(key.startswith("tis/") for key in aligned_metrics)
-    assert not any(key.startswith("tis/") for key in mismatched_metrics)
+    assert loss.item() == pytest.approx(0.0)
+    assert grad.item() == pytest.approx(0.0)
+    assert "dppo_mask_frac" in metrics

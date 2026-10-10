@@ -63,11 +63,11 @@ from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.rl import PromptGroup
 from training.utils.rl.common import align_sample_logprobs_to_target_tokens
-from training.utils.rl.tis import TISConfig
 from training.utils.timer import timer, flush_timing
 from training.train_loop import TrainStepFns, raw_rows_from_stats, run_batched_training_loop
 from training.utils.rl.losses import combine_prompt_groups
-from training.utils.rl.igpo import (
+from training.utils.rl.anchor import prepare_policy_anchor, validate_anchor
+from training.utils.rl.algorithm.igpo import (
     score_prefix as _score_prefix,
     compute_turn_advantages,
     expand_turn_advantages,
@@ -125,9 +125,10 @@ class Config:
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 disables clipping."""
 
-    tis: TISConfig = field(default_factory=TISConfig)
     eps_clip: float = 0.2
     eps_clip_high: float | None = None
+    anchor_logp: str = "old_policy"
+    """Fixed clipping anchor: trainer snapshot or recorded rollout logprobs."""
 
     # IGPO-specific
     gamma: float = 0.99
@@ -250,6 +251,7 @@ def main(
     config: Config,
 ):
     cfg = config
+    validate_anchor(cfg.anchor_logp)
     if cfg.router_replay:
         warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
     runner = RunnerIO(cfg.runner)
@@ -624,9 +626,6 @@ def main(
             data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(prompt_groups)
 
             t0 = _time.time()
-            old_policy_fwd = policy.forward(data, "cross_entropy")
-            old_policy_lp = [old_policy_fwd.loss_fn_outputs[i]["logprobs"].data for i in range(len(data))]
-            logger.info("policy_forward: done (%.1fs)", _time.time() - t0)
 
             # Collect per-token advantages from all groups
             all_per_token_adv: List[List[float]] = []
@@ -641,16 +640,24 @@ def main(
                         all_per_token_adv.append([pg.advantages[i]] * n_lp)
 
             t0 = _time.time()
+            old_policy_logprobs, precomputed_forward = prepare_policy_anchor(
+                policy,
+                data,
+                inf_lp,
+                cfg.anchor_logp,
+            )
             loss_fn = make_igpo_loss_fn(
                 per_token_advantages=all_per_token_adv,
                 ref_logprobs=ref_lp,
                 prompt_lens=prompt_lens,
                 inf_logprobs=inf_lp,
-                old_policy_logprobs=old_policy_lp,
+                old_policy_logprobs=old_policy_logprobs,
                 kl_beta=cfg.kl_beta,
                 eps_clip=cfg.eps_clip,
             )
-            fwd_bwd_result = policy.forward_backward_custom(data, loss_fn)
+            fwd_bwd_result = policy.forward_backward_custom(
+                data, loss_fn, precomputed_forward=precomputed_forward
+            )
             logger.info("fwd_bwd: done (%.1fs)", _time.time() - t0)
             return fwd_bwd_result
 

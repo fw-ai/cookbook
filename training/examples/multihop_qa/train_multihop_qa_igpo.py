@@ -62,7 +62,7 @@ from training.utils.rl import PromptGroup
 from training.train_loop import TrainStepFns, run_batched_training_loop
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
-from training.utils.rl.igpo import (
+from training.utils.rl.algorithm.igpo import (
     IGPOTurnScorer,
     compute_turn_advantages,
     expand_turn_advantages_from_spans,
@@ -346,6 +346,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
 
     # Tokenizer for answer tokens (loaded once, used per-prompt)
     import transformers
+
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         cfg.tokenizer_model, trust_remote_code=True,
     )
@@ -407,6 +408,7 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
         )
 
         from training.utils.checkpoints import TrainingCheckpoints
+
         ckpt = TrainingCheckpoints(
             policy,
             service,
@@ -679,7 +681,6 @@ def main(cfg: MultiHopQAIGPOConfig | None = None) -> dict:
                     ref_logprobs=ref_lp,
                     prompt_lens=prompt_lens,
                     inf_logprobs=inf_lp,
-                    old_policy_logprobs=None,
                     kl_beta=cfg.kl_beta,
                     eps_clip=cfg.eps_clip,
                 )

@@ -119,7 +119,7 @@ def test_main_has_direct_client_grpo_customization_boundary() -> None:
 
     assert "make_grpo_loss_fn(" in source
     assert "policy.forward_backward_custom(" in source
-    assert "precomputed_forward = old_policy_result" in source
+    assert "old_policy_forward" not in source
     assert "precomputed_forward=precomputed_forward" in source
     assert 'metrics["custom_forward_reused"]' in source
     assert "raw_inf_logprobs=raw_inference_logprobs" in source
@@ -274,9 +274,7 @@ def _stub_provisioning_dependencies(monkeypatch: Any) -> None:
     monkeypatch.setattr(
         module, "resolve_router_replay_enabled", lambda **kwargs: kwargs["requested"]
     )
-    monkeypatch.setattr(
-        module, "load_deployment_tokenizer", lambda *args, **kwargs: object()
-    )
+    monkeypatch.setattr(module, "load_deployment_tokenizer", lambda *args, **kwargs: object())
 
 
 def _build_service_kwargs(monkeypatch, cfg, *, sample_prompt_fn=None):
@@ -529,17 +527,11 @@ def test_main_collects_trains_and_hotloads_before_next_batch(monkeypatch) -> Non
         "load_deployment_tokenizer",
         lambda *_args, **_kwargs: object(),
     )
-    monkeypatch.setattr(
-        module,
-        "build_service_client",
-        lambda **_kwargs: _Service(),
-    )
+    monkeypatch.setattr(module, "build_service_client", lambda **_kwargs: _Service())
     monkeypatch.setattr(
         module,
         "ReconnectableClient",
-        SimpleNamespace(
-            from_training_client=lambda client, **_kwargs: client,
-        ),
+        SimpleNamespace(from_training_client=lambda client, **_kwargs: client),
     )
     monkeypatch.setattr(module, "TrainingCheckpoints", _Checkpoints)
     monkeypatch.setattr(module, "log_metrics", lambda *_args, **_kwargs: None)

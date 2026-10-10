@@ -99,7 +99,7 @@ def compute_inference_observability_metrics(
 def _compute_server_policy_observability_metrics(
     data: List[tinker.Datum],
     policy_logprobs: List[torch.Tensor],
-    old_policy_logprobs: List[List[float]],
+    sampling_logprobs: List[List[float]],
     raw_inf_logprobs: List[List[float]] | None,
     prompt_lens: List[int],
     *,
@@ -112,7 +112,7 @@ def _compute_server_policy_observability_metrics(
     n = len(data)
     aligned = {
         "policy_logprobs": len(policy_logprobs),
-        "old_policy_logprobs": len(old_policy_logprobs),
+        "sampling_logprobs": len(sampling_logprobs),
         "prompt_lens": len(prompt_lens),
     }
     mismatched = {name: size for name, size in aligned.items() if size != n}
@@ -129,11 +129,11 @@ def _compute_server_policy_observability_metrics(
     active_tokens = 0
     total_response_tokens = 0
 
-    for i, (datum, pi_logprobs, old_policy_row, prompt_len) in enumerate(
+    for i, (datum, pi_logprobs, sampling_row, prompt_len) in enumerate(
         zip(
             data,
             policy_logprobs,
-            old_policy_logprobs,
+            sampling_logprobs,
             prompt_lens,
             strict=True,
         )
@@ -161,25 +161,25 @@ def _compute_server_policy_observability_metrics(
         validate_inference_logprobs_for_sample(
             policy_loss,
             i,
-            old_policy_row,
+            sampling_row,
             response_start + resp_len,
-            source="old_policy_logprobs",
+            source="sampling_logprobs",
         )
         resp_old_values = _coerce_response_logprobs(
-            old_policy_row[response_start : response_start + resp_len],
+            sampling_row[response_start : response_start + resp_len],
             active,
             policy_loss=policy_loss,
             sample_idx=i,
-            source="old_policy_logprobs",
+            source="sampling_logprobs",
         )
-        resp_old_policy = torch.tensor(
+        resp_sampling = torch.tensor(
             resp_old_values,
             dtype=resp_pi.dtype,
             device=resp_pi.device,
         )
         clip_value, ratio_value = ratio_metrics(
             resp_pi.detach()[active],
-            resp_old_policy[active],
+            resp_sampling[active],
         )
         clip_total += clip_value
         ratio_total += ratio_value
@@ -211,7 +211,7 @@ def _compute_server_policy_observability_metrics(
 def compute_server_grpo_observability_metrics(
     data: List[tinker.Datum],
     policy_logprobs: List[torch.Tensor],
-    old_policy_logprobs: List[List[float]],
+    sampling_logprobs: List[List[float]],
     raw_inf_logprobs: List[List[float]] | None,
     prompt_lens: List[int],
     *,
@@ -224,11 +224,11 @@ def compute_server_grpo_observability_metrics(
 
     def ratio_metrics(
         policy: torch.Tensor,
-        old_policy: torch.Tensor,
+        sampling: torch.Tensor,
     ) -> tuple[float, float]:
         ratio = torch.exp(
             torch.clamp(
-                policy - old_policy,
+                policy - sampling,
                 min=-ratio_log_cap,
                 max=ratio_log_cap,
             )
@@ -246,7 +246,7 @@ def compute_server_grpo_observability_metrics(
     return _compute_server_policy_observability_metrics(
         data,
         policy_logprobs,
-        old_policy_logprobs,
+        sampling_logprobs,
         raw_inf_logprobs,
         prompt_lens,
         policy_loss="grpo",
@@ -259,7 +259,7 @@ def compute_server_grpo_observability_metrics(
 def compute_server_gspo_observability_metrics(
     data: List[tinker.Datum],
     policy_logprobs: List[torch.Tensor],
-    old_policy_logprobs: List[List[float]],
+    sampling_logprobs: List[List[float]],
     raw_inf_logprobs: List[List[float]] | None,
     prompt_lens: List[int],
     *,
@@ -271,9 +271,9 @@ def compute_server_gspo_observability_metrics(
 
     def ratio_metrics(
         policy: torch.Tensor,
-        old_policy: torch.Tensor,
+        sampling: torch.Tensor,
     ) -> tuple[float, float]:
-        seq_log_ratio = (policy - old_policy).mean()
+        seq_log_ratio = (policy - sampling).mean()
         seq_ratio = torch.exp(torch.clamp(seq_log_ratio, max=seq_ratio_log_cap))
         clipped = torch.clamp(
             seq_ratio,
@@ -285,7 +285,7 @@ def compute_server_gspo_observability_metrics(
     return _compute_server_policy_observability_metrics(
         data,
         policy_logprobs,
-        old_policy_logprobs,
+        sampling_logprobs,
         raw_inf_logprobs,
         prompt_lens,
         policy_loss="gspo",

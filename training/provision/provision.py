@@ -37,7 +37,7 @@ from training.utils import (
     read_api_extra_headers_env,
 )
 from training.utils.config import _reject_removed_accelerator_config
-from training.utils.rl.grpo import validate_grpo_config
+from training.utils.rl.algorithm.grpo import validate_grpo_config
 
 ProvisionMode = Literal["sft", "rl", "distillation", "dpo"]
 PROVISION_MODES: tuple[ProvisionMode, ...] = ("sft", "rl", "distillation", "dpo")

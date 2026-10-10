@@ -86,6 +86,8 @@ class _TrainingClient:
         self.forward_backward_custom_calls.append((data, loss_fn))
         self.precomputed_forward_calls.append(precomputed_forward)
         if precomputed_forward is None:
+            # Model the SDK-owned custom-loss forward, rather than a recipe snapshot.
+            self.forward(data, "cross_entropy").result()
             logprobs = [
                 torch.tensor(
                     [-0.15] * len(datum.loss_fn_inputs["target_tokens"].data),
@@ -205,9 +207,6 @@ def test_serverless_defaults_are_the_320_group_k3_contract() -> None:
     assert cfg.kl_beta == 0.0
     assert cfg.eps_clip == 0.2
     assert cfg.eps_clip_high is None
-    assert cfg.tis.cap == 5.0
-    assert cfg.tis.level == "token"
-    assert cfg.anchor_logp == "old_policy"
     assert cfg.max_seq_len == 524288
     assert cfg.max_completion_tokens == 8192
     assert cfg.step_offset == 0
@@ -224,6 +223,20 @@ def test_serverless_defaults_are_the_320_group_k3_contract() -> None:
 def test_serverless_rejects_reference_kl_without_reference_model() -> None:
     with pytest.raises(ValueError, match="kl_beta must be 0"):
         loop._validate_config(loop.Config(kl_beta=0.001))
+
+
+def test_invalid_anchor_fails_before_serverless_setup(monkeypatch) -> None:
+    def unexpected_service(*_args):
+        pytest.fail("invalid config must not provision a service")
+
+    monkeypatch.setattr(loop, "_make_service", unexpected_service)
+    monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="anchor_logp"):
+        loop.main(
+            loop.Config(anchor_logp="invalid"),
+            rollout_fn_factory=lambda _setup: None,
+            rows=[],
+        )
 
 
 def test_snapshot_names_are_valid_and_stable() -> None:
@@ -444,8 +457,7 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
     )
     assert len(service.training_client.forward_backward_custom_calls) == 2
     assert all(
-        result is not None
-        for result in service.training_client.precomputed_forward_calls
+        result is not None for result in service.training_client.precomputed_forward_calls
     )
     for custom_result in service.training_client.forward_backward_custom_results:
         assert custom_result.metrics["raw_inference_logprob_coverage"] == 1.0
@@ -455,7 +467,7 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
         assert "inference_diff" not in custom_result.metrics
         assert "k1" not in custom_result.metrics
         assert "k3" not in custom_result.metrics
-        assert "tis/weight_mean" in custom_result.metrics
+        assert "tis/weight_mean" not in custom_result.metrics
     step_metrics = next(
         metrics for metrics in logged_metrics if "train/step" in metrics
     )

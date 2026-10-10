@@ -201,8 +201,8 @@ def test_textworld_pi_recipe_uses_e2b_and_managed_server_grpo(tmp_path):
     assert config.prompt_groups_per_step == 8
     assert config.epochs == 1
     assert config.max_head_offpolicy_versions == 2
-    assert config.anchor_logp == "rollout"
-    assert config.server_side_grpo is True
+    assert config.anchor_logp == "old_policy"
+    assert config.loss_execution == "builtin"
     assert config.grad_norm_metrics == "basic"
     assert config.grad_clip_norm == 0.0
     assert config.kl_beta == 0
@@ -275,8 +275,7 @@ def test_textworld_full_sync_shape_and_batch_contract(tmp_path):
     assert config.pipeline_chunks_per_step == 2
     assert config.max_head_offpolicy_versions == 0
     assert config.policy_loss == "gspo"
-    assert config.server_side_grpo is False
-    assert config.gspo_execution == "two_pass"
+    assert config.loss_execution == "client"
     assert config.gspo.clip_ratio_low == 0.001
     assert config.gspo.clip_ratio_high == 0.001
     assert config.gspo.token_reduction == "sum"
@@ -355,7 +354,7 @@ def test_textworld_exposes_client_policy_loss_variants(
     )
 
     assert config.policy_loss == policy_loss
-    assert config.server_side_grpo is False
+    assert config.loss_execution == "client"
     assert config.dapo.eps_clip_high == 0.28
     assert config.dro.beta == 0.05
     assert config.cispo.eps_high == 0.28

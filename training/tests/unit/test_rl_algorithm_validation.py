@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
-from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
-from training.utils.rl.dppo import DPPOConfig, make_dppo_loss_fn
-from training.utils.rl.dro import DROConfig, make_dro_loss_fn
-from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
-from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
-from training.utils.rl.igpo import make_igpo_loss_fn
-from training.utils.rl.is_loss import make_is_loss_fn
-from training.utils.rl.reinforce import make_reinforce_loss_fn
-from training.utils.rl.score_centering import (
+from training.utils.rl.algorithm.cispo import CISPOConfig, make_cispo_loss_fn
+from training.utils.rl.algorithm.dapo import DAPOConfig, make_dapo_loss_fn
+from training.utils.rl.algorithm.dppo import DPPOConfig, make_dppo_loss_fn
+from training.utils.rl.algorithm.dro import DROConfig, make_dro_loss_fn
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn, validate_grpo_config
+from training.utils.rl.algorithm.gspo import GSPOConfig, make_gspo_loss_fn
+from training.utils.rl.algorithm.igpo import make_igpo_loss_fn
+from training.utils.rl.algorithm.importance_sampling import make_is_loss_fn
+from training.utils.rl.algorithm.reinforce import make_reinforce_loss_fn
+from training.utils.rl.algorithm.score_centering import (
     ScoreCenteringConfig,
     validate_score_centering_config,
 )
@@ -25,7 +25,6 @@ def _group_loss_inputs() -> dict:
         "ref_logprobs": [],
         "inf_logprobs": [],
         "prompt_len": [],
-        "old_policy_logprobs": [],
     }
 
 
@@ -54,7 +53,6 @@ def test_grpo_builder_validates_config(kwargs, message) -> None:
     ("kwargs", "message"),
     [
         ({"reference_job_id": "ref"}, "require kl_beta > 0"),
-        ({"anchor_logp": "latest"}, "anchor_logp"),
     ],
 )
 def test_grpo_recipe_validation(kwargs, message) -> None:

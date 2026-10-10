@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from collections import Counter
 from pathlib import Path
@@ -12,6 +13,96 @@ import pytest
 
 from training.examples.serverless_rl import visual_toolbench_rl as serverless_vtb
 from training.utils import GradAccNormalization
+
+
+def test_reference_kl_fails_before_visual_toolbench_setup(monkeypatch):
+    def unexpected_rows(*_args, **_kwargs):
+        pytest.fail("unsupported KL must fail before loading data or provisioning")
+
+    monkeypatch.setattr(serverless_vtb, "_load_rows", unexpected_rows)
+    with pytest.raises(ValueError, match="kl_beta must be 0"):
+        serverless_vtb.ServerlessVisualToolbenchRL(
+            serverless_vtb.Config(kl_beta=0.1)
+        )
+
+
+@pytest.mark.parametrize("anchor_logp", ["old_policy", "rollout"])
+def test_trained_step_keeps_drift_metrics_without_backward_logprobs(
+    anchor_logp, tmp_path, monkeypatch
+):
+    runner = object.__new__(serverless_vtb.ServerlessVisualToolbenchRL)
+    runner.cfg = serverless_vtb.Config(anchor_logp=anchor_logp, group_size=2)
+    runner.tokenizer = object()
+    runner.router_replay_enabled = False
+    runner.metrics_path = tmp_path / "metrics.jsonl"
+    runner.completions_dir = tmp_path
+    datum = SimpleNamespace(
+        loss_fn_inputs={"target_tokens": SimpleNamespace(data=[1, 2, 3])}
+    )
+    forward = SimpleNamespace(
+        loss_fn_outputs=[
+            {"logprobs": SimpleNamespace(data=[-1.0, -1.5, -1.5])}
+            for _ in range(2)
+        ]
+    )
+    forward_calls = []
+    backward_calls = []
+
+    class TrainingClient:
+        def save_weights_for_sampler(self, _name):
+            return SimpleNamespace(result=lambda: SimpleNamespace(path="snapshot"))
+
+        def forward(self, data, loss):
+            forward_calls.append((data, loss))
+            return SimpleNamespace(result=lambda: forward)
+
+        def forward_backward_custom(self, data, *, loss_fn, precomputed_forward):
+            assert precomputed_forward is forward
+            backward_calls.append(data)
+            # Custom backward returns gradients/metrics, without logprob rows.
+            return SimpleNamespace(loss_fn_outputs=[], metrics={"loss": -1.0})
+
+        def optim_step(self, *_args, **_kwargs):
+            return SimpleNamespace(result=lambda: SimpleNamespace(metrics={}))
+
+    runner.training_client = TrainingClient()
+    runner.service = SimpleNamespace(
+        create_sampling_client=lambda **_kwargs: SimpleNamespace(
+            deployment_sampler=object(), close=lambda: None
+        )
+    )
+    monkeypatch.setattr(runner, "_rollout_setup", lambda *_args, **_kwargs: object())
+    runs = [
+        SimpleNamespace(
+            segments=[SimpleNamespace(reward=reward, text="answer")], metadata={}
+        )
+        for reward in [0.0, 1.0]
+    ]
+
+    async def collect(*_args):
+        return [runs]
+
+    monkeypatch.setattr(runner, "_collect_runs", collect)
+    group = SimpleNamespace(
+        data=[datum, datum],
+        advantages=[-1.0, 1.0],
+        inf_logprobs=[[-1.0, -2.5, -2.5]] * 2,
+        raw_inf_logprobs=[[-1.0, -2.0, -2.0]] * 2,
+        prompt_lens=[2, 2],
+        rewards=[0.0, 1.0],
+        completion_lens=[2, 2],
+    )
+    monkeypatch.setattr(
+        serverless_vtb, "rollout_to_prompt_group", lambda *_args, **_kwargs: group
+    )
+
+    record = runner._step(0, [{"id": "sample"}])
+
+    assert record["train/trained"] is True
+    assert record["kld/token_count"] == 4
+    assert record["train/inference_kld"] == pytest.approx(math.exp(0.5) - 1.5)
+    assert len(forward_calls) == len(backward_calls) == 1
+    assert json.loads(runner.metrics_path.read_text())["kld/token_count"] == 4
 
 
 def test_serverless_defaults_use_qwen3p6():

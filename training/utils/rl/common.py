@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import torch
 import tinker
 
-from training.utils.rl.tis import TISConfig, compute_tis_weight
+SAFETY_CLAMP = 20.0
 
 
 def _normalize_prompt_lens(prompt_len: Union[int, List[int]], n: int) -> List[int]:
@@ -232,15 +232,13 @@ class SampleContext:
     resp_ref: torch.Tensor | None
     """Reference model logprobs, or ``None`` when no reference is available."""
     resp_old_policy: torch.Tensor
-    """Old-policy forward-pass logprobs for response tokens."""
+    """Fixed clipping/trust-region anchor, independent of rollout probabilities."""
     resp_inf: torch.Tensor
     """Rollout logprobs for response tokens."""
     resp_mask: torch.Tensor
     """Per-token loss mask (1.0 = active, 0.0 = masked)."""
     adv: torch.Tensor
     """Scalar advantage value (as a 0-d tensor)."""
-    tis_weight: torch.Tensor
-    """TIS importance weight per token."""
 
 
 @dataclass
@@ -258,7 +256,7 @@ PolicyFn = Callable[[SampleContext], Tuple[torch.Tensor, Dict[str, float]]]
 """``(ctx) -> (per_token_loss, extra_metrics)``
 
 The returned ``per_token_loss`` tensor should already incorporate
-``ctx.tis_weight`` and ``ctx.resp_mask`` however the policy requires.
+``ctx.resp_mask`` however the policy requires.
 Values in ``extra_metrics`` are summed across samples into
 :attr:`LossLoopResult.extra_sums`; the caller is responsible for
 averaging.
@@ -270,19 +268,23 @@ def run_loss_loop(
     ref_logprobs: List[List[float]],
     inf_logprobs: List[List[float]],
     prompt_lens: List[int],
-    old_policy_logprobs: List[List[float]],
-    tis_config: TISConfig,
     data: List[tinker.Datum],
     logprobs_list: List[torch.Tensor],
     policy_loss: str,
     policy_fn: PolicyFn,
+    *,
+    old_policy_logprobs: List[List[float]] | None = None,
 ) -> LossLoopResult:
-    """Shared loss loop: tensor setup, TIS weight, loss metrics, KL.
+    """Shared loss loop: tensor setup, response masks, loss metrics and KL.
 
     Iterates over ``logprobs_list``, builds a :class:`SampleContext` for each
     sample, and delegates per-token loss computation to ``policy_fn``.
-    loss/TIS ratios use ``inf_logprobs`` and ``old_policy_logprobs``.
+    Keep the fixed policy anchor separate from recorded rollout probabilities.
     """
+    if old_policy_logprobs is not None and len(old_policy_logprobs) != len(
+        logprobs_list
+    ):
+        raise ValueError("old_policy_logprobs must have one row per datum")
     total_loss = torch.tensor(0.0, requires_grad=True)
     total_kl = 0.0
     total_ppo_kl = 0.0
@@ -290,7 +292,6 @@ def run_loss_loop(
     ref_num_samples = 0
     behavior_num_samples = 0
     num_tokens = 0
-    tis_metrics_agg: Dict[str, float] = {}
     extra_sums: Dict[str, float] = {}
 
     for i, pi_logprobs in enumerate(logprobs_list):
@@ -347,21 +348,32 @@ def run_loss_loop(
             dtype=resp_pi.dtype,
             device=resp_pi.device,
         )
-        old_policy_lp = old_policy_logprobs[i]
-        resp_old_policy = torch.tensor(
-            [old_policy_lp[response_start + j] if (response_start + j) < len(old_policy_lp) else 0.0 for j in range(resp_len)],
-            dtype=resp_pi.dtype,
-            device=resp_pi.device,
-        )
+        resp_old_policy = resp_inf
+        if old_policy_logprobs is not None:
+            old_lp = old_policy_logprobs[i]
+            validate_inference_logprobs_for_sample(
+                policy_loss,
+                i,
+                old_lp,
+                response_start + resp_len,
+                source="old_policy_logprobs",
+            )
+            resp_old_policy = torch.tensor(
+                _coerce_response_logprobs(
+                    old_lp[response_start : response_start + resp_len],
+                    active,
+                    policy_loss=policy_loss,
+                    sample_idx=i,
+                    source="old_policy_logprobs",
+                ),
+                dtype=resp_pi.dtype,
+                device=resp_pi.device,
+            )
 
-        # Filter to loss_mask>0 positions: masked bridge/tool tokens otherwise
-        # contaminate sequence-level TIS weight (matches slime/AReaL behavior).
         active_pi = pi_detached[active]
         active_ref = resp_ref[active] if resp_ref is not None else None
-        active_inf = resp_inf[active]
-        active_old_policy = resp_old_policy[active]
 
-        ppo_log_diff = active_pi - active_old_policy
+        ppo_log_diff = active_pi - resp_old_policy[active]
         total_ppo_kl += (torch.exp(ppo_log_diff) - ppo_log_diff - 1.0).mean().item()
         if active_ref is not None:
             ref_log_diff = active_ref - active_pi
@@ -369,25 +381,16 @@ def run_loss_loop(
             ref_num_samples += 1
         behavior_num_samples += 1
 
-        tis_weight_active, bm = compute_tis_weight(active_old_policy, active_inf, tis_config)
-        # Identity (1.0) at masked positions: zeroes under ``resp_mask`` for
-        # masked-multiplied losses, no-op weight for ``dro``.
-        tis_weight = torch.ones(resp_len, dtype=resp_pi.dtype, device=resp_pi.device)
-        tis_weight[active] = tis_weight_active.to(resp_pi.dtype)
-        for k, v in bm.items():
-            tis_metrics_agg[k] = tis_metrics_agg.get(k, 0.0) + v
-
         adv_t = torch.as_tensor(advantages[i], dtype=resp_pi.dtype, device=resp_pi.device)
 
         ctx = SampleContext(
             resp_pi=resp_pi,
             pi_detached=pi_detached,
             resp_ref=resp_ref,
-            resp_old_policy=resp_old_policy,
             resp_inf=resp_inf,
+            resp_old_policy=resp_old_policy,
             resp_mask=resp_mask,
             adv=adv_t,
-            tis_weight=tis_weight,
         )
         per_token_loss, extra = policy_fn(ctx)
 
@@ -405,8 +408,6 @@ def run_loss_loop(
     if ref_num_samples > 0:
         base_metrics["mean_kl"] = total_kl / num_tokens if num_tokens > 0 else 0.0
         base_metrics["ref_kl"] = total_ref_kl / ref_num_samples
-    for k, v in tis_metrics_agg.items():
-        base_metrics[k] = v / n_samples
 
     return LossLoopResult(
         total_loss=total_loss,

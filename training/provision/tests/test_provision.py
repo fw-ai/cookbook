@@ -687,9 +687,6 @@ recipe:
     kl_beta: 0.2
     eps_clip: 0.15
     eps_clip_high: 0.25
-    tis:
-      cap: 2.0
-      level: sequence
 """,
         encoding="utf-8",
     )
@@ -702,8 +699,7 @@ recipe:
     assert cfg.kl_beta == 0.2
     assert cfg.eps_clip == 0.15
     assert cfg.eps_clip_high == 0.25
-    assert cfg.tis.cap == 2.0
-    assert cfg.tis.level == "sequence"
+    assert not hasattr(cfg, "tis")
     assert not hasattr(cfg, "dapo")
 
 

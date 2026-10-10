@@ -34,11 +34,12 @@ Users provide:
 - optional `dynamic_filter_fn` and `evaluation_fn` callbacks.
 
 The recipe owns trainer/deployment/sampler lifecycle, rollout fan-out and
-admission, group assembly, advantages, reference and old-policy forwards,
-GRPO/TIS/KL, training chunks, the optimizer, sampler hotload, version
-publication, metrics, checkpointing, and cleanup. Dedicated async GRPO may opt
-into the trainer's built-in PPO kernel with `server_side_grpo=True`; this is not
-a general loss selector and requires `kl_beta=0`.
+admission, group assembly, advantages, optional reference forwards,
+GRPO/KL, training chunks, the optimizer, sampler hotload, version
+publication, metrics, checkpointing, and cleanup. `policy_loss` selects
+an objective from `training/utils/rl/algorithm/`; `loss_execution="builtin"`
+runs its trainer loss instead of the portable closure and requires
+`kl_beta=0`.
 
 Keep custom environment logic in the rollout function. Do not put scheduler or
 trainer lifecycle state in the rollout.
@@ -403,14 +404,13 @@ table.
 
 ## Loss path
 
-The async recipe has one client-side GRPO path; it does not expose a
-`policy_loss` selector. `anchor_logp="old_policy"` snapshots trainer logprobs and
-applies TIS against rollout behavior logprobs. `anchor_logp="rollout"` skips the
-old-policy forward and makes the TIS ratio identity.
+Clipped and trust-region objectives use a fixed trainer snapshot by default
+(`anchor_logp="old_policy"`); `anchor_logp="rollout"` selects recorded sampling
+probabilities instead. IS and REINFORCE always use the sampling denominator.
+Advantages are not preweighted with external TIS. Reference KL is enabled
+when `kl_beta > 0`. Raw inference logprobs are observational only.
 
-`TISConfig` controls correction and clipping. Reference KL is enabled when
-`kl_beta > 0`. Raw inference-logprob drift metrics are observational and never
-replace behavior logprobs in PPO or TIS.
+See [`rl-loss-paths.md`](rl-loss-paths.md) for the client and built-in call paths.
 
 ## Examples and related references
 
