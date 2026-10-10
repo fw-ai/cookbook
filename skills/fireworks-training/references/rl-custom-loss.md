@@ -38,7 +38,7 @@ estimator from the former old/new-trainer plus TIS decomposition.
 ## Use the trainer built-in for dedicated async GRPO
 
 The dedicated async recipe exposes this exact switch as
-`Config(server_side_grpo=True, kl_beta=0)`. The trainer's built-in `"ppo"`
+`Config(loss_execution="builtin", kl_beta=0)`. The trainer's built-in `"ppo"`
 kernel does not consume reference logprobs.
 
 ```python
@@ -50,6 +50,7 @@ grpo_datums = build_grpo_datums(
     advantages,
     rollout_logprobs,
     prompt_lens,
+    include_response_mask=True,
 )
 result = policy.forward_backward(
     grpo_datums,
@@ -61,14 +62,18 @@ result = policy.forward_backward(
 )
 ```
 
-The option does not silently fall back. The async recipe also supports GSPO explicitly. Custom research losses remain
-ordinary closures.
+The option does not silently fall back: objectives without a built-in loss, or
+whose loss name the installed SDK does not accept, fail at startup. Custom
+research losses remain ordinary closures.
 
 ## Add a research algorithm
 
-Create or update one direct builder under `training/utils/rl/<algorithm>.py`.
+Create or update one module under `training/utils/rl/algorithm/<algorithm>.py`.
 Keep algorithm-specific configuration and a
-`validate_<algorithm>_config(...)` helper beside that builder. Call validation
+`validate_<algorithm>_config(...)` helper beside that builder. To make it
+selectable from the async recipe, export a `POLICY_LOSS` definition from the
+module and register it in `training/utils/rl/algorithm/__init__.py`; the module
+must not call the trainer. Call validation
 unconditionally when constructing the loss closure so invalid settings fail
 before the first training forward. Every config field must affect the objective
 or explicitly documented observability; delete unused knobs. Fork the closest
@@ -96,9 +101,10 @@ def my_loss(data, logprobs_list):
 The recipe passes the closure into
 `training_client.forward_backward_custom(datums, my_loss).result()`.
 
-`training/utils/rl/grpo.py` is the reference implementation: advantages,
-logprobs, and optional KL return a scalar plus metrics. Other direct builders
-live beside it (`dapo.py`, `dro.py`, `gspo.py`, `cispo.py`, and so on).
+`training/utils/rl/algorithm/grpo.py` is the reference implementation:
+advantages, logprobs, and optional KL return a scalar plus metrics. Other direct
+builders live beside it (`dapo.py`, `dro.py`, `gspo.py`, `cispo.py`, and so on).
+The previous `training/utils/rl/<algorithm>.py` import paths remain aliases.
 
 ## Preserve invariants
 
@@ -149,6 +155,6 @@ extra, then lint every changed Python file.
 ## See also
 
 - Built-in GRPO datum preparation: `training/utils/rl/losses.py`.
-- Direct client loss builders: `training/utils/rl/{grpo,dapo,dro,gspo,cispo}.py`.
+- Policy objectives and their registry: `training/utils/rl/algorithm/`.
 - `forward_backward_custom` signature and behavior:
   `fireworks.training.sdk.client.FiretitanTrainingClient.forward_backward_custom`.

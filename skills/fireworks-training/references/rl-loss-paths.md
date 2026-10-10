@@ -31,10 +31,17 @@ policy.forward_backward_custom(
 
 ## Built-in path
 
-The async recipe's `server_side_grpo=True` uses built-in PPO, or GSPO when
-selected explicitly. These paths require `kl_beta=0`. Datum preparation sends
-the selected anchor, masked raw advantages, and independent response membership.
-Returned trainer logprobs supply diagnostics without another forward.
+The async recipe's `loss_execution="builtin"` runs the selected objective's
+trainer loss (`grpo` maps to built-in `"ppo"`); `"client"` runs the portable
+closure. Built-in execution requires `kl_beta=0`. Datum preparation sends the
+selected anchor, masked raw advantages, and response membership. Returned
+trainer logprobs supply diagnostics without another forward.
+
+Objectives live in `training/utils/rl/algorithm/`, one module per algorithm.
+Each module exports a `POLICY_LOSS` definition: its typed options, the client
+closure, and the built-in `loss_fn_config` translation. `resolve_policy_loss`
+validates the choice once at startup; the recipe then calls
+`forward`/`forward_backward`/`forward_backward_custom` itself.
 
 Removing external TIS weights changes the estimator when rollout and trainer
 policies differ, even with the snapshot anchor restored. Existing trainer images

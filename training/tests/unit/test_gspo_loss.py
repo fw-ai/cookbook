@@ -14,7 +14,7 @@ import pytest
 import tinker
 import torch
 
-from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
+from training.utils.rl.algorithm.gspo import GSPOConfig, make_gspo_loss_fn
 
 SEQ_RATIO_LOG_CAP = 10.0
 

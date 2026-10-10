@@ -65,7 +65,7 @@ from training.utils.rl.async_rl import (
     TrainingChunk,
 )
 from training.utils.rl.anchor import prepare_policy_anchor, validate_anchor
-from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import datum_target_len
 from training.utils.rl.router_replay import warn_if_full_sequence_router_replay

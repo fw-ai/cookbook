@@ -57,17 +57,17 @@ __all__ = [
     "TokenizationError",
 ]
 
-from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
-from training.utils.rl.dppo import DPPOConfig, make_dppo_loss_fn
-from training.utils.rl.dro import DROConfig, make_dro_loss_fn
-from training.utils.rl.score_centering import (
+from training.utils.rl.algorithm.dapo import DAPOConfig, make_dapo_loss_fn
+from training.utils.rl.algorithm.dppo import DPPOConfig, make_dppo_loss_fn
+from training.utils.rl.algorithm.dro import DROConfig, make_dro_loss_fn
+from training.utils.rl.algorithm.score_centering import (
     ScoreCenteringConfig,
     build_score_centering_datums,
     make_score_centering_loss_fn,
 )
-from training.utils.rl.grpo import make_grpo_loss_fn
-from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
-from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
+from training.utils.rl.algorithm.gspo import GSPOConfig, make_gspo_loss_fn
+from training.utils.rl.algorithm.cispo import CISPOConfig, make_cispo_loss_fn
 from training.utils.rl.train import (
     DynamicFilterFn,
     TrainStepFns,
@@ -79,7 +79,7 @@ from training.utils.rl.metrics import (
     add_train_perf_metrics,
 )
 from training.utils.rl.router_replay import build_r3_routing_matrices
-from training.utils.rl.igpo import (
+from training.utils.rl.algorithm.igpo import (
     IGPOTurnScorer,
     compute_turn_advantages,
     expand_turn_advantages,

@@ -26,10 +26,15 @@ def prepare_policy_anchor(policy, data, rollout_logprobs, source):
         forward = policy.forward(data, "cross_entropy")
         if callable(getattr(forward, "result", None)):
             forward = forward.result()
+    return anchor_logprobs(data, forward), forward
+
+
+def anchor_logprobs(data, forward):
+    """Decode a completed snapshot forward; never invokes the trainer."""
     rows = [list(output["logprobs"].data) for output in forward.loss_fn_outputs]
     if len(rows) != len(data) or any(
         len(row) != len(datum.loss_fn_inputs["target_tokens"].data)
         for row, datum in zip(rows, data, strict=True)
     ):
         raise ValueError("Trainer anchor logprobs must align with target tokens")
-    return rows, forward
+    return rows

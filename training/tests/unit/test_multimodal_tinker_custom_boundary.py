@@ -15,7 +15,7 @@ from tinker.lib.public_interfaces.api_future import APIFuture
 from tinker.lib.public_interfaces.training_client import TrainingClient
 from tinker.types import ImageChunk
 
-from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
 from training.utils.supervised import build_multimodal_policy_datum
 
 

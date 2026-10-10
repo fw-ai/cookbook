@@ -6,7 +6,7 @@ import pytest
 import tinker
 import torch
 
-from training.utils.rl.score_centering import (
+from training.utils.rl.algorithm.score_centering import (
     MAX_SCORE_CENTERING_TOP_K,
     ScoreCenteringConfig,
     build_score_centering_datums,

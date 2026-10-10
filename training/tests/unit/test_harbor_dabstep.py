@@ -279,7 +279,7 @@ def test_dabstep_pi_recipe_uses_sdk_managed_resources_and_offpolicy_two(tmp_path
     assert config.prompt_groups_per_step == 8
     assert config.pipeline_chunks_per_step == 2
     assert config.max_head_offpolicy_versions == 2
-    assert config.server_side_grpo is True
+    assert config.loss_execution == "builtin"
     assert config.trainer.job_id is None
     assert config.trainer.training_shape_id is None
     assert config.deployment.deployment_id is None

@@ -70,7 +70,7 @@ from training.utils.rl.rollout import (
     load_eval_protocol_input_rows,
     make_eval_protocol_rollout_fn_factory,
 )
-from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.checkpoints import TrainingCheckpoints

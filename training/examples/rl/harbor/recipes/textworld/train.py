@@ -41,12 +41,12 @@ from training.utils import (
     resolve_router_replay_enabled,
 )
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
-from training.utils.rl.cispo import CISPOConfig
-from training.utils.rl.dapo import DAPOConfig
-from training.utils.rl.dppo import DPPOConfig
-from training.utils.rl.dro import DROConfig
-from training.utils.rl.gspo import GSPOConfig
-from training.utils.rl.score_centering import ScoreCenteringConfig
+from training.utils.rl.algorithm.cispo import CISPOConfig
+from training.utils.rl.algorithm.dapo import DAPOConfig
+from training.utils.rl.algorithm.dppo import DPPOConfig
+from training.utils.rl.algorithm.dro import DROConfig
+from training.utils.rl.algorithm.gspo import GSPOConfig
+from training.utils.rl.algorithm.score_centering import ScoreCenteringConfig
 from training.utils.tokenizers import load_tokenizer
 
 logging.basicConfig(
@@ -335,9 +335,8 @@ def _build_config(
         grad_clip_norm=args.grad_clip_norm,
         grad_norm_metrics=args.grad_norm_metrics,
         eps_clip=0.2,
-        server_side_grpo=args.policy_loss == "grpo",
         policy_loss=args.policy_loss,
-        gspo_execution=("two_pass" if args.policy_loss == "gspo" else "builtin"),
+        loss_execution="builtin" if args.policy_loss == "grpo" else "client",
         gspo=GSPOConfig(
             clip_ratio_low=args.gspo_clip_ratio_low,
             clip_ratio_high=args.gspo_clip_ratio_high,

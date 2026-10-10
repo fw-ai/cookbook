@@ -23,7 +23,7 @@ from training.utils.rl.rollout.renderer import (
     single_turn_renderer_rollout,
 )
 from fireworks.training.sdk.sampling import SampledCompletion
-from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
 from training.utils.rl.losses import build_grpo_datums
 from training.utils.rl.rollout.types import (
     Rollout,

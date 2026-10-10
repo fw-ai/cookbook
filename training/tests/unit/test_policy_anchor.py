@@ -9,7 +9,7 @@ import tinker
 import torch
 
 from training.utils.rl.anchor import prepare_policy_anchor
-from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
 from training.utils.rl.losses import build_grpo_datums
 
 
@@ -93,7 +93,7 @@ def test_misaligned_snapshot_fails_before_training():
 
 
 def test_igpo_accepts_explicit_snapshot_anchor():
-    from training.utils.rl.igpo import make_igpo_loss_fn
+    from training.utils.rl.algorithm.igpo import make_igpo_loss_fn
 
     pi = torch.tensor([0.0, math.log(0.22)], requires_grad=True)
     fn = make_igpo_loss_fn(

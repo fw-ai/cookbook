@@ -67,7 +67,7 @@ from training.utils.timer import timer, flush_timing
 from training.train_loop import TrainStepFns, raw_rows_from_stats, run_batched_training_loop
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.anchor import prepare_policy_anchor, validate_anchor
-from training.utils.rl.igpo import (
+from training.utils.rl.algorithm.igpo import (
     score_prefix as _score_prefix,
     compute_turn_advantages,
     expand_turn_advantages,

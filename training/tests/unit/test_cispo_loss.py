@@ -13,7 +13,7 @@ from __future__ import annotations
 import torch
 import pytest
 
-from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
+from training.utils.rl.algorithm.cispo import CISPOConfig, make_cispo_loss_fn
 
 
 def _make_logprobs(seq_len: int, seed: int = 0) -> torch.Tensor:

@@ -62,7 +62,7 @@ from training.utils.rl import PromptGroup
 from training.train_loop import TrainStepFns, run_batched_training_loop
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
-from training.utils.rl.igpo import (
+from training.utils.rl.algorithm.igpo import (
     IGPOTurnScorer,
     compute_turn_advantages,
     expand_turn_advantages_from_spans,

@@ -133,6 +133,7 @@ packages = [
     "training.utils.distillation",
     "training.utils.rl",
     "training.utils.rl.agent",
+    "training.utils.rl.algorithm",
     "training.utils.rl.async_rl",
     "training.utils.rl.rollout",
 ]

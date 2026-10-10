@@ -143,7 +143,7 @@ def _build_config(
         router_replay_completion_only=True,
         grad_clip_norm=0.0,
         eps_clip=0.2,
-        server_side_grpo=True,
+        loss_execution="builtin",
         dcp_save_interval=CHECKPOINT_INTERVAL,
         weight_sync_timeout=args.weight_sync_timeout,
         cleanup_on_exit=True,

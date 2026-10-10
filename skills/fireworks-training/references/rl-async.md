@@ -36,9 +36,10 @@ Users provide:
 The recipe owns trainer/deployment/sampler lifecycle, rollout fan-out and
 admission, group assembly, advantages, optional reference forwards,
 GRPO/KL, training chunks, the optimizer, sampler hotload, version
-publication, metrics, checkpointing, and cleanup. Dedicated async GRPO may opt
-into the trainer's built-in PPO kernel with `server_side_grpo=True`; this is not
-a general loss selector and requires `kl_beta=0`.
+publication, metrics, checkpointing, and cleanup. `policy_loss` selects
+an objective from `training/utils/rl/algorithm/`; `loss_execution="builtin"`
+runs its trainer loss instead of the portable closure and requires
+`kl_beta=0`.
 
 Keep custom environment logic in the rollout function. Do not put scheduler or
 trainer lifecycle state in the rollout.

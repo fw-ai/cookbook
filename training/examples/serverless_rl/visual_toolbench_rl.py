@@ -78,7 +78,7 @@ from training.examples.rl.visual_toolbench.reward import (
 from training.recipes.async_rl_loop import RolloutSetup
 from training.utils import GradAccNormalization
 from training.utils.rl.anchor import prepare_policy_anchor, validate_anchor
-from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn, validate_grpo_config
 from training.utils.rl.metrics import add_optimizer_metrics
 from training.utils.rl.rollout import Rollout, rollout_to_prompt_group
 from training.utils.service import resolve_router_replay_enabled

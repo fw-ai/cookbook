@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
-from training.utils.rl.dapo import DAPOConfig, make_dapo_loss_fn
-from training.utils.rl.dppo import DPPOConfig, make_dppo_loss_fn
-from training.utils.rl.dro import DROConfig, make_dro_loss_fn
-from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
-from training.utils.rl.gspo import GSPOConfig, make_gspo_loss_fn
-from training.utils.rl.igpo import make_igpo_loss_fn
-from training.utils.rl.is_loss import make_is_loss_fn
-from training.utils.rl.reinforce import make_reinforce_loss_fn
-from training.utils.rl.score_centering import (
+from training.utils.rl.algorithm.cispo import CISPOConfig, make_cispo_loss_fn
+from training.utils.rl.algorithm.dapo import DAPOConfig, make_dapo_loss_fn
+from training.utils.rl.algorithm.dppo import DPPOConfig, make_dppo_loss_fn
+from training.utils.rl.algorithm.dro import DROConfig, make_dro_loss_fn
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn, validate_grpo_config
+from training.utils.rl.algorithm.gspo import GSPOConfig, make_gspo_loss_fn
+from training.utils.rl.algorithm.igpo import make_igpo_loss_fn
+from training.utils.rl.algorithm.importance_sampling import make_is_loss_fn
+from training.utils.rl.algorithm.reinforce import make_reinforce_loss_fn
+from training.utils.rl.algorithm.score_centering import (
     ScoreCenteringConfig,
     validate_score_centering_config,
 )

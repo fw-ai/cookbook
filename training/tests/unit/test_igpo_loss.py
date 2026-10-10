@@ -6,7 +6,7 @@ import pytest
 import tinker
 import torch
 
-from training.utils.rl.igpo import make_igpo_loss_fn
+from training.utils.rl.algorithm.igpo import make_igpo_loss_fn
 
 
 def test_rollout_ratio_and_per_token_advantages_match_loss_and_gradient():

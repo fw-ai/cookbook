@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from training.utils.rl.grpo import make_grpo_loss_fn
+from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
 from training.utils.rl.observability import compute_inference_observability_metrics
 
 

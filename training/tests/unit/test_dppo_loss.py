@@ -8,7 +8,7 @@ import pytest
 import tinker
 import torch
 
-from training.utils.rl.dppo import DPPOConfig, make_dppo_loss_fn
+from training.utils.rl.algorithm.dppo import DPPOConfig, make_dppo_loss_fn
 
 
 def _datum() -> tinker.Datum:
