@@ -225,6 +225,20 @@ def test_serverless_rejects_reference_kl_without_reference_model() -> None:
         loop._validate_config(loop.Config(kl_beta=0.001))
 
 
+def test_invalid_anchor_fails_before_serverless_setup(monkeypatch) -> None:
+    def unexpected_service(*_args):
+        pytest.fail("invalid config must not provision a service")
+
+    monkeypatch.setattr(loop, "_make_service", unexpected_service)
+    monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="anchor_logp"):
+        loop.main(
+            loop.Config(anchor_logp="invalid"),
+            rollout_fn_factory=lambda _setup: None,
+            rows=[],
+        )
+
+
 def test_snapshot_names_are_valid_and_stable() -> None:
     assert loop._snapshot_name("async-rl", "step-0") == "async-rl-step-0"
 

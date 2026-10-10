@@ -71,6 +71,7 @@ from training.utils.rl.rollout import (
     make_eval_protocol_rollout_fn_factory,
 )
 from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
+from training.utils.rl.anchor import prepare_policy_anchor
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.checkpoints import TrainingCheckpoints
@@ -670,6 +671,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
 
             def fwd_bwd_one(sub: list[PromptGroup]):
                 data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
+                anchor, forward = prepare_policy_anchor(
+                    policy, data, inf_lp, "old_policy"
+                )
                 return policy.forward_backward_custom(
                     data,
                     make_grpo_loss_fn(
@@ -680,7 +684,9 @@ def main(cfg: FrozenLakeConfig | None = None) -> dict:
                         kl_beta=cfg.kl_beta,
                         eps_clip=cfg.eps_clip,
                         eps_clip_high=cfg.eps_clip_high,
+                        old_policy_logprobs=anchor,
                     ),
+                    precomputed_forward=forward,
                 )
 
             def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:

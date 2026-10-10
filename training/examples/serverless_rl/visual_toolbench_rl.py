@@ -547,6 +547,11 @@ class ServerlessVisualToolbenchRL:
             reference_training_shape_id=None,
             reference_job_id=None,
         )
+        if cfg.kl_beta != 0:
+            raise ValueError(
+                "Visual ToolBench does not provision a reference model; "
+                "kl_beta must be 0"
+            )
         self.rows = _load_rows(
             Path(cfg.dataset),
             require_tool_aligned=cfg.require_tool_aligned_data,
@@ -1149,6 +1154,13 @@ class ServerlessVisualToolbenchRL:
             anchor, forward = prepare_policy_anchor(
                 self.training_client, all_data, all_inf_logprobs, cfg.anchor_logp
             )
+            # Drift diagnostics need the trainer's pre-update logprobs even
+            # when clipping uses rollout logprobs. Reuse this same forward
+            # for custom backward so the diagnostic needs no extra pass.
+            if forward is None:
+                forward = self.training_client.forward(all_data, "cross_entropy")
+                if callable(getattr(forward, "result", None)):
+                    forward = forward.result()
             loss_fn = make_grpo_loss_fn(
                 advantages=all_advantages,
                 ref_logprobs=[],  # kl_beta=0 disables the ref term
@@ -1168,7 +1180,7 @@ class ServerlessVisualToolbenchRL:
             trained = True
             loss = _mean_loss(fb)
             train_diagnostics.update(_extract_train_diagnostics(fb))
-            policy_logprobs = _extract_output_logprobs(fb)
+            policy_logprobs = _extract_output_logprobs(forward)
             # Compare the trainer's pre-update logits with the sampler's raw
             # logits. The behavior stream above remains reserved for PPO.
             for policy_lps, raw_inference_lps, plen in zip(

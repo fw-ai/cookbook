@@ -232,6 +232,7 @@ def _serverless_base_url(base_url: str) -> str:
 
 
 def _validate_config(cfg: Config) -> None:
+    validate_anchor(cfg.anchor_logp)
     validate_grpo_config(
         kl_beta=cfg.kl_beta,
         eps_clip=cfg.eps_clip,
