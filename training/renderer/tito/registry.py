@@ -4,8 +4,8 @@ Each entry pins one renderer implementation to one tokenizer contract
 (backend + chat template + special tokens fingerprint). Adding a model means
 adding a per-model module next to this file plus one entry here.
 
-Models whose protocol cannot ship in this repository are registered instead by
-an installed distribution through ``training.renderer.tito.plugins``. Built-in
+Additional model certifications can be registered by an installed distribution
+through ``training.renderer.tito.plugins``. Built-in
 certifications always win, and an extension that claims a built-in renderer name
 is rejected rather than silently ignored.
 """
@@ -73,10 +73,10 @@ def _build_qwen38_tito_renderer(
 
 _TITO_RENDERER_CERTIFICATIONS = (
     TITORendererCertification(
-        certification_id="glm-5.3-preserved@935644c0-experimental-r4",
+        certification_id="glm-5.3-preserved@935644c0-experimental-r5",
         renderer_names=frozenset({GLM53_RENDERER_NAME}),
         tokenizer_fingerprint=(
-            "354d31d912584b016d9777f7b384cd552989bfb6080ed37c0d71a50c53c2ab77"
+            "add5eacab6a81583dd16eb18ea02ff43c4342aa32917a60a6f8fb55ad813c2cf"
         ),
         renderer_factory=_build_glm53_tito_renderer,
     ),

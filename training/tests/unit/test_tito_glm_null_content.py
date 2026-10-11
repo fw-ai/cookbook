@@ -10,6 +10,11 @@ import pytest
 from fireworks.training.sdk import TITOChatRequest
 from training.renderer.tito import GLM52TITORenderer, GLM53TITORenderer, TITORendererCertification
 from training.renderer.tito.shared import _tokenizer_fingerprint
+from training.renderer.tito import (
+    build_sidecar_tito_renderer,
+    get_tito_renderer_certification,
+    load_sidecar_tokenizer,
+)
 
 
 @pytest.fixture(
@@ -79,3 +84,36 @@ def test_glm_tool_history_normalizes_null_without_reordering_arguments(
     assert ("None" in text) == (content == "None")
     ordered_keys = list(json.loads(arguments))
     assert text.index(f"<arg_key>{ordered_keys[0]}</arg_key>") < text.index(f"<arg_key>{ordered_keys[1]}</arg_key>")
+
+
+def test_pinned_glm_tokenizer_survives_sidecar_registry_admission(glm, tmp_path):
+    tokenizer, renderer = glm
+    name = renderer.renderer_id
+    get_tito_renderer_certification(name, tokenizer)
+    tokenizer.save_pretrained(tmp_path)
+    sidecar_tokenizer = load_sidecar_tokenizer(tmp_path)
+    get_tito_renderer_certification(name, sidecar_tokenizer)
+    sidecar_renderer = build_sidecar_tito_renderer(sidecar_tokenizer, name)
+    request = TITOChatRequest.from_openai(
+        {
+            "messages": [
+                {"role": "user", "content": "Write 42 to answer.txt using bash."}
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ],
+        }
+    )
+    assert sidecar_renderer.render_conversation_tokens(
+        request
+    ) == renderer.render_conversation_tokens(request)
