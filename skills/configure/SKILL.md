@@ -170,7 +170,8 @@ user runs the dry-run and returns its output before final approval.
 For Training API SFT and RL, explicitly pass `emit_grad_norm_metrics=True` to
 each `optim_step` and log `result.metrics` with the optimizer step. Telemetry
 defaults to off; verify it appears after the first step. For `async_rl_loop`,
-set `grad_norm_metrics="basic"` (or `"detailed"`). See
+set `grad_norm_metrics="basic"` (or `"detailed"`). `sft_loop` exposes the same
+`grad_norm_metrics` field and defaults it to `"basic"`. See
 [gradient norm metrics](../fireworks-training/references/training-api.md#gradient-norm-metrics-sft-and-rl).
 
 ## Progressive references
