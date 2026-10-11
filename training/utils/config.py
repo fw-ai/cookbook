@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import functools
-import warnings
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, Literal, Mapping
 
 from fireworks.training.sdk.client import FiretitanTrainingClient
-from fireworks.training.sdk.deployment import DeploymentConfig
 
 # Match FireTitan/Tinker AdamParams for beta2/eps. Smaller eps matters when
 # grad-norm RMS is tiny (common in LoRA RL). Keep weight_decay=0.01 (cookbook
@@ -61,22 +59,11 @@ def _reject_removed_accelerator_kwargs(cls):
 
 @dataclass
 class ConcurrencyConfig:
-    """Concurrency control settings for inference sampling.
+    """Adaptive concurrency for inference sampling.
 
-    Two modes:
-
-    * **adaptive** (default): Uses ``AdaptiveConcurrencyController`` which adjusts
-      the concurrency window based on server-side ``prefill_queue_duration``.
-    * **fixed**: Uses a fixed ``asyncio.Semaphore(max_concurrency)``.
+    ``AdaptiveConcurrencyController`` adjusts the concurrency window from the
+    server-side ``prefill_queue_duration``.
     """
-
-    mode: str | None = "adaptive"
-    """``"adaptive"`` or ``"fixed"``.  ``None`` with ``max_concurrency`` set
-    triggers the deprecated backward-compat path."""
-
-    max_concurrency: int | None = None  # Deprecated alias for max_concurrency_rollout_sample.
-    """Deprecated.  Set ``mode="fixed"`` and use ``FixedConcurrencyController``
-    instead.  When set with ``mode=None``, creates a fixed controller and warns."""
 
     initial_window: int | None = None
     """Starting concurrency window for adaptive mode.
@@ -94,70 +81,6 @@ class ConcurrencyConfig:
     rollout_adjustment_interval: int = 32
     """Adjust adaptive concurrency every N completed requests within an RL step.
     Remaining requests adjust at the step boundary; ``0`` adjusts only there."""
-
-
-@_reject_removed_accelerator_kwargs
-@dataclass
-class InfraConfig:
-    """GPU and image settings.
-
-    .. deprecated::
-        ``InfraConfig`` is retained only for backward compatibility. New code
-        should configure provisioning with :class:`TrainerConfig` (and
-        :class:`DeployConfig`) and use the recipe's SDK-managed provisioning
-        path.
-        The recipe ``Config`` objects no longer accept an ``infra=`` field.
-
-    Two launch paths:
-
-    * **Shape path** (``training_shape_id`` set): the backend owns all
-      shape-derived fields (accelerator, image tag, node count).
-      Setting shape-owned infra overrides raises ``ValueError``; trainer
-      replica count remains a run-level control.
-    * **Manual path** (``training_shape_id`` is ``None``): remaining advanced
-      fields are sent as-is; trainer accelerator type and count are unsupported.
-    """
-
-    training_shape_id: str | None = None
-    """Training shape ID for the policy trainer (e.g. ``ts-qwen3-8b-policy``).
-    When set, infra config is auto-derived from the shape."""
-
-    ref_training_shape_id: str | None = None
-    """Training shape ID for a **separate** frozen reference trainer.
-    Only relevant for **full-parameter** training — LoRA runs reuse the
-    policy session as their frozen reference (adapter disabled), so leave
-    this ``None`` when ``lora_rank > 0``. For
-    full-param, when set, a second trainer is provisioned; when not set,
-    the backend auto-selects a LoRA-capable shape for the second trainer."""
-
-    custom_image_tag: str | None = None
-    region: str | None = None
-    """Optional explicit trainer region. Prefer leaving unset so the backend
-    can place the trainer from the validated training shape."""
-    node_count: int | None = None
-    trainer_timeout_s: float = 3600
-    extra_args: list[str] | None = None
-    """Opaque trainer arguments for testing. Requires a superuser API key."""
-    trainer_replica_count: int | None = None
-    """Data-parallel trainer replica count for service-mode HSDP launches.
-
-    Leave unset for the backend default. Values greater than 1 request
-    replicated HSDP for this trainer launch; this is intentionally a run-level
-    knob, not part of the validated training shape.
-    """
-    purpose: str | None = None
-    """Optional platform ``Purpose`` proto enum name."""
-    skip_validations: bool = False
-    """Skip server-side shape validation. Requires superuser API key."""
-
-    def __post_init__(self) -> None:
-        warnings.warn(
-            "InfraConfig is deprecated; use TrainerConfig (and DeployConfig) with "
-            "the recipe's SDK-managed provisioning path. It is retained only for backward compatibility "
-            "and will be removed in a future release.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
 
 
 @_reject_removed_accelerator_kwargs
@@ -314,44 +237,6 @@ class DeployConfig:
     Recipes choose weight_sync() or save followed by hotload from runtime
     capabilities. Durable checkpoints are saved separately from RDMA.
     """
-
-    def to_deployment_config(
-        self,
-        base_model: str,
-        infra: InfraConfig,
-    ) -> DeploymentConfig:
-        """Produce an SDK-level DeploymentConfig from cookbook settings."""
-        # Dev only: skip_validation skips validation of an unvalidated shape
-        # version (set it locally for dev). Never enable in production.
-        skip_validation = False
-        if not self.deployment_shape and not skip_validation:
-            raise ValueError(
-                "DeployConfig.deployment_shape is required. Shapeless "
-                "deployments are the most common cause of failed deployment "
-                "creations, and the shapeless path will be deprecated. "
-                "Resolve a shape from the training shape profile "
-                "(``profile.deployment_shape``) or find deployable shapes "
-                "with ``firectl deployment-shape-version match --model "
-                "<model>``."
-            )
-        replica_count = 1 if self.replica_count is None else self.replica_count
-        return DeploymentConfig(
-            deployment_id=self.deployment_id,
-            base_model=base_model,
-            region=infra.region,
-            deployment_shape=self.deployment_shape,
-            hot_load_bucket_type=self.hot_load_bucket_type if self.enable_hot_load else None,
-            hot_load_trainer_job=self.hot_load_trainer_job if self.enable_hot_load else None,
-            hot_load_transition_type=self.hot_load_transition_type if self.enable_hot_load else None,
-            enable_hot_load=self.enable_hot_load,
-            skip_shape_validation=skip_validation,
-            extra_args=self.deployment_extra_args,
-            min_replica_count=replica_count,
-            max_replica_count=replica_count,
-            disable_speculative_decoding=self.disable_speculative_decoding,
-            extra_values=self.extra_values,
-            preemptible=self.preemptible or getattr(infra, "preemptible", False),
-        )
 
 
 @dataclass

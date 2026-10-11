@@ -8,16 +8,18 @@ from types import MethodType
 
 import pytest
 
-from training.examples.rl.harbor.recipes.dabstep.manifest import (
+from training.examples.harbor_rl import common
+from training.examples.harbor_rl.records import select_rows
+from training.examples.harbor_rl.tasks.dabstep.manifest import (
     AdaptiveTaskSelector,
     DABstepManifest,
-    rows_for_tasks,
+    make_adaptive_rollout_factory,
     usable_group_probability,
 )
-from training.examples.rl.harbor.recipes.dabstep import (
+from training.examples.harbor_rl.tasks.dabstep import (
     prepare_tasks as prepare_dabstep_tasks,
 )
-from training.examples.rl.harbor.recipes.dabstep.dataset import (
+from training.examples.harbor_rl.tasks.dabstep.dataset import (
     DEFAULT_WAVE_SIZE,
     FrozenDABstepDataset,
     ProgressiveDABstepTasks,
@@ -25,8 +27,8 @@ from training.examples.rl.harbor.recipes.dabstep.dataset import (
     make_progressive_rollout_factory,
     shuffle_dataset_for_run,
 )
-from training.examples.rl.harbor.recipes import train_pi as pi_train
-from training.examples.rl.harbor.tito.evaluate import (
+from training.examples.harbor_rl import train_pi as pi_train
+from training.examples.harbor_rl.tito.evaluate import (
     evaluate_rows,
     make_fixed_evaluation,
 )
@@ -63,7 +65,7 @@ def test_dabstep_manifest_validates_fixed_membership(tmp_path):
     assert len(manifest.train_tasks) == 67
     assert len(manifest.holdout_tasks) == 8
     assert not set(manifest.train_tasks) & set(manifest.holdout_tasks)
-    assert rows_for_tasks(
+    assert select_rows(
         [{"task_name": name} for name in reversed(manifest.train_tasks)],
         manifest.train_tasks[:2],
     ) == [{"task_name": "dabstep-0"}, {"task_name": "dabstep-1"}]
@@ -87,7 +89,7 @@ def test_dabstep_manifest_rejects_content_drift(tmp_path, monkeypatch):
     for name in (*manifest.train_tasks, *manifest.holdout_tasks):
         (tmp_path / name).mkdir()
     monkeypatch.setattr(
-        "training.examples.rl.harbor.recipes.dabstep.manifest._directory_sha256",
+        "training.examples.harbor_rl.tasks.dabstep.manifest.dirhash_sha256",
         lambda path: "b" * 64,
     )
 
@@ -107,7 +109,7 @@ def test_dabstep_manifest_rejects_sign_insensitive_scorer(tmp_path, monkeypatch)
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "training.examples.rl.harbor.recipes.dabstep.manifest._directory_sha256",
+        "training.examples.harbor_rl.tasks.dabstep.manifest.dirhash_sha256",
         lambda path: "a" * 64,
     )
 
@@ -116,7 +118,7 @@ def test_dabstep_manifest_rejects_sign_insensitive_scorer(tmp_path, monkeypatch)
 
 
 def test_dabstep_hash_dependency_is_loaded_only_when_needed(tmp_path, monkeypatch):
-    from training.examples.rl.harbor.recipes.dabstep import manifest as dabstep
+    from training.examples.harbor_rl import records
 
     original_import = builtins.__import__
 
@@ -128,7 +130,7 @@ def test_dabstep_hash_dependency_is_loaded_only_when_needed(tmp_path, monkeypatc
     monkeypatch.setattr(builtins, "__import__", import_without_dirhash)
 
     with pytest.raises(RuntimeError, match="example-only 'dirhash' dependency"):
-        dabstep._directory_sha256(tmp_path)
+        records.dirhash_sha256(tmp_path)
 
 
 @pytest.mark.parametrize("quote", ["'", '"'])
@@ -210,12 +212,12 @@ def test_dabstep_dataset_freezes_complete_snapshot_order(tmp_path, monkeypatch):
         json.dumps(snapshot), encoding="utf-8"
     )
     monkeypatch.setattr(
-        "training.examples.rl.harbor.recipes.dabstep.dataset."
+        "training.examples.harbor_rl.tasks.dabstep.dataset."
         "EXPECTED_DEFAULT_SPLIT_TASKS",
         4,
     )
     monkeypatch.setattr(
-        "training.examples.rl.harbor.recipes.dabstep.dataset._directory_sha256",
+        "training.examples.harbor_rl.tasks.dabstep.dataset.dirhash_sha256",
         lambda path: f"hash-{path.name}",
     )
 
@@ -273,13 +275,13 @@ def test_dabstep_pi_recipe_uses_sdk_managed_resources_and_offpolicy_two(tmp_path
         ]
     )
 
-    config = pi_train._build_config(args, run_dir=tmp_path, row_count=450)
+    config = pi_train.build_config(args, run_dir=tmp_path, row_count=450)
 
     assert config.completions_per_prompt == 8
     assert config.prompt_groups_per_step == 8
     assert config.pipeline_chunks_per_step == 2
     assert config.max_head_offpolicy_versions == 2
-    assert config.loss_execution == "builtin"
+    assert config.eps_clip == 0.2
     assert config.trainer.job_id is None
     assert config.trainer.training_shape_id is None
     assert config.deployment.deployment_id is None
@@ -290,7 +292,7 @@ def test_dabstep_pi_recipe_uses_sdk_managed_resources_and_offpolicy_two(tmp_path
     assert not hasattr(args, "deployment_shape")
 
 
-def test_dabstep_launch_manifest_records_automatic_resource_selection(tmp_path):
+def test_dabstep_pi_recipe_reattaches_resources_and_uses_e2b(tmp_path):
     args = pi_train.parse_args(
         [
             "--base-model",
@@ -305,27 +307,68 @@ def test_dabstep_launch_manifest_records_automatic_resource_selection(tmp_path):
             str(tmp_path / "run"),
             "--shuffle-seed",
             "17",
+            "--trainer-job-id",
+            "accounts/example/rlorTrainerJobs/job",
+            "--deployment-id",
+            "accounts/example/deployments/policy",
+            "--skip-cleanup",
         ]
     )
-    output = tmp_path / "launch.json"
 
-    pi_train._write_launch_manifest(
-        output,
-        args=args,
-        task_names=("task-a", "task-b"),
-        evaluation_tasks=("task-a",),
-        dataset_manifest_sha256="a" * 64,
+    config = pi_train.build_config(args, run_dir=tmp_path, row_count=450)
+    harbor = common.harbor_settings(
+        args, run_dir=tmp_path, environment="e2b", trials_dir=tmp_path / "t"
     )
 
-    document = json.loads(output.read_text())
-    assert document["harness"] == "pi"
-    assert document["environment"] == "e2b"
-    assert document["resources"] == {
-        "cleanup_on_exit": True,
-        "replica_count": 4,
-        "selection": "automatic",
-    }
-    assert document["training"]["max_head_offpolicy_versions"] == 2
+    assert config.trainer.job_id == "accounts/example/rlorTrainerJobs/job"
+    assert config.trainer.training_shape_id is None
+    assert config.deployment.deployment_id == "accounts/example/deployments/policy"
+    assert config.cleanup_on_exit is False
+    assert harbor.environment == "e2b"
+    assert harbor.terminal_failure_reward == 0.0
+    assert harbor.tito.debug_enabled is True
+    assert harbor.max_concurrent_trials == 256
+
+
+def test_adaptive_rollout_factory_selects_training_rows_only():
+    calls = []
+
+    class Selector:
+        async def row_for_group(self, group_index):
+            return {"task_name": f"selected-{group_index}"}
+
+        async def record(self, group_index, sample_index, reward):
+            calls.append(("record", group_index, sample_index, reward))
+
+    def base_factory(setup):
+        async def base(row, **context):
+            calls.append(("rollout", row["task_name"], context["evaluation"]))
+            return RolloutRun(
+                segments=[
+                    RolloutSample(tokens=[1], logprobs=[0.0], loss_mask=[1], reward=0.5)
+                ]
+            )
+
+        async def close():
+            calls.append("closed")
+
+        base.aclose = close
+        return base
+
+    rollout = make_adaptive_rollout_factory(Selector(), base_factory)(object())
+
+    async def exercise():
+        await rollout({"id": "placeholder"}, cursor_index=3, sample_index=1)
+        await rollout({"task_name": "holdout"}, cursor_index=0, evaluation=True)
+        await rollout.aclose()
+
+    asyncio.run(exercise())
+    assert calls == [
+        ("rollout", "selected-3", False),
+        ("record", 3, 1, 0.5),
+        ("rollout", "holdout", True),
+        "closed",
+    ]
 
 
 def test_progressive_dabstep_prepares_only_sequential_training_waves(tmp_path):
@@ -602,9 +645,7 @@ def test_evaluate_rows_aggregates_logical_run_lengths_and_failures():
     assert peak == 2
     assert metrics["eval/attempted_trajectories"] == 4
     assert metrics["eval/completed_trajectories"] == 2
-    assert metrics["eval/failed_trajectories"] == 2
-    assert metrics["eval/no_trajectory"] == 0
-    assert metrics["eval/failure/TimeoutError"] == 2
+    assert metrics["eval/no_trajectory"] == 2
     assert metrics["eval/trainable_tokens_mean"] == 2
     assert metrics["eval/trainable_tokens_min"] == 2
     assert metrics["eval/trainable_tokens_max"] == 2

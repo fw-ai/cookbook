@@ -1,14 +1,23 @@
-"""Attach recorded sampler support to built-in policy datums.
+"""Sampling-support replay for top-p rollouts.
 
-The sampler publishes each completion token's top-K support to trainer-shared
-storage (Parquet) and returns references. Rollout assembly aligns them with
-model-input positions; this module hands them to the trainer unchanged. It
-never applies importance weights or changes advantages.
+With ``top_p < 1`` rollouts sample from a truncated distribution while the
+trainer normalizes over the full vocabulary. Replay trains over the recorded
+support instead, in three steps a forked loop calls:
+
+1. :func:`sampling_support_kwargs` -- sampler kwargs that truncate to the
+   nucleus and publish each completion token's top-K support to trainer-shared
+   storage (Parquet); rollout assembly carries the returned references into
+   ``PolicyBatch.top_sampling_references``.
+2. :func:`attach_top_sampling_references` -- hand them to the built-in datums.
+3. :func:`sampling_support_loss_fn_config` -- ask the trainer to normalize
+   target logprobs over that support.
+
+Nothing here applies importance weights or changes advantages.
 """
 
 from __future__ import annotations
 
-from typing import List
+from typing import Any, List
 
 import tinker
 from fireworks.training.sdk.routing import RoutingReferences
@@ -52,3 +61,25 @@ def attach_top_sampling_references(
             )
         )
     return result
+
+
+def sampling_support_kwargs(*, top_p: float, support_size: int) -> dict[str, Any]:
+    """Sampler kwargs: sample the ``top_p`` nucleus and record its top-K support.
+
+    ``support_size`` is a storage width (K candidates per token), not a top-k
+    filter; it must cover the support of every trained token.
+    """
+    if not 0 < top_p <= 1:
+        raise ValueError(f"top_p must be in (0, 1]; got {top_p!r}")
+    if type(support_size) is not int or support_size < 1:
+        raise ValueError("support_size must be a positive integer")
+    return {
+        "top_p": top_p,
+        "top_sampling_logprobs": support_size,
+        "top_sampling_format": "parquet_v1",
+    }
+
+
+def sampling_support_loss_fn_config(loss_fn_config: dict[str, Any]) -> dict[str, Any]:
+    """A built-in loss config that normalizes target logprobs over the recorded support."""
+    return {**loss_fn_config, "target_logprob_support": "sampling_support"}

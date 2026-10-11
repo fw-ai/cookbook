@@ -40,7 +40,7 @@ policy and reuse it before the first rollout and after optimizer steps. Its RDMA
 branch calls `policy.weight_sync()`; its FILE branch calls
 `saved = policy.save_weights_for_sampler(name)` followed by
 `service.hotload_sampler_snapshot(saved.path)`. The cookbook wrapper waits for
-completion. The [training README](../../../training/README.md) shows this usage.
+completion. [`recipes/rl_loop.py`](../../../training/recipes/rl_loop.py) shows this usage.
 The compatibility option
 `weight_sync_transport="RDMA"` does not override capability checks. Do not
 infer support from an image tag or retry an RDMA transfer failure as FILE.
@@ -134,7 +134,8 @@ deployments that resolves to `ASYNC`.
 
 `ASYNC` is what you want by default: it keeps the rollout fleet busy, and the
 recorded `sampling_logprob` for each token still comes from the version that
-actually sampled it, so the importance ratio stays correct.
+actually sampled it, so the RL loops' rollout-logprob clipping anchor stays
+correct.
 
 Reach for `SYNC` when a mid-generation version boundary is itself suspect — for
 example long multi-turn agentic rollouts where structured output or tool-call

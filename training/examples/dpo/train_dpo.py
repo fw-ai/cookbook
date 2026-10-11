@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
-import signal
 
 from dotenv import load_dotenv
 import training.recipes.dpo_loop as dpo_loop
@@ -24,15 +22,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-
-FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
-FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-
-
-def _signal_handler(signum, frame):
-    name = signal.Signals(signum).name
-    logger.warning("Received %s — raising SystemExit for cleanup", name)
-    raise SystemExit(f"Terminated by {name}")
 
 
 def parse_args():
@@ -94,14 +83,8 @@ def parse_args():
 
 
 def main():
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-
     args = parse_args()
     logger.info("DPO training: model=%s dataset=%s", args.base_model, args.dataset)
-
-    os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
-    os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
 
     config = dpo_loop.Config(
         log_path=args.log_path,

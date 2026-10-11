@@ -242,6 +242,46 @@ def log_metrics(
         wandb_log(record)
 
 
+_RUN_RESOURCE_ATTRIBUTES = (
+    "trainer_job_id",
+    "reference_trainer_job_id",
+    "deployment_id",
+)
+
+
+def log_run_resources(service: Any) -> dict[str, str]:
+    """Record the run's trainer and deployment ids in the log and W&B config.
+
+    These ids are the join keys between client metrics in W&B or the metrics
+    JSONL and the trainer/deployment server metrics labeled ``trainer_id`` and
+    ``deployment_id``. Call it once after the policy trainer and deployment
+    exist. Ids the service does not expose are omitted.
+    """
+    resources: dict[str, str] = {}
+    for name in _RUN_RESOURCE_ATTRIBUTES:
+        try:
+            value = getattr(service, name, None)
+        except RuntimeError:
+            # The SDK raises for ids a service never resolved.
+            value = None
+        if isinstance(value, str) and value:
+            resources[name] = value
+    if not resources:
+        return resources
+    logger.info(
+        "Run resources: %s",
+        " ".join(f"{name}={value}" for name, value in resources.items()),
+    )
+    try:
+        import wandb
+
+        if wandb.run is not None:
+            wandb.config.update(resources, allow_val_change=True)
+    except ImportError:
+        pass
+    return resources
+
+
 def wandb_finish(*, metrics_file: str | None = None) -> None:
     """Flush tracing, optionally attach local artifacts, then finish W&B."""
     try:

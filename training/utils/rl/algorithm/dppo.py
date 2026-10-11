@@ -3,23 +3,34 @@
 Implements the binary trust-region approximations from
 https://arxiv.org/abs/2602.04879. Unlike PPO ratio clipping, DPPO masks an
 advantage-improving token update only after its direct policy divergence from
-the fixed anchor policy exceeds a configured threshold.
+the anchor exceeds a configured threshold. Same module surface as
+:mod:`training.utils.rl.algorithm.grpo`; ``dppo_clip_frac`` is the share of
+tokens past the threshold.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Tuple, Union
+from typing import Any, Dict, List, Literal, Tuple
 
 import tinker
 import torch
 
+from training.utils.client import GradAccNormalization
 from training.utils.rl.common import (
-    _normalize_prompt_lens,
+    client_loss_metrics,
     masked_mean,
+    policy_ratio_metrics,
     run_loss_loop,
 )
-from training.utils.rl.algorithm.base import ClientObjective, PolicyLoss, client_loss_kwargs
+from training.utils.rl.losses import PolicyBatch, build_policy_datums
+
+LOSS_FN = "dppo"
+"""Trainer built-in DPPO loss."""
+
+NORMALIZATION = GradAccNormalization.NUM_LOSS_TOKENS
+
+PREFIX = "dppo"
 
 _DEFAULT_THRESHOLD = {
     "binary_tv": 0.15,
@@ -27,29 +38,23 @@ _DEFAULT_THRESHOLD = {
 }
 
 
-@dataclass
+@dataclass(frozen=True)
 class DPPOConfig:
-    """DPPO binary-divergence trust-region configuration."""
+    """DPPO binary-divergence trust region; ``threshold=None`` uses the divergence's default."""
 
     divergence: Literal["binary_tv", "binary_kl"] = "binary_tv"
     threshold: float | None = None
     ratio_log_cap: float = 20.0
 
     def __post_init__(self) -> None:
+        if self.divergence not in _DEFAULT_THRESHOLD:
+            raise ValueError("DPPO divergence must be 'binary_tv' or 'binary_kl'.")
         if self.threshold is None:
-            self.threshold = _DEFAULT_THRESHOLD.get(self.divergence)
-
-
-def validate_dppo_config(config: DPPOConfig) -> None:
-    """Validate DPPO settings before building the loss closure."""
-    if config.divergence not in {"binary_tv", "binary_kl"}:
-        raise ValueError(
-            "DPPO divergence must be 'binary_tv' or 'binary_kl'."
-        )
-    if config.threshold is not None and config.threshold < 0:
-        raise ValueError("DPPO threshold must be non-negative.")
-    if config.ratio_log_cap < 0:
-        raise ValueError("DPPO ratio_log_cap must be non-negative.")
+            object.__setattr__(self, "threshold", _DEFAULT_THRESHOLD[self.divergence])
+        if self.threshold < 0:
+            raise ValueError("DPPO threshold must be non-negative.")
+        if self.ratio_log_cap < 0:
+            raise ValueError("DPPO ratio_log_cap must be non-negative.")
 
 
 def _binary_divergence(
@@ -70,105 +75,58 @@ def _binary_divergence(
     ) * torch.log((1.0 - behavior_prob) / (1.0 - policy_prob))
 
 
-def make_dppo_loss_fn(
-    advantages: List[float],
-    ref_logprobs: List[List[float]],
-    inf_logprobs: List[List[float]],
-    prompt_len: Union[int, List[int]],
-    dppo_config: DPPOConfig | None = None,
-    *,
-    old_policy_logprobs: List[List[float]] | None = None,
-) -> ...:
-    """Build DPPO with a binary-TV/KL divergence trust-region mask."""
-    if dppo_config is None:
-        dppo_config = DPPOConfig()
-    validate_dppo_config(dppo_config)
-    prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
+def loss_fn_config(config: DPPOConfig) -> Dict[str, float | str]:
+    """``loss_fn_config`` for :data:`LOSS_FN`."""
+    return {
+        "divergence": config.divergence,
+        "ratio_log_cap": config.ratio_log_cap,
+        "threshold": float(config.threshold),
+    }
+
+
+def build_datums(batch: PolicyBatch, config: DPPOConfig) -> List[tinker.Datum]:
+    """Datums for the built-in :data:`LOSS_FN`."""
+    del config
+    return build_policy_datums(batch)
+
+
+def metrics(batch: PolicyBatch, result: Any, config: DPPOConfig) -> Dict[str, float]:
+    """``dppo_ratio_mean``, ``dppo_kl`` and ``dppo_clip_frac`` (tokens past the threshold)."""
+    threshold = float(config.threshold)
+
+    def outside(_ratio, policy, anchor):
+        return _binary_divergence(policy, anchor, config.divergence) > threshold
+
+    return policy_ratio_metrics(
+        batch, result, loss_name="dppo", prefix=PREFIX, outside_trust_region=outside
+    )
+
+
+def make_loss_fn(batch: PolicyBatch, config: DPPOConfig):
+    """Client-side DPPO loss; also reports ``dppo_divergence_mean``."""
 
     def policy_fn(ctx):
         log_ratio = torch.clamp(
-            ctx.resp_pi - ctx.resp_old_policy,
-            min=-dppo_config.ratio_log_cap,
-            max=dppo_config.ratio_log_cap,
+            ctx.resp_pi - ctx.resp_anchor, min=-config.ratio_log_cap, max=config.ratio_log_cap
         )
         ratio = torch.exp(log_ratio)
-        divergence = _binary_divergence(
-            ctx.resp_pi,
-            ctx.resp_old_policy,
-            dppo_config.divergence,
-        )
-        improving = ((ctx.adv > 0) & (ratio > 1.0)) | (
-            (ctx.adv < 0) & (ratio < 1.0)
-        )
-        trust_region_mask = ~(
-            improving & (divergence > dppo_config.threshold)
-        )
-        per_token_loss = (
-            -ratio
-            * ctx.adv
-            * trust_region_mask.detach()
-            * ctx.resp_mask
-        )
+        divergence = _binary_divergence(ctx.resp_pi, ctx.resp_anchor, config.divergence)
+        improving = ((ctx.adv > 0) & (ratio > 1.0)) | ((ctx.adv < 0) & (ratio < 1.0))
+        outside = divergence.detach() > config.threshold
+        trust_region_mask = ~(improving & outside)
+        per_token_loss = -ratio * ctx.adv * trust_region_mask.detach() * ctx.resp_mask
         return per_token_loss, {
-            "mask_frac": masked_mean(
-                (~trust_region_mask).float(), ctx.resp_mask
-            ).item(),
-            "divergence_mean": masked_mean(
-                divergence.detach(), ctx.resp_mask
-            ).item(),
-            "ratio_mean": masked_mean(
-                ratio.detach(), ctx.resp_mask
-            ).item(),
+            "clip_frac": masked_mean(outside.float(), ctx.resp_mask).item(),
+            "divergence_mean": masked_mean(divergence.detach(), ctx.resp_mask).item(),
+            "ratio_mean": masked_mean(ratio.detach(), ctx.resp_mask).item(),
         }
 
     def loss_fn(
-        data: List[tinker.Datum],
-        logprobs_list: List[torch.Tensor],
+        data: List[tinker.Datum], logprobs_list: List[torch.Tensor]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        result = run_loss_loop(
-            advantages,
-            ref_logprobs,
-            inf_logprobs,
-            prompt_lens,
-            data,
-            logprobs_list,
-            "dppo",
-            policy_fn,
-            old_policy_logprobs=old_policy_logprobs,
-        )
-        metrics = dict(result.base_metrics)
-        ns = result.n_samples
-        metrics["dppo_mask_frac"] = (
-            result.extra_sums.get("mask_frac", 0.0) / ns
-        )
-        metrics["dppo_divergence_mean"] = (
-            result.extra_sums.get("divergence_mean", 0.0) / ns
-        )
-        metrics["ppo_ratio_mean"] = (
-            result.extra_sums.get("ratio_mean", 0.0) / ns
-        )
-        return result.total_loss, metrics
+        result = run_loss_loop(batch, data, logprobs_list, "dppo", policy_fn)
+        out = client_loss_metrics(result, PREFIX)
+        out[f"{PREFIX}_divergence_mean"] = result.extra_sums.get("divergence_mean", 0.0) / result.n_samples
+        return result.total_loss, out
 
     return loss_fn
-
-
-def _loss_fn_config(options: DPPOConfig) -> Dict[str, float | str]:
-    config: Dict[str, float | str] = {
-        "divergence": options.divergence,
-        "ratio_log_cap": options.ratio_log_cap,
-    }
-    if options.threshold is not None:
-        config["threshold"] = options.threshold
-    return config
-
-
-POLICY_LOSS = PolicyLoss(
-    name="dppo",
-    client=lambda inputs, options: ClientObjective(
-        inputs.data,
-        make_dppo_loss_fn(**client_loss_kwargs(inputs), dppo_config=options),
-    ),
-    builtin_name="dppo",
-    loss_fn_config=_loss_fn_config,
-    validate=validate_dppo_config,
-)

@@ -1,33 +1,37 @@
-"""DAPO (Dynamic Advantage Policy Optimization) loss for GRPO training.
+"""DAPO: PPO clipping with asymmetric bounds and optional dual clip.
 
-Uses PPO-style clipped surrogate objective with asymmetric clipping bounds
-and rollout-policy ratio correction.  The PPO ratio is computed against
-pre-computed old-policy logprobs.
-
-Reference: https://arxiv.org/abs/2503.14476
+Reference: https://arxiv.org/abs/2503.14476. Same module surface as
+:mod:`training.utils.rl.algorithm.grpo`.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Union
 from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
 
 import torch
 import tinker
 
-from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
-from training.utils.rl.algorithm.base import ClientObjective, PolicyLoss, client_loss_kwargs
+from training.utils.client import GradAccNormalization
+from training.utils.rl.common import client_loss_metrics, policy_ratio_metrics, run_loss_loop
+from training.utils.rl.losses import PolicyBatch, build_policy_datums
+
+LOSS_FN = "dapo"
+"""Trainer built-in DAPO loss."""
+
+NORMALIZATION = GradAccNormalization.NUM_LOSS_TOKENS
+
+PREFIX = "dapo"
 
 
-@dataclass
+@dataclass(frozen=True)
 class DAPOConfig:
     """DAPO clipping thresholds.
 
-    ``eps_clip`` is the lower clipping bound (ratio >= 1 - eps_clip).
-    ``eps_clip_high`` is the upper clipping bound (ratio <= 1 + eps_clip_high).
-    Setting them equal recovers standard PPO clipping.
-    ``eps_clip_c`` enables optional dual-clip PPO for negative-advantage tokens.
-    ``ratio_log_cap`` clamps log-ratio before exp() for numerical stability.
+    The ratio is clipped to ``[1 - eps_clip, 1 + eps_clip_high]``; equal
+    values recover standard PPO clipping. ``eps_clip_c`` enables dual-clip PPO
+    for negative-advantage tokens. ``ratio_log_cap`` clamps the log-ratio
+    before ``exp`` for numerical stability.
     """
 
     eps_clip: float = 0.2
@@ -35,102 +39,70 @@ class DAPOConfig:
     eps_clip_c: float | None = None
     ratio_log_cap: float = 20.0
 
-
-def validate_dapo_config(config: DAPOConfig) -> None:
-    """Validate DAPO settings before building the loss closure."""
-    if config.eps_clip < 0 or config.eps_clip_high < 0:
-        raise ValueError("DAPO eps_clip and eps_clip_high must be non-negative.")
-    if config.eps_clip_c is not None and config.eps_clip_c <= 1.0:
-        raise ValueError(
-            "DAPO dual-clip eps_clip_c must be > 1.0, got "
-            f"{config.eps_clip_c}."
-        )
-    if config.ratio_log_cap < 0:
-        raise ValueError("DAPO ratio_log_cap must be non-negative.")
+    def __post_init__(self) -> None:
+        if self.eps_clip < 0 or self.eps_clip_high < 0:
+            raise ValueError("DAPO eps_clip and eps_clip_high must be non-negative.")
+        if self.eps_clip_c is not None and self.eps_clip_c <= 1.0:
+            raise ValueError(f"DAPO dual-clip eps_clip_c must be > 1.0, got {self.eps_clip_c}.")
+        if self.ratio_log_cap < 0:
+            raise ValueError("DAPO ratio_log_cap must be non-negative.")
 
 
-def make_dapo_loss_fn(
-    advantages: List[float],
-    ref_logprobs: List[List[float]],
-    inf_logprobs: List[List[float]],
-    prompt_len: Union[int, List[int]],
-    dapo_config: DAPOConfig | None = None,
-    *,
-    old_policy_logprobs: List[List[float]] | None = None,
-) -> ...:
-    """Build a DAPO loss closure with PPO-clipped ratio."""
-    if dapo_config is None:
-        dapo_config = DAPOConfig()
-    validate_dapo_config(dapo_config)
-    prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
+def loss_fn_config(config: DAPOConfig) -> Dict[str, float]:
+    """``loss_fn_config`` for :data:`LOSS_FN`."""
+    out = {
+        "clip_low_threshold": 1.0 - config.eps_clip,
+        "clip_high_threshold": 1.0 + config.eps_clip_high,
+        "ratio_log_cap": config.ratio_log_cap,
+    }
+    if config.eps_clip_c is not None:
+        out["eps_clip_c"] = config.eps_clip_c
+    return out
+
+
+def build_datums(batch: PolicyBatch, config: DAPOConfig) -> List[tinker.Datum]:
+    """Datums for the built-in :data:`LOSS_FN`."""
+    del config
+    return build_policy_datums(batch)
+
+
+def metrics(batch: PolicyBatch, result: Any, config: DAPOConfig) -> Dict[str, float]:
+    """``dapo_ratio_mean``, ``dapo_clip_frac`` and ``dapo_kl`` for one trainer call."""
+    low, high = 1.0 - config.eps_clip, 1.0 + config.eps_clip_high
+    return policy_ratio_metrics(
+        batch,
+        result,
+        loss_name="dapo",
+        prefix=PREFIX,
+        outside_trust_region=lambda ratio, *_: (ratio < low) | (ratio > high),
+    )
+
+
+def make_loss_fn(batch: PolicyBatch, config: DAPOConfig):
+    """Client-side DAPO loss: ``forward_backward_custom(batch.data, make_loss_fn(batch, config))``."""
 
     def policy_fn(ctx):
         log_ratio = torch.clamp(
-            ctx.resp_pi - ctx.resp_old_policy,
-            min=-dapo_config.ratio_log_cap,
-            max=dapo_config.ratio_log_cap,
+            ctx.resp_pi - ctx.resp_anchor, min=-config.ratio_log_cap, max=config.ratio_log_cap
         )
         ratio = torch.exp(log_ratio)
-        clipped_ratio = torch.clamp(ratio, min=1.0 - dapo_config.eps_clip, max=1.0 + dapo_config.eps_clip_high)
-        clip_frac = (clipped_ratio != ratio).float().mean().item()
-        ratio_mean = ratio.detach().mean().item()
-
-        surr1 = -ratio * ctx.adv
-        surr2 = -clipped_ratio * ctx.adv
-        clipped_surrogate = torch.maximum(surr1, surr2)
-
-        if dapo_config.eps_clip_c is not None:
-            surr3 = -dapo_config.eps_clip_c * ctx.adv
-            lower_clipped = torch.minimum(surr3, clipped_surrogate)
+        clipped_ratio = torch.clamp(ratio, min=1.0 - config.eps_clip, max=1.0 + config.eps_clip_high)
+        clipped_surrogate = torch.maximum(-ratio * ctx.adv, -clipped_ratio * ctx.adv)
+        if config.eps_clip_c is not None:
+            lower_clipped = torch.minimum(-config.eps_clip_c * ctx.adv, clipped_surrogate)
             per_token_loss = torch.where(ctx.adv < 0, lower_clipped, clipped_surrogate)
         else:
             per_token_loss = clipped_surrogate
-
-        per_token_loss = per_token_loss * ctx.resp_mask
-        return per_token_loss, {"clip_frac": clip_frac, "ratio_mean": ratio_mean}
+        active = ctx.resp_mask > 0.5
+        return per_token_loss * ctx.resp_mask, {
+            "clip_frac": (clipped_ratio[active] != ratio[active]).float().mean().item(),
+            "ratio_mean": ratio.detach()[active].mean().item(),
+        }
 
     def loss_fn(
-        data: List[tinker.Datum],
-        logprobs_list: List[torch.Tensor],
+        data: List[tinker.Datum], logprobs_list: List[torch.Tensor]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        result = run_loss_loop(
-            advantages,
-            ref_logprobs,
-            inf_logprobs,
-            prompt_lens,
-            data,
-            logprobs_list,
-            "dapo",
-            policy_fn,
-            old_policy_logprobs=old_policy_logprobs,
-        )
-        metrics = dict(result.base_metrics)
-        ns = result.n_samples
-        metrics["dapo_clip_frac"] = result.extra_sums.get("clip_frac", 0.0) / ns
-        metrics["ppo_ratio_mean"] = result.extra_sums.get("ratio_mean", 0.0) / ns
-        return result.total_loss, metrics
+        result = run_loss_loop(batch, data, logprobs_list, "dapo", policy_fn)
+        return result.total_loss, client_loss_metrics(result, PREFIX)
 
     return loss_fn
-
-
-def _loss_fn_config(options: DAPOConfig) -> Dict[str, float]:
-    config = {
-        "clip_low_threshold": 1.0 - options.eps_clip,
-        "clip_high_threshold": 1.0 + options.eps_clip_high,
-        "ratio_log_cap": options.ratio_log_cap,
-    }
-    if options.eps_clip_c is not None:
-        config["eps_clip_c"] = options.eps_clip_c
-    return config
-
-
-POLICY_LOSS = PolicyLoss(
-    name="dapo",
-    client=lambda inputs, options: ClientObjective(
-        inputs.data,
-        make_dapo_loss_fn(**client_loss_kwargs(inputs), dapo_config=options),
-    ),
-    builtin_name="dapo",
-    loss_fn_config=_loss_fn_config,
-    validate=validate_dapo_config,
-)

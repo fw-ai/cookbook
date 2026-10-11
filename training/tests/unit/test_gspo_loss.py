@@ -14,7 +14,8 @@ import pytest
 import tinker
 import torch
 
-from training.utils.rl.algorithm.gspo import GSPOConfig, make_gspo_loss_fn
+from training.utils.rl.algorithm.gspo import GSPOConfig, make_loss_fn
+from training.utils.rl.losses import PolicyBatch
 
 SEQ_RATIO_LOG_CAP = 10.0
 
@@ -41,6 +42,18 @@ def _datum(mask: list[float]) -> tinker.Datum:
     )
 
 
+def make_gspo_loss_fn(*, advantages, ref_logprobs, inf_logprobs, prompt_len, gspo_config=None):
+    """Client GSPO loss over a :class:`PolicyBatch` anchored on ``inf_logprobs``."""
+    batch = PolicyBatch(
+        data=[],
+        advantages=advantages,
+        prompt_lens=[prompt_len] * len(advantages),
+        rollout_logprobs=inf_logprobs,
+        ref_logprobs=ref_logprobs,
+    )
+    return make_loss_fn(batch, gspo_config or GSPOConfig())
+
+
 def _run(old_policy: list[float], config: GSPOConfig = CONFIG):
     pi = torch.tensor(PI, requires_grad=True)
     fn = make_gspo_loss_fn(
@@ -59,7 +72,7 @@ def test_sequence_ratio_averages_only_active_positions():
     loss, grad, metrics = _run(OLD_POLICY)
     ratio = math.exp(ACTIVE_SEQ_LOG_RATIO)
 
-    assert metrics["ppo_ratio_mean"] == pytest.approx(ratio)
+    assert metrics["gspo_ratio_mean"] == pytest.approx(ratio)
     assert metrics["gspo_clip_frac"] == pytest.approx(0.0)
     # The two active token losses are averaged within the sequence.
     assert loss.item() == pytest.approx(-ratio)
@@ -192,7 +205,7 @@ def test_matches_independent_sequence_ratio_reference(
     assert batched_loss.item() == pytest.approx(
         sum(value.item() for value in sequence_means), rel=1e-6
     )
-    for key in ("ppo_kl", "gspo_clip_frac", "ppo_ratio_mean"):
+    for key in ("gspo_kl", "gspo_clip_frac", "gspo_ratio_mean"):
         assert key in metrics
 
     mask = mask_full[:, response_start:]

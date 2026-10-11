@@ -15,7 +15,7 @@ export COOKBOOK_TRACE_FILE="$PWD/client-phase-trace.json"
 python -m training.recipes.rl_loop ...
 ```
 
-To run one real serverless Countdown RL optimizer step and trace the actual
+To run one real serverless DeepMath RL optimizer step and trace the actual
 weight snapshot, rollout, forward/backward, optimizer, and checkpoint calls:
 
 ```bash
@@ -25,15 +25,16 @@ python -m training.examples.tools.client_phase_trace_demo
 ```
 
 This is a paid training run against the shared serverless pool. It uses the
-bundled sample dataset, disables evaluation and promotion, runs one bounded
+bundled sample dataset, disables evaluation, runs one bounded
 optimizer step, and writes both the training artifacts and
 `client-phase-trace.json` under `./client-phase-trace-demo/`.
 
 The synchronous and asynchronous RL recipes emit their existing coarse phases:
 
 - synchronous rollout batch collection;
-- reference and old-policy forward passes;
 - forward/backward and optimizer operations;
+- reference (`ref_forward`) and trainer-anchor (`old_policy_forward`) passes
+  in forks that add them;
 - sampler weight publication;
 - evaluation and evaluation joins;
 - checkpoint saves.

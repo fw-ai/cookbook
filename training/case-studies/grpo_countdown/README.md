@@ -1,15 +1,15 @@
-# Serverless non-agentic GRPO: own the Countdown loop
+# Serverless non-agentic GRPO: Countdown task + reference loop
 
 Train a single-turn math policy with **GRPO** on the Fireworks **serverless**
-Training API — the loop you write yourself, with no trainer job and no inference
-deployment to provision. The runnable teaching notebook is
+Training API — you write the task, a forkable reference loop runs it, and there
+is no trainer job or inference deployment to provision. The runnable teaching notebook is
 [`countdown_grpo.ipynb`](countdown_grpo.ipynb).
 
 **Is this you?** You can grade answers automatically (right/wrong or a scored
 check), but you do **not** have gold reasoning to imitate — and the task is a
-**single-turn** completion, not a tool-calling agent. You want to **own the GRPO
-loop** on serverless (smoke it cheaply), then optionally express the **same**
-loop for dedicated GPUs. Classic cases: arithmetic puzzles, unit-testable code
+**single-turn** completion, not a tool-calling agent. You want to write the
+**task** (prompt, reward, rollout), smoke the GRPO loop cheaply on serverless,
+then optionally run the **same** task code on dedicated GPUs. Classic cases: arithmetic puzzles, unit-testable code
 snippets, extraction with a validator.
 
 **Not this notebook** if you need:
@@ -18,26 +18,29 @@ snippets, extraction with a validator.
 | --- | --- |
 | Managed one-call RFT (no loop) | [`reasoning_rl`](../reasoning_rl/) (GSM8K) |
 | Multi-turn tool-calling agent | [`agentic_rl_text2sql`](../agentic_rl_text2sql/) |
-| Coding agents / sandboxes at scale | Harbor recipes under [`examples/rl/harbor/`](../../examples/rl/harbor/) |
-| Preference pairs (chosen/rejected) | DPO case studies / `examples/serverless_dpo/` |
+| Coding agents / sandboxes at scale | Harbor recipes under [`examples/harbor_rl/`](../../examples/harbor_rl/) |
+| Preference pairs (chosen/rejected) | DPO case studies / `examples/dpo/` |
 
 ## The idea
 
-1. **Connect once.** `FiretitanServiceClient(.../training/v1/serverless)` gives
-   you both a LoRA training client and per-snapshot samplers.
-2. **Score locally.** `composite_reward` in
-   [`countdown_rewards.py`](../../examples/serverless_rl/countdown_rewards.py)
-   gives partial credit for format, number usage, and hitting the target — no
-   GPU required to sanity-check it.
-3. **GRPO update.** Sample a group per prompt, standardize rewards within the
-   group, drop zero-spread groups, then `forward_backward` + `optim_step`.
-4. **Same algorithm, dedicated compute.** §10 of the notebook shows the
-   dedicated expression via [`recipes/rl_loop.py`](../../recipes/rl_loop.py)
-   — config swap, not a second notebook (the same serverless/dedicated
-   side-by-side as [`sft_prompt_router`](../sft_prompt_router/)).
+1. **Write the task.** A rollout renders the prompt, samples one completion and
+   scores it with `composite_reward` in
+   [`countdown_rewards.py`](../../examples/archive/countdown/countdown_rewards.py)
+   (partial credit for format, number usage, and hitting the target) — no GPU
+   required to sanity-check it.
+2. **Hand it to the loop.** The serverless async-RL recipe
+   ([`recipes/experiment/async_rl_loop_serverless.py`](../../recipes/experiment/async_rl_loop_serverless.py))
+   attaches to a pooled LoRA trainer, samples a group per prompt from the
+   current snapshot, standardizes rewards within the group, skips zero-spread
+   groups, then runs `forward_backward` + `optim_step` and publishes the next
+   snapshot.
+3. **Same task, dedicated compute.** §10 of the notebook runs the same rollout
+   on [`recipes/async_rl_loop.py`](../../recipes/async_rl_loop.py) — a config
+   swap, not a second notebook (the same serverless/dedicated side-by-side as
+   [`sft_prompt_router`](../sft_prompt_router/)).
 
-The production loop is already implemented as
-[`examples/serverless_rl/countdown_rl.py`](../../examples/serverless_rl/countdown_rl.py).
+The task code is
+[`examples/archive/countdown/countdown_rl.py`](../../examples/archive/countdown/countdown_rl.py).
 This case study **imports** it; it does not paste GRPO math.
 
 ## Data
@@ -45,9 +48,8 @@ This case study **imports** it; it does not paste GRPO math.
 Rows are `{"messages": [...], "ground_truth": "{\"numbers\": [...], \"target\": N}"}`
 from the [TinyZero Countdown](https://huggingface.co/datasets/Jiayi-Pan/Countdown-Tasks-3to4)
 tasks — note `ground_truth` is a JSON-encoded **string** (that is what
-`countdown_rl.prepare_dataset` writes, what the shipped sample rows contain, and
-what the loop's eval path (`json.loads(row["ground_truth"])`) and the §10
-dedicated snippet expect; the reward's `parse_ground_truth` in
+[`prepare_data.py`](../../examples/archive/countdown/prepare_data.py) writes and
+what the shipped sample rows contain; the reward's `parse_ground_truth` in
 `countdown_rewards.py` also accepts a plain dict).
 `countdown_train.sample.jsonl` (8 rows) ships so you can
 see the schema. The notebook materializes a larger file via `prepare_dataset`
@@ -68,13 +70,14 @@ jupyter lab case-studies/grpo_countdown/countdown_grpo.ipynb
 Kernel: **cookbook (3.12)** if you use the shared training venv. Leave
 `RUN_LIVE = False` until you are ready to spend serverless tokens; teaching
 cells (reward sanity, fake GRPO group) are free once deps are installed.
-`group_relative_advantages` and the live runner import
-`examples/serverless_rl/countdown_rl.py` — they need the cookbook training
-install (`uv sync`), not just `fireworks-ai`.
+`group_relative_advantages` and the live run import the cookbook training
+stack — they need the cookbook training install (`uv sync`), not just
+`fireworks-ai`.
 
 ## Cost
 
 Serverless bills per token. Smoke defaults in the notebook are intentionally
-tiny (`STEPS=2`, `GROUP_SIZE=4`). Raise them when you want a visible climb.
+tiny (two steps of two prompts × four completions). Raise them when you want a
+visible climb.
 Serverless teardown is a no-op; the dedicated section shows trainer + deployment
 cleanup for that path only.

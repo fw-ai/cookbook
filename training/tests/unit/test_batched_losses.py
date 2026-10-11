@@ -20,11 +20,11 @@ from training.utils.losses import (
     perplexity_from_nll,
 )
 from training.utils.rl.common import (
-    _normalize_prompt_lens,
     align_sample_logprobs_to_target_tokens,
+    inference_drift_metrics,
 )
-from training.utils.rl.losses import build_grpo_datums
-from training.utils.rl.observability import compute_server_grpo_observability_metrics
+from training.utils.rl.algorithm import grpo
+from training.utils.rl.losses import PolicyBatch, build_policy_datums
 from training.utils.supervised import build_datum_from_token_mask
 
 
@@ -67,18 +67,6 @@ def test_perplexity_from_nll_handles_infinities(
 
 def test_perplexity_from_nll_preserves_nan() -> None:
     assert math.isnan(perplexity_from_nll(math.nan))
-
-
-class TestNormalizePromptLens:
-    def test_int_broadcasts(self):
-        assert _normalize_prompt_lens(5, 3) == [5, 5, 5]
-
-    def test_list_passthrough(self):
-        assert _normalize_prompt_lens([1, 2, 3], 3) == [1, 2, 3]
-
-    def test_list_length_mismatch_raises(self):
-        with pytest.raises(ValueError, match="Expected 3 prompt lengths, got 2"):
-            _normalize_prompt_lens([1, 2], 3)
 
 
 class TestAlignSampleLogprobs:
@@ -233,7 +221,17 @@ class TestAlignSampleLogprobs:
             )
 
 
-class TestBuildGRPODatums:
+def _policy_batch(data, advantages, rollout_logprobs, prompt_lens, **kwargs) -> PolicyBatch:
+    return PolicyBatch(
+        data=data,
+        advantages=advantages,
+        prompt_lens=prompt_lens,
+        rollout_logprobs=rollout_logprobs,
+        **kwargs,
+    )
+
+
+class TestBuildPolicyDatums:
     @staticmethod
     def _datum():
         return build_datum_from_token_mask(
@@ -242,70 +240,110 @@ class TestBuildGRPODatums:
         ).datum
 
     def test_builds_exact_builtin_contract(self):
-        datum = build_grpo_datums(
-            data=[self._datum()],
-            advantages=[1.0],
-            inf_logprobs=[[-0.1, -0.2, -0.3]],
-            prompt_lens=[2],
+        datum = build_policy_datums(
+            _policy_batch([self._datum()], [1.0], [[-0.1, -0.2, -0.3]], [2])
         )[0]
 
         assert set(datum.loss_fn_inputs) == {
             "target_tokens",
             "logprobs",
             "advantages",
+            "response_mask",
         }
         assert datum.loss_fn_inputs["logprobs"].data == pytest.approx(
-            [-0.1, -0.2, -0.3]
+            [0.0, -0.2, -0.3]
         )
+        assert datum.loss_fn_inputs["response_mask"].data == [0, 1, 1]
 
     @pytest.mark.parametrize(
         ("field", "kwargs"),
         [
             ("advantages", {"advantages": []}),
-            ("rollout_logprobs", {"inf_logprobs": []}),
+            ("rollout_logprobs", {"rollout_logprobs": []}),
             ("prompt_lens", {"prompt_lens": []}),
+            ("anchor_logprobs", {"anchor_logprobs": []}),
+            ("token_advantages", {"token_advantages": []}),
         ],
     )
     def test_rejects_misaligned_rows(self, field, kwargs):
         inputs = {
             "data": [self._datum()],
             "advantages": [1.0],
-            "inf_logprobs": [[-0.1, -0.2, -0.3]],
+            "rollout_logprobs": [[-0.1, -0.2, -0.3]],
             "prompt_lens": [2],
         }
         inputs.update(kwargs)
 
         with pytest.raises(ValueError, match=field):
-            build_grpo_datums(**inputs)
+            build_policy_datums(PolicyBatch(**inputs))
 
     def test_rejects_short_rollout_row_instead_of_padding(self):
         with pytest.raises(ValueError, match="expected 3, got 2"):
-            build_grpo_datums(
-                data=[self._datum()],
-                advantages=[1.0],
-                inf_logprobs=[[-0.1, -0.2]],
-                prompt_lens=[2],
+            build_policy_datums(
+                _policy_batch([self._datum()], [1.0], [[-0.1, -0.2]], [2])
             )
 
     @pytest.mark.parametrize("prompt_len", [-1, 5])
     def test_rejects_prompt_boundary_outside_sequence(self, prompt_len):
         with pytest.raises(ValueError, match="prompt_len"):
-            build_grpo_datums(
-                data=[self._datum()],
-                advantages=[1.0],
-                inf_logprobs=[[-0.1, -0.2, -0.3]],
-                prompt_lens=[prompt_len],
+            build_policy_datums(
+                _policy_batch([self._datum()], [1.0], [[-0.1, -0.2, -0.3]], [prompt_len])
             )
 
     def test_keeps_response_advantages_unweighted(self):
-        datum = build_grpo_datums(
-            data=[self._datum()],
-            advantages=[2.0],
-            inf_logprobs=[[-1.0, -1.0, -1.0]],
-            prompt_lens=[2],
+        datum = build_policy_datums(
+            _policy_batch([self._datum()], [2.0], [[-1.0, -1.0, -1.0]], [2])
         )[0]
 
         assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.0, 2.0, 2.0])
+
+    def test_token_advantages_replace_scalar_advantage_on_active_tokens(self):
+        datum = tinker.Datum(
+            model_input=tinker.ModelInput.from_ints([10, 11, 12, 13]),
+            loss_fn_inputs={
+                "target_tokens": tinker.TensorData(data=[11, 12, 13, 14], dtype="int64", shape=[4]),
+                "weights": tinker.TensorData(data=[0, 1, 0, 1], dtype="float32", shape=[4]),
+            },
+        )
+        batch = _policy_batch(
+            [datum],
+            [5.0],
+            [[-0.1, -0.2, None, -0.4]],
+            [2],
+            token_advantages=[[9.0, 1.0, -7.0, -2.0]],
+        )
+
+        inputs = build_policy_datums(batch)[0].loss_fn_inputs
+
+        # Prompt and masked targets get no advantage; the scalar is ignored.
+        assert inputs["advantages"].data == [0.0, 1.0, 0.0, -2.0]
+        assert inputs["response_mask"].data == [0, 1, 0, 1]
+        assert inputs["logprobs"].data == pytest.approx([0.0, -0.2, 0.0, -0.4])
+
+    def test_token_advantages_row_must_match_target_tokens(self):
+        batch = _policy_batch(
+            [self._datum()], [1.0], [[-0.1, -0.2, -0.3]], [2], token_advantages=[[1.0, 1.0]]
+        )
+        with pytest.raises(ValueError, match="2 values for 3 target tokens"):
+            build_policy_datums(batch)
+
+    def test_anchor_logprobs_replace_rollout_as_datum_logprobs(self):
+        batch = _policy_batch(
+            [self._datum()],
+            [1.0],
+            [[-0.1, -0.2, -0.3]],
+            [2],
+            anchor_logprobs=[[-9.0, -0.5, -0.6]],
+        )
+
+        inputs = build_policy_datums(batch)[0].loss_fn_inputs
+
+        assert inputs["logprobs"].data == pytest.approx([0.0, -0.5, -0.6])
+        assert inputs["advantages"].data == [0.0, 1.0, 1.0]
+
+    def test_anchor_defaults_to_rollout_logprobs(self):
+        rollout = [[-0.1, -0.2, -0.3]]
+        assert _policy_batch([self._datum()], [1.0], rollout, [2]).anchor_logprobs is rollout
 
     @pytest.mark.parametrize("advantage", [0.0, -0.0, 1.0 / 3, -1.23456789])
     @pytest.mark.parametrize(
@@ -342,11 +380,8 @@ class TestBuildGRPODatums:
             float(advantage * tensor_mask[i].item()) for i in range(response_len)
         ]
 
-        result = build_grpo_datums(
-            [source],
-            [advantage],
-            [rollout_lp],
-            [prefix + 1],
+        result = build_policy_datums(
+            _policy_batch([source], [advantage], [rollout_lp], [prefix + 1])
         )[0]
 
         actual = result.loss_fn_inputs["advantages"]
@@ -361,51 +396,125 @@ class TestBuildGRPODatums:
         )
 
 
-class TestServerGRPOObservability:
+def _logprob_result(*rows):
+    return SimpleNamespace(
+        loss_fn_outputs=[
+            {"logprobs": tinker.TensorData(data=row, dtype="float32", shape=[len(row)])}
+            for row in rows
+        ]
+    )
+
+
+class TestServerGRPOMetrics:
     @staticmethod
-    def _datum():
-        return build_datum_from_token_mask(
+    def _batch(rollout_logprobs, raw_logprobs, **kwargs):
+        datum = build_datum_from_token_mask(
             token_ids=[10, 11, 12, 13],
             token_mask=[0, 1, 1, 1],
         ).datum
+        return _policy_batch(
+            [datum],
+            [1.0],
+            rollout_logprobs,
+            [2],
+            raw_inference_logprobs=raw_logprobs,
+            **kwargs,
+        )
 
     def test_uses_returned_policy_logprobs_without_another_forward(self):
-        policy_logprobs = [torch.tensor([-0.4, -0.2, -0.1])]
-        old_policy_logprobs = [[-0.4, -0.3, -0.1]]
-        raw_inf_logprobs = [[-0.4, -0.4, -0.2]]
+        batch = self._batch([[-0.4, -0.3, -0.1]], [[-0.4, -0.4, -0.2]])
+        result = _logprob_result([-0.4, -0.2, -0.1])
 
-        metrics = compute_server_grpo_observability_metrics(
-            [self._datum()],
-            policy_logprobs,
-            old_policy_logprobs,
-            raw_inf_logprobs,
-            [2],
-            eps_clip=0.2,
-            eps_clip_high=None,
-        )
+        metrics = grpo.metrics(batch, result, grpo.GRPOConfig())
 
         expected_ratios = torch.exp(torch.tensor([0.1, 0.0]))
         assert metrics["ppo_ratio_mean"] == pytest.approx(expected_ratios.mean().item())
         assert metrics["ppo_clip_frac"] == 0.0
-        assert metrics["inference_k1"] == pytest.approx(0.15)
-        expected_diff = torch.tensor([0.2, 0.1])
-        assert metrics["inference_k3"] == pytest.approx(
-            (torch.exp(expected_diff) - expected_diff - 1.0).mean().item()
+        log_ratio = torch.tensor([0.1, 0.0])
+        assert metrics["ppo_kl"] == pytest.approx(
+            (torch.exp(log_ratio) - log_ratio - 1.0).mean().item()
         )
         assert metrics["active_tokens"] == 2
         assert metrics["total_resp_tokens"] == 2
+        # Sampler/trainer drift is a separate call, not part of the objective metrics.
+        assert "inference_k1" not in metrics
+
+        drift = inference_drift_metrics(batch, result)
+        assert drift["inference_k1"] == pytest.approx(0.15)
+        expected_diff = torch.tensor([0.2, 0.1])
+        assert drift["inference_k3"] == pytest.approx(
+            (torch.exp(expected_diff) - expected_diff - 1.0).mean().item()
+        )
+        assert drift["raw_inference_logprob_coverage"] == 1.0
+
+    def test_anchor_override_and_clip_fraction(self):
+        batch = self._batch(
+            [[-0.4, -0.3, -0.1]], [[]], anchor_logprobs=[[-0.4, -0.5, -0.1]]
+        )
+        result = _logprob_result([-0.4, 0.0, -0.1])
+
+        metrics = grpo.metrics(batch, result, grpo.GRPOConfig(eps_clip=0.1))
+
+        # Ratios exp(0.5) and 1.0: one of two active tokens is outside [0.9, 1.1].
+        assert metrics["ppo_clip_frac"] == pytest.approx(0.5)
+        assert inference_drift_metrics(batch, result) == {
+            "raw_inference_logprob_coverage": 0.0
+        }
 
     def test_rejects_misaligned_trainer_outputs(self):
+        batch = self._batch([[-0.4, -0.3, -0.1]], [[-0.4, -0.4, -0.2]])
         with pytest.raises(ValueError, match="policy_logprobs=0"):
-            compute_server_grpo_observability_metrics(
-                [self._datum()],
-                [],
-                [[-0.4, -0.3, -0.1]],
-                [[-0.4, -0.4, -0.2]],
-                [2],
-                eps_clip=0.2,
-                eps_clip_high=None,
-            )
+            grpo.metrics(batch, _logprob_result(), grpo.GRPOConfig())
+
+
+class TestInferenceDriftMetrics:
+    def test_preserves_per_sequence_macro_average(self):
+        batch = _policy_batch(
+            [],
+            [0.0, 0.0],
+            [[0.0], [0.0, 0.0, 0.0]],
+            [1, 1],
+            raw_inference_logprobs=[[0.0], [0.0, 0.0, 0.0]],
+        )
+
+        metrics = inference_drift_metrics(batch, _logprob_result([1.0], [0.0, 0.0, 0.0]))
+
+        # The one-token and three-token sequences have equal weight. A
+        # token-weighted reduction would return 0.25 instead of 0.5.
+        assert metrics["inference_k1"] == pytest.approx(0.5)
+        assert metrics["inference_k3"] == pytest.approx(
+            (torch.exp(torch.tensor(1.0)).item() - 2.0) / 2.0
+        )
+
+    @pytest.mark.parametrize("raw", [[], [[], []]])
+    def test_coverage_is_zero_without_raw_rows(self, raw):
+        batch = _policy_batch(
+            [], [1.0, 1.0], [[-0.1, -0.2], [-0.1, -0.2]], [1, 1], raw_inference_logprobs=raw
+        )
+
+        metrics = inference_drift_metrics(batch, _logprob_result([-0.1, -0.2], [-0.1, -0.2]))
+
+        assert metrics == {"raw_inference_logprob_coverage": 0.0}
+
+    def test_partial_coverage_reports_share_of_active_tokens(self):
+        batch = _policy_batch(
+            [],
+            [1.0, 1.0],
+            [[-0.1, -0.2], [-0.1, -0.2, -0.3, -0.4]],
+            [1, 1],
+            raw_inference_logprobs=[[-0.1, -0.3], []],
+        )
+
+        metrics = inference_drift_metrics(
+            batch, _logprob_result([-0.1, -0.2], [-0.1, -0.2, -0.3, -0.4])
+        )
+
+        assert metrics["raw_inference_logprob_coverage"] == pytest.approx(2 / 6)
+        assert metrics["inference_k1"] == pytest.approx(0.05)
+
+    def test_no_active_tokens_reports_nothing(self):
+        batch = _policy_batch([], [], [], [])
+        assert inference_drift_metrics(batch, _logprob_result()) == {}
 
 
 class TestBatchDPOLoss:
@@ -644,3 +753,19 @@ class TestSFTLossResponseStartOffByOne:
             f"Expected CE=1.0 (from logp(C|A,B)=-1.0), got {loss.item():.4f}. "
             "Fix: use `lp_start = max(0, response_start - 1)` (same fix as DPO)."
         )
+
+
+def test_build_policy_datums_rejects_null_rollout_logprobs_after_anchor_recompute():
+    datum = tinker.Datum(
+        model_input=tinker.ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={"target_tokens": tinker.TensorData(data=[2, 3], dtype="int64", shape=[2])},
+    )
+    batch = PolicyBatch(
+        data=[datum],
+        advantages=[1.0],
+        prompt_lens=[1],
+        rollout_logprobs=[[-0.1, None]],
+        anchor_logprobs=[[-0.1, -0.2]],
+    )
+    with pytest.raises(ValueError, match="rollout_logprobs"):
+        build_policy_datums(batch)

@@ -1,230 +1,47 @@
 #!/usr/bin/env python3
-"""GRPO training on DeepMath-Probability-Hard with Qwen3-30B-A3B-Instruct/or model passed by args.
+"""GRPO on DeepMath-style verifiable math with the async RL loop.
 
-Run prepare_data.py first, then: python train_deepmath.py
+Assembly: ``dataset.jsonl`` rows (chat ``messages`` + ``ground_truth``;
+regenerate with ``prepare_data.py``) + a single-turn renderer rollout graded by
+:func:`deepmath_reward` + ``recipes.async_rl_loop.main`` (server-side GRPO,
+on-policy by default). Groups whose completions all earn the same reward carry
+no advantage and are filtered before training.
+
+    python -m training.examples.rl.deepmath.train_deepmath \\
+      --base-model accounts/fireworks/models/qwen3-4b \\
+      --tokenizer-model Qwen/Qwen3-4B --output-model-id deepmath-qwen3-4b
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import asyncio
+import logging
 import os
 import re
-import subprocess
-import sys
-import logging
-import threading
 import time
-from dataclasses import dataclass, field
-from typing import cast
 
 from dotenv import load_dotenv
 
-_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
-
-
-class _MathVerifyService:
-    """Runs math_verify symbolic comparison in a killable subprocess.
-
-    math_verify cannot be bounded safely in-process: its built-in timeout uses
-    ``signal.SIGALRM`` (the alarm fires into arbitrary asyncio event-loop code
-    and wedges rollouts), and disabling it leaves sympy's hyperexpand/lerchphi
-    expansions unbounded. A worker *thread* running such an expansion can't be
-    interrupted, so it leaks — enough leaked threads starve the GIL and stall
-    the trainer. A subprocess can simply be killed, which also unblocks our
-    reader thread (the pipe closes on kill), so nothing leaks.
-    """
-
-    _WORKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_mathverify_worker.py")
-
-    def __init__(self, worker_path: str | None = None):
-        self._worker_path = worker_path or self._WORKER
-        self._lock = threading.Lock()
-        self._proc: subprocess.Popen | None = None
-
-    def _ensure(self) -> None:
-        if self._proc is None or self._proc.poll() is not None:
-            self._proc = subprocess.Popen(
-                [sys.executable, self._worker_path],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-            )
-
-    def _kill(self) -> None:
-        if self._proc is not None:
-            try:
-                self._proc.kill()
-                self._proc.wait()
-            except Exception:
-                pass
-            self._proc = None
-
-    def verify(self, pred_str: str, gt_str: str, timeout: float = 5.0) -> bool:
-        with self._lock:
-            try:
-                self._ensure()
-                proc = self._proc
-                assert proc is not None and proc.stdin and proc.stdout
-                proc.stdin.write(json.dumps([pred_str, gt_str]) + "\n")
-                proc.stdin.flush()
-
-                result = [False]
-                done = threading.Event()
-
-                def _read() -> None:
-                    # If the worker wedges and we kill it, readline() unblocks
-                    # on EOF — so this thread never leaks.
-                    try:
-                        line = proc.stdout.readline()  # type: ignore[union-attr]
-                        result[0] = bool(json.loads(line)) if line.strip() else False
-                    except Exception:
-                        result[0] = False
-                    finally:
-                        done.set()
-
-                reader = threading.Thread(target=_read, daemon=True)
-                reader.start()
-                if done.wait(timeout):
-                    return result[0]
-                # Worker is stuck on a pathological sympy expansion — kill it
-                # (also unblocks the reader). It respawns on the next call.
-                self._kill()
-                return False
-            except Exception:
-                self._kill()
-                return False
-
-
-_math_verify_service = _MathVerifyService()
-
-
-def math_verify(pred_str: str, gt_str: str, timeout: float = 5.0) -> bool:
-    """Symbolic equality check via the out-of-process math_verify worker."""
-    return _math_verify_service.verify(pred_str, gt_str, timeout=timeout)
-
-
-import training.recipes.rl_loop as rl_loop
+from training.examples.rl.deepmath.math_verify_service import math_verify
+from training.recipes.async_rl_loop import Config, RolloutFn, RolloutSetup, main
+from training.renderer import get_text_content
 from training.utils import (
-    WandBConfig,
     DeployConfig,
     TrainerConfig,
+    WandBConfig,
+    build_renderer,
+    prepare_sampling_messages,
 )
+from training.utils.rl.losses import has_reward_variance
+from training.utils.rl.rollout import RolloutRun, single_turn_renderer_rollout
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Fixed configuration
-# ---------------------------------------------------------------------------
-
-load_dotenv()
-
-FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
-FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-
-
-@dataclass
-class TrainArgs:
-    base_model: str = "accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
-    tokenizer_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-    dataset_path: str = field(
-        default_factory=lambda: os.path.join(os.path.dirname(__file__), "dataset.jsonl")
-    )
-    training_shape: str = field(default_factory=lambda: os.environ.get("TRAINING_SHAPE", ""))
-    ref_training_shape: str | None = None
-    """LoRA-capable training shape for the separate reference trainer."""
-    deployment_id: str | None = None
-    """Omit to auto-create a new deployment; set to reuse an existing one."""
-    deployment_replica_count: int | None = None
-    trainer_replica_count: int | None = None
-    """Run-level data-parallel trainer replicas for HSDP launches."""
-    max_rows: int = 1500
-    epochs: int = 3
-    completions_per_prompt: int = 8
-    learning_rate: float = 1e-5
-    kl_beta: float = 0.001
-    temperature: float = 1.0
-    max_completion_tokens: int = 30 * 1024
-    prompt_groups_per_step: int = 32
-    lora_rank: int = 0
-    """LoRA rank (0 = full-param).  Backend trainer creation selects a
-    LoRA-capable shape; LoRA references reuse the policy trainer (no extra GPUs)."""
-    wandb_entity: str = field(default_factory=lambda: os.environ.get("WANDB_ENTITY", ""))
-    wandb_project: str = field(default_factory=lambda: os.environ.get("WANDB_PROJECT", "grpo-tinker"))
-    skip_cleanup: bool = False
-    """Do not delete deployment and trainer jobs on exit."""
-    policy_job_id: str | None = None
-    """Pre-created policy trainer job ID to reuse."""
-    reference_job_id: str | None = None
-    """Pre-created reference trainer job ID to reuse."""
-    output_model_id: str | None = None
-    """Promote final checkpoint to this model ID."""
-
-
-def parse_args() -> TrainArgs:
-    """Parse CLI args into TrainArgs. Defaults come from the dataclass above."""
-    defaults = TrainArgs()
-    parser = argparse.ArgumentParser(
-        description="Train GRPO on DeepMath-Probability-Hard"
-    )
-    parser.add_argument("--base-model")
-    parser.add_argument("--tokenizer-model")
-    parser.add_argument("--dataset-path")
-    parser.add_argument("--training-shape")
-    parser.add_argument(
-        "--ref-training-shape",
-        help="LoRA-capable training shape for the separate reference trainer",
-    )
-    parser.add_argument(
-        "--deployment-id",
-        help="Existing deployment ID to reuse; omit to auto-create",
-    )
-    parser.add_argument("--deployment-replica-count", type=int)
-    parser.add_argument(
-        "--trainer-replicas",
-        "--trainer-replica-count",
-        dest="trainer_replica_count",
-        type=int,
-        help="Run-level data-parallel trainer replicas for HSDP launches",
-    )
-
-    parser.add_argument("--max-rows", type=int)
-    parser.add_argument("--epochs", type=int)
-    parser.add_argument("--completions-per-prompt", type=int)
-    parser.add_argument("--learning-rate", type=float)
-    parser.add_argument("--kl-beta", type=float)
-    parser.add_argument("--temperature", type=float)
-    parser.add_argument("--max-completion-tokens", type=int)
-
-    parser.add_argument("--prompt-groups-per-step", type=int)
-    parser.add_argument("--lora-rank", type=int,
-                        help="LoRA rank (0 = full-param, e.g. 64 or 128 for LoRA)")
-
-    parser.add_argument("--wandb-entity")
-    parser.add_argument("--wandb-project")
-    parser.add_argument("--skip-cleanup", action="store_true",
-                        help="Do not delete deployment and trainer jobs on exit")
-    parser.add_argument("--policy-job-id",
-                        help="Pre-created policy trainer job ID to reuse")
-    parser.add_argument("--reference-job-id",
-                        help="Pre-created reference trainer job ID to reuse")
-    parser.add_argument("--output-model-id", type=str, required=True,
-                        help="Promote final checkpoint to this model ID")
-
-    parsed = parser.parse_args(namespace=defaults)
-    return cast(TrainArgs, parsed)
-
+DEFAULT_DATASET = os.path.join(os.path.dirname(__file__), "dataset.jsonl")
 
 # ---------------------------------------------------------------------------
-# Reward function
+# Reward
 # ---------------------------------------------------------------------------
 
 _BOXED_RE = re.compile(r"\\boxed\s*\{", re.DOTALL)
@@ -235,8 +52,7 @@ def extract_boxed(text: str) -> str | None:
     matches = list(_BOXED_RE.finditer(text))
     if not matches:
         return None
-    last = matches[-1]
-    start = last.end()
+    start = matches[-1].end()
     depth = 1
     i = start
     while i < len(text) and depth > 0:
@@ -251,25 +67,16 @@ def extract_boxed(text: str) -> str | None:
 
 
 def extract_answer_from_completion(text: str) -> str | None:
-    """Extract the final answer from a model completion.
-
-    Tries (in order):
-      1. \\boxed{...}  (last occurrence, handles nested braces)
-      2. <answer>...</answer> XML tags
-      3. **Answer:** ... markdown prefix
-    """
+    """Final answer from ``\\boxed{}``, then ``<answer>`` tags, then ``**Answer:**``."""
     ans = extract_boxed(text)
     if ans is not None:
         return ans
-
     m = re.search(r"<answer>(.*?)</answer>", text, re.IGNORECASE | re.DOTALL)
     if m:
         return m.group(1).strip()
-
     m = re.search(r"\*\*(?:Answer|ANSWER)\s*[:：]\*\*\s*(.+?)(?:\n|$)", text)
     if m:
         return m.group(1).strip()
-
     return None
 
 
@@ -278,43 +85,66 @@ def _normalize_text(s: str) -> str:
     s = s.strip()
     s = re.sub(r"\\(?:text|mathrm|operatorname)\{([^}]*)\}", r"\1", s)
     s = re.sub(r"\\(?:left|right|displaystyle|,|;|!|quad|qquad)", "", s)
-    s = s.replace("\\dfrac", "\\frac")
-    s = s.replace("\\tfrac", "\\frac")
-    s = s.strip().strip("$").strip()
-    return s
+    s = s.replace("\\dfrac", "\\frac").replace("\\tfrac", "\\frac")
+    return s.strip().strip("$").strip()
 
 
 def deepmath_reward(completion: str, row: dict) -> float:
-    """Return 1.0 if the model's answer matches the ground truth, 0.0 otherwise.
+    """1.0 if the answer matches ``row["ground_truth"]``, else 0.0.
 
-    Uses math_verify for symbolic comparison, with string and numeric fallbacks.
+    Exact match after normalization, then symbolic ``math_verify``, then a
+    numeric comparison.
     """
     ground_truth = str(row.get("ground_truth", ""))
     predicted = extract_answer_from_completion(completion)
     if predicted is None:
         return 0.0
-
     pred_norm = _normalize_text(predicted)
     gt_norm = _normalize_text(ground_truth)
-
     if pred_norm == gt_norm:
         return 1.0
-
-    try:
-        pred_boxed = f"\\boxed{{{predicted}}}"
-        gt_boxed = f"\\boxed{{{ground_truth}}}"
-        if math_verify(pred_boxed, gt_boxed):
-            return 1.0
-    except Exception:
-        pass
-
+    if math_verify(f"\\boxed{{{predicted}}}", f"\\boxed{{{ground_truth}}}"):
+        return 1.0
     try:
         if abs(float(pred_norm) - float(gt_norm)) < 1e-6:
             return 1.0
     except (ValueError, OverflowError):
         pass
-
     return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Rollout
+# ---------------------------------------------------------------------------
+
+
+def make_rollout_fn(setup: RolloutSetup, *, renderer_name: str = "") -> RolloutFn:
+    """One sampled completion per call, rendered and graded by ``deepmath_reward``.
+
+    ``renderer_name`` empty infers the renderer from the tokenizer; bind another
+    with ``functools.partial(make_rollout_fn, renderer_name=...)``.
+    """
+    renderer = build_renderer(
+        setup.tokenizer, setup.tokenizer_id, renderer_name, load_image_processor=False
+    )
+    sampler = setup.sampler  # borrowed from the recipe; do not close
+
+    async def grade(row: dict, message, _parse_success: bool) -> float:
+        # math_verify blocks on its worker process; keep the event loop free.
+        return await asyncio.to_thread(deepmath_reward, get_text_content(message), row)
+
+    async def rollout_fn(row: dict) -> RolloutRun | None:
+        return await single_turn_renderer_rollout(
+            row,
+            renderer=renderer,
+            sample_with_prompt_tokens=sampler.sample_with_prompt_tokens,
+            message_builder=lambda r: prepare_sampling_messages(r.get("messages", [])),
+            reward_fn=grade,
+            sample_kwargs=setup.sample_kwargs,
+            tokenizer=setup.tokenizer,
+        )
+
+    return rollout_fn
 
 
 # ---------------------------------------------------------------------------
@@ -322,38 +152,93 @@ def deepmath_reward(completion: str, row: dict) -> float:
 # ---------------------------------------------------------------------------
 
 
-def main():
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--base-model", default="accounts/fireworks/models/qwen3-30b-a3b-instruct-2507"
+    )
+    parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-30B-A3B-Instruct-2507")
+    parser.add_argument("--dataset-path", default=DEFAULT_DATASET)
+    parser.add_argument(
+        "--training-shape", default=os.environ.get("TRAINING_SHAPE", "")
+    )
+    parser.add_argument("--policy-job-id", help="Existing trainer job to reattach")
+    parser.add_argument(
+        "--deployment-id", help="Existing deployment to reattach; omit to create one"
+    )
+    parser.add_argument("--deployment-replica-count", type=int)
+    parser.add_argument(
+        "--trainer-replicas",
+        "--trainer-replica-count",
+        dest="trainer_replica_count",
+        type=int,
+        help="Run-level data-parallel trainer replicas for HSDP launches",
+    )
+    parser.add_argument("--max-rows", type=int, default=1500)
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--completions-per-prompt", type=int, default=8)
+    parser.add_argument("--prompt-groups-per-step", type=int, default=32)
+    parser.add_argument("--learning-rate", type=float, default=1e-5)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--max-completion-tokens", type=int, default=30 * 1024)
+    parser.add_argument(
+        "--lora-rank", type=int, default=0, help="0 = full-parameter, e.g. 64 for LoRA"
+    )
+    parser.add_argument(
+        "--max-head-offpolicy-versions",
+        type=int,
+        default=0,
+        help="Rollout lead over training in policy versions; 0 is on-policy",
+    )
+    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
+    parser.add_argument(
+        "--wandb-project", default=os.environ.get("WANDB_PROJECT", "grpo-tinker")
+    )
+    parser.add_argument(
+        "--skip-cleanup",
+        action="store_true",
+        help="Keep the trainer and deployment after the run",
+    )
+    parser.add_argument(
+        "--output-model-id",
+        default=None,
+        help="Promote the final checkpoint to this model id; omit to skip promotion",
+    )
+    return parser.parse_args()
+
+
+def main_cli() -> None:
+    load_dotenv()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
     args = parse_args()
-
-    logger.info("GRPO DeepMath-Probability-Hard training with Qwen3-30B-A3B-Instruct")
-
     if not os.path.exists(args.dataset_path):
         raise FileNotFoundError(
             f"Dataset not found at {args.dataset_path}. Run prepare_data.py first."
         )
-
-    os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
-    os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
-
-    config = rl_loop.Config(
+    config = Config(
         log_path="./deepmath_logs",
         base_model=args.base_model,
         dataset=args.dataset_path,
         learning_rate=args.learning_rate,
-        kl_beta=args.kl_beta,
         completions_per_prompt=args.completions_per_prompt,
+        prompt_groups_per_step=args.prompt_groups_per_step,
         max_completion_tokens=args.max_completion_tokens,
         temperature=args.temperature,
         epochs=args.epochs,
         max_rows=args.max_rows,
         lora_rank=args.lora_rank,
-        prompt_groups_per_step=args.prompt_groups_per_step,
+        max_head_offpolicy_versions=args.max_head_offpolicy_versions,
+        dcp_save_interval=20,
+        weight_sync_timeout=600,
+        cleanup_on_exit=not args.skip_cleanup,
         output_model_id=args.output_model_id,
         trainer=TrainerConfig(
             job_id=args.policy_job_id,
-            training_shape_id=args.training_shape,
-            reference_training_shape_id=args.ref_training_shape,
-            reference_job_id=args.reference_job_id,
+            training_shape_id=args.training_shape or None,
             replica_count=args.trainer_replica_count,
         ),
         deployment=DeployConfig(
@@ -362,40 +247,19 @@ def main():
             tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
         ),
-        weight_sync_timeout=600,
-        dcp_save_interval=20,
-        cleanup_on_exit=not args.skip_cleanup,
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
             run_name=args.deployment_id or f"deepmath-{int(time.time()) % 100000}",
         ),
     )
-
-    logger.info(
-        "model=%s | training_shape=%s | deployment_shape=(parsed from training shape)",
-        args.base_model,
-        args.training_shape or "auto",
+    metrics = main(
+        config,
+        rollout_fn_factory=make_rollout_fn,
+        dynamic_filter_fn=has_reward_variance,
     )
-    logger.info(
-        "max_rows=%d | epochs=%d | completions_per_prompt=%d | temp=%.1f | lr=%g | kl_beta=%g",
-        args.max_rows,
-        args.epochs,
-        args.completions_per_prompt,
-        args.temperature,
-        args.learning_rate,
-        args.kl_beta,
-    )
-    logger.info(
-        "prompt_groups_per_step=%d",
-        args.prompt_groups_per_step,
-    )
-
-    rl_loop.reward_fn = deepmath_reward
-    metrics = rl_loop.main(config)
-
     logger.info("Training complete. Final metrics: %s", metrics)
 
 
 if __name__ == "__main__":
-    main()
+    main_cli()

@@ -78,42 +78,41 @@ packages = [
     "training.case-studies.reasoning_rl.grpo_math_evaluator",
     "training.case-studies.sft_bfcl_toolcalls",
     "training.examples",
+    "training.examples.archive",
+    "training.examples.archive.countdown",
+    "training.examples.archive.eval_protocol_chat",
+    "training.examples.archive.eval_protocol_chat.remote_server",
+    "training.examples.archive.single_turn_token_in",
     "training.examples.distillation.gsm8k_privileged",
-    "training.examples.distillation.routed_mopd",
     "training.examples.distillation.serverless_k3_privileged",
     "training.examples.dpo",
     "training.examples.embedding",
-    "training.examples.multihop_qa",
+    "training.examples.harbor_rl",
+    "training.examples.harbor_rl.harnesses",
+    "training.examples.harbor_rl.harnesses.mimoagent",
+    "training.examples.harbor_rl.harnesses.mini_swe",
+    "training.examples.harbor_rl.harnesses.opencode",
+    "training.examples.harbor_rl.harnesses.pi",
+    "training.examples.harbor_rl.tasks",
+    "training.examples.harbor_rl.tasks.dabstep",
+    "training.examples.harbor_rl.tasks.deep_swe",
+    "training.examples.harbor_rl.tasks.mimo",
+    "training.examples.harbor_rl.tasks.mimo.assets",
+    "training.examples.harbor_rl.tasks.mimo.assets.webdev",
+    "training.examples.harbor_rl.tasks.mimo.mcp",
+    "training.examples.harbor_rl.tasks.mimo.music_scorer",
+    "training.examples.harbor_rl.tasks.terminal_bench",
+    "training.examples.harbor_rl.tasks.textworld",
+    "training.examples.harbor_rl.tito",
     "training.examples.orpo",
     "training.examples.orpo.ifeval",
     "training.examples.rl",
     "training.examples.rl.deepmath",
-    "training.examples.rl.eval_protocol_chat",
-    "training.examples.rl.eval_protocol_chat.remote_server",
+    "training.examples.rl.experiment",
+    "training.examples.rl.experiment.sao",
     "training.examples.rl.frozen_lake",
-    "training.examples.rl.harbor",
-    "training.examples.rl.harbor.datasets",
-    "training.examples.rl.harbor.datasets.mimo",
-    "training.examples.rl.harbor.datasets.mimo.assets",
-    "training.examples.rl.harbor.datasets.mimo.assets.webdev",
-    "training.examples.rl.harbor.datasets.mimo.mcp",
-    "training.examples.rl.harbor.datasets.mimo.music_scorer",
-    "training.examples.rl.harbor.mimoagent",
-    "training.examples.rl.harbor.mini_swe",
-    "training.examples.rl.harbor.opencode",
-    "training.examples.rl.harbor.pi",
-    "training.examples.rl.harbor.recipes",
-    "training.examples.rl.harbor.recipes.dabstep",
-    "training.examples.rl.harbor.recipes.deep_swe",
-    "training.examples.rl.harbor.recipes.terminal_bench",
-    "training.examples.rl.harbor.recipes.textworld",
-    "training.examples.rl.harbor.tito",
-    "training.examples.rl.SAO",
-    "training.examples.rl.single_turn_token_in",
+    "training.examples.rl.multihop_qa",
     "training.examples.rl.visual_toolbench",
-    "training.examples.serverless_dpo",
-    "training.examples.serverless_rl",
-    "training.examples.serverless_sft",
     "training.examples.sft",
     "training.examples.tools",
     "training.recipes",
@@ -137,15 +136,15 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-"training.examples.sft" = ["text2sql_dataset.jsonl", "food_reasoning.jsonl"]
-"training.examples.serverless_sft" = ["data/support_triage_train.jsonl"]
+"training.examples.sft" = ["text2sql_dataset.jsonl", "food_reasoning.jsonl", "data/support_triage_train.jsonl"]
 "training.examples.rl.deepmath" = ["dataset.jsonl"]
 "training.examples.rl.frozen_lake" = ["seeds.jsonl", "assets/img/*.png"]
-"training.examples.rl.eval_protocol_chat" = ["train.jsonl"]
-"training.examples.rl.harbor.datasets.mimo.music_scorer" = ["baselines/ref_full4k.json"]
 "training.examples.embedding" = ["retrieval_pairs.jsonl"]
+"training.examples.harbor_rl.tasks.mimo.music_scorer" = ["baselines/ref_full4k.json"]
 "training.examples.distillation.serverless_k3_privileged" = ["data/gsm8k_privileged.jsonl", "data/gsm8k_200.jsonl"]
-"training.examples.serverless_rl" = ["data/countdown_train.jsonl"]
+"training.examples.archive.countdown" = ["data/countdown_train.jsonl"]
+"training.examples.archive.eval_protocol_chat" = ["train.jsonl"]
+"training.tests" = ["_encoding_dsv41_oracle.LICENSE"]
 "training._vendor.tinker_cookbook_0_4_3" = ["LICENSE"]
 "training._vendor.tinker_cookbook_fw" = ["LICENSE"]
 
@@ -169,8 +168,8 @@ select = ["E4", "E7", "E9", "F"]
 [tool.ruff.lint.per-file-ignores]
 # Vendored MiMo graders. The music scorer and webdev shot script are copied
 # unchanged so scores stay comparable with MiMo's published runs.
-"examples/rl/harbor/datasets/mimo/music_scorer/**" = ["E731"]
-"examples/rl/harbor/datasets/mimo/assets/**" = ["E731"]
+"examples/harbor_rl/tasks/mimo/music_scorer/**" = ["E731"]
+"examples/harbor_rl/tasks/mimo/assets/**" = ["E731"]
 
 [tool.coverage.run]
 branch = true

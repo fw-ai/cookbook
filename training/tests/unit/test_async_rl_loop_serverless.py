@@ -7,11 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 import tinker
-import torch
 
-from training.examples.rl import vanilla_sampler
+from training.examples.archive import vanilla_sampler
 from training.recipes.experiment import async_rl_loop_serverless as loop
-from training.utils.rl.losses import PromptGroup
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 
 
@@ -43,11 +41,10 @@ class _TrainingClient:
         self.saved: list[str] = []
         self.saved_states: list[str] = []
         self.loaded_states: list[str] = []
-        self.forward_backward_calls: list[tuple[list[tinker.Datum], str]] = []
-        self.forward_calls: list[tuple[list[tinker.Datum], str]] = []
-        self.forward_backward_custom_calls: list[tuple[list[tinker.Datum], object]] = []
-        self.precomputed_forward_calls: list[object | None] = []
-        self.forward_backward_custom_results: list[SimpleNamespace] = []
+        self.forward_backward_calls: list[
+            tuple[list[tinker.Datum], str, dict | None]
+        ] = []
+        self.forward_backward_results: list[SimpleNamespace] = []
         self.optim_calls: list[tuple[tinker.AdamParams, str | None, bool]] = []
 
     def save_weights_for_sampler(self, name: str) -> _Future:
@@ -62,47 +59,21 @@ class _TrainingClient:
         self.loaded_states.append(path)
         return _Future(SimpleNamespace())
 
-    def forward_backward(self, data, loss_fn: str) -> _Future:
-        self.forward_backward_calls.append((data, loss_fn))
-        return _Future(SimpleNamespace(metrics={}))
-
-    def forward(self, data, loss_fn: str) -> _Future:
-        self.forward_calls.append((data, loss_fn))
-        outputs = []
-        for datum in data:
-            target_tokens = datum.loss_fn_inputs["target_tokens"].data
-            outputs.append(
-                {"logprobs": SimpleNamespace(data=[-0.2] * len(target_tokens))}
-            )
-        return _Future(SimpleNamespace(loss_fn_outputs=outputs))
-
-    def forward_backward_custom(
-        self,
-        data,
-        loss_fn,
-        *,
-        precomputed_forward=None,
-    ) -> _Future:
-        self.forward_backward_custom_calls.append((data, loss_fn))
-        self.precomputed_forward_calls.append(precomputed_forward)
-        if precomputed_forward is None:
-            # Model the SDK-owned custom-loss forward, rather than a recipe snapshot.
-            self.forward(data, "cross_entropy").result()
-            logprobs = [
-                torch.tensor(
-                    [-0.15] * len(datum.loss_fn_inputs["target_tokens"].data),
-                    requires_grad=True,
+    def forward_backward(self, data, loss_fn: str, loss_fn_config=None) -> _Future:
+        self.forward_backward_calls.append((data, loss_fn, loss_fn_config))
+        # The trainer returns the pre-update policy logprob of every target.
+        outputs = [
+            {
+                "logprobs": tinker.TensorData(
+                    data=[-0.15] * len(datum.loss_fn_inputs["target_tokens"].data),
+                    dtype="float32",
+                    shape=[len(datum.loss_fn_inputs["target_tokens"].data)],
                 )
-                for datum in data
-            ]
-        else:
-            logprobs = [
-                torch.tensor(output["logprobs"].data, requires_grad=True)
-                for output in precomputed_forward.loss_fn_outputs
-            ]
-        _loss, metrics = loss_fn(data, logprobs)
-        result = SimpleNamespace(metrics=metrics)
-        self.forward_backward_custom_results.append(result)
+            }
+            for datum in data
+        ]
+        result = SimpleNamespace(metrics={"loss:sum": 1.0}, loss_fn_outputs=outputs)
+        self.forward_backward_results.append(result)
         return _Future(result)
 
     def optim_step(
@@ -125,13 +96,13 @@ class _Service:
         self.training_client = _TrainingClient()
         self.sampling_clients: list[_SamplingClient] = []
         self.base_sampling_calls: list[str] = []
-        self.lora_creation_calls: list[tuple[str, int]] = []
+        self.lora_creation_calls: list[tuple[str, int, int]] = []
         self.closed = False
 
-    def create_lora_training_client(self, *, base_model: str, rank: int):
+    def create_lora_training_client(self, *, base_model: str, rank: int, alpha: int):
         assert base_model == "accounts/fireworks/models/kimi-k3"
         assert rank > 0
-        self.lora_creation_calls.append((base_model, rank))
+        self.lora_creation_calls.append((base_model, rank, alpha))
         return self.training_client
 
     def create_sampling_client(
@@ -150,37 +121,6 @@ class _Service:
 
     def close(self) -> None:
         self.closed = True
-
-
-def _datum_group() -> PromptGroup:
-    model_input = tinker.ModelInput.from_ints([10, 11]).model_copy(
-        update={"routing_matrices": ["", "route-11"]}
-    )
-    datum = tinker.Datum(
-        model_input=model_input,
-        loss_fn_inputs={
-            "target_tokens": tinker.TensorData(
-                data=[11, 12],
-                dtype="int64",
-                shape=[2],
-            ),
-            "weights": tinker.TensorData(
-                data=[0, 1],
-                dtype="int64",
-                shape=[2],
-            ),
-        },
-    )
-    return PromptGroup(
-        data=[datum],
-        advantages=[0.5],
-        ref_logprobs=None,
-        prompt_len=2,
-        rewards=[1.0],
-        inf_logprobs=[[0.0, -0.25]],
-        raw_inf_logprobs=[[0.0, -0.35]],
-        prompt_lens=[2],
-    )
 
 
 def _patch_runtime(monkeypatch, service: _Service) -> None:
@@ -203,8 +143,6 @@ def test_serverless_defaults_are_the_320_group_k3_contract() -> None:
     assert cfg.pipeline_chunks_per_step == 2
     assert cfg.max_head_offpolicy_versions == 0
     assert cfg.max_concurrency_rollout_sample is None
-    assert cfg.grad_accumulation_normalization == "num_loss_tokens"
-    assert cfg.kl_beta == 0.0
     assert cfg.eps_clip == 0.2
     assert cfg.eps_clip_high is None
     assert cfg.max_seq_len == 524288
@@ -215,25 +153,21 @@ def test_serverless_defaults_are_the_320_group_k3_contract() -> None:
     assert cfg.adam_beta2 == 0.95
     assert cfg.adam_epsilon == 1e-12
     assert cfg.weight_decay == 0.01
+    assert cfg.lora_alpha == 32
     assert cfg.dcp_save_interval == 0
     assert cfg.save_final_checkpoint
     assert cfg.max_rows // cfg.prompt_groups_per_step == 40
 
 
-def test_serverless_rejects_reference_kl_without_reference_model() -> None:
-    with pytest.raises(ValueError, match="kl_beta must be 0"):
-        loop._validate_config(loop.Config(kl_beta=0.001))
-
-
-def test_invalid_anchor_fails_before_serverless_setup(monkeypatch) -> None:
+def test_invalid_clip_fails_before_serverless_setup(monkeypatch) -> None:
     def unexpected_service(*_args):
         pytest.fail("invalid config must not provision a service")
 
     monkeypatch.setattr(loop, "_make_service", unexpected_service)
     monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="anchor_logp"):
+    with pytest.raises(ValueError, match="eps_clip"):
         loop.main(
-            loop.Config(anchor_logp="invalid"),
+            loop.Config(eps_clip=-0.1),
             rollout_fn_factory=lambda _setup: None,
             rows=[],
         )
@@ -262,7 +196,7 @@ def test_vanilla_sampler_prefers_injected_sampler() -> None:
     assert vanilla_sampler.build_deployment_sampler(setup) is injected
 
 
-def test_harbor_turn_limit_reaches_rollout_setup() -> None:
+def test_rollout_setup_carries_the_completion_and_sequence_limits() -> None:
     sampler = loop.ServerlessSampler(_SamplingClient("snapshot"))
 
     setup = loop._rollout_setup(
@@ -270,12 +204,25 @@ def test_harbor_turn_limit_reaches_rollout_setup() -> None:
         tokenizer=object(),
         sampler=sampler,
         api_key="test-key",
-        extras=None,
         router_replay_enabled=False,
     )
 
     assert setup.sample_kwargs["max_tokens"] == 32768
     assert setup.sample_kwargs["max_seq_len"] == 524288
+    assert "include_routing_matrix" not in setup.sample_kwargs
+
+
+def test_moe_rollouts_request_completion_only_router_replay() -> None:
+    setup = loop._rollout_setup(
+        loop.Config(),
+        tokenizer=object(),
+        sampler=loop.ServerlessSampler(_SamplingClient("snapshot")),
+        api_key="test-key",
+        router_replay_enabled=True,
+    )
+
+    assert setup.sample_kwargs["include_routing_matrix"] is True
+    assert setup.sample_kwargs["echo"] is False
 
 
 def test_sampler_replacement_drains_old_client() -> None:
@@ -336,12 +283,10 @@ def test_sampling_preflight_uses_zero_update_snapshot(monkeypatch) -> None:
 
     assert result == {"preflight/reward": 0.5}
     assert seen["evaluation"] is True
-    assert service.lora_creation_calls == [("accounts/fireworks/models/kimi-k3", 64)]
+    assert service.lora_creation_calls == [("accounts/fireworks/models/kimi-k3", 64, 32)]
     assert service.base_sampling_calls == []
     assert service.training_client.saved == ["async-rl-preflight-step-0"]
     assert service.training_client.forward_backward_calls == []
-    assert service.training_client.forward_calls == []
-    assert service.training_client.forward_backward_custom_calls == []
     assert service.training_client.optim_calls == []
     assert service.training_client.saved_states == []
     assert [client.deployment_sampler.model for client in service.sampling_clients] == [
@@ -449,32 +394,20 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
 
     assert result["steps"] == 1
     assert result["accepted_groups"] == 2
-    assert service.training_client.forward_backward_calls == []
-    assert len(service.training_client.forward_calls) == 2
-    assert all(
-        loss_fn == "cross_entropy"
-        for _, loss_fn in service.training_client.forward_calls
-    )
-    assert len(service.training_client.forward_backward_custom_calls) == 2
-    assert all(
-        result is not None for result in service.training_client.precomputed_forward_calls
-    )
-    for custom_result in service.training_client.forward_backward_custom_results:
-        assert custom_result.metrics["raw_inference_logprob_coverage"] == 1.0
-        assert custom_result.metrics["inference_k3"] >= 0.0
-        assert "inference_k1" in custom_result.metrics
-        assert "inference_kld" not in custom_result.metrics
-        assert "inference_diff" not in custom_result.metrics
-        assert "k1" not in custom_result.metrics
-        assert "k3" not in custom_result.metrics
-        assert "tis/weight_mean" not in custom_result.metrics
+    assert [
+        loss_fn for _, loss_fn, _ in service.training_client.forward_backward_calls
+    ] == ["ppo", "ppo"]
+    for fwd_bwd_result in service.training_client.forward_backward_results:
+        assert fwd_bwd_result.metrics["raw_inference_logprob_coverage"] == 1.0
+        assert fwd_bwd_result.metrics["inference_k3"] >= 0.0
+        assert "ppo_ratio_mean" in fwd_bwd_result.metrics
     step_metrics = next(
         metrics for metrics in logged_metrics if "train/step" in metrics
     )
     assert step_metrics["train/raw_inference_logprob_coverage"] == 1.0
     assert step_metrics["train/inference_k3"] >= 0.0
     assert "train/inference_k1" in step_metrics
-    assert step_metrics["train/custom_forward_reused"] == 1.0
+    assert "train/ppo_clip_frac" in step_metrics
     assert len(service.training_client.optim_calls) == 1
     adam = service.training_client.optim_calls[0][0]
     assert adam.beta2 == 0.95
@@ -560,15 +493,15 @@ def test_evaluation_overlaps_training_and_finishes_before_snapshot_replacement(
         lambda metrics, **_kwargs: logged_metrics.append(dict(metrics)),
     )
 
-    original_forward = service.training_client.forward
+    original_forward_backward = service.training_client.forward_backward
 
-    def forward(data, loss_fn):
+    def forward_backward(data, loss_fn, loss_fn_config=None):
         assert evaluation_started.wait(timeout=5)
         events.append("train-forward")
         release_evaluation.set()
-        return original_forward(data, loss_fn)
+        return original_forward_backward(data, loss_fn, loss_fn_config)
 
-    service.training_client.forward = forward
+    service.training_client.forward_backward = forward_backward
     original_save = service.training_client.save_weights_for_sampler
 
     def save_weights_for_sampler(name):
@@ -626,22 +559,18 @@ def test_evaluation_overlaps_training_and_finishes_before_snapshot_replacement(
     assert any("eval/weight_sync_wait_time" in metrics for metrics in logged_metrics)
 
 
-def test_missing_raw_inference_logprobs_fail_before_optimizer(monkeypatch) -> None:
+def test_train_step_uses_server_grpo_with_rollout_anchor(monkeypatch) -> None:
     service = _Service()
     _patch_runtime(monkeypatch, service)
 
     def factory(_setup):
-        async def rollout(
-            _row,
-            *,
-            sample_index: int,
-            **_context,
-        ) -> RolloutRun:
+        async def rollout(_row, *, sample_index: int, **_context) -> RolloutRun:
             return RolloutRun(
                 segments=[
                     RolloutSample(
                         tokens=[10, 11, 12],
                         logprobs=[0.0, -0.1, -0.2],
+                        raw_logprobs=[0.0, -0.3, -0.4],
                         loss_mask=[0, 1, 1],
                         reward=float(sample_index),
                     )
@@ -651,27 +580,41 @@ def test_missing_raw_inference_logprobs_fail_before_optimizer(monkeypatch) -> No
 
         return rollout
 
-    with pytest.raises(ValueError, match="raw inference logprob row"):
-        loop.main(
-            loop.Config(
-                completions_per_prompt=2,
-                prompt_groups_per_step=2,
-                pipeline_chunks_per_step=2,
-                max_completion_tokens=2,
-                max_seq_len=8,
-                max_rows=2,
-                min_group_size=2,
-                max_incomplete_group_retries=0,
-            ),
-            rollout_fn_factory=factory,
-            rows=[{"id": "a"}, {"id": "b"}],
-        )
+    loop.main(
+        loop.Config(
+            completions_per_prompt=2,
+            prompt_groups_per_step=1,
+            pipeline_chunks_per_step=1,
+            max_completion_tokens=2,
+            max_seq_len=8,
+            max_rows=1,
+            min_group_size=2,
+            max_incomplete_group_retries=0,
+            eps_clip_high=0.28,
+        ),
+        rollout_fn_factory=factory,
+        rows=[{"id": "a"}],
+    )
 
-    assert service.training_client.forward_calls == []
-    assert service.training_client.forward_backward_custom_calls == []
-    assert service.training_client.optim_calls == []
-    assert all(client.closed for client in service.sampling_clients)
-    assert service.closed
+    ((datums, loss_fn, loss_fn_config),) = (
+        service.training_client.forward_backward_calls
+    )
+    assert loss_fn == "ppo"
+    assert loss_fn_config == pytest.approx(
+        {"clip_low_threshold": 0.8, "clip_high_threshold": 1.28}
+    )
+    assert len(datums) == 2
+    for datum in datums:
+        inputs = datum.loss_fn_inputs
+        # The clipping anchor is the rollout's sampling logprobs, untouched.
+        assert inputs["logprobs"].data == pytest.approx([-0.1, -0.2])
+        assert inputs["response_mask"].data == [1, 1]
+    assert sorted(datum.loss_fn_inputs["advantages"].data[0] for datum in datums) == (
+        pytest.approx([-0.7071, 0.7071], abs=1e-4)
+    )
+    (optim,) = service.training_client.optim_calls
+    assert optim[1] == "num_loss_tokens"
+    assert optim[2] is True
 
 
 def test_resume_restores_optimizer_cursor_and_step(monkeypatch) -> None:

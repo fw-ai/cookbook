@@ -16,31 +16,27 @@ from training.utils.service import build_service_client, resolve_router_replay_e
 
 @pytest.mark.parametrize("capability", [None, False, True])
 @pytest.mark.parametrize("configured_rdma", [False, True])
-@pytest.mark.parametrize("extended", [False, True])
-def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, extended, caplog):
+def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, caplog):
     from unittest.mock import Mock
 
     policy = SimpleNamespace(
         weight_sync=Mock(return_value=SimpleNamespace(optimizer_version=0)),
         save_weights_for_sampler=Mock(return_value=SimpleNamespace(path="saved")),
-        save_weights_for_sampler_ext=Mock(return_value=SimpleNamespace(snapshot_name="saved")),
     )
     if capability is not None:
         policy.supports_rdma_weight_sync = capability
     managed_service = SimpleNamespace(hotload_sampler_snapshot=Mock())
     deployment = DeployConfig(weight_sync_transport="RDMA" if configured_rdma else None)
-    sync = service.make_weight_sync(policy, managed_service, deployment, extended=extended)
+    sync = service.make_weight_sync(policy, managed_service, deployment)
     with caplog.at_level("INFO", logger=service.__name__):
         sync("step-1", checkpoint_type="base")
     assert f"Weight sync completed: {'RDMA' if capability is True else 'FILE'}" in caplog.text
     if capability is True:
         policy.weight_sync.assert_called_once_with()
         policy.save_weights_for_sampler.assert_not_called()
-        policy.save_weights_for_sampler_ext.assert_not_called()
         managed_service.hotload_sampler_snapshot.assert_not_called()
     else:
-        save = policy.save_weights_for_sampler_ext if extended else policy.save_weights_for_sampler
-        save.assert_called_once_with("step-1", checkpoint_type="base")
+        policy.save_weights_for_sampler.assert_called_once_with("step-1", checkpoint_type="base")
         managed_service.hotload_sampler_snapshot.assert_called_once_with("saved")
         policy.weight_sync.assert_not_called()
 
@@ -316,7 +312,7 @@ def test_router_replay_last_resort_honors_user_flag_when_model_not_visible(
         )
 
     assert enabled is True
-    assert "honoring router_replay=True" in caplog.text
+    assert "requesting Router Replay" in caplog.text
 
 
 def test_router_replay_last_resort_still_off_when_user_disabled(monkeypatch):

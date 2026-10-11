@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Hashable, Iterable
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
-from training.train_loop import DynamicFilterFn
+from training.utils.rl.rollout.setup import DynamicFilterFn
 from training.utils.rl.async_rl.batch import (
     OptimizerBatch,
     TrainingChunk,
@@ -118,7 +118,6 @@ class RolloutProducer:
         max_head_off_policy_versions: int,
         max_concurrent_rollouts: int | None,
         advantage_fn: AdvantageFn,
-        with_reference: bool,
         router_replay_completion_only: bool,
         min_group_size: int,
         max_incomplete_group_retries: int,
@@ -161,7 +160,6 @@ class RolloutProducer:
         self._assembler = GroupAssembler(
             completions_per_prompt=completions_per_prompt,
             advantage_fn=advantage_fn,
-            with_reference=with_reference,
             router_replay_completion_only=router_replay_completion_only,
             min_group_size=min_group_size,
         )

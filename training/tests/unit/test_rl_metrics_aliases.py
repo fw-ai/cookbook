@@ -9,7 +9,7 @@ import tinker
 from tinker.lib.chunked_fwdbwd_helpers import combine_fwd_bwd_output_results
 
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.metrics import compute_step_metrics
+from training.utils.rl.metrics import async_step_perf_metrics, compute_step_metrics
 
 
 def _make_prompt_group() -> PromptGroup:
@@ -18,7 +18,6 @@ def _make_prompt_group() -> PromptGroup:
     return PromptGroup(
         data=[datum],
         advantages=[1.0],
-        ref_logprobs=[[0.1, 0.1, 0.1]],
         prompt_len=2,
         rewards=[1.0],
         inf_logprobs=[[-0.2, -0.3, -0.4]],
@@ -33,19 +32,23 @@ class TestComputeStepMetrics:
             prompt_groups=[_make_prompt_group()],
             fwd_bwd_results=[SimpleNamespace(metrics={"loss": 0.5})],
             optim_result=SimpleNamespace(metrics={"lr": 1e-5}),
-            n_accum=4,
             timing_metrics={"perf/fwd_bwd_time": 1.0},
-            loop_stats={
-                "perf/step_time": 6.0,
-                "perf/train_time": 1.0,
-                "perf/train_wait_time": 5.0,
-                "perf/wait_time_ratio": 5 / 6,
-                "perf/train_chunk_wait_time": 0.25,
-                "all_raw_rewards": [1.0, 0.0],
-                "async/in_flight_samples_mean": 6.5,
-                "async/realized_training_chunks": 4,
-                "async/trained_against_version": 2,
-            },
+            raw_rewards=[1.0, 0.0],
+        )
+        metrics.update(
+            async_step_perf_metrics(
+                {
+                    "perf/step_time": 6.0,
+                    "perf/train_time": 1.0,
+                    "perf/train_wait_time": 5.0,
+                    "perf/wait_time_ratio": 5 / 6,
+                    "perf/train_chunk_wait_time": 0.25,
+                    "async/in_flight_samples_mean": 6.5,
+                    "async/realized_training_chunks": 4,
+                    "async/trained_against_version": 2,
+                },
+                [_make_prompt_group()],
+            )
         )
 
         rollout_metrics = {
@@ -57,6 +60,9 @@ class TestComputeStepMetrics:
             "rollout/raw_samples": 2,
             "rollout/filtered_samples": 1,
             "rollout/filter_ratio": 0.5,
+            "rollout/completion_tokens_mean": 2.0,
+            "rollout/completion_tokens_max": 2,
+            "rollout/truncated_ratio": 0.0,
         }
         assert metrics["train/target_tokens"] == 3
         assert metrics["perf/step_time"] == 6.0
@@ -69,6 +75,7 @@ class TestComputeStepMetrics:
         assert metrics["async/in_flight_samples_mean"] == 6.5
         assert metrics["async/realized_training_chunks"] == 4
         assert metrics["async/trained_against_version"] == 2
+        assert "train/effective_accumulation_steps" not in metrics
         assert "perf/overlap_ratio" not in metrics
         assert "perf/trainer_idle_ratio" not in metrics
         assert "perf/trainer_wait_for_sampler_time" not in metrics
@@ -110,9 +117,8 @@ class TestComputeStepMetrics:
             prompt_groups=[group],
             fwd_bwd_results=[],
             optim_result=None,
-            n_accum=1,
             timing_metrics={},
-            loop_stats={"all_raw_rewards": [1.0]},
+            raw_rewards=[1.0],
         )
 
         assert len(group.data) == 2
@@ -169,7 +175,6 @@ class TestComputeStepMetrics:
             prompt_groups=[left, right],
             fwd_bwd_results=[],
             optim_result=None,
-            n_accum=1,
             timing_metrics={},
         )
 
@@ -192,7 +197,6 @@ class TestComputeStepMetrics:
                 prompt_groups=[group],
                 fwd_bwd_results=[],
                 optim_result=None,
-                n_accum=1,
                 timing_metrics={},
             )
 
@@ -211,7 +215,6 @@ class TestComputeStepMetrics:
                 prompt_groups=[group],
                 fwd_bwd_results=[],
                 optim_result=None,
-                n_accum=1,
                 timing_metrics={},
             )
 
@@ -230,7 +233,6 @@ class TestComputeStepMetrics:
             prompt_groups=[group],
             fwd_bwd_results=[],
             optim_result=None,
-            n_accum=1,
             timing_metrics={},
         )
 
@@ -260,7 +262,6 @@ class TestComputeStepMetrics:
             prompt_groups=[group],
             fwd_bwd_results=[],
             optim_result=None,
-            n_accum=1,
             timing_metrics={},
         )
 
@@ -287,7 +288,6 @@ class TestComputeStepMetrics:
                     "trainer_busy_walltime_pct:last": 80.0,
                 }
             ),
-            n_accum=0,
             timing_metrics={},
         )
 
@@ -314,7 +314,6 @@ class TestComputeStepMetrics:
                     "grad_norm_post_clip": 1.0,
                 }
             ),
-            n_accum=0,
             timing_metrics={},
         )
 
@@ -339,7 +338,6 @@ class TestFwdBwdResultAveraging:
             prompt_groups=[],
             fwd_bwd_results=fwd_bwds,
             optim_result=None,
-            n_accum=len(fwd_bwds),
             timing_metrics={},
         )
         assert metrics["train/ppo_clip_frac"] == (0.0 + 0.1 + 0.3) / 3
@@ -362,7 +360,6 @@ class TestFwdBwdResultAveraging:
             prompt_groups=[],
             fwd_bwd_results=fwd_bwds,
             optim_result=None,
-            n_accum=2,
             timing_metrics={},
         )
 
@@ -378,7 +375,6 @@ class TestFwdBwdResultAveraging:
                 self._fake_fwd_bwd(loss=3.0, inference_k3=0.25),
             ],
             optim_result=None,
-            n_accum=2,
             timing_metrics={},
         )
 
@@ -402,7 +398,6 @@ class TestFwdBwdResultAveraging:
                 ),
             ],
             optim_result=None,
-            n_accum=2,
             timing_metrics={},
         )
 
@@ -417,7 +412,6 @@ class TestFwdBwdResultAveraging:
             prompt_groups=[],
             fwd_bwd_results=[only],
             optim_result=None,
-            n_accum=1,
             timing_metrics={},
         )
         assert metrics["train/ppo_clip_frac"] == 0.42
@@ -452,7 +446,6 @@ class TestFwdBwdResultAveraging:
             prompt_groups=[],
             fwd_bwd_results=[only],
             optim_result=None,
-            n_accum=1,
             timing_metrics={},
         )
 
@@ -470,7 +463,6 @@ class TestFwdBwdResultAveraging:
             prompt_groups=[],
             fwd_bwd_results=[],
             optim_result=None,
-            n_accum=0,
             timing_metrics={},
         )
         assert not any(k.startswith("train/ppo_") for k in metrics)
@@ -564,7 +556,7 @@ class TestTrialPhaseTimings:
     def test_extracts_harbor_timing_brackets(self):
         from datetime import datetime, timedelta, timezone
 
-        from training.examples.rl.harbor.tito.trial import _trial_phase_timings
+        from training.examples.harbor_rl.tito.trial import _trial_phase_timings
 
         start = datetime(2026, 1, 1, tzinfo=timezone.utc)
         bracket = lambda seconds: SimpleNamespace(  # noqa: E731
@@ -589,7 +581,7 @@ class TestTrialPhaseTimings:
         }
 
     def test_omits_unrecorded_brackets(self):
-        from training.examples.rl.harbor.tito.trial import _trial_phase_timings
+        from training.examples.harbor_rl.tito.trial import _trial_phase_timings
 
         result = SimpleNamespace(
             environment_setup=None,
@@ -602,7 +594,7 @@ class TestTrialPhaseTimings:
         assert _trial_phase_timings(result) == {}
 
     def test_attach_trial_phase_metrics_builds_one_sample_distributions(self):
-        from training.examples.rl.harbor.tito.rollout import (
+        from training.examples.harbor_rl.tito.rollout import (
             _attach_trial_phase_metrics,
         )
 

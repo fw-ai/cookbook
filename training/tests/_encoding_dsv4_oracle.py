@@ -13,7 +13,7 @@
 # Any edits here will mask drift between our renderer and the upstream encoder.
 # To refresh:
 #     curl -sL https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/raw/main/encoding/encoding_dsv4.py \
-#         -o train-firetitan-py/cookbook/training/tests/_encoding_dsv4_oracle.py
+#         -o tests/_encoding_dsv4_oracle.py
 # and re-prepend this header.
 
 """

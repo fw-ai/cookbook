@@ -20,7 +20,7 @@ Use **managed training** for standard SFT/DPO/ORPO jobs. Reach for the **Trainin
 
 | Path | Use when | Cookbook |
 |---|---|---|
-| **Serverless** | Supported-model LoRA SFT or RL, shared pool, per-token billing, no provisioning | `training/examples/serverless_rl/` for the synchronous quickstart; `training/recipes/experiment/async_rl_loop_serverless.py` for experimental async RL |
+| **Serverless** | Supported-model LoRA SFT or RL, shared pool, per-token billing, no provisioning | `training/examples/*/train_*_serverless.py` (e.g. DeepMath, VisualToolBench) on the experimental async RL loop `training/recipes/experiment/async_rl_loop_serverless.py` |
 | **Dedicated** | Full-parameter, DPO, broader model/method support, sustained runs, explicit trainer/deployment/checkpoint control | `training/recipes/` |
 
 Read the live [serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and [dedicated](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md) pages before choosing.
@@ -78,7 +78,7 @@ Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw
 - `training/examples/` — worked RL / SFT / DPO / ORPO
 - `training/utils/` — config, data loading, losses, metrics
 
-Recipes cover SFT, DPO/ORPO, and RL (GRPO, SAO/PPO, DAPO, GSPO, CISPO).
+Recipes cover SFT, DPO/ORPO, and RL. The RL loops train GRPO; DAPO, GSPO, CISPO, DRO, DPPO and others are objective modules in `training/utils/rl/algorithm/` that a forked loop calls (see `rl-custom-loss.md`). SAO/PPO and IGPO have their own recipes.
 
 ## Core SDK primitives
 
@@ -112,8 +112,9 @@ Log `result.metrics` with the optimizer step. `True` emits global L2
 `grad_norm` and `grad_norm_rms`; `"detailed"` adds parameter-bucket norms.
 `grad_norm` is after accumulation normalization and before clipping; preserve
 the run's normalization setting. Keys may have a `:last` suffix.
-For `async_rl_loop`, set `Config(grad_norm_metrics="basic")` (or `"detailed"`).
-Verify the first step's logs; missing metrics do not mean zero gradients.
+The RL loops always request `True`; a fork that needs bucket norms passes
+`"detailed"`. Verify the first step's logs; missing metrics do not mean zero
+gradients.
 
 ### Top-K logprobs from `forward` (entropy / distributional KL)
 
@@ -145,19 +146,19 @@ def reward_fn(completion: str, row: dict) -> float:   # fork this
     truth = extract_answer(str(row.get("ground_truth", "")))
     return 1.0 if predicted == truth else 0.0
 ```
-The dataset is JSONL of prompts (`messages`) plus exactly the fields the selected reward reads. `ground_truth` is common for exact-match rewards, but it is not universal. Declare and validate the reward's required fields before launch. The recipe samples rollouts, scores each with `reward_fn`, and trains. Key knobs: `policy_loss` (`grpo`/`dapo`/`gspo`/`cispo`/…), `max_head_offpolicy_versions` (0 = strict on-policy), `completions_per_prompt`. The SDK provisions the trainer + rollout deployment and tears them down on close. **No registered evaluator needed on this path.**
+The dataset is JSONL of prompts (`messages`) plus exactly the fields the selected reward reads. `ground_truth` is common for exact-match rewards, but it is not universal. Declare and validate the reward's required fields before launch. The recipe samples rollouts, scores each with `reward_fn`, and trains with the trainer's built-in GRPO loss, clipped against the rollout logprobs, with no reference KL. Key knobs: `completions_per_prompt`, `prompt_groups_per_step`, `eps_clip`/`eps_clip_high`, and `max_head_offpolicy_versions` (async; 0 = strict on-policy). To change the objective, fork the loop's train step (`rl-custom-loss.md`). The SDK provisions the trainer + rollout deployment and tears them down on close. **No registered evaluator needed on this path.**
 
 ## Numerics alignment & MoE Router Replay (R3)
 
 Trainer↔inference divergence silently wrecks RL. Required reading: https://docs.fireworks.ai/fine-tuning/rl-rollout-integration#numerics-alignment
 - Match **precision/quantization** between trainer checkpoints and the deployment shape.
 - Measure **logprob divergence** between trainer forward and rollout inference on the same tokens.
-- **MoE → Router Replay (R3):** align the top-K experts the router picks. Inference returns them via `include_routing_matrix: true` + `logprobs: true`; feed them back through `loss_fn_inputs`. https://docs.fireworks.ai/guides/rollout-inference#moe-router-replay
+- **MoE → Router Replay (R3):** align the top-K experts the router picks. Inference returns them via `include_routing_matrix: true` + `logprobs: true`, and rollout assembly attaches them to the trainer datums. The RL loops request completion-only R3 automatically for MoE base models. https://docs.fireworks.ai/guides/rollout-inference#moe-router-replay
 
 ## Critical rules
 
 - **Start from a cookbook recipe**, not a blank loop.
-- **Align numerics** before trusting any RL signal; turn on **R3** for MoE.
+- **Align numerics** before trusting any RL signal; keep **R3** on for MoE.
 - **For RL, use a dedicated rollout deployment** (sized for sampling), not your prod endpoint.
 - **Set an explicit deployment shape for the rollout.** RFT provisions a rollout/sampling deployment, and the accelerator is owned by the *deployment shape*. With only a base model and `training_shape=auto`, creation fails: `ValueError: Cannot create a managed deployment without a deployment shape`. Pass a `deployment_shape` (or a `training_shape_id` whose shape references one) — e.g. via the recipe's `--training-shape`. The RFT preflight should check this before launch. (Observed live on qwen3-4b, 2026-07-15.)
 - Use `forward_backward_custom` only for a genuinely custom objective; otherwise the built-in path is cheaper.

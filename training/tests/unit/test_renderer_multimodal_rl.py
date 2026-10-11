@@ -23,8 +23,8 @@ from training.utils.rl.rollout.renderer import (
     single_turn_renderer_rollout,
 )
 from fireworks.training.sdk.sampling import SampledCompletion
-from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
-from training.utils.rl.losses import build_grpo_datums
+from training.utils.rl.algorithm import grpo
+from training.utils.rl.losses import build_policy_datums, combine_prompt_groups
 from training.utils.rl.rollout.types import (
     Rollout,
     rollout_to_prompt_group,
@@ -406,30 +406,6 @@ def test_multimodal_rollout_sample_packs_prompt_group():
     assert has_non_text_chunks(segment.prompt_model_input)
 
 
-def test_multimodal_reference_datum_mask_shape_matches_weights():
-    prompt = _multimodal_prompt()
-    run = _build_multimodal_rollout_sample(
-        prompt_model_input=prompt,
-        completion_tokens=[30, 31],
-        completion_logprobs=[-0.1, -0.2],
-        raw_completion_logprobs=[-1.1, -1.2],
-        reward=1.0,
-        finish_reason="stop",
-        text="hi",
-    )
-    pg = rollout_to_prompt_group(
-        Rollout(runs=[run, run]),
-        with_reference=True,
-        advantage_fn=lambda rewards: list(rewards),
-    )
-    assert pg is not None
-    policy_weights = pg.data[0].loss_fn_inputs["weights"]
-    ref_mask = pg.ref_data[0].loss_fn_inputs["loss_mask"]
-    assert len(ref_mask.data) == ref_mask.shape[0]
-    assert ref_mask.shape[0] == policy_weights.shape[0]
-    assert ref_mask.shape[0] == len(pg.data[0].loss_fn_inputs["target_tokens"].data)
-
-
 def test_multimodal_inf_logprobs_match_datum_weight_index_space():
     """GRPO slices inf_logprobs with prompt_lens in shifted-weights space."""
     prompt = _multimodal_prompt()
@@ -486,13 +462,9 @@ def test_multimodal_client_grpo_preserves_expanded_coordinates():
     ]
     assert target_lengths == [len(values) for values in pg.inf_logprobs]
 
-    loss_fn = make_grpo_loss_fn(
-        pg.advantages,
-        [[0.0] * n for n in target_lengths],
-        pg.prompt_lens,
-        inf_logprobs=pg.inf_logprobs,
-        kl_beta=0.0,
-    )
+    batch = combine_prompt_groups([pg])
+    assert batch.prompt_lens == pg.prompt_lens
+    loss_fn = grpo.make_loss_fn(batch, grpo.GRPOConfig())
     forward_logprobs = [
         torch.tensor(values, dtype=torch.float32, requires_grad=True)
         for values in pg.inf_logprobs
@@ -535,12 +507,7 @@ def test_multimodal_builtin_loss_datums_use_expanded_coordinates():
     assert pg is not None
     assert pg.prompt_lens is not None
 
-    builtin_datums = build_grpo_datums(
-        data=pg.data,
-        advantages=pg.advantages,
-        inf_logprobs=pg.inf_logprobs,
-        prompt_lens=pg.prompt_lens,
-    )
+    builtin_datums = build_policy_datums(combine_prompt_groups([pg]))
 
     for policy_datum, builtin_datum in zip(pg.data, builtin_datums):
         expected_len = policy_datum.model_input.length
@@ -548,6 +515,7 @@ def test_multimodal_builtin_loss_datums_use_expanded_coordinates():
             "target_tokens",
             "logprobs",
             "advantages",
+            "response_mask",
         }
         assert all(
             len(tensor.data) == tensor.shape[0] == expected_len
@@ -580,7 +548,6 @@ def test_multimodal_router_replay_uses_expanded_datum_boundary():
     pg = rollout_to_prompt_group(
         Rollout(runs=[run, run]),
         advantage_fn=lambda rewards: list(rewards),
-        with_reference=True,
         router_replay_completion_only=True,
     )
 
@@ -592,7 +559,6 @@ def test_multimodal_router_replay_uses_expanded_datum_boundary():
     assert len(routes) == len(weights)
     assert [routes[i] for i in active] == ["route-30", "route-31"]
     assert all(routes[i] == "" for i in range(active[0]))
-    assert pg.ref_data[0].model_input.routing_matrices is None
 
 
 @pytest.mark.asyncio
@@ -826,10 +792,7 @@ def test_multimodal_sampling_support_survives_expanded_image_positions():
     group = rollout_to_prompt_group(Rollout(runs=[run]), advantage_fn=lambda rewards: rewards)
     assert group is not None
     (datum,) = attach_top_sampling_references(
-        build_grpo_datums(
-            group.data, group.advantages, group.inf_logprobs, group.prompt_lens,
-            include_response_mask=True,
-        ), group.top_sampling_references,
+        build_policy_datums(combine_prompt_groups([group])), group.top_sampling_references,
     )
     aligned = RoutingReferences.from_dict(datum.model_input.top_sampling_references)
     assert len(aligned) == datum.model_input.length == 8

@@ -2,7 +2,7 @@ import pytest
 import tinker
 
 from fireworks.training.sdk.routing import RoutingReferences
-from training.utils.rl.losses import build_grpo_datums
+from training.utils.rl.losses import PolicyBatch, build_policy_datums
 from training.utils.rl.sampling_support import attach_top_sampling_references
 
 
@@ -19,8 +19,10 @@ def _datum():
 @pytest.mark.parametrize("advantage", [0.0, -2.0, 3.0])
 def test_references_attach_without_changing_loss_inputs(advantage):
     references = RoutingReferences(2, (), ({"input_token_start": 0, "count": 2},))
-    built = build_grpo_datums(
-        [_datum()], [advantage], [[0.0, -0.2]], [1], include_response_mask=True
+    built = build_policy_datums(
+        PolicyBatch(
+            data=[_datum()], advantages=[advantage], prompt_lens=[1], rollout_logprobs=[[0.0, -0.2]]
+        )
     )
 
     (result,) = attach_top_sampling_references(built, [references])
@@ -45,7 +47,7 @@ def test_references_must_align_with_datums():
         attach_top_sampling_references([_datum()], [])
 
 
-def test_older_sdk_keeps_default_recipe_usable_and_rejects_replay(monkeypatch):
+def test_older_sdk_rejects_replay(monkeypatch):
     import importlib
 
     import fireworks.training.sdk.routing as routing
@@ -53,8 +55,29 @@ def test_older_sdk_keeps_default_recipe_usable_and_rejects_replay(monkeypatch):
 
     monkeypatch.delattr(routing, "top_sampling_model_input_kwargs")
     importlib.reload(sampling_support)
-    from training.recipes.async_rl_loop import Config, sampling_support_kwargs
 
-    assert sampling_support_kwargs(Config(log_path="unused")) == {}
     with pytest.raises(ValueError, match="upgrade fireworks-ai"):
-        attach_top_sampling_references([_datum()], [None])
+        sampling_support.attach_top_sampling_references([_datum()], [None])
+
+
+def test_sampling_support_kwargs_and_loss_config():
+    from training.utils.rl.sampling_support import (
+        sampling_support_kwargs,
+        sampling_support_loss_fn_config,
+    )
+
+    assert sampling_support_kwargs(top_p=0.95, support_size=64) == {
+        "top_p": 0.95,
+        "top_sampling_logprobs": 64,
+        "top_sampling_format": "parquet_v1",
+    }
+    config = {"clip_low_threshold": 0.8}
+    assert sampling_support_loss_fn_config(config) == {
+        "clip_low_threshold": 0.8,
+        "target_logprob_support": "sampling_support",
+    }
+    assert config == {"clip_low_threshold": 0.8}
+    with pytest.raises(ValueError, match="top_p"):
+        sampling_support_kwargs(top_p=0.0, support_size=64)
+    with pytest.raises(ValueError, match="support_size"):
+        sampling_support_kwargs(top_p=0.9, support_size=0)

@@ -24,9 +24,6 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
-FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -69,9 +66,6 @@ def main():
         raise FileNotFoundError(
             f"Dataset not found at {args.dataset_path}. Run prepare_data.py first."
         )
-
-    os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
-    os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
 
     config = orpo_loop.Config(
         log_path="./ifeval_orpo_logs",

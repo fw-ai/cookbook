@@ -29,9 +29,7 @@ from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 logger = logging.getLogger(__name__)
 
 
-def make_weight_sync(
-    policy: Any, service: Any, deployment: DeployConfig, *, extended: bool = False
-):
+def make_weight_sync(policy: Any, service: Any, deployment: DeployConfig):
     """Select publication once, preserving FILE names and initial-base requests."""
     if getattr(policy, "supports_rdma_weight_sync", False) is True:
         def publish(name: str, **kwargs: Any) -> Any:
@@ -40,17 +38,9 @@ def make_weight_sync(
             return result
 
         return publish
-    save = (
-        policy.save_weights_for_sampler_ext
-        if extended
-        else policy.save_weights_for_sampler
-    )
-
     def publish(name, **kwargs):
-        saved = save(name, **kwargs)
-        result = service.hotload_sampler_snapshot(
-            saved.snapshot_name if extended else saved.path
-        )
+        saved = policy.save_weights_for_sampler(name, **kwargs)
+        result = service.hotload_sampler_snapshot(saved.path)
         logger.info("Weight sync completed: FILE")
         return result
 
@@ -107,9 +97,9 @@ def resolve_router_replay_enabled(
         logger.warning(
             "Router Replay: cannot determine whether %s is MoE (model record not "
             "visible to this caller, HTTP %d) and the trainer did not report it; "
-            "honoring router_replay=True as requested. If the model is dense, "
-            "sampling will reject the routing request -- rerun with "
-            "--router-replay false.",
+            "requesting Router Replay. If the model is dense, sampling will "
+            "reject the routing request -- call resolve_router_replay_enabled "
+            "with requested=False in the loop.",
             base_model,
             exc.status_code,
         )

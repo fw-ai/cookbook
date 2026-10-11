@@ -21,9 +21,9 @@ from fireworks.training.sdk import (
     TITOTrajectoryArtifact,
     TITOTurn,
 )
-from training.examples.rl.harbor.tito._artifact_io import ArtifactProcessPool
-from training.examples.rl.harbor.tito.rollout import materialize_harbor_trajectory
-from training.examples.rl.harbor.tito.trial import (
+from training.examples.harbor_rl.tito._artifact_io import ArtifactProcessPool
+from training.examples.harbor_rl.tito.rollout import materialize_harbor_trajectory
+from training.examples.harbor_rl.tito.trial import (
     HarborTrialOutcome,
     _finish_harbor_trial,
 )
@@ -320,7 +320,7 @@ def test_setup_timeout_preserves_retry_policy(tmp_path):
 
 
 def test_pi_process_reconciles_lifecycle_and_timeout_metadata(pool, tmp_path):
-    from training.examples.rl.harbor.pi.rollout import _materialize_pi_trajectory
+    from training.examples.harbor_rl.harnesses.pi.rollout import _materialize_pi_trajectory
 
     outcome = _write_artifact(tmp_path, routing=True)
     convert = partial(
@@ -360,7 +360,7 @@ def test_pi_process_reconciles_lifecycle_and_timeout_metadata(pool, tmp_path):
 def test_drain_bound_discards_a_wedged_worker(pool, tmp_path, monkeypatch):
     """A worker that outlives the drain bound must not own the pool's process."""
 
-    from training.examples.rl.harbor.tito import _artifact_io
+    from training.examples.harbor_rl.tito import _artifact_io
 
     monkeypatch.setattr(_artifact_io, "_DRAIN_TIMEOUT_SECONDS", 1.0)
     started, release, finished = (

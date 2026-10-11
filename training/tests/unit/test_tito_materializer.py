@@ -21,7 +21,7 @@ from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.rollout.tito import materialize_tito_trajectory
 from training.utils.rl.rollout.types import Rollout, rollout_to_prompt_group
-from training.utils.rl.losses import build_grpo_datums
+from training.utils.rl.losses import build_policy_datums
 from training.utils.rl.sampling_support import attach_top_sampling_references
 
 
@@ -288,12 +288,9 @@ def test_materializes_and_packs_sampler_topk_in_target_coordinates() -> None:
     assert group.inference_topk_logprobs == [
         [[], [-0.1, -1.1], [-0.1, -1.1], [], [-0.1, -1.1]]
     ]
-    *_, topk_ids, topk_logprobs = combine_prompt_groups(
-        [group],
-        include_topk=True,
-    )
-    assert topk_ids == group.inference_topk_token_ids
-    assert topk_logprobs == group.inference_topk_logprobs
+    batch = combine_prompt_groups([group])
+    assert batch.inference_topk_token_ids == group.inference_topk_token_ids
+    assert batch.inference_topk_logprobs == group.inference_topk_logprobs
 
 
 @pytest.mark.parametrize(
@@ -809,7 +806,6 @@ def test_sidecar_metrics_reach_common_step_reducer() -> None:
         prompt_groups=[group],
         fwd_bwd_results=[],
         optim_result=SimpleNamespace(metrics={}),
-        n_accum=1,
         timing_metrics={},
     )
 
@@ -909,12 +905,9 @@ def test_top_sampling_references_follow_completion_only_route_operations(
     group = rollout_to_prompt_group(Rollout(runs=[run]), advantage_fn=lambda rewards: rewards)
     assert group is not None
     assert group.top_sampling_references == [sample.top_sampling_references]
-    data, adv, _, prompt_lens, inf_lp, references = combine_prompt_groups(
-        [group], include_top_sampling_references=True
-    )
+    batch = combine_prompt_groups([group])
     (datum,) = attach_top_sampling_references(
-        build_grpo_datums(data, adv, inf_lp, prompt_lens, include_response_mask=True),
-        references,
+        build_policy_datums(batch), batch.top_sampling_references
     )
     assert datum.model_input.top_sampling_references == sample.top_sampling_references.to_dict()
     assert any(datum.loss_fn_inputs["advantages"].data)

@@ -9,7 +9,7 @@ model/template-specific suffix-and-junction implementation.
 Layout: ``shared`` holds the certification dataclass, tokenizer fingerprint,
 and template normalization; ``<model>.py`` holds each certified renderer;
 ``registry`` owns the production certification table; ``plugins`` accepts
-certifications from installed distributions whose protocol cannot ship here.
+additional model certifications from installed distributions.
 """
 
 from training.renderer.tito.glm52 import GLM52TITORenderer

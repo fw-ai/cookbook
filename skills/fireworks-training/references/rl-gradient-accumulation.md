@@ -4,7 +4,8 @@ Every `forward_backward(...)` / `forward_backward_custom(...)` **accumulates gra
 
 `rl_loop.py` runs a **strict 1:1 ratio** per step: all
 `prompt_groups_per_step * completions_per_prompt` datums flow through one
-forward-backward followed by one `optim_step`.
+forward-backward followed by one `optim_step`. `async_rl_loop.py` accumulates
+`pipeline_chunks_per_step` chunk forward-backwards into one `optim_step`.
 
 Do **not** use trainer-job `grad_accum`, `TrainerJobConfig.gradient_accumulation_steps`, or the old REST `gradientAccumulationSteps` field. Cookbook recipes and examples do not expose the server-side knob; SDK compatibility handling rejects values above `1`. Real gradient accumulation is only client-side control flow: call `forward_backward` N times, then call one `optim_step`.
 
@@ -20,7 +21,8 @@ Do **not** use trainer-job `grad_accum`, `TrainerJobConfig.gradient_accumulation
 
 ## Defaults that matter
 
-- Cookbook RL recipe defaults leave `grad_accumulation_normalization=None`, so `optim_step` performs **no server-side normalization** unless the recipe/user opts in.
+- The RL loops pass `objective.NORMALIZATION`; for GRPO that is `GradAccNormalization.NUM_LOSS_TOKENS`. The built-in GRPO loss is a raw sum, so token-mean normalization keeps the gradient, `train/grad_norm` and `grad_clip_norm` independent of how many tokens a step trains. There is no `Config` field.
+- Every objective module in `training.utils.rl.algorithm` exports its mode as `NORMALIZATION` (GSPO: `NUM_SEQUENCES`; the others `NUM_LOSS_TOKENS`), so swapping the objective module also swaps the normalization.
 - The SFT recipe passes `reduction="mean"` while constructing each datum, so
   every example's loss weights sum to 1 and `optim_step` needs no additional
   normalization.

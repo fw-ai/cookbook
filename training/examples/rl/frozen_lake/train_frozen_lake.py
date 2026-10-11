@@ -1,949 +1,254 @@
 #!/usr/bin/env python3
-"""GRPO training on FrozenLake multi-turn tool calls with eval-protocol rollouts.
+"""GRPO on FrozenLake multi-turn tool calls, with eval-protocol rollouts.
 
-Demonstrates reinforcement learning with multi-turn tool-calling:
-  - eval-protocol handles the data plane (token-ID-based rollout with environment)
-  - cookbook handles the training plane (GRPO loss, weight sync, reference model)
-  - training uses the server-side builtin loss path when available, otherwise
-    it falls back to the client-side custom loss path
+The policy plays FrozenLake through a ``lake_move`` tool: each turn it sees the
+grid (text, or a rendered image with ``--observation-mode image``) and calls
+the tool once. An episode ends in a hole, at the goal or after ``--max-steps``
+moves; its reward is 1 when the agent reaches the goal. Training is
+``recipes/async_rl_loop.py`` driven by this file's task code:
+
+- ``make_frozen_lake_evaluator``: the eval-protocol ``@evaluation_test`` that
+  owns the seed rows, the ``FrozenLakeToolRolloutProcessor`` and the reward.
+- ``episode_to_sample``: one played episode -> one token-native sample. The
+  model's tool calls are trained; tool replies and turn framing are context.
+- ``make_eval_protocol_rollout_fn_factory`` turns both into the recipe's
+  ``rollout_fn``. Groups whose episodes all score the same are skipped.
 
 Usage:
     Follow the setup instructions in ../../../README.md.
     export FIREWORKS_API_KEY=...
-    python train_frozen_lake.py --training-shape <shape_id>
+    python -m training.examples.rl.frozen_lake.train_frozen_lake --training-shape <shape_id>
+
+Reuse a trainer and deployment with ``--policy-job-id`` and ``--deployment-id``.
+``verify_rollout.py`` plays the same episodes against a serving model without
+a trainer.
 """
 
-from __future__ import annotations
-
+# No ``from __future__ import annotations``: eval-protocol checks the reward
+# function's annotations by identity.
 import argparse
-import asyncio
 import json
 import logging
 import os
-import signal
-import time
-from contextlib import closing
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, cast
+from dataclasses import dataclass
+from typing import Any
 
-import tinker
-
-from eval_protocol.models import EvaluationRow, InputMetadata
+from eval_protocol.dataset_logger import default_logger
+from eval_protocol.models import EvaluateResult, EvaluationRow, InputMetadata
 from eval_protocol.pytest import evaluation_test
 
 from training.examples.rl.frozen_lake.frozen_lake_rollout import (
-    DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS,
     FrozenLakeToolRolloutProcessor,
 )
-from training.examples.rl.frozen_lake.masking import (
-    compute_model_output_spans,
-    build_ui_token_mask,
-)
-
-from fireworks.training.sdk.client import GradAccNormalization
-
-from training.utils import (
-    DEFAULT_ADAM,
-    TrainerConfig,
-    WandBConfig,
-    DeployConfig,
-    ReconnectableClient,
-    wandb_log,
-    setup_wandb,
-    wandb_finish,
-    log_metrics_json,
-    build_service_client,
-    make_weight_sync,
-    read_api_extra_headers_env,
-    build_training_datum_from_token_mask,
-    validate_config,
-)
-from training.utils.rl import PromptGroup
-from training.utils.rl.async_rl import (
-    AsyncRLCoordinator,
-    AsyncRLTelemetry,
-    TrainingChunk,
-    RolloutRow,
-)
-from training.utils.rl.rollout import (
-    RolloutSample,
+from training.recipes import async_rl_loop
+from training.recipes.async_rl_loop import Config, RolloutFnFactory, RolloutSetup
+from training.utils import DeployConfig, TrainerConfig, WandBConfig
+from training.utils.rl.losses import has_reward_variance
+from training.utils.rl.rollout import RolloutSample
+from training.utils.rl.rollout.eval_protocol import (
     load_eval_protocol_input_rows,
     make_eval_protocol_rollout_fn_factory,
 )
-from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
-from training.utils.rl.anchor import prepare_policy_anchor
-from training.utils.rl.losses import combine_prompt_groups
-from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
-from training.utils.checkpoints import TrainingCheckpoints
-from training.utils.timer import flush_timing, wall_timer
+from training.utils.rl.rollout.turn_traces import turn_traces_to_sample
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-DEFAULT_USER_PROMPT_TEMPLATE = "FrozenLake grid observation:\n{observation}"
-DEFAULT_VISUAL_PROMPT_TEMPLATE = (
-    "You are playing FrozenLake. The image shows the current grid. "
-    "The current textual observation is below.\n"
-    "{observation}\n\n"
-    "Tiles are labeled S, F, H, and G. The agent is marked with a red dot. "
-    "Use exactly one lake_move tool call with action LEFT, DOWN, RIGHT, or UP."
-)
-
-DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS
-DCP_SAVE_INTERVAL = 20
-WEIGHT_SYNC_TIMEOUT_S = 900
+DEFAULT_SEEDS = os.path.join(os.path.dirname(__file__), "seeds.jsonl")
 
 
 @dataclass
-class FrozenLakeConfig:
-    log_path: str = "./frozen_lake_logs"
-
-    base_model: str = "accounts/fireworks/models/qwen3-8b"
-    tokenizer_model: str = "Qwen/Qwen3-8B"
-
-    learning_rate: float = 1e-5
-    kl_beta: float = 0.001
-    completions_per_prompt: int = 4
-    max_completion_tokens: int = 128
-    temperature: float = 1.0
-    epochs: int = 3
+class FrozenLakeTask:
+    seed_jsonl_path: str = DEFAULT_SEEDS
+    """One JSON object per line; each is an episode's ``environment_context``
+    (``{"seed": 7}`` draws a random 4x4 map with that seed)."""
     max_seeds: int = 20
     max_steps: int = 12
-    lora_rank: int = 0
-    max_seq_len: int | None = None
-
-    prompt_groups_per_step: int = 4
-    max_concurrent: int = 16
-
-    eps_clip: float = 0.2
-    """PPO clip epsilon for the client-side GRPO objective."""
-    eps_clip_high: float | None = None
-    """Asymmetric upper clip bound for the client-side GRPO objective."""
-
-    seed_jsonl_path: str = field(
-        default_factory=lambda: os.path.join(os.path.dirname(__file__), "seeds.jsonl")
-    )
-    map_name: str = "4x4"
-    use_random_map: bool = True
-    system_prompt: str = DEFAULT_SYSTEM_PROMPT
-    user_prompt_template: str = DEFAULT_USER_PROMPT_TEMPLATE
-    visual_prompt_template: str = DEFAULT_VISUAL_PROMPT_TEMPLATE
+    """Moves per episode."""
     observation_mode: str = "text"
+    """``text`` grid, or a rendered ``image`` for vision models."""
     allow_plaintext_action_fallback: bool = False
+    """Accept a bare LEFT/DOWN/RIGHT/UP when the model emits no tool call."""
+    log_rollouts: bool = False
+    """Log every episode to eval-protocol's local store (browse with ``ep logs``)."""
 
-    training_shape: str = ""
-    deployment_shape: str = ""
-    deployment_id: str | None = None
-    deployment_replica_count: int | None = None
 
-    wandb_entity: str = field(
-        default_factory=lambda: os.environ.get("WANDB_ENTITY", "")
+# -- Task: rows, environment and reward (eval-protocol) -----------------------
+
+
+def frozen_lake_reward(row: EvaluationRow) -> EvaluationRow:
+    """Score 1.0 when the episode's last move reached the goal."""
+    step_rewards = (row.execution_metadata.extra or {}).get("step_rewards") or []
+    reached_goal = bool(step_rewards) and float(step_rewards[-1]) > 0
+    row.evaluation_result = EvaluateResult(
+        score=1.0 if reached_goal else 0.0,
+        reason="reached the goal" if reached_goal else "did not reach the goal",
     )
-    wandb_project: str = field(
-        default_factory=lambda: os.environ.get("WANDB_PROJECT", "frozen-lake-grpo")
+    return row
+
+
+def make_frozen_lake_evaluator(task: FrozenLakeTask):
+    """The eval-protocol evaluation test the trainer rolls out."""
+    with open(task.seed_jsonl_path) as f:
+        contexts = [json.loads(line) for line in f if line.strip()][: task.max_seeds]
+    rows = [
+        EvaluationRow(
+            input_metadata=InputMetadata(
+                row_id=f"seed_{context['seed']}",
+                dataset_info={"environment_context": context},
+            )
+        )
+        for context in contexts
+    ]
+    processor = FrozenLakeToolRolloutProcessor(
+        observation_mode=task.observation_mode,
+        allow_plaintext_action_fallback=task.allow_plaintext_action_fallback,
+    )
+    return evaluation_test(
+        input_rows=[rows],
+        rollout_processor=processor,
+        steps=task.max_steps,
+        mode="pointwise",
+        logger=default_logger if task.log_rollouts else None,
+    )(frozen_lake_reward)
+
+
+def evaluator_rows(evaluator) -> list[dict[str, Any]]:
+    """The evaluator's rows as recipe dataset rows."""
+    return [
+        {"id": row.input_metadata.row_id, "evaluation_row": row}
+        for row in load_eval_protocol_input_rows(evaluator)
+    ]
+
+
+# -- Rollout: one episode -> one training sample -----------------------------
+
+
+def episode_to_sample(row: EvaluationRow) -> RolloutSample | None:
+    """Pack a played episode; drop it when a tool call could not be parsed."""
+    extra = row.execution_metadata.extra or {}
+    if extra.get("rollout_error"):
+        logger.warning(
+            "Dropping FrozenLake episode %s: %s",
+            row.input_metadata.row_id,
+            extra["rollout_error"],
+        )
+        return None
+    return turn_traces_to_sample(
+        extra["token_turn_traces"],
+        reward=row.evaluation_result.score,
+        finish_reason=row.execution_metadata.finish_reason or "stop",
     )
 
-    policy_job_id: str | None = None
-    reference_job_id: str | None = None
-    inference_base_url: str | None = None
-    output_model_id: str | None = None
+
+def completion_params(setup: RolloutSetup, _params: Any) -> dict[str, Any]:
+    """Sample from the recipe's deployment with the recipe's sampling settings."""
+    gateway = setup.inference_base_url.rstrip("/").removesuffix("/inference")
+    sample_kwargs = setup.sample_kwargs
+    return {
+        "model": setup.model,
+        "base_url": f"{gateway}/inference",
+        "api_key": setup.api_key,
+        "tokenizer_name_or_path": setup.tokenizer_id,
+        "temperature": sample_kwargs["temperature"],
+        "max_tokens": sample_kwargs["max_tokens"],
+        # Full-vocabulary sampling: the trainer normalizes over the full vocabulary.
+        "top_p": sample_kwargs.get("top_p", 1.0),
+        "top_k": sample_kwargs.get("top_k", 0),
+    }
 
 
-def parse_args() -> FrozenLakeConfig:
-    parser = argparse.ArgumentParser(
-        description="GRPO training on FrozenLake tool calls"
+def make_rollout_fn_factory(evaluator) -> RolloutFnFactory:
+    return make_eval_protocol_rollout_fn_factory(
+        evaluator,
+        sample_converter=episode_to_sample,
+        completion_params_factory=completion_params,
     )
+
+
+# -- Assembly -----------------------------------------------------------------
+
+
+def main(cfg: Config, task: FrozenLakeTask | None = None) -> dict[str, Any]:
+    evaluator = make_frozen_lake_evaluator(task or FrozenLakeTask())
+    return async_rl_loop.main(
+        cfg,
+        rollout_fn_factory=make_rollout_fn_factory(evaluator),
+        rows=evaluator_rows(evaluator),
+        dynamic_filter_fn=has_reward_variance,
+    )
+
+
+def parse_args(argv: list[str] | None = None) -> tuple[Config, FrozenLakeTask]:
+    parser = argparse.ArgumentParser(description="GRPO on FrozenLake tool calls")
     parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3-8b")
     parser.add_argument("--tokenizer-model", default="Qwen/Qwen3-8B")
-    parser.add_argument(
-        "--training-shape", default=os.environ.get("TRAINING_SHAPE", "")
-    )
-    parser.add_argument("--deployment-shape", default="")
-    parser.add_argument("--deployment-id", default=None)
-    parser.add_argument("--deployment-replica-count", type=int, default=None)
-
-    parser.add_argument(
-        "--seed-jsonl-path",
-        default=os.path.join(os.path.dirname(__file__), "seeds.jsonl"),
-    )
+    parser.add_argument("--training-shape", default=os.environ.get("TRAINING_SHAPE"))
+    parser.add_argument("--policy-job-id", help="Reuse this trainer job.")
+    parser.add_argument("--deployment-id", help="Reuse this deployment.")
+    parser.add_argument("--deployment-shape")
+    parser.add_argument("--deployment-replica-count", type=int)
+    parser.add_argument("--seed-jsonl-path", default=DEFAULT_SEEDS)
     parser.add_argument("--max-seeds", type=int, default=20)
-    parser.add_argument("--max-steps", type=int, default=12)
-    parser.add_argument("--map-name", default="4x4")
-    parser.add_argument("--use-random-map", action="store_true", default=True)
-
+    parser.add_argument("--max-steps", type=int, default=12, help="Moves per episode.")
+    parser.add_argument("--observation-mode", choices=("text", "image"), default="text")
+    parser.add_argument("--allow-plaintext-action-fallback", action="store_true")
+    parser.add_argument("--log-rollouts", action="store_true")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--completions-per-prompt", type=int, default=4)
+    parser.add_argument("--prompt-groups-per-step", type=int, default=4)
+    parser.add_argument("--max-concurrent", type=int, default=16, help="Episodes in flight.")
     parser.add_argument("--learning-rate", type=float, default=1e-5)
-    parser.add_argument("--kl-beta", type=float, default=0.001)
-    parser.add_argument("--ratio-log-cap", type=float, default=20.0)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-completion-tokens", type=int, default=128)
-    parser.add_argument("--prompt-groups-per-step", type=int, default=4)
-    parser.add_argument("--min-samples-per-fwd-bwd", type=int, default=None)
-    parser.add_argument("--max-concurrent", type=int, default=16)
     parser.add_argument("--lora-rank", type=int, default=0)
-
-    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
+    parser.add_argument("--log-path", default="./frozen_lake_logs")
+    parser.add_argument("--output-model-id")
+    parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY"))
     parser.add_argument(
         "--wandb-project", default=os.environ.get("WANDB_PROJECT", "frozen-lake-grpo")
     )
-    parser.add_argument(
-        "--visual-prompt-template", default=DEFAULT_VISUAL_PROMPT_TEMPLATE
-    )
-    parser.add_argument("--observation-mode", choices=("text", "image"), default="text")
-    parser.add_argument("--allow-plaintext-action-fallback", action="store_true")
+    args = parser.parse_args(argv)
 
-    parser.add_argument(
-        "--policy-job-id",
-        default=None,
-        help="Pre-created policy trainer job ID (skip creation)",
-    )
-    parser.add_argument(
-        "--reference-job-id",
-        default=None,
-        help="Pre-created reference trainer job ID (skip creation)",
-    )
-    parser.add_argument(
-        "--inference-base-url",
-        default=None,
-        help="Direct base URL for inference deployment (skip gateway)",
-    )
-    parser.add_argument(
-        "--output-model-id",
-        type=str,
-        required=True,
-        help="Promote final checkpoint to this model ID",
-    )
-
-    return cast(FrozenLakeConfig, parser.parse_args(namespace=FrozenLakeConfig()))
-
-
-# ---------------------------------------------------------------------------
-# Seed loading
-# ---------------------------------------------------------------------------
-
-
-def load_seed_contexts(path: str, max_seeds: int) -> List[Dict[str, Any]]:
-    """Load environment contexts from a seed JSONL file."""
-    contexts: List[Dict[str, Any]] = []
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            entry = json.loads(line)
-            contexts.append(
-                {
-                    "map_name": entry.get("map_name", "4x4"),
-                    "use_random_map": True,
-                    "seed": int(entry["seed"]),
-                }
-            )
-            if len(contexts) >= max_seeds:
-                break
-    return contexts
-
-
-# ---------------------------------------------------------------------------
-# EvaluationRow -> PromptGroup conversion
-# ---------------------------------------------------------------------------
-
-
-def evaluation_row_to_training_data(
-    row: EvaluationRow,
-) -> tuple[list[tinker.Datum], int, list[float], list[float]]:
-    """Convert a completed rollout EvaluationRow into tinker training datums.
-
-    For a multi-turn episode, the last turn's prompt_ids contain the full
-    conversation context.  We build one datum per episode using the full
-    token sequence (all turns concatenated by the rollout processor).
-
-    Returns (datums, prompt_len, inf_logprobs_per_datum, [episode_reward]).
-    """
-    extra = row.execution_metadata.extra or {}
-    token_turn_traces = extra.get("token_turn_traces") or []
-    step_rewards = extra.get("step_rewards") or []
-
-    if not token_turn_traces:
-        return [], 0, [], []
-
-    # The last turn's prompt_ids = full context; its completion_ids = final action.
-    # But for training, we want the complete trajectory as one sequence.
-    # Build the full sequence: first turn prompt + all completions + turn suffixes.
-    # The rollout processor already tracks prompt_ids per turn where each turn's
-    # prompt_ids = previous prompt_ids + assistant_turn_ids + tool_suffix_ids.
-    # So the last turn's prompt_ids + completion_ids = full episode tokens.
-    last_trace = token_turn_traces[-1]
-    last_prompt_ids = [int(x) for x in (last_trace.get("prompt_ids") or [])]
-    last_completion_ids = [int(x) for x in (last_trace.get("completion_ids") or [])]
-    full_tokens = last_prompt_ids + last_completion_ids
-
-    if len(full_tokens) < 2:
-        return [], 0, [], []
-
-    # prompt_len = first turn's prompt length (system + user message, before any model output)
-    first_prompt_len = len(
-        [int(x) for x in (token_turn_traces[0].get("prompt_ids") or [])]
-    )
-
-    model_request_traces = extra.get("model_request_traces") or []
-    spans = compute_model_output_spans(token_turn_traces, model_request_traces)
-    token_mask = build_ui_token_mask(spans, len(full_tokens))
-    datum = build_training_datum_from_token_mask(
-        full_tokens,
-        token_mask,
-        include_loss_mask=True,
-    )
-    model_input_len = datum.model_input.length
-
-    # Reconstruct rollout_logprobs aligned to the full sequence.
-    # Pad prompt positions with 0.0, then fill in per-turn completion logprobs.
-    inf_logprobs = [0.0] * model_input_len
-
-    for trace in token_turn_traces:
-        turn_prompt_len = len(trace.get("prompt_ids") or [])
-        turn_completion_logprobs = trace.get("completion_logprobs") or []
-        start_pos = max(0, turn_prompt_len - 1)
-        for i, lp in enumerate(turn_completion_logprobs):
-            pos = start_pos + i
-            if pos < model_input_len:
-                inf_logprobs[pos] = float(lp)
-
-    episode_reward = 1.0 if step_rewards and float(step_rewards[-1]) > 0 else 0.0
-
-    return [datum], first_prompt_len, [inf_logprobs], [episode_reward]
-
-
-def evaluation_row_to_rollout_sample(row: EvaluationRow) -> RolloutSample | None:
-    """Convert a completed FrozenLake EvaluationRow into one RolloutSample."""
-    extra = row.execution_metadata.extra or {}
-    token_turn_traces = extra.get("token_turn_traces") or []
-    step_rewards = extra.get("step_rewards") or []
-
-    if not token_turn_traces:
-        return None
-
-    last_trace = token_turn_traces[-1]
-    last_prompt_ids = [int(x) for x in (last_trace.get("prompt_ids") or [])]
-    last_completion_ids = [int(x) for x in (last_trace.get("completion_ids") or [])]
-    full_tokens = last_prompt_ids + last_completion_ids
-    if len(full_tokens) < 2:
-        return None
-
-    model_request_traces = extra.get("model_request_traces") or []
-    spans = compute_model_output_spans(token_turn_traces, model_request_traces)
-    ui_token_mask = build_ui_token_mask(spans, len(full_tokens))
-    loss_mask = [1 if int(m) > 0 else 0 for m in ui_token_mask]
-
-    # RolloutSample.logprobs are token-aligned rollout_logprobs.
-    # Non-generated tokens keep 0.0; generated token logprobs are copied from
-    # each turn's completion payload.
-    rollout_logprobs = [0.0] * len(full_tokens)
-    for trace in token_turn_traces:
-        turn_prompt_len = len(trace.get("prompt_ids") or [])
-        turn_completion_logprobs = trace.get("completion_logprobs") or []
-        for i, lp in enumerate(turn_completion_logprobs):
-            pos = turn_prompt_len + i
-            if pos < len(rollout_logprobs):
-                rollout_logprobs[pos] = float(lp)
-
-    episode_reward = 1.0 if step_rewards and float(step_rewards[-1]) > 0 else 0.0
-    return RolloutSample(
-        tokens=full_tokens,
-        logprobs=rollout_logprobs,
-        loss_mask=loss_mask,
-        reward=episode_reward,
-        finish_reason=str(row.execution_metadata.finish_reason or "stop"),
-    )
-
-
-def frozen_lake_eval_row_factory(row: Dict[str, Any]) -> EvaluationRow:
-    """Build one per-run EvaluationRow from an eval3 input row."""
-    base_row = row.get("evaluation_row")
-    rollout_idx = int(row.get("rollout_idx", 0))
-    if not isinstance(base_row, EvaluationRow):
-        raise TypeError(
-            "FrozenLake row must include an 'evaluation_row' EvaluationRow."
-        )
-
-    eval_row = base_row.model_copy(deep=True)
-    base_row_id = eval_row.input_metadata.row_id or "row"
-    eval_row.input_metadata.row_id = f"{base_row_id}_{rollout_idx}"
-    return eval_row
-
-
-def make_frozen_lake_eval3_evaluator(
-    *,
-    input_rows: List[EvaluationRow],
-    rollout_processor: FrozenLakeToolRolloutProcessor,
-    completion_params: Dict[str, Any],
-    steps: int,
-):
-    """Create the eval3 expression that managed RFT can adapt into rollout_fn.
-
-    FrozenLake's scalar reward and token trace are produced by the rollout
-    processor, so the pointwise evaluator body is intentionally identity.
-    """
-
-    def frozen_lake_eval(row):
-        return row
-
-    # eval-protocol validates annotations by object identity, while this module
-    # uses postponed annotations. Set the runtime annotations explicitly.
-    frozen_lake_eval.__annotations__ = {"row": EvaluationRow, "return": EvaluationRow}
-
-    return evaluation_test(
-        input_rows=[input_rows],
-        completion_params=[completion_params],
-        rollout_processor=rollout_processor,
-        mcp_config_path="",
-        steps=steps,
-    )(frozen_lake_eval)
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
-def main(cfg: FrozenLakeConfig | None = None) -> dict:
-    """Run FrozenLake GRPO training. Returns a dict with 'steps' and 'rewards'."""
-    if cfg is None:
-        cfg = parse_args()
-
-    logger.info("FrozenLake GRPO training: %s", cfg.base_model)
-
-    api_key = os.environ["FIREWORKS_API_KEY"]
-    base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-
-    completions_per_prompt = cfg.completions_per_prompt
-    prompt_groups_per_step = cfg.prompt_groups_per_step
-
-    deploy_cfg = DeployConfig(
-        deployment_id=cfg.deployment_id,
-        deployment_shape=cfg.deployment_shape or None,
-        replica_count=cfg.deployment_replica_count,
-        tokenizer_model=cfg.tokenizer_model,
-        sample_timeout=1200,
-    )
-    wandb_cfg = WandBConfig(
-        entity=cfg.wandb_entity or None,
-        project=cfg.wandb_project,
-        run_name=cfg.deployment_id or f"frozen-lake-{int(time.time()) % 100000}",
-    )
-
-    validate_config(
-        cfg.base_model,
-        cfg.seed_jsonl_path,
-        deploy=deploy_cfg,
-        output_model_id=cfg.output_model_id,
-    )
-
-    setup_wandb(
-        wandb_cfg,
-        {
-            "completions_per_prompt": completions_per_prompt,
-            "prompt_groups_per_step": prompt_groups_per_step,
-            "kl_beta": cfg.kl_beta,
-            "lr": cfg.learning_rate,
-            "temperature": cfg.temperature,
-            "max_steps": cfg.max_steps,
-            "max_seeds": cfg.max_seeds,
-        },
-        metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
-    )
-
-    # -- Load seed contexts --------------------------------------------------
-
-    seed_contexts = load_seed_contexts(cfg.seed_jsonl_path, cfg.max_seeds)
-    logger.info(
-        "Loaded %d seed contexts from %s",
-        len(seed_contexts),
-        os.path.abspath(cfg.seed_jsonl_path),
-    )
-
-    use_reference = cfg.kl_beta > 0 or cfg.reference_job_id is not None
-
-    # -- Infrastructure setup -----------------------------------------------
-
-    _infra_start = time.time()
-    policy_job_id: str | None = None
-    trajectory_log = None
-    global_step = step_offset = 0
-
-    reward_history: list[float] = []
-    _shutdown_requested = False
-
-    def _signal_handler(signum, frame):
-        nonlocal _shutdown_requested
-        sig_name = signal.Signals(signum).name
-        logger.warning("Received %s — initiating graceful shutdown...", sig_name)
-        _shutdown_requested = True
-        raise SystemExit(128 + signum)
-
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-
-    service = build_service_client(
-        api_key=api_key,
-        base_url=base_url,
-        inference_url=cfg.inference_base_url,
-        additional_headers=read_api_extra_headers_env(),
-        base_model=cfg.base_model,
-        tokenizer_model=cfg.tokenizer_model,
-        max_lora_rank=cfg.lora_rank,
-        max_context_length=cfg.max_seq_len,
-        learning_rate=cfg.learning_rate,
+    cfg = Config(
+        log_path=args.log_path,
+        base_model=args.base_model,
+        learning_rate=args.learning_rate,
+        completions_per_prompt=args.completions_per_prompt,
+        max_completion_tokens=args.max_completion_tokens,
+        temperature=args.temperature,
+        epochs=args.epochs,
+        lora_rank=args.lora_rank,
+        prompt_groups_per_step=args.prompt_groups_per_step,
+        max_concurrency_rollout_sample=args.max_concurrent,
+        min_group_size=2,
+        weight_sync_timeout=900,
         trainer=TrainerConfig(
-            job_id=cfg.policy_job_id or None,
-            training_shape_id=cfg.training_shape or None,
-            reference_job_id=(cfg.reference_job_id if use_reference else None),
+            job_id=args.policy_job_id, training_shape_id=args.training_shape
         ),
-        deployment=deploy_cfg,
-        hotload_timeout_s=WEIGHT_SYNC_TIMEOUT_S,
-        cleanup_trainer_on_close=not cfg.policy_job_id,
-        reference_required=use_reference,
+        deployment=DeployConfig(
+            deployment_id=args.deployment_id,
+            deployment_shape=args.deployment_shape,
+            replica_count=args.deployment_replica_count,
+            tokenizer_model=args.tokenizer_model,
+        ),
+        wandb=WandBConfig(entity=args.wandb_entity, project=args.wandb_project),
+        output_model_id=args.output_model_id,
     )
-
-    with closing(service):
-        training_client = service.create_training_client(
-            cfg.base_model,
-            lora_rank=cfg.lora_rank,
-        )
-        policy = ReconnectableClient.from_training_client(
-            training_client,
-            base_model=cfg.base_model,
-            lora_rank=cfg.lora_rank,
-            job_id=service.trainer_job_id,
-            service=service,
-        )
-        publish_weights = make_weight_sync(
-            policy, service, cfg.deployment, extended=True
-        )
-        policy_job_id = service.trainer_job_id
-        sampler = service.create_deployment_sampler()
-        reference = None
-        if use_reference:
-            reference = ReconnectableClient.from_training_client(
-                service.create_reference_client(policy_client=training_client),
-                base_model=cfg.base_model,
-                lora_rank=0,
-                job_id=service.reference_client_job_id,
-                service=service,
-                base_only=True,
-            )
-
-        inference_model = sampler.model
-
-        infra_boot_time = time.time() - _infra_start
-        wandb_log({"train/step": 0, "infra/total_boot_time": infra_boot_time}, step=0)
-
-        ckpt = TrainingCheckpoints(
-            policy,
-            service,
-            trainer_id=policy_job_id,
-            log_path=cfg.log_path,
-            lora_rank=cfg.lora_rank,
-        )
-        resume_info = ckpt.resume()
-        step_offset = resume_info.step if resume_info else 0
-        prior_rows_consumed = resume_info.data_consumed if resume_info else 0
-        name = f"resume-{step_offset}-base" if step_offset > 0 else "step-0-base"
-        publish_weights(name, checkpoint_type="base")
-
-        # -- Build rollout processor ----------------------------------------
-        rollout_base_url = sampler.base_url.rstrip("/") + (
-            "" if cfg.inference_base_url else "/inference"
-        )
-        rollout_processor = FrozenLakeToolRolloutProcessor(
-            model_id=inference_model,
-            tokenizer_name_or_path=cfg.tokenizer_model,
-            api_key=api_key,
-            base_url=rollout_base_url,
-            temperature=cfg.temperature,
-            max_tokens=cfg.max_completion_tokens,
-            system_prompt=cfg.system_prompt,
-            user_prompt_template=cfg.user_prompt_template,
-            logprobs=True,
-            observation_mode=cfg.observation_mode,
-            allow_plaintext_action_fallback=cfg.allow_plaintext_action_fallback,
-        )
-        all_prompts = seed_contexts * cfg.epochs
-        frozen_lake_input_rows = [
-            EvaluationRow(
-                input_metadata=InputMetadata(
-                    row_id=f"seed_{env_context.get('seed', row_idx)}_{row_idx}",
-                    dataset_info={
-                        "environment_context": dict(env_context),
-                        "user_prompt_template": cfg.user_prompt_template,
-                        "visual_prompt_template": cfg.visual_prompt_template,
-                    },
-                ),
-            )
-            for row_idx, env_context in enumerate(all_prompts)
-        ]
-        frozen_lake_evaluator = make_frozen_lake_eval3_evaluator(
-            input_rows=frozen_lake_input_rows,
-            rollout_processor=rollout_processor,
-            completion_params={"model": inference_model},
-            steps=cfg.max_steps,
-        )
-        eval3_input_rows = load_eval_protocol_input_rows(frozen_lake_evaluator)[
-            prior_rows_consumed:
-        ]
-
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
-        # -- Trajectory logging -----------------------------------------------
-        trajectory_path = f"/tmp/frozen_lake_trajectories_{int(time.time())}.jsonl"
-        trajectory_log = open(trajectory_path, "a")
-        logger.info("Logging trajectories to %s", trajectory_path)
-        try:
-            # -- Per-sample rollout function ------------------------------------
-
-            def convert_and_log_sample(result: EvaluationRow) -> RolloutSample | None:
-                extra = result.execution_metadata.extra or {}
-                dataset_info = result.input_metadata.dataset_info or {}
-                env_context = dict(dataset_info.get("environment_context") or {})
-                rollout_idx = str(result.input_metadata.row_id or "").rsplit("_", 1)[-1]
-                if extra.get("rollout_error"):
-                    logger.warning(
-                        "Rollout error for seed %s sample %s: %s",
-                        env_context.get("seed"),
-                        rollout_idx,
-                        extra["rollout_error"],
-                    )
-                    return None
-
-                sample = evaluation_row_to_rollout_sample(result)
-                if sample is None:
-                    return None
-
-                if trajectory_log:
-                    entry = {
-                        "seed": env_context.get("seed"),
-                        "rollout_idx": rollout_idx,
-                        "messages": [
-                            m.model_dump() if hasattr(m, "model_dump") else m
-                            for m in (result.messages or [])
-                        ],
-                        "step_rewards": extra.get("step_rewards", []),
-                        "reward": sample.reward,
-                        "rollout_error": extra.get("rollout_error"),
-                    }
-                    trajectory_log.write(json.dumps(entry) + "\n")
-                    trajectory_log.flush()
-
-                return sample
-
-            frozen_lake_rollout_fn = make_eval_protocol_rollout_fn_factory(
-                frozen_lake_evaluator,
-                row_factory=frozen_lake_eval_row_factory,
-                sample_converter=convert_and_log_sample,
-            )(None)
-
-            # -- Training callbacks ---------------------------------------------
-
-            def ref_forward_batch(groups: list[PromptGroup]) -> None:
-                if not use_reference or reference is None:
-                    return
-                all_ref_data = [d for pg in groups for d in pg.ref_data]
-                if not all_ref_data:
-                    return
-                ref_fwd = reference.forward(all_ref_data, "cross_entropy")
-                idx = 0
-                for pg in groups:
-                    n = len(pg.ref_data)
-                    pg.ref_logprobs = [
-                        ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data
-                        for i in range(n)
-                    ]
-                    idx += n
-
-            logger.info("algorithm=grpo trainer_loss=client")
-
-            def fwd_bwd_one(sub: list[PromptGroup]):
-                data, adv, ref_lp, prompt_lens, inf_lp = combine_prompt_groups(sub)
-                anchor, forward = prepare_policy_anchor(
-                    policy, data, inf_lp, "old_policy"
-                )
-                return policy.forward_backward_custom(
-                    data,
-                    make_grpo_loss_fn(
-                        adv,
-                        ref_lp,
-                        prompt_lens,
-                        inf_logprobs=inf_lp,
-                        kl_beta=cfg.kl_beta,
-                        eps_clip=cfg.eps_clip,
-                        eps_clip_high=cfg.eps_clip_high,
-                        old_policy_logprobs=anchor,
-                    ),
-                    precomputed_forward=forward,
-                )
-
-            def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
-                """Run reference and policy forward/backward for one ready chunk."""
-
-                prompt_groups = list(chunk.groups)
-                t0 = time.time()
-                ref_forward_batch(prompt_groups)
-                logger.info(
-                    "[step %d chunk %d/%d] ref_forward: done (%.1fs)",
-                    chunk.batch_id,
-                    chunk.index + 1,
-                    chunk.planned_chunks,
-                    time.time() - t0,
-                )
-
-                t0 = time.time()
-                fwd_bwd_result = fwd_bwd_one(prompt_groups)
-                logger.info(
-                    "[step %d chunk %d/%d] fwd_bwd: done (%.1fs)",
-                    chunk.batch_id,
-                    chunk.index + 1,
-                    chunk.planned_chunks,
-                    time.time() - t0,
-                )
-                return {
-                    "prompt_groups": prompt_groups,
-                    "fwd_bwd_result": fwd_bwd_result,
-                }
-
-            def optimizer_step(step: int):
-                """Apply the batch's sole optimizer mutation."""
-
-                t0 = time.time()
-                result = policy.optim_step(
-                    adam_params,
-                    grad_accumulation_normalization=GradAccNormalization.NUM_LOSS_TOKENS,
-                )
-                logger.info(
-                    "[step %d] optim_step: done (%.1fs)",
-                    step,
-                    time.time() - t0,
-                )
-                return result
-
-            def save_intermediate_checkpoint(step: int, data_consumed: int) -> None:
-                logger.info("[step %d] dcp_save...", step)
-                t0 = time.time()
-                ckpt.save(
-                    f"step-{step}",
-                    resumable=True,
-                    promotable=False,
-                    data_consumed=data_consumed,
-                )
-                logger.info(
-                    "[step %d] dcp_save: done (%.1fs)",
-                    step,
-                    time.time() - t0,
-                )
-
-            def _weight_sync(step: int) -> float:
-                logger.info("[step %d] weight_sync: saving + loading...", step)
-                with wall_timer() as span:
-                    publish_weights(f"step-{step}")
-                logger.info(
-                    "[step %d] weight_sync: done (%.1fs)",
-                    step,
-                    span.elapsed,
-                )
-                return span.elapsed
-
-            def should_accept(pg: PromptGroup) -> bool:
-                return len(set(pg.rewards)) > 1
-
-            max_concurrent_samples = cfg.max_concurrent or None
-            min_group_size = 2 if completions_per_prompt > 1 else 1
-            logger.info(
-                "Training: %d seeds x %d epochs = %d prompt groups, "
-                "%d completions/prompt, %d groups/step, max_concurrent_samples=%s",
-                len(seed_contexts),
-                cfg.epochs,
-                len(eval3_input_rows),
-                completions_per_prompt,
-                prompt_groups_per_step,
-                max_concurrent_samples,
-            )
-
-            _wandb_step = [step_offset]
-
-            def report_step_metrics(metrics: dict[str, Any], step: int) -> None:
-                avg_reward = metrics.get("rollout/filtered_reward", 0.0)
-                avg_ref_kl = metrics.get("train/ref_kl", 0.0)
-                logger.info(
-                    "Step %d | Reward: %.3f | RefKL: %.4f | Loss: %.4f "
-                    "(adv=%.4f kl_pen=%.4f) | K3: %.4f | MaskRatio: %.2f",
-                    step,
-                    avg_reward,
-                    avg_ref_kl,
-                    metrics.get("train/mean_loss", 0.0),
-                    metrics.get("train/mean_adv_loss", 0.0),
-                    metrics.get("train/mean_kl_penalty", 0.0),
-                    metrics.get("train/inference_k3", 0.0),
-                    metrics.get("train/mask_ratio", 0.0),
-                )
-                reward_history.append(avg_reward)
-                log_metrics_json(
-                    step,
-                    reward=avg_reward,
-                    ref_kl=avg_ref_kl,
-                )
-                _wandb_step[0] = max(_wandb_step[0] + 1, step)
-                wandb_log(metrics, _wandb_step[0])
-
-            def make_row_requests():
-                for row_idx, eval_row in enumerate(
-                    eval3_input_rows,
-                    start=prior_rows_consumed,
-                ):
-                    dataset_info = eval_row.input_metadata.dataset_info or {}
-                    env_context_dict = dict(
-                        dataset_info.get("environment_context") or {}
-                    )
-
-                    def run_one_rollout(
-                        rollout_idx: int,
-                        *,
-                        row_idx: int = row_idx,
-                        eval_row: EvaluationRow = eval_row,
-                    ):
-                        return frozen_lake_rollout_fn(
-                            {
-                                "row_id": row_idx,
-                                "rollout_idx": rollout_idx,
-                                "evaluation_row": eval_row,
-                            }
-                        )
-
-                    yield RolloutRow(
-                        row_id=row_idx,
-                        run_factory=run_one_rollout,
-                        row_meta={
-                            "seed": env_context_dict.get("seed"),
-                            "environment_context": env_context_dict,
-                        },
-                    )
-
-            async def run_training() -> tuple[int, dict[str, Any]]:
-                telemetry = AsyncRLTelemetry(
-                    producer_metrics_fn=wandb_log,
-                    step_metrics_fn=report_step_metrics,
-                )
-                coordinator = AsyncRLCoordinator(
-                    rows=make_row_requests(),
-                    completions_per_prompt=completions_per_prompt,
-                    prompt_groups_per_step=prompt_groups_per_step,
-                    training_chunks_per_step=1,
-                    max_head_off_policy_versions=0,
-                    max_concurrent_rollouts=max_concurrent_samples,
-                    with_reference=use_reference,
-                    min_group_size=min_group_size,
-                    dynamic_filter_fn=should_accept,
-                    global_step=step_offset,
-                    resolved_rows_offset=prior_rows_consumed,
-                )
-                async with coordinator:
-                    telemetry.start(coordinator.snapshot)
-                    try:
-                        while (batch := await coordinator.next_batch()) is not None:
-                            chunk_outputs: list[dict[str, Any]] = []
-                            async for chunk in batch.chunks():
-                                coordinator.raise_if_failed(batch)
-                                output = await coordinator.run_blocking(
-                                    "train_chunk",
-                                    train_chunk,
-                                    chunk,
-                                    optimizer_batch=batch,
-                                )
-                                coordinator.raise_if_failed(batch)
-                                chunk_outputs.append(output)
-
-                            coordinator.raise_if_failed(batch)
-                            optim_result = await coordinator.run_blocking(
-                                "optimizer",
-                                optimizer_step,
-                                batch.batch_id,
-                                optimizer_batch=batch,
-                            )
-                            weight_update_time = await coordinator.run_blocking(
-                                "weight_sync",
-                                _weight_sync,
-                                batch.batch_id,
-                                optimizer_batch=batch,
-                            )
-                            published = coordinator.publish(batch)
-
-                            telemetry.finish_step(
-                                batch=batch,
-                                trained_against_version=(
-                                    published.trained_against_version
-                                ),
-                                prompt_groups=[
-                                    group
-                                    for output in chunk_outputs
-                                    for group in output["prompt_groups"]
-                                ],
-                                fwd_bwd_results=[
-                                    output["fwd_bwd_result"] for output in chunk_outputs
-                                ],
-                                optim_result=optim_result,
-                                timing_metrics=flush_timing(),
-                                step_time=published.step_time,
-                                weight_update_time=weight_update_time,
-                                learning_rate=cfg.learning_rate,
-                            )
-
-                            if (
-                                DCP_SAVE_INTERVAL > 0
-                                and batch.batch_id % DCP_SAVE_INTERVAL == 0
-                            ):
-                                await coordinator.run_blocking(
-                                    "checkpoint",
-                                    save_intermediate_checkpoint,
-                                    batch.batch_id,
-                                    published.resolved_rows,
-                                )
-                    finally:
-                        await telemetry.aclose()
-
-                    return coordinator.global_step, telemetry.final_stats()
-
-            global_step, final_stats = asyncio.run(run_training())
-
-            # -- Final checkpoint -----------------------------------------------
-
-            if global_step > step_offset:
-                try:
-                    cp_name = f"step-{global_step}"
-                    _data_consumed = int(final_stats["resolved_rows"])
-                    ckpt.save(
-                        cp_name,
-                        resumable=True,
-                        promotable=True,
-                        data_consumed=_data_consumed,
-                    )
-                    if getattr(cfg, "output_model_id", None):
-                        ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
-                except Exception as e:
-                    logger.warning("Failed to save final checkpoint: %s", e)
-                logger.info("Training complete: %d steps", global_step)
-
-        finally:
-            if trajectory_log and not trajectory_log.closed:
-                trajectory_log.close()
-            wandb_finish()
-
-    return {"steps": global_step - step_offset, "rewards": reward_history}
+    task = FrozenLakeTask(
+        seed_jsonl_path=args.seed_jsonl_path,
+        max_seeds=args.max_seeds,
+        max_steps=args.max_steps,
+        observation_mode=args.observation_mode,
+        allow_plaintext_action_fallback=args.allow_plaintext_action_fallback,
+        log_rollouts=args.log_rollouts,
+    )
+    return cfg, task
 
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    main(*parse_args())

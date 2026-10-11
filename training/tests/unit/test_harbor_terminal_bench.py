@@ -4,9 +4,9 @@ import sys
 
 import pytest
 
-from training.examples.rl.harbor.recipes.terminal_bench.train import (
+from training.examples.harbor_rl.records import select_rows
+from training.examples.harbor_rl.tasks.terminal_bench.train import (
     parse_args,
-    select_rows,
     split_rows,
     training_rows,
 )
@@ -44,29 +44,6 @@ def test_training_rows_shuffles_once_then_cycles() -> None:
     assert names[:3] == names[3:6]
     assert names[:2] == names[6:]
     assert set(names[:3]) == {"a", "b", "c"}
-
-
-def test_router_replay_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "train_serverless",
-            "--base-model",
-            "model",
-            "--tokenizer-model",
-            "tokenizer",
-            "--renderer-name",
-            "glm_moe_dsa_preserve_thinking",
-            "--harbor-dataset",
-            "/tasks",
-            "--harbor-trials-dir",
-            "/trials",
-            "--no-router-replay",
-        ],
-    )
-
-    assert parse_args().router_replay is False
 
 
 def test_max_seq_len_is_the_single_total_context_limit(

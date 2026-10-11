@@ -122,7 +122,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--server",
         default="",
-        help='Optional gateway host, e.g. "gateway-dev.fireworks.ai:443".',
+        help='Optional gateway host, e.g. "gateway.fireworks.ai:443".',
     )
     parser.add_argument(
         "--output",

@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from training.examples.rl.harbor.datasets.mimo.mcp.client import (
+from training.examples.harbor_rl.tasks.mimo.mcp.client import (
     MCPServer,
     MCPToolError,
     call_tool,
@@ -71,8 +71,8 @@ def _install_fake_mimoagent() -> None:
 
 def _mcp_tools_module():
     _install_fake_mimoagent()
-    sys.modules.pop("training.examples.rl.harbor.mimoagent.mcp_tools", None)
-    from training.examples.rl.harbor.mimoagent import mcp_tools
+    sys.modules.pop("training.examples.harbor_rl.harnesses.mimoagent.mcp_tools", None)
+    from training.examples.harbor_rl.harnesses.mimoagent import mcp_tools
 
     return mcp_tools
 

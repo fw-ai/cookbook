@@ -39,7 +39,6 @@ def _has_keyword(call: ast.Call, keyword_name: str) -> bool:
         "training.recipes.distillation_loop",
         "training.recipes.dpo_loop",
         "training.recipes.embedding_loop",
-        "training.recipes.igpo_loop",
         "training.recipes.orpo_loop",
         "training.recipes.rl_loop",
         "training.recipes.sft_loop",

@@ -1,77 +1,52 @@
-"""Unit tests for sampled-token OPD helpers."""
+"""Unit tests for sampled-token on-policy distillation."""
 
 from __future__ import annotations
 
 import asyncio
-import math
-from contextlib import ExitStack
 from math import exp
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import tinker
 
-from training.recipes.distillation_loop import (
-    Config,
-    _default_teacher_deployment_id,
-    _is_base_model_resource,
-    _resolve_teacher_runtime,
-    _resolve_teacher_specs,
-    _teacher_deployment_shape_for_spec,
-    _teacher_deployment_id_for_spec,
-    _teacher_metric_slug,
-    _validate_teacher_tokenizers,
-    main as run_opd_main,
-)
+import training.recipes.distillation_loop as distillation_loop
+from training.recipes.distillation_loop import Config, main as run_opd_main
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DeployConfig,
-    RunnerConfig,
     TrainerConfig,
 )
 from training.utils.distillation import (
-    DistillMode,
-    MultiTeacherConfig,
     OPDPromptGroup,
-    TeacherConfig,
-    blend_teacher_topk,
+    build_opd_datums,
+    build_opd_prompt_group,
     build_opd_server_datums,
-    build_topk_forward_kl_datums,
-    build_topk_datum,
     combine_opd_prompt_groups,
-    combine_topk_prompt_groups,
-    teacher_topk_from_row,
 )
 from training.utils.distillation.eval import (
+    EvalContext,
     evaluate_teacher_trace_logprob_gap,
     extract_final_answer,
     expected_final_answer,
-    make_teacher_trace_logprob_gap_eval,
     normalize_final_answer,
     validate_privileged_opd_dataset,
     validate_opd_trace_result,
 )
-from training.utils.distillation.objectives import (
-    DistillationObjectiveSettings,
-    TeacherScoringFns,
-    TeacherSourceContext,
-    build_topk_forward_kl_inputs,
-    build_topk_forward_kl_train_batch,
-    create_distillation_objective,
-    summarize_distillation_step,
-)
 from training.utils.distillation.sampling import (
-    TopKDist,
-    _align_completion_logprobs,
-    _align_response_logprobs,
-    _build_teacher_scoring_tokens,
-    _extract_teacher_topk,
     _extract_scored_token_logprobs,
-    _score_teacher_topk,
     _slice_response_logprobs,
-    _teacher_messages_for_row,
-    _tokenize_teacher_prompt,
+    align_completion_logprobs,
+    align_response_logprobs,
+    completions_from_sample_response,
+    score_teacher_logprobs,
+    score_teacher_logprobs_with_sampling_client,
+    teacher_messages_for_row,
+    tokenize_teacher_prompt,
+)
+from training.utils.distillation.teacher import (
+    create_teacher_sampler,
+    default_teacher_deployment_id,
+    is_base_model_resource,
 )
 
 MAX_CONTEXT_LEN = 262_144
@@ -81,7 +56,6 @@ def _build_qwen_opd_config(
     *,
     training_shape_id: str | None = None,
     log_path: str = "/tmp/opd",
-    metrics_file: str | None = None,
 ) -> Config:
     return Config(
         log_path=log_path,
@@ -91,11 +65,7 @@ def _build_qwen_opd_config(
         dataset="/tmp/opd_math.jsonl",
         trainer=TrainerConfig(training_shape_id=training_shape_id),
         deployment=DeployConfig(tokenizer_model="Qwen/Qwen3.5-9B"),
-        weight_sync_interval=1,
-        runner=RunnerConfig(metrics_file=metrics_file),
-        step_eval=make_teacher_trace_logprob_gap_eval(min_pre_final_tokens=4),
-        step_eval_interval=1,
-        eval_before_training=True,
+        eval_every=1,
         lora_rank=0,
         learning_rate=2e-5,
         max_rows=8,
@@ -145,561 +115,6 @@ def _server_importance_sampling_loss(
     )
 
 
-def test_topk_dist_rejects_mismatched_or_invalid_fields() -> None:
-    with pytest.raises(ValueError, match="same length"):
-        TopKDist(token_ids=[1], logprobs=[-0.1, -0.2])
-    with pytest.raises(TypeError, match="integers"):
-        TopKDist(token_ids=[True], logprobs=[-0.1])
-    with pytest.raises(ValueError, match="non-negative"):
-        TopKDist(token_ids=[-1], logprobs=[-0.1])
-
-
-def test_build_topk_datum_places_renormalized_weights_on_response_positions() -> None:
-    datum = build_topk_datum(
-        _datum().model_input,
-        [
-            TopKDist(
-                token_ids=[101, 102, 103],
-                logprobs=[math.log(0.2), math.log(0.3), math.log(0.5)],
-            ),
-            None,
-            TopKDist(token_ids=[201], logprobs=[-3.0]),
-        ],
-        target_len=4,
-        prompt_len=2,
-        top_k=2,
-    )
-
-    assert datum.loss_fn_inputs["target_tokens"].shape == [4, 2]
-    assert datum.loss_fn_inputs["target_tokens"].data == [
-        0,
-        0,
-        103,
-        102,
-        0,
-        0,
-        201,
-        0,
-    ]
-    assert datum.loss_fn_inputs["weights"].data == pytest.approx(
-        [
-            0.0,
-            0.0,
-            0.625,
-            0.375,
-            0.0,
-            0.0,
-            1.0,
-            0.0,
-        ]
-    )
-
-
-def _teacher_topk_output() -> SimpleNamespace:
-    return SimpleNamespace()
-
-
-def _teacher_inference_topk() -> list[TopKDist]:
-    return [
-        TopKDist(token_ids=[101, 102], logprobs=[math.log(0.8), math.log(0.2)]),
-        TopKDist(token_ids=[202, 201], logprobs=[math.log(0.75), math.log(0.25)]),
-    ]
-
-
-def test_combine_topk_prompt_groups_flattens_inference_topk_rows() -> None:
-    student = _datum()
-    teacher_topk = _teacher_inference_topk()
-    group = OPDPromptGroup(
-        data=[student],
-        teacher_logprobs=[[]],
-        sampling_logprobs=[[]],
-        prompt_len=2,
-        rewards=[0.0],
-        teacher_topk=[teacher_topk],
-    )
-
-    student_data, teacher_rows, student_prompt_lens = combine_topk_prompt_groups([group])
-
-    assert student_data == [student]
-    assert teacher_rows == [teacher_topk]
-    assert student_prompt_lens == [2]
-
-
-def test_build_topk_forward_kl_datums_uses_inference_response_support() -> None:
-    student = _datum(tokens=[10, 11, 40, 41])
-
-    datums, metrics = build_topk_forward_kl_datums(
-        [student],
-        [_teacher_inference_topk()],
-        student_prompt_lens=[2],
-        top_k=2,
-    )
-
-    assert len(datums) == 1
-    assert datums[0].loss_fn_inputs["target_tokens"].shape == [3, 2]
-    assert datums[0].loss_fn_inputs["target_tokens"].data == [
-        0,
-        0,
-        101,
-        102,
-        202,
-        201,
-    ]
-    assert datums[0].loss_fn_inputs["weights"].data == pytest.approx(
-        [
-            0.0,
-            0.0,
-            0.8,
-            0.2,
-            0.75,
-            0.25,
-        ]
-    )
-    assert metrics["sdft_active_positions"] == pytest.approx(2.0)
-    assert metrics["sdft_active_slots"] == pytest.approx(4.0)
-    assert metrics["sdft_top_k"] == pytest.approx(2.0)
-    assert metrics["sdft_teacher_topk_mass_min"] == pytest.approx(1.0)
-    assert metrics["sdft_teacher_topk_mass_max"] == pytest.approx(1.0)
-    assert metrics["sdft_teacher_topk_entropy"] > 0.0
-
-
-def test_build_topk_forward_kl_datums_rejects_missing_teacher_topk() -> None:
-    with pytest.raises(ValueError, match="teacher inference top-K returned"):
-        build_topk_forward_kl_datums(
-            [_datum()],
-            [[]],
-            student_prompt_lens=[1],
-            top_k=2,
-        )
-
-
-def test_build_topk_forward_kl_datums_rejects_short_teacher_topk_slots() -> None:
-    with pytest.raises(ValueError, match="expected 2"):
-        build_topk_forward_kl_datums(
-            [_datum(tokens=[10, 11, 40])],
-            [[TopKDist(token_ids=[101], logprobs=[0.0])]],
-            student_prompt_lens=[2],
-            top_k=2,
-        )
-
-
-def test_topk_forward_kl_objective_builds_cross_entropy_batch() -> None:
-    student = _datum(tokens=[10, 11, 40, 41])
-    teacher_topk = _teacher_inference_topk()
-    group = OPDPromptGroup(
-        data=[student],
-        teacher_logprobs=[[]],
-        sampling_logprobs=[[]],
-        prompt_len=2,
-        rewards=[0.0],
-        teacher_topk=[teacher_topk],
-    )
-
-    inputs = build_topk_forward_kl_inputs([group])
-    batch = build_topk_forward_kl_train_batch(
-        inputs,
-        top_k=2,
-        include_shape_record=True,
-    )
-
-    assert inputs.teacher_topk == [teacher_topk]
-    assert batch.loss_name == "cross_entropy"
-    assert batch.loss_fn_config is None
-    assert batch.datums[0].loss_fn_inputs["target_tokens"].shape == [3, 2]
-    assert batch.shape_record == {
-        "top_k_logprobs_shape": [2, 2],
-        "top_k_indices_shape": [2, 2],
-        "target_tokens_shape": [3, 2],
-        "weights_shape": [3, 2],
-    }
-
-
-def test_topk_forward_kl_strategy_scores_inference_top_logprobs() -> None:
-    topk_calls: list[tuple[int, list[int], int, int, int]] = []
-
-    async def score_logprobs(
-        source_idx: int,
-        scoring_tokens: list[int],
-        prompt_len: int,
-        response_len: int,
-    ) -> list[float] | None:
-        raise AssertionError("TOPK_FORWARD_KL should not request scalar logprobs")
-
-    async def score_topk(
-        source_idx: int,
-        scoring_tokens: list[int],
-        prompt_len: int,
-        response_len: int,
-        top_k: int,
-    ) -> list[TopKDist] | None:
-        topk_calls.append((source_idx, scoring_tokens, prompt_len, response_len, top_k))
-        return _teacher_inference_topk()
-
-    objective = create_distillation_objective(
-        DistillationObjectiveSettings(
-            mode=DistillMode.TOPK_FORWARD_KL,
-            top_k=2,
-            has_multi_teacher=False,
-            max_top_logprobs=5,
-        ),
-        loss_scale=1.0,
-        server_loss_config=None,
-    )
-    sources = [TeacherSourceContext(prompt_tokens=[20, 21, 22, 23])]
-    teacher_scores = asyncio.run(
-        objective.collect_teacher_scores(
-            [SimpleNamespace(**_sample_kwargs(tokens=[10, 11, 40, 41], prompt_len=2))],
-            sources,
-            TeacherScoringFns(logprobs=score_logprobs, topk=score_topk),
-        )
-    )
-    group = objective.build_prompt_group(
-        [SimpleNamespace(**_sample_kwargs(tokens=[10, 11, 40, 41], prompt_len=2))],
-        teacher_scores,
-        sources,
-        warning=lambda *args, **kwargs: None,
-    )
-    assert group is not None
-    batch = objective.build_train_batch([group], step=3, include_shape_record=False)
-
-    assert topk_calls == [(0, [20, 21, 22, 23, 40, 41], 4, 2, 2)]
-    assert batch.loss_name == "cross_entropy"
-    assert batch.datums[0].loss_fn_inputs["weights"].shape == [3, 2]
-
-
-def test_topk_forward_kl_strategy_blends_multi_teacher_sources() -> None:
-    samples = [SimpleNamespace(**_sample_kwargs(tokens=[10, 11, 40], prompt_len=2))]
-    topk_calls: list[tuple[int, list[int], int, int, int]] = []
-
-    async def score_logprobs(
-        source_idx: int,
-        scoring_tokens: list[int],
-        prompt_len: int,
-        response_len: int,
-    ) -> list[float] | None:
-        raise AssertionError("multi-teacher SDFT should not request scalar logprobs")
-
-    async def score_topk(
-        source_idx: int,
-        scoring_tokens: list[int],
-        prompt_len: int,
-        response_len: int,
-        top_k: int,
-    ) -> list[TopKDist] | None:
-        topk_calls.append((source_idx, scoring_tokens, prompt_len, response_len, top_k))
-        if source_idx == 0:
-            return [TopKDist(token_ids=[101, 102], logprobs=[math.log(0.8), math.log(0.2)])]
-        return [TopKDist(token_ids=[102, 103], logprobs=[math.log(0.5), math.log(0.5)])]
-
-    objective = create_distillation_objective(
-        DistillationObjectiveSettings(
-            mode=DistillMode.TOPK_FORWARD_KL,
-            top_k=2,
-            has_multi_teacher=True,
-            max_top_logprobs=5,
-        ),
-        loss_scale=1.0,
-        server_loss_config=None,
-    )
-    sources = [
-        TeacherSourceContext(prompt_tokens=[20, 21]),
-        TeacherSourceContext(prompt_tokens=[30, 31]),
-    ]
-    teacher_scores = asyncio.run(
-        objective.collect_teacher_scores(
-            samples,
-            sources,
-            TeacherScoringFns(logprobs=score_logprobs, topk=score_topk),
-        )
-    )
-    group = objective.build_prompt_group(
-        samples,
-        teacher_scores,
-        sources,
-        warning=lambda *args, **kwargs: None,
-    )
-    assert group is not None
-    batch = objective.build_train_batch([group], step=0, include_shape_record=True)
-
-    assert topk_calls == [
-        (0, [20, 21, 40], 2, 1, 2),
-        (1, [30, 31, 40], 2, 1, 2),
-    ]
-    assert batch.datums[0].loss_fn_inputs["target_tokens"].data == [0, 0, 101, 102]
-    assert batch.datums[0].loss_fn_inputs["weights"].data == pytest.approx(
-        [0.0, 0.0, 0.4 / 0.75, 0.35 / 0.75]
-    )
-
-
-def test_topk_forward_kl_strategy_uses_teacher_blend_weights() -> None:
-    samples = [SimpleNamespace(**_sample_kwargs(tokens=[10, 11, 40], prompt_len=2))]
-
-    async def score_logprobs(
-        source_idx: int,
-        scoring_tokens: list[int],
-        prompt_len: int,
-        response_len: int,
-    ) -> list[float] | None:
-        raise AssertionError("multi-teacher SDFT should not request scalar logprobs")
-
-    async def score_topk(
-        source_idx: int,
-        scoring_tokens: list[int],
-        prompt_len: int,
-        response_len: int,
-        top_k: int,
-    ) -> list[TopKDist] | None:
-        if source_idx == 0:
-            return [TopKDist(token_ids=[101, 102], logprobs=[math.log(0.8), math.log(0.2)])]
-        return [TopKDist(token_ids=[102, 103], logprobs=[math.log(0.5), math.log(0.5)])]
-
-    objective = create_distillation_objective(
-        DistillationObjectiveSettings(
-            mode=DistillMode.TOPK_FORWARD_KL,
-            top_k=2,
-            has_multi_teacher=True,
-            max_top_logprobs=5,
-        ),
-        loss_scale=1.0,
-        server_loss_config=None,
-    )
-    teacher_scores = asyncio.run(
-        objective.collect_teacher_scores(
-            samples,
-            [
-                TeacherSourceContext(prompt_tokens=[20, 21], weight=2.0),
-                TeacherSourceContext(prompt_tokens=[30, 31], weight=1.0),
-            ],
-            TeacherScoringFns(logprobs=score_logprobs, topk=score_topk),
-        )
-    )
-    group = objective.build_prompt_group(
-        samples,
-        teacher_scores,
-        [TeacherSourceContext(prompt_tokens=[20, 21])],
-        warning=lambda *args, **kwargs: None,
-    )
-    assert group is not None
-    batch = objective.build_train_batch([group], step=0, include_shape_record=False)
-
-    assert batch.datums[0].loss_fn_inputs["target_tokens"].data == [0, 0, 101, 102]
-    assert batch.datums[0].loss_fn_inputs["weights"].data == pytest.approx(
-        [0.0, 0.0, 0.64, 0.36]
-    )
-
-
-def test_summarize_distillation_step_reports_topk_forward_kl_metrics() -> None:
-    summary = summarize_distillation_step(
-        DistillMode.TOPK_FORWARD_KL,
-        {
-            "train/sdft_active_positions": 7.0,
-            "train/sdft_active_slots": 140.0,
-            "train/loss:sum": 12.5,
-            "train/response_tokens": 140.0,
-        },
-        step=2,
-        top_k=20,
-    )
-
-    assert summary.active_tokens == 7
-    assert summary.json_metrics == {
-        "sdft_top_k": 20,
-        "sdft_active_positions": 7.0,
-        "sdft_active_slots": 140.0,
-        "loss_sum": 12.5,
-        "response_tokens": 140.0,
-    }
-
-
-def test_topk_forward_kl_summary_falls_back_to_response_tokens() -> None:
-    summary = summarize_distillation_step(
-        DistillMode.TOPK_FORWARD_KL,
-        {
-            "train/sdft_active_slots": 140.0,
-            "train/loss:sum": 12.5,
-            "train/response_tokens": 11.0,
-        },
-        step=2,
-        top_k=20,
-    )
-
-    assert summary.active_tokens == 11
-
-
-def test_teacher_topk_from_row_rejects_mismatched_position_counts() -> None:
-    with pytest.raises(ValueError, match="same number of positions"):
-        teacher_topk_from_row(
-            {
-                "teacher_topk_ids": [[1], [2]],
-                "teacher_topk_logprobs": [[-0.1]],
-            }
-        )
-
-
-def test_blend_teacher_topk_mixes_probability_mass_and_rejects_empty_weight() -> None:
-    blended = blend_teacher_topk(
-        [
-            (
-                TopKDist(
-                    token_ids=[1, 2],
-                    logprobs=[math.log(0.8), math.log(0.2)],
-                ),
-                2.0,
-            ),
-            (
-                TopKDist(
-                    token_ids=[2, 3],
-                    logprobs=[math.log(0.5), math.log(0.5)],
-                ),
-                1.0,
-            ),
-        ],
-        top_k=2,
-    )
-
-    assert blended.token_ids == [1, 2]
-    assert [math.exp(logprob) for logprob in blended.logprobs] == pytest.approx(
-        [0.64, 0.36]
-    )
-    blended_with_empty = blend_teacher_topk(
-        [
-            (TopKDist(token_ids=[], logprobs=[]), 2.0),
-            (TopKDist(token_ids=[7], logprobs=[0.0]), 1.0),
-        ],
-        top_k=1,
-    )
-    assert blended_with_empty.token_ids == [7]
-    assert [math.exp(logprob) for logprob in blended_with_empty.logprobs] == pytest.approx(
-        [1.0]
-    )
-
-    with pytest.raises(ValueError, match="positive total mass"):
-        blend_teacher_topk(
-            [(TopKDist(token_ids=[1], logprobs=[0.0]), 0.0)],
-            top_k=1,
-        )
-
-
-def test_extract_teacher_topk_uses_candidate_ids_and_tokenizer_fallback() -> None:
-    tokenizer = _FakeTokenizer(
-        {
-            "A": [201],
-            "B": [102],
-            "multi": [301, 302],
-        }
-    )
-    response = {
-        "choices": [
-            {
-                "logprobs": {
-                    "content": [
-                        {"logprob": 0.0},
-                        {"logprob": -9.0, "token_id": 10},
-                        {
-                            "logprob": -0.1,
-                            "token_id": 42,
-                            "top_logprobs": [
-                                {"token_id": 101, "logprob": math.log(0.6)},
-                                {"token": "B", "logprob": math.log(0.4)},
-                                {"token": "multi", "logprob": -99.0},
-                            ],
-                        },
-                        {
-                            "logprob": -0.3,
-                            "token": "A",
-                            "top_logprobs": [{"token": "A", "logprob": -0.3}],
-                        },
-                    ],
-                },
-            }
-        ]
-    }
-
-    topk_by_pos = _extract_teacher_topk(
-        response,
-        prompt_len=2,
-        response_len=2,
-        target_len=3,
-        tokenizer=tokenizer,
-    )
-
-    assert topk_by_pos == [
-        TopKDist(token_ids=[101, 102], logprobs=[math.log(0.6), math.log(0.4)]),
-        TopKDist(token_ids=[201], logprobs=[-0.3]),
-    ]
-
-
-def test_extract_teacher_topk_rejects_missing_top_logprobs() -> None:
-    response = {
-        "choices": [
-            {
-                "logprobs": {
-                    "content": [
-                        {"logprob": 0.0},
-                        {"logprob": -0.1, "token_id": 42},
-                    ],
-                },
-            }
-        ]
-    }
-
-    assert (
-        _extract_teacher_topk(
-            response,
-            prompt_len=1,
-            response_len=1,
-            target_len=1,
-        )
-        is None
-    )
-
-
-def test_score_teacher_topk_requests_top_logprobs_and_aligns_response_window() -> None:
-    sampler = _FakeScoringSampler(
-        top_logprobs_by_token={
-            2: [{"token_id": 20, "logprob": -0.2}, {"token_id": 21, "logprob": -1.2}],
-            3: [{"token_id": 30, "logprob": -0.3}, {"token_id": 31, "logprob": -1.3}],
-        }
-    )
-
-    topk_by_pos = asyncio.run(
-        _score_teacher_topk(
-            sampler,
-            [1, 2, 3],
-            prompt_len=1,
-            response_len=2,
-            top_logprobs=2,
-            http_timeout=30,
-        )
-    )
-
-    assert topk_by_pos == [
-        TopKDist(token_ids=[20, 21], logprobs=[-0.2, -1.2]),
-        TopKDist(token_ids=[30, 31], logprobs=[-0.3, -1.3]),
-    ]
-    assert sampler.calls[0][1]["top_logprobs"] == 2
-
-
-def test_score_teacher_topk_fails_when_inference_returns_too_few_candidates() -> None:
-    sampler = _FakeScoringSampler(
-        top_logprobs_by_token={
-            2: [{"token_id": 20, "logprob": -0.2}],
-        }
-    )
-
-    with pytest.raises(ValueError, match="fewer candidates"):
-        asyncio.run(
-            _score_teacher_topk(
-                sampler,
-                [1, 2],
-                prompt_len=1,
-                response_len=1,
-                top_logprobs=2,
-                http_timeout=30,
-            )
-        )
-
-
 def _datum(
     *,
     tokens: list[int] | None = None,
@@ -728,22 +143,6 @@ def _datum(
     )
 
 
-def _sample_kwargs(
-    *,
-    tokens: list[int],
-    prompt_len: int,
-) -> dict[str, object]:
-    return {
-        "full_tokens": tokens,
-        "prompt_len": prompt_len,
-        "completion_len": max(0, len(tokens) - prompt_len),
-        "finish_reason": "stop",
-        "sampling_logprobs": [-0.1] * max(0, len(tokens) - prompt_len),
-        "inference_logprobs": None,
-        "logprobs_echoed": False,
-    }
-
-
 class _FakeTokenizer:
     def __init__(self, token_map: dict[str, list[int]]):
         self.token_map = token_map
@@ -766,32 +165,33 @@ class _FakeScoringSampler:
         self,
         response_logprob: float = -0.1,
         response_logprobs_by_token: dict[int, float] | None = None,
-        top_logprobs_by_token: dict[int, list[dict[str, object]]] | None = None,
         tokenizer: _FakeTokenizer | None = None,
         sample_text: str = "",
         sample_completion_tokens: list[int] | None = None,
     ):
         self.response_logprob = response_logprob
         self.response_logprobs_by_token = response_logprobs_by_token or {}
-        self.top_logprobs_by_token = top_logprobs_by_token or {}
         self.tokenizer = tokenizer
         self.sample_text = sample_text
         self.sample_completion_tokens = sample_completion_tokens or []
         self.calls = []
         self.sample_calls = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     async def async_completions_stream(self, prompt, **kwargs):
         self.calls.append((prompt, kwargs))
         content = [{"logprob": 0.0}]
         for token_id in prompt[1:]:
             token_id = int(token_id)
-            slot = {
-                "logprob": self.response_logprobs_by_token.get(token_id, self.response_logprob),
-                "token_id": token_id,
-            }
-            if token_id in self.top_logprobs_by_token:
-                slot["top_logprobs"] = self.top_logprobs_by_token[token_id]
-            content.append(slot)
+            content.append(
+                {
+                    "logprob": self.response_logprobs_by_token.get(token_id, self.response_logprob),
+                    "token_id": token_id,
+                }
+            )
         return {"choices": [{"logprobs": {"content": content}}]}, {}
 
     async def sample_with_tokens(self, messages, **kwargs):
@@ -904,7 +304,6 @@ def test_combine_opd_prompt_groups_uses_explicit_teacher_and_sampling_fields() -
         teacher_logprobs=[[-0.1, -0.2, -0.3, -0.4]],
         sampling_logprobs=[[-0.5, -0.6, -0.7, -0.8]],
         prompt_len=2,
-        rewards=[0.0],
     )
 
     data, teacher_logprobs, prompt_lens, sampling_logprobs = combine_opd_prompt_groups([group])
@@ -921,7 +320,6 @@ def test_combine_opd_prompt_groups_rejects_mismatched_teacher_scores() -> None:
         teacher_logprobs=[],
         sampling_logprobs=[[-0.5, -0.6, -0.7, -0.8]],
         prompt_len=2,
-        rewards=[0.0],
     )
 
     with pytest.raises(ValueError, match="teacher_logprobs length"):
@@ -959,7 +357,7 @@ def test_build_opd_server_datums_rejects_missing_active_sampling_logprobs() -> N
 
 
 def test_align_completion_logprobs_pads_prompt_prefix_for_non_echo_generation() -> None:
-    aligned = _align_completion_logprobs(
+    aligned = align_completion_logprobs(
         [-0.4, -0.5],
         prompt_len=3,
         target_len=4,
@@ -971,7 +369,7 @@ def test_align_completion_logprobs_pads_prompt_prefix_for_non_echo_generation() 
 
 def test_align_completion_logprobs_rejects_missing_active_generation_logprobs() -> None:
     assert (
-        _align_completion_logprobs(
+        align_completion_logprobs(
             [-0.4],
             prompt_len=3,
             target_len=4,
@@ -982,7 +380,7 @@ def test_align_completion_logprobs_rejects_missing_active_generation_logprobs() 
 
 
 def test_align_completion_logprobs_trims_echoed_logprobs() -> None:
-    aligned = _align_completion_logprobs(
+    aligned = align_completion_logprobs(
         [-0.1, -0.2, -0.3, -0.4, -0.5],
         prompt_len=3,
         target_len=4,
@@ -993,7 +391,7 @@ def test_align_completion_logprobs_trims_echoed_logprobs() -> None:
 
 
 def test_align_response_logprobs_places_teacher_scores_on_student_response_tokens() -> None:
-    assert _align_response_logprobs(
+    assert align_response_logprobs(
         [-0.4, -0.5],
         prompt_len=3,
         target_len=4,
@@ -1028,7 +426,59 @@ def test_slice_response_logprobs_extracts_teacher_completion_span() -> None:
     ) == [-0.3, -0.4]
 
 
-def test_teacher_scoring_tokens_use_privileged_prompt_and_sampled_response() -> None:
+def test_build_opd_datums_flattens_groups_into_server_datums() -> None:
+    group = OPDPromptGroup(
+        data=[_datum(), _datum()],
+        teacher_logprobs=[[-9.0, -0.2, -1.0, -0.3]] * 2,
+        sampling_logprobs=[[-8.0, -0.5, -0.8, -0.7]] * 2,
+        prompt_len=2,
+    )
+
+    datums, metrics = build_opd_datums([group], loss_scale=2.0)
+
+    assert len(datums) == 2
+    assert datums[1].loss_fn_inputs["advantages"].data == pytest.approx([0.0, 0.6, -0.4, 0.8])
+    assert metrics["opd_active_tokens"] == pytest.approx(6.0)
+
+
+def _student_sample(
+    tokens: list[int],
+    *,
+    prompt_len: int,
+    sampling_logprobs: list[float] | None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        full_tokens=tokens,
+        prompt_len=prompt_len,
+        sampling_logprobs=sampling_logprobs,
+        logprobs_echoed=False,
+    )
+
+
+def test_build_opd_prompt_group_aligns_student_and_teacher_logprobs() -> None:
+    sample = _student_sample([10, 11, 40, 41], prompt_len=2, sampling_logprobs=[-0.4, -0.5])
+
+    group = build_opd_prompt_group([sample], [[-0.1, -0.2]])
+
+    assert group is not None
+    assert group.prompt_len == 2
+    assert group.data[0].loss_fn_inputs["target_tokens"].data == [11, 40, 41]
+    assert group.data[0].model_input.to_ints() == [10, 11, 40]
+    assert group.sampling_logprobs == [[0.0, -0.4, -0.5]]
+    assert group.teacher_logprobs == [[0.0, -0.1, -0.2]]
+
+
+def test_build_opd_prompt_group_skips_unscored_or_incomplete_samples() -> None:
+    samples = [
+        _student_sample([10, 11, 40, 41], prompt_len=2, sampling_logprobs=[-0.4, -0.5]),
+        _student_sample([10, 11, 40, 41], prompt_len=2, sampling_logprobs=None),
+        _student_sample([10, 11, 40, 41], prompt_len=2, sampling_logprobs=[-0.4]),
+    ]
+
+    assert build_opd_prompt_group(samples, [None, [-0.1, -0.2], [-0.1, -0.2]]) is None
+
+
+def test_score_teacher_logprobs_scores_sampled_response_under_teacher_prompt() -> None:
     row = {
         "messages": [{"role": "user", "content": "student"}],
         "teacher_messages": [
@@ -1037,92 +487,57 @@ def test_teacher_scoring_tokens_use_privileged_prompt_and_sampled_response() -> 
         ],
     }
     student_messages = [{"role": "user", "content": "student"}]
-    tokenizer = _FakeTokenizer(
-        {
-            "privileged": [900, 901],
-            "student": [10, 11],
-        }
-    )
+    tokenizer = _FakeTokenizer({"privileged": [900, 901], "student": [10, 11]})
+    teacher = _FakeScoringSampler(response_logprob=-0.1, response_logprobs_by_token={41: -0.3})
+    samples = [
+        _student_sample([10, 11, 40, 41], prompt_len=2, sampling_logprobs=[-0.4, -0.5]),
+        _student_sample([10, 11], prompt_len=2, sampling_logprobs=[]),
+    ]
 
-    teacher_messages = _teacher_messages_for_row(row, student_messages)
-    teacher_prompt_tokens = _tokenize_teacher_prompt(tokenizer, teacher_messages)
-    scoring_tokens = _build_teacher_scoring_tokens(
-        teacher_prompt_tokens,
-        [10, 11, 40, 41],
-        student_prompt_len=2,
-    )
+    teacher_messages = teacher_messages_for_row(row, student_messages)
+    teacher_prompt = tokenize_teacher_prompt(tokenizer, teacher_messages)
+    scores = asyncio.run(score_teacher_logprobs(teacher, teacher_prompt, samples, http_timeout=5))
 
     assert teacher_messages == row["teacher_messages"]
-    assert scoring_tokens == ([900, 901, 10, 11, 40, 41], 2)
+    assert scores == [pytest.approx([-0.1, -0.3]), None]
+    assert len(teacher.calls) == 1
+    prompt, kwargs = teacher.calls[0]
+    assert prompt == [900, 901, 10, 11, 40, 41]
+    assert kwargs["echo"] is True and kwargs["logprobs"] is True
+    assert "top_logprobs" not in kwargs
 
 
 def test_teacher_messages_fallback_to_student_prompt() -> None:
     student_messages = [{"role": "user", "content": "student"}]
 
-    assert _teacher_messages_for_row({"messages": student_messages}, student_messages) == student_messages
+    assert teacher_messages_for_row({"messages": student_messages}, student_messages) == student_messages
 
 
-def test_teacher_messages_use_explicit_teacher_key() -> None:
+def test_teacher_messages_accept_privileged_messages_alias() -> None:
     student_messages = [{"role": "user", "content": "student"}]
-    row = {
-        "teacher_messages": [{"role": "user", "content": "generic"}],
-        "math_teacher_messages": [{"role": "user", "content": "math"}],
-    }
+    row = {"privileged_messages": [{"role": "user", "content": "privileged"}]}
 
-    assert _teacher_messages_for_row(
-        row,
-        student_messages,
-        teacher_messages_key="math_teacher_messages",
-    ) == [{"role": "user", "content": "math"}]
-
-
-def test_explicit_teacher_messages_key_falls_back_to_student_prompt() -> None:
-    student_messages = [{"role": "user", "content": "student"}]
-    row = {"teacher_messages": [{"role": "user", "content": "generic"}]}
-
-    assert _teacher_messages_for_row(
-        row,
-        student_messages,
-        teacher_messages_key="math_teacher_messages",
-    ) == student_messages
+    assert teacher_messages_for_row(row, student_messages) == row["privileged_messages"]
 
 
 def test_teacher_model_resource_detection() -> None:
-    assert _is_base_model_resource("accounts/fireworks/models/qwen3p5-9b")
-    assert not _is_base_model_resource("accounts/test/deployments/distillation-teacher-qwen3p5-9b")
-    assert not _is_base_model_resource("accounts/test/deployedModels/qwen3p5-9b")
+    assert is_base_model_resource("accounts/fireworks/models/qwen3p5-9b")
+    assert not is_base_model_resource("accounts/test/deployments/distillation-teacher-qwen3p5-9b")
+    assert not is_base_model_resource("accounts/test/deployedModels/qwen3p5-9b")
 
 
-class _FakeTeacherRuntimeService:
+class _FakeTeacherService:
     def __init__(self) -> None:
         self.direct_calls: list[dict] = []
         self.deployment_calls: list[dict] = []
-        self.closed: list[str] = []
 
-    def create_deployment_sampler_for_model(
-        self,
-        model: str,
-        *,
-        tokenizer,
-        inference_url: str | None = None,
-    ):
+    def create_deployment_sampler_for_model(self, model: str, *, tokenizer, inference_url=None):
         self.direct_calls.append(
-            {
-                "model": model,
-                "tokenizer": tokenizer,
-                "inference_url": inference_url,
-            }
+            {"model": model, "tokenizer": tokenizer, "inference_url": inference_url}
         )
-        return SimpleNamespace(model=model, close=lambda: self.closed.append(model))
+        return SimpleNamespace(model=model)
 
-    def create_inference_deployment_sampler(
-        self,
-        config,
-        *,
-        timeout_s: float,
-        cleanup_on_close: str | None,
-        tokenizer,
-    ):
+    def create_inference_deployment_sampler(self, config, *, timeout_s, cleanup_on_close, tokenizer):
         self.deployment_calls.append(
             {
                 "config": config,
@@ -1131,289 +546,84 @@ class _FakeTeacherRuntimeService:
                 "tokenizer": tokenizer,
             }
         )
-        if config.base_model.endswith("broken"):
-            raise RuntimeError("teacher deployment never became ready")
-        model = f"accounts/test/deployments/{config.deployment_id}"
-        return SimpleNamespace(model=model, close=lambda: self.closed.append(model))
+        return SimpleNamespace(model=f"accounts/test/deployments/{config.deployment_id}")
 
 
-def test_resolve_teacher_runtime_uses_existing_inference_model_directly() -> None:
-    cfg = Config(
-        log_path="/tmp/opd",
-        teacher_model="accounts/test/deployments/teacher-existing",
-        teacher_inference_url="https://inference.teacher",
-    )
-    service = _FakeTeacherRuntimeService()
+def test_create_teacher_sampler_uses_existing_inference_model_directly() -> None:
+    service = _FakeTeacherService()
 
-    runtime = _resolve_teacher_runtime(
-        cfg=cfg,
-        teacher_specs=_resolve_teacher_specs(cfg),
-        service=service,
+    sampler = create_teacher_sampler(
+        service,
+        "accounts/test/deployments/teacher-existing",
         tokenizer="tok",
-        base_url="https://api.test",
-        cancel_on_exit=True,
-        stack=ExitStack(),
+        inference_url="https://api.test",
+        cleanup_on_close=True,
     )
 
-    assert len(service.direct_calls) == 1
-    assert service.direct_calls[0] == {
-        "model": "accounts/test/deployments/teacher-existing",
-        "tokenizer": "tok",
-        "inference_url": "https://inference.teacher",
-    }
+    assert service.direct_calls == [
+        {
+            "model": "accounts/test/deployments/teacher-existing",
+            "tokenizer": "tok",
+            "inference_url": "https://api.test",
+        }
+    ]
     assert service.deployment_calls == []
-    assert runtime.primary.resolved_model == "accounts/test/deployments/teacher-existing"
-    assert runtime.primary.sampler.model == "accounts/test/deployments/teacher-existing"
-    assert runtime.route_key == "teacher"
+    assert sampler.model == "accounts/test/deployments/teacher-existing"
 
 
-def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> None:
+def test_create_teacher_sampler_deploys_frozen_base_model() -> None:
     teacher_model = "accounts/fireworks/models/qwen3p5-9b"
-    cfg = Config(
-        log_path="/tmp/opd",
-        teacher_model="",
-        multi_teacher=MultiTeacherConfig(
-            teachers=[
-                TeacherConfig(model=teacher_model, route_value="math"),
-                TeacherConfig(model=teacher_model, route_value="code"),
-            ],
-            route_key="teacher_route",
-        ),
-        teacher_deployment_id="ignored-for-multi-teacher",
-        teacher_replica_count=2,
-        teacher_deployment_timeout_s=123,
-    )
-    service = _FakeTeacherRuntimeService()
+    service = _FakeTeacherService()
 
-    runtime = _resolve_teacher_runtime(
-        cfg=cfg,
-        teacher_specs=_resolve_teacher_specs(cfg),
-        service=service,
+    create_teacher_sampler(
+        service,
+        teacher_model,
         tokenizer="tok",
-        base_url="https://api.test",
-        cancel_on_exit=True,
-        stack=ExitStack(),
+        inference_url="https://api.test",
+        deployment_shape="shape-teacher",
+        replica_count=2,
+        timeout_s=123,
+        cleanup_on_close=True,
     )
 
     assert service.direct_calls == []
-    assert len(service.deployment_calls) == 1
-    call = service.deployment_calls[0]
+    [call] = service.deployment_calls
     assert call["timeout_s"] == 123
     assert call["cleanup_on_close"] == CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
     assert call["tokenizer"] == "tok"
-    assert call["config"].base_model == teacher_model
-    assert call["config"].min_replica_count == 2
-    assert call["config"].max_replica_count == 2
-    assert call["config"].enable_hot_load is False
-    assert call["config"].hot_load_bucket_type is None
-    assert call["config"].for_training is True
-    assert runtime.is_multi_teacher
-    assert runtime.route_key == "teacher_route"
-    assert sorted(runtime.route_to_entry) == ["code", "math"]
-    assert {id(entry.sampler) for entry in runtime.entries} == {id(runtime.primary.sampler)}
+    config = call["config"]
+    assert config.deployment_id == "distillation-teacher-qwen3p5-9b"
+    assert config.base_model == teacher_model
+    assert config.deployment_shape == "shape-teacher"
+    assert config.min_replica_count == 2
+    assert config.max_replica_count == 2
+    assert config.enable_hot_load is False
+    assert config.hot_load_bucket_type is None
+    assert config.for_training is True
+
+
+def test_create_teacher_sampler_keeps_teacher_deployment_without_cleanup() -> None:
+    service = _FakeTeacherService()
+
+    create_teacher_sampler(
+        service,
+        "accounts/fireworks/models/qwen3p5-9b",
+        tokenizer="tok",
+        inference_url="https://api.test",
+        deployment_id="my-teacher",
+    )
+
+    [call] = service.deployment_calls
+    assert call["config"].deployment_id == "my-teacher"
+    assert call["config"].deployment_shape is None
+    assert call["cleanup_on_close"] is None
 
 
 def test_default_teacher_deployment_id_is_stable_and_safe() -> None:
     assert (
-        _default_teacher_deployment_id("accounts/fireworks/models/Qwen_3.5_9B")
+        default_teacher_deployment_id("accounts/fireworks/models/Qwen_3.5_9B")
         == "distillation-teacher-qwen-3-5-9b"
     )
-
-
-def test_multi_teacher_default_deployment_ids_include_full_model_identity() -> None:
-    first = _teacher_deployment_id_for_spec(
-        TeacherConfig(model="accounts/first/models/shared-name"),
-        single_teacher=False,
-        single_teacher_deployment_id=None,
-    )
-    second = _teacher_deployment_id_for_spec(
-        TeacherConfig(model="accounts/second/models/shared-name"),
-        single_teacher=False,
-        single_teacher_deployment_id=None,
-    )
-
-    assert first != second
-
-
-def test_multi_teacher_metric_slugs_include_full_model_identity() -> None:
-    assert _teacher_metric_slug("accounts/first/models/shared-name") != _teacher_metric_slug(
-        "accounts/second/models/shared-name"
-    )
-
-
-def test_resolve_teacher_specs_allows_multi_teacher_without_single_teacher_model() -> None:
-    cfg = Config(
-        log_path="/tmp/opd",
-        teacher_model="",
-        multi_teacher=MultiTeacherConfig(
-            teachers=[TeacherConfig(model="accounts/fireworks/models/math-teacher")]
-        ),
-    )
-
-    assert _resolve_teacher_specs(cfg) == cfg.multi_teacher.teachers
-
-
-def test_resolve_teacher_specs_requires_single_teacher_model() -> None:
-    with pytest.raises(ValueError, match="teacher_model is required"):
-        _resolve_teacher_specs(Config(log_path="/tmp/opd", teacher_model=""))
-
-
-def test_multi_teacher_config_rejects_empty_teachers() -> None:
-    with pytest.raises(ValueError, match="requires at least one teacher"):
-        MultiTeacherConfig()
-
-
-def test_teacher_config_routing_value_defaults_to_model() -> None:
-    spec = TeacherConfig(model="accounts/fireworks/models/math-teacher")
-
-    assert spec.routing_value == "accounts/fireworks/models/math-teacher"
-
-
-def test_teacher_config_routing_value_uses_route_value() -> None:
-    spec = TeacherConfig(
-        model="accounts/fireworks/models/qwen3p5-35b-a3b",
-        route_value="math-teacher",
-    )
-
-    assert spec.routing_value == "math-teacher"
-
-
-def test_teacher_config_rejects_empty_route_value() -> None:
-    with pytest.raises(ValueError, match="route_value"):
-        TeacherConfig(
-            model="accounts/fireworks/models/math-teacher",
-            route_value="",
-        )
-
-
-def test_multi_teacher_config_allows_duplicate_models_with_distinct_routes() -> None:
-    cfg = MultiTeacherConfig(
-        teachers=[
-            TeacherConfig(
-                model="accounts/fireworks/models/qwen3p5-35b-a3b",
-                route_value="math-teacher",
-            ),
-            TeacherConfig(
-                model="accounts/fireworks/models/qwen3p5-35b-a3b",
-                route_value="code-teacher",
-            ),
-        ]
-    )
-
-    assert [teacher.routing_value for teacher in cfg.teachers] == ["math-teacher", "code-teacher"]
-
-
-def test_multi_teacher_config_rejects_duplicate_route_values() -> None:
-    with pytest.raises(ValueError, match="Duplicate teacher route values"):
-        MultiTeacherConfig(
-            teachers=[
-                TeacherConfig(
-                    model="accounts/fireworks/models/math-teacher",
-                    route_value="shared-route",
-                ),
-                TeacherConfig(
-                    model="accounts/fireworks/models/code-teacher",
-                    route_value="shared-route",
-                ),
-            ]
-        )
-
-
-def test_teacher_config_rejects_empty_deployment_shape() -> None:
-    with pytest.raises(ValueError, match="deployment_shape"):
-        TeacherConfig(
-            model="accounts/fireworks/models/math-teacher",
-            deployment_shape="",
-        )
-
-
-def test_teacher_config_rejects_invalid_blend_weight() -> None:
-    with pytest.raises(ValueError, match="blend_weight"):
-        TeacherConfig(
-            model="accounts/fireworks/models/math-teacher",
-            blend_weight=-1.0,
-        )
-    with pytest.raises(ValueError, match="blend_weight"):
-        TeacherConfig(
-            model="accounts/fireworks/models/math-teacher",
-            blend_weight=math.inf,
-        )
-    with pytest.raises(TypeError, match="blend_weight"):
-        TeacherConfig(
-            model="accounts/fireworks/models/math-teacher",
-            blend_weight=True,
-        )
-
-
-def test_teacher_deployment_shape_prefers_per_teacher_override() -> None:
-    cfg = Config(
-        log_path="/tmp/opd",
-        base_model="accounts/fireworks/models/student",
-        teacher_deployment_shape="shape-run",
-    )
-    spec = TeacherConfig(
-        model="accounts/fireworks/models/teacher",
-        deployment_shape="shape-teacher",
-    )
-
-    assert (
-        _teacher_deployment_shape_for_spec(
-            spec,
-            cfg,
-        )
-        == "shape-teacher"
-    )
-
-
-def test_teacher_deployment_shape_uses_run_level_override() -> None:
-    cfg = Config(
-        log_path="/tmp/opd",
-        base_model="accounts/fireworks/models/student",
-        teacher_deployment_shape="shape-run",
-    )
-    spec = TeacherConfig(model="accounts/fireworks/models/teacher")
-
-    assert (
-        _teacher_deployment_shape_for_spec(
-            spec,
-            cfg,
-        )
-        == "shape-run"
-    )
-
-
-def test_teacher_deployment_shape_leaves_same_base_default_to_sdk() -> None:
-    cfg = Config(log_path="/tmp/opd", base_model="accounts/fireworks/models/student")
-    spec = TeacherConfig(model="accounts/fireworks/models/student")
-
-    assert (
-        _teacher_deployment_shape_for_spec(
-            spec,
-            cfg,
-        )
-        is None
-    )
-
-
-def test_teacher_deployment_shape_lets_api_choose_for_heterogeneous_teacher() -> None:
-    cfg = Config(log_path="/tmp/opd", base_model="accounts/fireworks/models/student")
-    spec = TeacherConfig(model="accounts/fireworks/models/teacher")
-
-    assert (
-        _teacher_deployment_shape_for_spec(
-            spec,
-            cfg,
-        )
-        is None
-    )
-
-
-def test_validate_teacher_tokenizers_rejects_declared_mismatch() -> None:
-    with pytest.raises(ValueError, match="tokenizer_model must match"):
-        _validate_teacher_tokenizers(
-            [TeacherConfig(model="accounts/fireworks/models/code-teacher", tokenizer_model="tok-b")],
-            student_tokenizer_model="tok-a",
-        )
 
 
 def test_qwen_opd_config_can_be_full_param_and_privileged() -> None:
@@ -1422,12 +632,9 @@ def test_qwen_opd_config_can_be_full_param_and_privileged() -> None:
     assert cfg.lora_rank == 0
     assert cfg.trainer.training_shape_id is None
     assert cfg.base_model == cfg.teacher_model
-    assert cfg.step_eval is not None
-    assert cfg.step_eval_interval == 1
-    assert cfg.eval_before_training is True
+    assert cfg.eval_every == 1
     assert cfg.max_seq_len == MAX_CONTEXT_LEN
     assert cfg.prompt_groups_per_step == cfg.max_rows
-    assert cfg.weight_sync_interval == 1
 
 
 def test_qwen_opd_config_lets_pinned_shape_own_context_length() -> None:
@@ -1439,21 +646,147 @@ def test_qwen_opd_config_lets_pinned_shape_own_context_length() -> None:
     assert cfg.max_seq_len is None
 
 
-def test_opd_rejects_stale_weight_sync_windows() -> None:
+def test_main_requires_teacher_model() -> None:
     cfg = _build_qwen_opd_config()
-    cfg.weight_sync_interval = 2
+    cfg.teacher_model = ""
 
-    with pytest.raises(ValueError, match="weight_sync_interval"):
+    with pytest.raises(ValueError, match="teacher_model is required"):
         run_opd_main(cfg)
 
 
-def test_topk_forward_kl_rejects_top_k_above_inference_limit() -> None:
+def test_main_rejects_non_positive_teacher_replicas() -> None:
     cfg = _build_qwen_opd_config()
-    cfg.distill_mode = DistillMode.TOPK_FORWARD_KL
-    cfg.sdft_top_k = 20
+    cfg.teacher_replica_count = 0
 
-    with pytest.raises(ValueError, match="inference top_logprobs limit"):
+    with pytest.raises(ValueError, match="teacher_replica_count"):
         run_opd_main(cfg)
+
+
+def test_main_samples_scores_trains_and_hotloads_each_step(monkeypatch) -> None:
+    events: list[str] = []
+    logged: list[dict] = []
+    eval_steps: list[int] = []
+    tokenizer = _FakeTokenizer({"q0": [10, 11], "q1": [12, 13], "q2": [14, 15], "privileged": [9]})
+
+    class _Student:
+        model = "accounts/test/deployments/student"
+
+        def close(self):
+            events.append("student-closed")
+
+        def drain_metrics(self):
+            return []
+
+        async def sample_with_tokens(self, messages, *, n, **_kwargs):
+            prompt = tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True
+            )
+            events.append(f"sample:{messages[-1]['content']}")
+            return [
+                _student_sample(prompt + [40, 41], prompt_len=len(prompt), sampling_logprobs=[-0.4, -0.5])
+                for _ in range(n)
+            ]
+
+    teacher = _FakeScoringSampler(response_logprob=-0.1)
+    teacher.model = "accounts/test/deployments/teacher"
+
+    class _Policy:
+        def save_weights_for_sampler(self, name, checkpoint_type=None):
+            return SimpleNamespace(path=f"/{name}")
+
+        def forward_backward(self, datums, loss_fn, *, loss_fn_config=None):
+            events.append(f"fwd-bwd:{len(datums)}:{loss_fn}:{loss_fn_config['ratio_log_cap']}")
+            return SimpleNamespace(metrics={"loss:sum": 1.0})
+
+        def optim_step(self, _params, **_kwargs):
+            events.append("optim")
+            return SimpleNamespace(metrics={})
+
+    class _Service:
+        trainer_job_id = "trainer"
+        deployment_id = "deployment"
+        max_context_length = 4096
+
+        def create_training_client(self, *_args, **_kwargs):
+            return _Policy()
+
+        def create_deployment_sampler(self, **_kwargs):
+            return _Student()
+
+        def create_inference_deployment_sampler(self, config, **_kwargs):
+            events.append(f"teacher-deployment:{config.deployment_id}")
+            return teacher
+
+        def hotload_sampler_snapshot(self, path):
+            events.append(f"hotload:{path}")
+
+        def close(self):
+            events.append("close")
+
+    class _Checkpoints:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def resume(self, **_kwargs):
+            return None
+
+        def save(self, name, **kwargs):
+            events.append(f"checkpoint:{name}:{kwargs['data_consumed']}")
+
+    async def eval_fn(context: EvalContext) -> dict[str, float]:
+        assert context.teacher_sampler is teacher
+        eval_steps.append(context.step)
+        return {"eval/score": float(context.step)}
+
+    rows = [
+        {"messages": [{"role": "user", "content": "q0"}]},
+        {
+            "messages": [{"role": "user", "content": "q1"}],
+            "teacher_messages": [{"role": "user", "content": "privileged"}],
+        },
+        {"messages": [{"role": "user", "content": "q2"}]},
+    ]
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    for name in ("setup_wandb", "validate_config", "log_metrics_json", "wandb_finish", "log_run_resources"):
+        monkeypatch.setattr(distillation_loop, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(distillation_loop, "load_deployment_tokenizer", lambda *_args: tokenizer)
+    monkeypatch.setattr(distillation_loop, "load_jsonl_dataset", lambda *_args: list(rows))
+    monkeypatch.setattr(distillation_loop, "build_service_client", lambda **_kwargs: _Service())
+    monkeypatch.setattr(
+        distillation_loop,
+        "ReconnectableClient",
+        SimpleNamespace(from_training_client=lambda client, **_kwargs: client),
+    )
+    monkeypatch.setattr(distillation_loop, "TrainingCheckpoints", _Checkpoints)
+    monkeypatch.setattr(
+        distillation_loop, "log_metrics", lambda metrics, *, step: logged.append(dict(metrics))
+    )
+
+    cfg = _build_qwen_opd_config()
+    cfg.epochs = 1
+    cfg.prompt_groups_per_step = 2
+    cfg.completions_per_prompt = 2
+    cfg.save_final_checkpoint = True
+    result = run_opd_main(cfg, eval_fn=eval_fn)
+
+    assert result["steps"] == 2
+    assert result["eval"] == {"eval/score": 2.0}
+    assert eval_steps == [0, 1, 2]
+    assert events[0] == "teacher-deployment:distillation-teacher-qwen3p5-9b-unit"
+    assert events.index("hotload:/step-0") < events.index("sample:q0")
+    assert events.index("fwd-bwd:4:importance_sampling:20.0") < events.index("hotload:/step-1")
+    assert events.index("hotload:/step-1") < events.index("sample:q2")
+    assert events.count("optim") == 2
+    # The loop owns both samplers it created and closes them on exit.
+    assert "student-closed" in events
+    assert teacher.closed
+    assert "checkpoint:step-2:3" in events
+    # The privileged row is scored under the teacher prompt, not the student one.
+    assert [9, 40, 41] in [prompt for prompt, _kwargs in teacher.calls]
+    train_records = [record for record in logged if "train/opd_active_tokens" in record]
+    assert [record["train/step"] for record in train_records] == [1, 2]
+    assert train_records[0]["train/opd_active_tokens"] == pytest.approx(8.0)
+    assert train_records[0]["train/loss:sum"] == pytest.approx(1.0)
 
 
 def test_teacher_trace_eval_normalizes_expected_answers() -> None:
@@ -1511,36 +844,38 @@ def test_teacher_trace_logprob_eval_scores_reasoning_trace(tmp_path) -> None:
     teacher_trace = "Add 2 and 3.\nFinal: 5"
     student_generation = "Now I know it.\nFinal: 5"
 
-    metrics = evaluate_teacher_trace_logprob_gap(
-        {
-            "config": _build_qwen_opd_config(),
-            "dataset": [
-                {
-                    "messages": [{"role": "user", "content": "student"}],
-                    "teacher_messages": [{"role": "user", "content": "teacher"}],
-                    "expected_answer": "5",
-                }
-            ],
-            "teacher_sampler": _FakeScoringSampler(
-                response_logprob=-0.1,
-                response_logprobs_by_token={40: -0.05},
+    metrics = asyncio.run(
+        evaluate_teacher_trace_logprob_gap(
+            EvalContext(
+                config=_build_qwen_opd_config(),
+                rows=[
+                    {
+                        "messages": [{"role": "user", "content": "student"}],
+                        "teacher_messages": [{"role": "user", "content": "teacher"}],
+                        "expected_answer": "5",
+                    }
+                ],
+                teacher_sampler=_FakeScoringSampler(
+                    response_logprob=-0.1,
+                    response_logprobs_by_token={40: -0.05},
+                    tokenizer=tokenizer,
+                    sample_text=teacher_trace,
+                    sample_completion_tokens=[30, 31, 32, 33, 40],
+                ),
+                student_sampler=_FakeScoringSampler(
+                    response_logprob=-0.5,
+                    response_logprobs_by_token={40: -0.4},
+                    tokenizer=tokenizer,
+                    sample_text=student_generation,
+                    sample_completion_tokens=[50, 51, 52, 40],
+                ),
                 tokenizer=tokenizer,
-                sample_text=teacher_trace,
-                sample_completion_tokens=[30, 31, 32, 33, 40],
+                step=3,
+                max_seq_len=MAX_CONTEXT_LEN,
             ),
-            "student_sampler": _FakeScoringSampler(
-                response_logprob=-0.5,
-                response_logprobs_by_token={40: -0.4},
-                tokenizer=tokenizer,
-                sample_text=student_generation,
-                sample_completion_tokens=[50, 51, 52, 40],
-            ),
-            "tokenizer": tokenizer,
-            "global_step": 3,
-            "max_seq_len": MAX_CONTEXT_LEN,
-        },
-        trace_log_path=eval_file,
-        min_pre_final_tokens=4,
+            trace_log_path=eval_file,
+            min_pre_final_tokens=4,
+        )
     )
 
     assert metrics["eval/opd_trace_teacher_nll"] == pytest.approx((0.1 * 4 + 0.05) / 5)
@@ -1557,199 +892,11 @@ def test_teacher_trace_logprob_eval_scores_reasoning_trace(tmp_path) -> None:
     assert '"teacher_generated_final":"5"' in records[0]
 
 
-def test_teacher_trace_logprob_eval_routes_multi_teacher_rows() -> None:
-    math_teacher = "accounts/fireworks/models/math-teacher"
-    code_teacher = "accounts/fireworks/models/code-teacher"
-    tokenizer = _FakeTokenizer(
-        {
-            "student-a": [10, 11],
-            "student-b": [12, 13],
-            "math": [20, 21],
-            "code": [30, 31],
-            "Trace\nFinal: ": [40, 41],
-            "Student\nFinal: ": [50, 51],
-            "5": [42],
-        }
-    )
-    teacher_trace = "Trace\nFinal: 5"
-    math_sampler = _FakeScoringSampler(
-        response_logprob=-0.1,
-        tokenizer=tokenizer,
-        sample_text=teacher_trace,
-        sample_completion_tokens=[40, 41, 42],
-    )
-    code_sampler = _FakeScoringSampler(
-        response_logprob=-0.2,
-        tokenizer=tokenizer,
-        sample_text=teacher_trace,
-        sample_completion_tokens=[40, 41, 42],
-    )
-    student_sampler = _FakeScoringSampler(
-        response_logprob=-0.5,
-        tokenizer=tokenizer,
-        sample_text="Student\nFinal: 5",
-        sample_completion_tokens=[50, 51, 42],
-    )
-
-    metrics = evaluate_teacher_trace_logprob_gap(
-        {
-            "config": _build_qwen_opd_config(),
-            "dataset": [
-                {
-                    "messages": [{"role": "user", "content": "student-a"}],
-                    "math_teacher_messages": [{"role": "user", "content": "math"}],
-                    "teacher": math_teacher,
-                    "expected_answer": "5",
-                },
-                {
-                    "messages": [{"role": "user", "content": "student-b"}],
-                    "code_teacher_messages": [{"role": "user", "content": "code"}],
-                    "teacher": code_teacher,
-                    "expected_answer": "5",
-                },
-            ],
-            "teacher_sampler": math_sampler,
-            "teacher_samplers": {
-                math_teacher: math_sampler,
-                code_teacher: code_sampler,
-            },
-            "teacher_messages_keys": {
-                math_teacher: "math_teacher_messages",
-                code_teacher: "code_teacher_messages",
-            },
-            "teacher_route_key": "teacher",
-            "is_multi_teacher": True,
-            "student_sampler": student_sampler,
-            "tokenizer": tokenizer,
-            "global_step": 3,
-            "max_seq_len": MAX_CONTEXT_LEN,
-        },
-        min_pre_final_tokens=2,
-    )
-
-    assert metrics["eval/opd_trace_examples"] == pytest.approx(2.0)
-    assert math_sampler.sample_calls[0][0] == [{"role": "user", "content": "math"}]
-    assert code_sampler.sample_calls[0][0] == [{"role": "user", "content": "code"}]
-
-
-def test_teacher_trace_logprob_eval_uses_single_teacher_custom_messages_key() -> None:
-    tokenizer = _FakeTokenizer(
-        {
-            "student": [10, 11],
-            "generic": [12, 13],
-            "math": [20, 21],
-            "Trace\nFinal: ": [40, 41],
-            "Student\nFinal: ": [50, 51],
-            "5": [42],
-        }
-    )
-    teacher_sampler = _FakeScoringSampler(
-        response_logprob=-0.1,
-        tokenizer=tokenizer,
-        sample_text="Trace\nFinal: 5",
-        sample_completion_tokens=[40, 41, 42],
-    )
-    student_sampler = _FakeScoringSampler(
-        response_logprob=-0.5,
-        tokenizer=tokenizer,
-        sample_text="Student\nFinal: 5",
-        sample_completion_tokens=[50, 51, 42],
-    )
-
-    metrics = evaluate_teacher_trace_logprob_gap(
-        {
-            "config": _build_qwen_opd_config(),
-            "dataset": [
-                {
-                    "messages": [{"role": "user", "content": "student"}],
-                    "teacher_messages": [{"role": "user", "content": "generic"}],
-                    "math_teacher_messages": [{"role": "user", "content": "math"}],
-                    "expected_answer": "5",
-                }
-            ],
-            "teacher_sampler": teacher_sampler,
-            "teacher_messages_keys": {
-                "math-teacher": "math_teacher_messages",
-            },
-            "is_multi_teacher": False,
-            "student_sampler": student_sampler,
-            "tokenizer": tokenizer,
-            "max_seq_len": MAX_CONTEXT_LEN,
-        },
-        min_pre_final_tokens=2,
-    )
-
-    assert metrics["eval/opd_trace_examples"] == pytest.approx(1.0)
-    assert teacher_sampler.sample_calls[0][0] == [{"role": "user", "content": "math"}]
-
-
-def test_teacher_trace_logprob_eval_skips_unconfigured_multi_teacher_routes() -> None:
-    math_teacher = "accounts/fireworks/models/math-teacher"
-    tokenizer = _FakeTokenizer(
-        {
-            "student-a": [10, 11],
-            "math": [20, 21],
-            "Trace\nFinal: ": [40, 41],
-            "Student\nFinal: ": [50, 51],
-            "5": [42],
-        }
-    )
-    math_sampler = _FakeScoringSampler(
-        response_logprob=-0.1,
-        tokenizer=tokenizer,
-        sample_text="Trace\nFinal: 5",
-        sample_completion_tokens=[40, 41, 42],
-    )
-    student_sampler = _FakeScoringSampler(
-        response_logprob=-0.5,
-        tokenizer=tokenizer,
-        sample_text="Student\nFinal: 5",
-        sample_completion_tokens=[50, 51, 42],
-    )
-
-    metrics = evaluate_teacher_trace_logprob_gap(
-        {
-            "config": _build_qwen_opd_config(),
-            "dataset": [
-                {
-                    "messages": [{"role": "user", "content": "student-a"}],
-                    "math_teacher_messages": [{"role": "user", "content": "math"}],
-                    "teacher": math_teacher,
-                    "expected_answer": "5",
-                },
-                {
-                    "messages": [{"role": "user", "content": "student-b"}],
-                    "teacher": "accounts/fireworks/models/code-teacher",
-                },
-                {
-                    "messages": [{"role": "user", "content": "student-c"}],
-                },
-            ],
-            "teacher_sampler": math_sampler,
-            "teacher_samplers": {
-                math_teacher: math_sampler,
-            },
-            "teacher_messages_keys": {
-                math_teacher: "math_teacher_messages",
-            },
-            "teacher_route_key": "teacher",
-            "is_multi_teacher": True,
-            "student_sampler": student_sampler,
-            "tokenizer": tokenizer,
-            "max_seq_len": MAX_CONTEXT_LEN,
-        },
-        min_pre_final_tokens=2,
-    )
-
-    assert metrics["eval/opd_trace_examples"] == pytest.approx(1.0)
-    assert len(math_sampler.sample_calls) == 1
-    assert len(student_sampler.sample_calls) == 1
-
-
 def test_opd_trace_result_validation_requires_opd_signal(tmp_path) -> None:
-    cfg = _build_qwen_opd_config(metrics_file=str(tmp_path / "metrics.jsonl"))
+    cfg = _build_qwen_opd_config()
+    metrics_file = tmp_path / "metrics.jsonl"
     cfg.epochs = 1
-    Path(cfg.runner.metrics_file).write_text(
+    metrics_file.write_text(
         "\n".join(
             [
                 '{"step":0,"eval/opd_trace_teacher_nll":0.1,'
@@ -1770,13 +917,14 @@ def test_opd_trace_result_validation_requires_opd_signal(tmp_path) -> None:
             "max_seq_len": MAX_CONTEXT_LEN,
             "eval": _passing_trace_logprob_eval(),
         },
+        metrics_file=metrics_file,
         min_max_seq_len=MAX_CONTEXT_LEN,
         min_teacher_final_accuracy=1.0,
         min_student_generation_accuracy=1.0,
         min_trace_gap_improvement=0.2,
     )
 
-    Path(cfg.runner.metrics_file).write_text(
+    metrics_file.write_text(
         "\n".join(
             [
                 '{"step":0,"eval/opd_trace_teacher_nll":0.1,'
@@ -1797,6 +945,7 @@ def test_opd_trace_result_validation_requires_opd_signal(tmp_path) -> None:
                 "max_seq_len": MAX_CONTEXT_LEN,
                 "eval": _passing_trace_logprob_eval(),
             },
+            metrics_file=metrics_file,
             min_max_seq_len=MAX_CONTEXT_LEN,
             min_teacher_final_accuracy=1.0,
             min_student_generation_accuracy=1.0,
@@ -1805,9 +954,10 @@ def test_opd_trace_result_validation_requires_opd_signal(tmp_path) -> None:
 
 
 def test_opd_trace_result_validation_requires_trace_logprob_eval(tmp_path) -> None:
-    cfg = _build_qwen_opd_config(metrics_file=str(tmp_path / "metrics.jsonl"))
+    cfg = _build_qwen_opd_config()
+    metrics_file = tmp_path / "metrics.jsonl"
     cfg.epochs = 1
-    Path(cfg.runner.metrics_file).write_text(
+    metrics_file.write_text(
         "\n".join(
             [
                 '{"step":0,"eval/opd_trace_teacher_nll":0.1,'
@@ -1829,11 +979,13 @@ def test_opd_trace_result_validation_requires_trace_logprob_eval(tmp_path) -> No
                 "max_seq_len": MAX_CONTEXT_LEN,
                 "eval": {},
             },
+            metrics_file=metrics_file,
         )
 
 
 def test_opd_trace_result_validation_requires_gap_improvement(tmp_path) -> None:
-    cfg = _build_qwen_opd_config(metrics_file=str(tmp_path / "metrics.jsonl"))
+    cfg = _build_qwen_opd_config()
+    metrics_file = tmp_path / "metrics.jsonl"
     cfg.epochs = 8
     train_records = [
         f'{{"step":{step},"train/opd_active_tokens":4,'
@@ -1845,7 +997,7 @@ def test_opd_trace_result_validation_requires_gap_improvement(tmp_path) -> None:
         f'"eval/opd_trace_student_minus_teacher_nll":1.0}}'
         for step in range(0, 9)
     ]
-    Path(cfg.runner.metrics_file).write_text(
+    metrics_file.write_text(
         "\n".join([*eval_records, *train_records]) + "\n",
         encoding="utf-8",
     )
@@ -1858,35 +1010,179 @@ def test_opd_trace_result_validation_requires_gap_improvement(tmp_path) -> None:
                 "max_seq_len": MAX_CONTEXT_LEN,
                 "eval": _passing_trace_logprob_eval(),
             },
+            metrics_file=metrics_file,
             min_train_gap_improvement=0.2,
             min_trace_gap_improvement=0.2,
         )
 
 
-def test_resolve_teacher_runtime_closes_earlier_samplers_when_a_teacher_fails() -> None:
-    cfg = Config(
-        log_path="/tmp/opd",
-        teacher_model="",
-        multi_teacher=MultiTeacherConfig(
-            teachers=[
-                TeacherConfig(model="accounts/test/deployments/teacher-ok", route_value="math"),
-                TeacherConfig(model="accounts/fireworks/models/teacher-broken", route_value="code"),
-            ],
-            route_key="teacher_route",
-        ),
+# -- Serverless (Tinker sampling client) scoring and the K3 example -------------
+
+
+class _Done:
+    """A completed future, as Tinker clients return."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def result(self, timeout=None):
+        return self.value
+
+
+class _LogprobSampler:
+    """compute_logprobs: ``None`` for the first token, then a fixed logprob."""
+
+    def __init__(self, logprob: float = -0.1):
+        self.logprob = logprob
+        self.scored: list[list[int]] = []
+        self.closed = False
+
+    def compute_logprobs(self, model_input):
+        tokens = model_input.to_ints()
+        self.scored.append(tokens)
+        return _Done([None] + [self.logprob] * (len(tokens) - 1))
+
+    def close(self):
+        self.closed = True
+
+
+def _sample_response(*sequences: tuple[list[int], list[float] | None]) -> SimpleNamespace:
+    return SimpleNamespace(
+        sequences=[
+            SimpleNamespace(tokens=tokens, logprobs=logprobs, stop_reason="stop")
+            for tokens, logprobs in sequences
+        ]
     )
-    service = _FakeTeacherRuntimeService()
 
-    with pytest.raises(RuntimeError, match="never became ready"):
-        with ExitStack() as stack:
-            _resolve_teacher_runtime(
-                cfg=cfg,
-                teacher_specs=_resolve_teacher_specs(cfg),
-                service=service,
-                tokenizer="tok",
-                base_url="https://api.test",
-                cancel_on_exit=True,
-                stack=stack,
-            )
 
-    assert service.closed == ["accounts/test/deployments/teacher-ok"]
+def test_completions_from_sample_response_prepends_the_student_prompt() -> None:
+    completions = completions_from_sample_response(
+        [10, 11], _sample_response(([40, 41], [-0.4, -0.5]), ([42], None))
+    )
+
+    assert [c.full_tokens for c in completions] == [[10, 11, 40, 41], [10, 11, 42]]
+    assert [c.prompt_len for c in completions] == [2, 2]
+    assert [c.completion_len for c in completions] == [2, 1]
+    assert completions[0].sampling_logprobs == [-0.4, -0.5]
+    assert completions[1].sampling_logprobs is None
+    assert completions[0].logprobs_echoed is False
+
+
+def test_score_teacher_logprobs_with_sampling_client_slices_response() -> None:
+    teacher = _LogprobSampler(logprob=-0.2)
+    sampled = completions_from_sample_response(
+        [10, 11], _sample_response(([40, 41], [-0.4, -0.5]), ([], []))
+    )
+
+    scores = score_teacher_logprobs_with_sampling_client(teacher, [900, 901, 902], sampled, timeout=5)
+
+    assert scores == [[-0.2, -0.2], None]
+    assert teacher.scored == [[900, 901, 902, 40, 41]]
+    group = build_opd_prompt_group(sampled, scores)
+    assert group is not None
+    assert group.teacher_logprobs == [[0.0, -0.2, -0.2]]
+    assert group.sampling_logprobs == [[0.0, -0.4, -0.5]]
+
+
+def test_serverless_k3_example_distills_from_step0_teacher(monkeypatch, tmp_path) -> None:
+    from training.examples.distillation.serverless_k3_privileged import (
+        train_serverless_k3_privileged as example,
+    )
+
+    events: list[str] = []
+    teacher = _LogprobSampler(logprob=-0.1)
+    students: list[SimpleNamespace] = []
+
+    class Student:
+        def __init__(self):
+            self.closed = False
+            students.append(self)
+
+        def sample(self, *, prompt, num_samples, sampling_params):
+            events.append(f"sample:{num_samples}")
+            return _Done(_sample_response(*[([40, 41], [-0.5, -0.5])] * num_samples))
+
+        def close(self):
+            self.closed = True
+
+    class TrainingClient:
+        def save_weights_for_sampler(self, name):
+            events.append(f"save:{name}")
+            return _Done(SimpleNamespace(path=f"snap/{name}"))
+
+        def forward_backward(self, datums, loss_fn):
+            events.append(f"fwd-bwd:{len(datums)}:{loss_fn}")
+            self.datums = datums
+            return _Done(SimpleNamespace(metrics={"loss:sum": 1.0}))
+
+        def optim_step(self, adam):
+            events.append("optim")
+            return _Done(SimpleNamespace(metrics={}))
+
+    training_client = TrainingClient()
+
+    class Service:
+        def __init__(self, *, api_key, base_url):
+            assert base_url == "https://api.example.test/training/v1/serverless"
+
+        def create_lora_training_client(self, *, base_model, rank):
+            return training_client
+
+        def create_sampling_client(self, *, model_path, tokenizer):
+            return teacher if model_path == "snap/sdft-teacher-step0" else Student()
+
+        def close(self):
+            events.append("service-close")
+
+    class Renderer:
+        def build_generation_prompt(self, messages):
+            # System turn -> [900], each user turn -> [10, 11].
+            tokens = [900 if m["role"] == "system" else 10 for m in messages] + [11]
+            return tinker.ModelInput.from_ints(tokens)
+
+        def get_stop_sequences(self):
+            return []
+
+    monkeypatch.setenv("FIREWORKS_API_KEY", "fw-test")
+    monkeypatch.setenv("FIREWORKS_BASE_URL", "https://api.example.test")
+    monkeypatch.setattr(example, "FiretitanServiceClient", Service)
+    monkeypatch.setattr(example, "load_tokenizer", lambda name: object())
+    monkeypatch.setattr(example, "get_renderer", lambda name, tokenizer: Renderer())
+    dataset = tmp_path / "rows.jsonl"
+    dataset.write_text('{"question": "q1"}\n{"question": "q2"}\n')
+
+    cfg = example.Config(
+        log_path=str(tmp_path / "logs"),
+        dataset=str(dataset),
+        steps=2,
+        prompt_groups_per_step=2,
+        completions_per_prompt=3,
+    )
+    result = example.main(cfg)
+
+    assert events == [
+        "save:sdft-teacher-step0",
+        "save:sdft-student-0001",
+        "sample:3",
+        "sample:3",
+        "fwd-bwd:6:importance_sampling",
+        "optim",
+        "save:sdft-student-0002",
+        "sample:3",
+        "sample:3",
+        "fwd-bwd:6:importance_sampling",
+        "optim",
+        "save:sdft-student-final",
+        "service-close",
+    ]
+    # The teacher scores the student's tokens under the privileged system turn.
+    assert teacher.scored[0] == [900, 10, 11, 40, 41]
+    assert teacher.closed and all(student.closed for student in students)
+    # advantage = teacher (-0.1) - sampling (-0.5) on the two response tokens.
+    datum = training_client.datums[0]
+    assert datum.loss_fn_inputs["target_tokens"].data == [11, 40, 41]
+    assert datum.loss_fn_inputs["advantages"].data == pytest.approx([0.0, 0.4, 0.4])
+    assert result["final_snapshot"] == "snap/sdft-student-final"
+    records = (tmp_path / "logs" / "metrics.jsonl").read_text().splitlines()
+    assert len(records) == 2
+    assert '"train/opd_sampled_reverse_kl"' in records[0]

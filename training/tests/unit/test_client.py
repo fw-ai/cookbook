@@ -51,10 +51,6 @@ class _FakeInnerClient:
         self.calls.append(("forward_projection", data))
         return self.future
 
-    def save_weights_for_sampler_ext(self, name, *, checkpoint_type=None):
-        self.calls.append(("save_weights_for_sampler_ext", name, checkpoint_type))
-        return self.saved_sampler
-
     def save_weights_for_sampler(self, name, ttl_seconds=None, *, checkpoint_type=None):
         self.calls.append(("save_weights_for_sampler", name, checkpoint_type))
         return _FakeFuture(self.saved_sampler)

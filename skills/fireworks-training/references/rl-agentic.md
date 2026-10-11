@@ -356,30 +356,39 @@ Before a paid training run:
 
 ## Cookbook example
 
-`training/examples/rl/harbor/opencode/`, `harbor/pi/`, and `harbor/mini_swe/`
-are concrete adapters over the same sidecar contract:
+`training/examples/harbor_rl/harnesses/opencode/`, `pi/`, `mini_swe/`, and
+`mimoagent/` are concrete adapters over the same sidecar contract. Each
+describes itself once as a `HarborHarness` (agent import path, pinned version,
+call classifier, materializer); the harness-neutral
+`harbor_rl/tito/rollout.py` `HarborRollout` owns its typed `HarborSettings`
+(sidecar settings in `TITOSidecarSettings`), fresh-trajectory
+retries, trial admission, and artifact-process materialization:
 
 - Harbor owns local Docker task execution and verifier reward;
-- OpenCode, Pi, or Mini-SWE-Agent supplies the multi-turn agent and tool behavior;
+- OpenCode, Pi, Mini-SWE-Agent, or mimoagent supplies the multi-turn agent and tool behavior;
 - one environment-local `TITOSidecar` records exact sampler responses and may
   route multiple independent linear trajectories;
 - the shared renderer layer resolves structured model messages and parses tools;
-- harness-local code owns classification, retry, compaction, and lifecycle;
+- harness-local code owns call classification, compaction reconciliation, and
+  agent lifecycle; the shared rollout owns attempt retries;
 - full-history mode renders every request before inference, while experimental
   incremental mode joins the stored checkpoint to a model-owned suffix; any
   incompatible boundary closes the segment and uses a full-rendered current
   prompt as the next masked segment within the same logical run.
 
-For R3, the Harbor adapters follow the recipe's `router_replay` and
-`router_replay_completion_only` settings. Set completion-only to `False` to
-also capture the initial prompt and newly added user/tool context. The sidecar
-captures those routes incrementally, and the materializer preserves their token
-alignment. Prompt/tool tokens remain loss-masked; prompt construction stays in
-the selected renderer mode.
+For R3, the Harbor adapters follow the recipe's sampling kwargs. MoE runs
+request completion-only routes by default; a fork that sets `echo=True`
+alongside `include_routing_matrix=True` also captures the initial prompt and
+newly added user/tool context. The sidecar captures those routes
+incrementally, and the materializer preserves their token alignment.
+Prompt/tool tokens remain loss-masked; prompt construction stays in the
+selected renderer mode.
 
-The DABstep and Terminal-Bench entrypoints keep their task selection and
-experiment defaults in `harbor/recipes/dabstep/` and
-`harbor/recipes/terminal_bench/`.
+The task entry points in `harbor_rl/` (`train_opencode.py`, `train_pi.py`,
+`tasks/{dabstep,terminal_bench,textworld}/train.py`) are each task rows + a harness `make_rollout_fn` + a recipe
+`Config` + `main`, with the harness factory bound to its settings by
+`functools.partial`; their shared CLI, `harbor_settings(...)`, and sampling-only
+scoring live in `harbor_rl/common.py`.
 The default qualification and training path is **Pi + DeepSWE + one
 environment-local TITO sidecar in `full_history` mode**. OpenCode and
 Mini-SWE-Agent are alternate adapters over the same harness-neutral contract;
@@ -393,9 +402,8 @@ agent is required by `async_rl_loop`, and all retain the ordinary
 
 ## Multi-turn task sandboxes: local Docker or a remote provider
 
-Harbor trials select the task sandbox through `rollout_extras` —
-`harbor_environment="docker"` (local containers) or `"e2b"` (remote
-microVMs). The execution model is identical in both; only placement and cost
+Harbor trials select the task sandbox through `HarborSettings.environment` —
+`"docker"` (local containers) or `"e2b"` (remote microVMs). The execution model is identical in both; only placement and cost
 differ.
 
 ### One sandbox per trial, not per turn

@@ -3,7 +3,16 @@
 Implements Equation 6/11 of "Score Centering Stabilizes Off-policy
 Reinforcement Learning" (arXiv:2609.20807). Sampler top-k token ids are packed
 as additional targets so ``forward_backward_custom`` returns differentiable
-trainer logprobs for the same vocabulary head.
+trainer logprobs for the same vocabulary head. Client loss only (no
+``LOSS_FN``); otherwise the same module surface as
+:mod:`training.utils.rl.algorithm.grpo`::
+
+    sample with **score_centering.sampling_kwargs(config)
+    datums = score_centering.build_datums(batch, config)
+    policy.forward_backward_custom(datums, score_centering.make_loss_fn(batch, config))
+    policy.optim_step(..., grad_accumulation_normalization=score_centering.NORMALIZATION)
+
+The loss function reports its own ``score_centering/*`` metrics.
 """
 
 from __future__ import annotations
@@ -14,7 +23,8 @@ from typing import Dict, List, Tuple
 import tinker
 import torch
 
-from training.utils.rl.algorithm.base import ClientObjective, PolicyLoss
+from training.utils.client import GradAccNormalization
+
 
 # Public inference defaults to 5 (``FIREWORKS_MAX_LOGPROBS``). Dedicated
 # deployments can raise that with ``--max-logprobs``. 8 is the cookbook cap
@@ -30,8 +40,11 @@ class ScoreCenteringConfig:
     top_k: int = PUBLIC_DEFAULT_TOP_LOGPROBS
     tail_mass_epsilon: float = 1e-6
 
+    def __post_init__(self) -> None:
+        _validate(self)
 
-def validate_score_centering_config(config: ScoreCenteringConfig) -> None:
+
+def _validate(config: ScoreCenteringConfig) -> None:
     if config.top_k < 1:
         raise ValueError("score centering top_k must be positive.")
     if config.top_k > MAX_SCORE_CENTERING_TOP_K:
@@ -45,14 +58,13 @@ def validate_score_centering_config(config: ScoreCenteringConfig) -> None:
         raise ValueError("score centering tail_mass_epsilon must be positive.")
 
 
-def build_score_centering_datums(
+def _expand_datums(
     data: List[tinker.Datum],
     sampler_topk_token_ids: List[List[List[int]]],
     sampler_topk_logprobs: List[List[List[float]]],
     config: ScoreCenteringConfig,
 ) -> tuple[List[tinker.Datum], List[List[List[float]]]]:
     """Expand sampled targets to ``[sampled, sampler top-k...]`` per position."""
-    validate_score_centering_config(config)
     if not (
         len(data)
         == len(sampler_topk_token_ids)
@@ -143,13 +155,12 @@ def build_score_centering_datums(
     return expanded, aligned_sampler_logprobs
 
 
-def make_score_centering_loss_fn(
+def _make_loss(
     advantages: List[float],
     sampler_topk_logprobs: List[List[List[float]]],
     config: ScoreCenteringConfig,
 ) -> ...:
     """Build the vanilla top-k score-centering loss from paper Equation 6."""
-    validate_score_centering_config(config)
     if len(advantages) != len(sampler_topk_logprobs):
         raise ValueError("score centering advantages and top-k rows must align.")
 
@@ -254,26 +265,26 @@ def make_score_centering_loss_fn(
     return loss_fn
 
 
-def _client(inputs, options: ScoreCenteringConfig) -> ClientObjective:
-    data, sampler_logprobs = build_score_centering_datums(
-        inputs.data,
-        inputs.sampler_topk_token_ids,
-        inputs.sampler_topk_logprobs,
-        options,
-    )
-    loss_fn = make_score_centering_loss_fn(
-        advantages=inputs.advantages,
-        sampler_topk_logprobs=sampler_logprobs,
-        config=options,
-    )
-    return ClientObjective(data, loss_fn, needs_forward=True)
+NORMALIZATION = GradAccNormalization.NUM_LOSS_TOKENS
 
 
-POLICY_LOSS = PolicyLoss(
-    name="score_centering",
-    client=_client,
-    validate=validate_score_centering_config,
-    sampling_kwargs=lambda options: {"top_logprobs": options.top_k},
-    normalization="num_loss_tokens",
-    uses_anchor=False,
-)
+def build_datums(batch, config: ScoreCenteringConfig) -> List[tinker.Datum]:
+    """Expand each sampled target to ``[sampled, sampler top-k...]`` per position."""
+    return _expand_datums(
+        batch.data, batch.inference_topk_token_ids, batch.inference_topk_logprobs, config
+    )[0]
+
+
+def make_loss_fn(batch, config: ScoreCenteringConfig):
+    """Client loss over :func:`build_datums`; one advantage per datum."""
+    if batch.token_advantages is not None:
+        raise ValueError("score centering takes one advantage per datum, not token_advantages.")
+    _, sampler_logprobs = _expand_datums(
+        batch.data, batch.inference_topk_token_ids, batch.inference_topk_logprobs, config
+    )
+    return _make_loss(batch.advantages, sampler_logprobs, config)
+
+
+def sampling_kwargs(config: ScoreCenteringConfig) -> Dict[str, int]:
+    """Sampler kwargs that record the top-k support this objective centers on."""
+    return {"top_logprobs": config.top_k}

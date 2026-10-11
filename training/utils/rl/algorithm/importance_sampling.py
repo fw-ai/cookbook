@@ -1,85 +1,79 @@
-"""Unclipped Importance Sampling (IS) policy loss.
+"""Unclipped importance-sampling (IS) policy loss.
 
-Unclipped importance-sampling objective matching the Tinker kernel::
+Matches the Tinker kernel::
 
-    loss = -(exp(lp - rollout) * adv).sum()
+    loss = -(exp(lp - anchor) * adv).sum()
 
-The ratio ``exp(pi - rollout)`` is capped by ``ratio_log_cap`` for numerical
-stability but is otherwise unclipped. Its denominator is the recorded
-sampling distribution.
+The anchor is the rollout logprobs unless recomputed, so by default the ratio's
+denominator is the recorded sampling distribution. ``ratio_log_cap`` bounds the
+ratio for numerical stability; it is otherwise unclipped. Same module surface
+as :mod:`training.utils.rl.algorithm.grpo`.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Union
+from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
 
 import torch
 import tinker
 
-from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
-from training.utils.rl.algorithm.base import ClientObjective, PolicyLoss
+from training.utils.client import GradAccNormalization
+from training.utils.rl.common import client_loss_metrics, policy_ratio_metrics, run_loss_loop
+from training.utils.rl.losses import PolicyBatch, build_policy_datums
+
+LOSS_FN = "importance_sampling"
+"""Trainer built-in unclipped importance-sampling loss."""
+
+NORMALIZATION = GradAccNormalization.NUM_LOSS_TOKENS
+
+PREFIX = "is"
 
 
-def validate_is_config(*, ratio_log_cap: float) -> None:
-    """Validate importance-sampling settings before building the loss closure."""
-    if ratio_log_cap < 0:
-        raise ValueError("IS ratio_log_cap must be non-negative.")
+@dataclass(frozen=True)
+class ISConfig:
+    """``ratio_log_cap`` clamps the client loss's log-ratio before ``exp``."""
+
+    ratio_log_cap: float = 20.0
+
+    def __post_init__(self) -> None:
+        if self.ratio_log_cap < 0:
+            raise ValueError("IS ratio_log_cap must be non-negative.")
 
 
-def make_is_loss_fn(
-    advantages: List[float],
-    ref_logprobs: List[List[float]],
-    inf_logprobs: List[List[float]],
-    prompt_len: Union[int, List[int]],
-    ratio_log_cap: float = 20.0,
-) -> ...:
-    """Build an IS loss closure with unclipped ratio."""
-    validate_is_config(ratio_log_cap=ratio_log_cap)
-    prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
+def loss_fn_config(config: ISConfig) -> Dict[str, float]:
+    """``loss_fn_config`` for :data:`LOSS_FN` (the kernel takes no settings)."""
+    del config
+    return {}
+
+
+def build_datums(batch: PolicyBatch, config: ISConfig) -> List[tinker.Datum]:
+    """Datums for the built-in :data:`LOSS_FN`."""
+    del config
+    return build_policy_datums(batch)
+
+
+def metrics(batch: PolicyBatch, result: Any, config: ISConfig) -> Dict[str, float]:
+    """``is_ratio_mean`` and ``is_kl`` for one trainer call."""
+    del config
+    return policy_ratio_metrics(batch, result, loss_name="importance_sampling", prefix=PREFIX)
+
+
+def make_loss_fn(batch: PolicyBatch, config: ISConfig):
+    """Client-side IS loss: ``forward_backward_custom(batch.data, make_loss_fn(batch, config))``."""
 
     def policy_fn(ctx):
         log_ratio = torch.clamp(
-            ctx.resp_pi - ctx.resp_inf,
-            min=-ratio_log_cap,
-            max=ratio_log_cap,
+            ctx.resp_pi - ctx.resp_anchor, min=-config.ratio_log_cap, max=config.ratio_log_cap
         )
         ratio = torch.exp(log_ratio)
-        per_token_loss = -(ratio * ctx.adv) * ctx.resp_mask
-        return per_token_loss, {"is_ratio_mean": ratio.detach().mean().item()}
+        active = ctx.resp_mask > 0.5
+        return -(ratio * ctx.adv) * ctx.resp_mask, {"ratio_mean": ratio.detach()[active].mean().item()}
 
     def loss_fn(
-        data: List[tinker.Datum],
-        logprobs_list: List[torch.Tensor],
+        data: List[tinker.Datum], logprobs_list: List[torch.Tensor]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        result = run_loss_loop(
-            advantages,
-            ref_logprobs,
-            inf_logprobs,
-            prompt_lens,
-            data,
-            logprobs_list,
-            "importance_sampling",
-            policy_fn,
-        )
-        metrics = dict(result.base_metrics)
-        metrics["is_ratio_mean"] = result.extra_sums.get("is_ratio_mean", 0.0) / result.n_samples
-        return result.total_loss, metrics
+        result = run_loss_loop(batch, data, logprobs_list, "importance_sampling", policy_fn)
+        return result.total_loss, client_loss_metrics(result, PREFIX)
 
     return loss_fn
-
-
-POLICY_LOSS = PolicyLoss(
-    name="importance_sampling",
-    client=lambda inputs, _options: ClientObjective(
-        inputs.data,
-        make_is_loss_fn(
-            advantages=inputs.advantages,
-            ref_logprobs=inputs.ref_logprobs,
-            inf_logprobs=inputs.rollout_logprobs,
-            prompt_len=inputs.prompt_lens,
-        ),
-    ),
-    builtin_name="importance_sampling",
-    loss_fn_config=lambda _options: {},
-    uses_anchor=False,
-)

@@ -230,7 +230,7 @@ class TestSingleTurnPacking:
             _sample(tokens=[1, 2, 9, 9, 7], loss_mask=[0, 0, 0, 0, 1]),
         ))
         pg = rollout_to_prompt_group(r)
-        _, _, _, prompt_lens, _ = combine_prompt_groups([pg])
+        prompt_lens = combine_prompt_groups([pg]).prompt_lens
         assert prompt_lens == [2, 4], (
             "combine_prompt_groups must extend with per-sample prompt_lens "
             f"when set; got {prompt_lens}"
@@ -247,17 +247,11 @@ class TestSingleTurnPacking:
         )
         pg = rollout_to_prompt_group(r)
 
-        *_, rows = combine_prompt_groups([pg], include_raw=True)
+        rows = combine_prompt_groups([pg]).raw_inference_logprobs
 
         assert len(rows) == 2
         assert rows[0]
         assert rows[1] == []
-
-    def test_with_reference_mirrors_policy_datums(self):
-        r = Rollout(runs=_solo(_sample(), _sample()))
-        pg = rollout_to_prompt_group(r, with_reference=True)
-        assert pg is not None
-        assert len(pg.ref_data) == 2
 
     def test_completion_lens_counts_mask_ones(self):
         r = Rollout(runs=_solo(

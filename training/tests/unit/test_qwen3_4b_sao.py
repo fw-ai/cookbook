@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from training.examples.rl.SAO import qwen3_4b_sao as example
+from training.examples.rl.experiment.sao import qwen3_4b_sao as example
 
 
 @pytest.fixture(autouse=True)

@@ -10,7 +10,7 @@ from typing import Any, TypeAlias
 
 from training.utils.rl.async_rl.batch import OptimizerBatch
 from training.utils.rl.losses import PromptGroup
-from training.utils.rl.metrics import compute_step_metrics
+from training.utils.rl.metrics import compute_step_metrics, async_step_perf_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +231,7 @@ class AsyncRLTelemetry:
         step_time: float,
         weight_update_time: float | None,
         learning_rate: float,
+        extra_metrics: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         reporter = self._reporter
         if reporter is None:
@@ -256,7 +257,6 @@ class AsyncRLTelemetry:
             "async/version_offset_min": min(offsets),
             "async/trained_against_version": trained_against_version,
             "async/realized_training_chunks": batch.realized_chunks,
-            "all_raw_rewards": batch.completed_rewards,
             "perf/step_time": step_time,
             "perf/train_time": train_time,
             "perf/train_wait_time": train_wait_time,
@@ -270,25 +270,25 @@ class AsyncRLTelemetry:
             prompt_groups=prompt_groups,
             fwd_bwd_results=fwd_bwd_results,
             optim_result=optim_result,
-            n_accum=len(fwd_bwd_results),
             timing_metrics=timing_metrics,
-            loop_stats=loop_stats,
+            raw_rewards=batch.completed_rewards,
         )
+        metrics.update(async_step_perf_metrics(loop_stats, prompt_groups))
         if weight_update_time is not None:
             metrics["perf/weight_update_time"] = weight_update_time
+        metrics.update(extra_metrics or {})
         metrics["train/lr"] = learning_rate
         metrics["rollout/step"] = batch.batch_id
         metrics["train/step"] = batch.batch_id
         logger.info(
             "Rollout %d | Reward raw %.3f filtered %.3f | "
-            "Samples raw %d filtered %d | Filter %.1f%% | RefKL %.4f",
+            "Samples raw %d filtered %d | Filter %.1f%%",
             batch.batch_id,
             metrics.get("rollout/raw_reward", 0.0),
             metrics.get("rollout/filtered_reward", 0.0),
             metrics.get("rollout/raw_samples", 0),
             metrics.get("rollout/filtered_samples", 0),
             metrics.get("rollout/filter_ratio", 0.0) * 100,
-            metrics.get("train/ref_kl", 0.0),
         )
         self._step_metrics_fn(metrics, batch.batch_id)
         return metrics

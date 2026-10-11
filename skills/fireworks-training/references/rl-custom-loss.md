@@ -1,198 +1,163 @@
-# RL: customize a loss
+# RL: customize the objective
 
-Keep group construction, advantages, reference/anchor forwards, backward, and
-optimizer updates visible in the recipe. Isolate loss formulas and their typed
-options under `training/utils/rl/algorithm/`; these modules never call a trainer.
+The RL recipes are reference loops with one fixed objective and no loss,
+anchor, KL, TIS or sampling-support options. To change the objective, fork the
+loop and edit its train step; each loop carries the same short commented
+pseudo-code for the forks below.
 
-## Recipe contract
+## What the reference loops train
 
-`training/recipes/rl_loop.py` runs client-side GRPO. The async recipe resolves
-`policy_loss` and `loss_execution` once at startup, then executes the selected
-objective in its training loop:
-
-1. Compute group-normalized advantages from rollout rewards.
-2. If the objective uses reference KL, collect the reference logprobs.
-3. For clipped objectives, prepare the fixed anchor selected by `anchor_logp`.
-4. Run the client closure with `forward_backward_custom`, reusing its anchor
-   forward, or assemble the built-in inputs and call `forward_backward`.
-5. Apply the optimizer update and publish sampler weights in the recipe.
-
-For example, the async client GRPO path uses:
+`rl_loop`, `async_rl_loop` and `async_rl_loop_serverless` train server-side
+GRPO: the trainer's `"ppo"` loss clipped to `[1 - eps_clip, 1 + eps_clip_high]`
+against the rollout logprobs, with no reference model, KL or importance-sampling
+correction. MoE models get completion-only router replay. The train step:
 
 ```python
-Config(
-    policy_loss="grpo",
-    loss_execution="client",
-    anchor_logp="old_policy",
-    kl_beta=0.001,
-    eps_clip=0.2,
-    eps_clip_high=None,
-)
+from training.utils.rl.algorithm import grpo as objective
+from training.utils.rl.common import inference_drift_metrics
+from training.utils.rl.losses import combine_prompt_groups
+
+batch = combine_prompt_groups(prompt_groups)          # PolicyBatch; anchor = rollout logprobs
+datums = objective.build_datums(batch, policy_loss)   # advantages, anchor, response mask
+result = policy.forward_backward(datums, objective.LOSS_FN, loss_fn_config=objective.loss_fn_config(policy_loss))
+result.metrics.update(objective.metrics(batch, result, policy_loss))
+result.metrics.update(inference_drift_metrics(batch, result))
+policy.optim_step(adam, grad_accumulation_normalization=objective.NORMALIZATION, emit_grad_norm_metrics=True)
 ```
 
-Use `kl_beta=0` to disable reference KL and provisioning. Unused reference
-settings and built-in objectives that cannot consume reference KL are rejected
-at startup. Client GRPO applies a differentiable k3 reference-KL penalty;
-`ref_kl` is not only a logging estimator.
+Every util returns a flat metrics dict; merge it into `result.metrics` and the
+step logger records it as `train/<name>` (see
+[`step-metrics.md`](step-metrics.md#policy-objectives)).
 
-External TIS advantage preweighting is removed. The default clipping anchor is
-still the pre-update trainer snapshot (`anchor_logp="old_policy"`);
-`anchor_logp="rollout"` instead clips against recorded sampling logprobs and
-skips the anchor forward. Sampling probabilities remain a separate input for
-importance-sampling objectives and drift metrics. Removing external TIS changes
-the estimator when trainer and sampler policies differ.
+## Objective modules
 
-## Choose client or built-in execution
+`training/utils/rl/algorithm/<name>.py`, no registry. Every module has the same
+surface, so swapping objectives is one import plus its config:
 
-The async recipe uses `loss_execution="client" | "builtin"` for registered
-objectives. Built-in GRPO maps to the trainer's `"ppo"` loss and requires
-`kl_beta=0`. Its datum logprobs must contain the selected clipping anchor:
+| Name | What it is |
+|---|---|
+| `<Name>Config` | Frozen settings, validated on construction |
+| `LOSS_FN`, `loss_fn_config(cfg)` | Trainer built-in loss (absent for `reinforce`, `score_centering`) |
+| `build_datums(batch, cfg)` | Datums for that loss |
+| `metrics(batch, result, cfg)` | `{PREFIX}_ratio_mean`, `{PREFIX}_clip_frac`, `{PREFIX}_kl` |
+| `make_loss_fn(batch, cfg)` | Same objective as a client loss on `batch.data`, same metric names |
+| `NORMALIZATION` | `grad_accumulation_normalization` for `optim_step` (GSPO: `num_sequences`) |
+
+Modules: `grpo` (prefix `ppo`), `gspo`, `dapo`, `cispo`, `dro`, `dppo`,
+`importance_sampling` (prefix `is`), `reinforce`, `score_centering`. `igpo` is
+an advantage estimator, not a loss; `sao` holds the experimental value-head
+recipe's DIS loss.
 
 ```python
-from training.utils.rl.anchor import prepare_policy_anchor
-from training.utils.rl.losses import build_grpo_datums
+from training.utils.rl.algorithm import cispo as objective
+policy_loss = objective.CISPOConfig(eps_low=0.2, eps_high=0.28)
+# server side: the train step above, unchanged
+# client side:
+# client side: the batch's own datums carry the loss mask
+result = policy.forward_backward_custom(batch.data, objective.make_loss_fn(batch, policy_loss))
+```
 
-anchor, _ = prepare_policy_anchor(
-    policy, data, rollout_logprobs, cfg.anchor_logp,
+A new client loss is `loss_fn(data, logprobs_list) -> (scalar_loss, metrics)`;
+build it on `common.run_loss_loop(batch, ...)` and name its metrics with
+`common.client_loss_metrics`.
+
+## Recompute the anchor
+
+Clip against a pre-update trainer snapshot instead of the rollout logprobs, for
+one extra forward (`perf/old_policy_forward_time`). Everything downstream reads
+`batch.anchor_logprobs`:
+
+```python
+from training.utils.rl.anchor import anchor_drift_metrics, recompute_anchor
+
+batch, forward = recompute_anchor(policy, batch)
+datums = objective.build_datums(batch, policy_loss)
+...
+result.metrics.update(anchor_drift_metrics(batch))   # anchor_k1, anchor_k3
+```
+
+Off-policy async (`max_head_offpolicy_versions > 0`) clips against the stale
+sampling policy by default; recomputing gives the proximal snapshot that
+decoupled PPO uses.
+
+## Truncated importance sampling (TIS)
+
+With a recomputed anchor, weight trained tokens by `min(pi_old / mu, cap)`
+between the snapshot and the sampler. The weight scales the datum advantages,
+so it works with any server-side loss:
+
+```python
+from training.utils.rl.tis import apply_tis
+
+datums, tis = apply_tis(datums, batch, cap=2.0)   # level="sequence": one weight per response
+result.metrics.update(tis)                         # tis_weight_mean, tis_clip_frac
+```
+
+With the rollout logprobs as the anchor every weight is 1.
+
+## Add reference KL
+
+Client-side GRPO and REINFORCE add a reference penalty when the batch carries
+reference logprobs. In the fork, drop the loop's reference guard, pass
+`reference_required=True` to `build_service_client`, and:
+
+```python
+from dataclasses import replace
+
+reference = service.create_reference_client(policy_client=training_client)
+ref = reference.forward(batch.data, "cross_entropy").result()
+batch = replace(batch, ref_logprobs=[list(o["logprobs"].data) for o in ref.loss_fn_outputs])
+policy_loss = objective.GRPOConfig(eps_clip=0.2, kl_beta=0.001)
+result = policy.forward_backward_custom(batch.data, objective.make_loss_fn(batch, policy_loss))
+```
+
+Logs `train/ref_kl` and `train/mean_kl_penalty`. The built-in loss has no
+reference input, so `loss_fn_config` rejects `kl_beta > 0`.
+
+## Replay the sampling support (top-p)
+
+With `top_p < 1`, train over the recorded sampling support instead of the full
+vocabulary:
+
+```python
+from training.utils.rl.sampling_support import (
+    attach_top_sampling_references, sampling_support_kwargs, sampling_support_loss_fn_config,
 )
-eps_high = cfg.eps_clip if cfg.eps_clip_high is None else cfg.eps_clip_high
-grpo_datums = build_grpo_datums(
-    data,
-    advantages,
-    anchor,
-    prompt_lens,
-    include_response_mask=True,
-)
+
+sample_kwargs.update(sampling_support_kwargs(top_p=0.95, support_size=4096))
+...
+datums = attach_top_sampling_references(objective.build_datums(batch, policy_loss), batch.top_sampling_references)
 result = policy.forward_backward(
-    grpo_datums,
-    "ppo",
-    loss_fn_config={
-        "clip_low_threshold": 1.0 - cfg.eps_clip,
-        "clip_high_threshold": 1.0 + eps_high,
-    },
+    datums, objective.LOSS_FN, loss_fn_config=sampling_support_loss_fn_config(objective.loss_fn_config(policy_loss))
 )
+result.metrics.update(objective.metrics(batch, result, policy_loss))   # skip inference_drift_metrics
 ```
 
-Objectives without a built-in implementation, or whose loss name the installed
-SDK does not accept, fail at startup. Custom research losses remain ordinary
-closures; there is no automatic execution fallback.
+- `support_size` is a storage width, not a top-k filter; it must cover every
+  trained token's support (trainer limit 20,000). Incomplete support at a
+  trained position is rejected.
+- Needs a sampler bound to the trainer's shared storage, a serving image that
+  accepts `top_sampling_format="parquet_v1"`, and
+  `training_client.supports_target_logprob_support`.
+- Only server-side losses read the support. Drift against full-vocabulary
+  serving logprobs is meaningless here, so the fork skips the drift call.
+- Do not combine with a recomputed anchor; the snapshot is full-vocabulary.
 
-## Sampling-support metadata
+## Turn-level advantages (IGPO)
 
-With an SDK release containing the sampling-support API, both deployment
-sampling and the Tinker-style `FiretitanSamplingClient.sample` path can record
-support. For the latter, opt in with:
+`rl_loop.main(cfg, rollout_fn_factory=..., prepare_batch_fn=igpo.prepare_batch(gamma=1.0))`.
+Each `RolloutRun.metadata` sets `TURN_SPANS` and `ANSWER_TOKENS`; one trainer
+forward scores the answer after every turn and sets `batch.token_advantages`,
+which `build_datums` and every client loss read. See
+`training/examples/rl/multihop_qa/`.
 
-```python
-from fireworks.training.sdk import FiretitanSamplingParams
+## Invariants
 
-params = FiretitanSamplingParams(top_p=0.95, top_sampling_logprobs=K)
-response = sampler.sample(prompt, 1, params).result()
-support = response.sequences[0].top_sampling_references
-```
-
-`top_sampling_logprobs` is a storage-width limit, not a top-k sampling filter.
-The wrapper requests `parquet_v1` automatically. Leave it unset to avoid
-recording support; the default target distribution remains `full_vocabulary`.
-References contain generated-token rows only, including when
-`include_prompt_logprobs=True`. When assembling a datum, preserve the
-next-token alignment: reference row j belongs to generated target token j;
-mask prompt positions and serialize the aligned references using
-`top_sampling_model_input_kwargs` from `fireworks.training.sdk.routing`.
-
-Using the recorded support requires a shared storage binding, a compatible
-serving image, and `training_client.supports_target_logprob_support`. Explicitly
-set `loss_fn_config={"target_logprob_support": "sampling_support"}` on the
-built-in backward request. This renormalizes the target distribution over the
-recorded support; it does not change sampler settings. K must cover the complete
-support at every trained token: truncated support is rejected by the trainer.
-`r3_ttl_seconds` controls retention when support or routing recording is enabled.
-No deployment-start replay switch is required. Client custom losses and
-unsupported trainers cannot silently substitute for this built-in path.
-
-## Add a research algorithm
-
-Create or update `training/utils/rl/algorithm/<algorithm>.py`. Keep its formula,
-typed options, and validation together. To expose it through the async recipe,
-export a `POLICY_LOSS` definition and register it in
-`training/utils/rl/algorithm/__init__.py`. The definition maps options into a
-client closure or built-in `loss_fn_config`; it must not perform trainer I/O.
-
-Validate settings when constructing a closure and resolving recipe options.
-Each option must affect the objective or documented observability. For a
-one-off custom loss, fork the closest recipe and replace its loss call while
-keeping rollout, checkpoint, optimizer, and weight-sync operations explicit.
-
-IGPO owns per-token turn advantages and uses `make_igpo_loss_fn` with
-`forward_backward_custom` in its dedicated recipe.
-
-## Custom-loss interface
-
-```python
-def my_loss(data, logprobs_list):
-    # data: aligned tensors (advantages, inference logprobs, prompt lens, etc.)
-    # logprobs_list: per-datum training logprobs from the trainer forward pass
-    loss = compute_loss(data, logprobs_list)   # scalar torch.Tensor, requires_grad
-    return loss, {"loss": float(loss.item())}  # (loss_tensor, metrics_dict)
-```
-
-The recipe passes the closure into
-`training_client.forward_backward_custom(datums, my_loss).result()`.
-
-`training/utils/rl/algorithm/grpo.py` is the reference implementation:
-advantages, logprobs, and optional KL return a scalar plus metrics. Other direct
-builders live beside it (`dapo.py`, `dro.py`, `gspo.py`, `cispo.py`, and so on).
-The previous `training/utils/rl/<algorithm>.py` import paths remain aliases.
-
-## Preserve invariants
-
-- Import loss builders at module scope.
-- Require exact datum, prompt-boundary, and logprob alignment.
-- Keep sampling probabilities separate from the fixed clipping anchor. Use
-  `old_policy_logprobs` for snapshot clipping, and rollout probabilities for IS.
-- Keep advantages unweighted; the chosen objective owns any weighting.
-- Keep raw inference logprobs observability-only; report drift metrics without
-  feeding them into the policy ratio.
-- Provision and run a reference only when the selected loss consumes it.
-- Raise on incompatible configuration; never ignore or downgrade it.
-- Test the direct builder and the recipe boundary. Delete tests that only
-  exercise removed dispatch machinery.
-
-## RL-only `Config` fields commonly changed
-
-All live on `rl_loop.Config`:
-
-| Field | Default | Meaning |
-|---|---|---|
-| `completions_per_prompt` | `4` | GRPO group size: responses sampled per prompt. |
-| `prompt_groups_per_step` | `1` | Prompt groups per `forward_backward + optim_step` pair. |
-| `kl_beta` | `0.001` | Reference-KL coefficient; `0` skips the reference. |
-| `eps_clip`, `eps_clip_high` | `0.2`, `None` | PPO clip for GRPO. |
-| `router_replay`, `router_replay_completion_only` | `True`, `True` | Replay MoE routes for generated tokens by default. Set completion-only to `False` only when full-sequence replay is worth the serving cost of `echo=True`. |
-| `grad_accumulation_normalization` | `None` | No server-side normalization by default. Use `NUM_LOSS_TOKENS` for raw-sum losses. See [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md). |
-
-Trainer accelerator type and count are not cookbook config fields; select them
-indirectly with `training_shape_id`. Other shape-owned fields such as
-`node_count` and `custom_image_tag` come from the training profile; never
-hand-set them.
-
-## Do not
-
-- Reimplement `forward_backward_custom`; replace the documented direct builder
-  in a fork of the closest recipe.
-- Add an automatic fallback. A fork calls either `forward_backward` or
-  `forward_backward_custom` explicitly.
-- Silently reuse the GRPO reference. Keep or remove reference provisioning
-  based on what the replacement closure consumes.
-- Forget `grad_accumulation_normalization`. Match it to whether the loss returns
-  a raw sum or a pre-normalized mean; double-normalization is the common bug.
-
-Run the focused RL and provisioning tests under `training/` with the `dev`
-extra, then lint every changed Python file.
-
-## See also
-
-- Built-in GRPO datum preparation: `training/utils/rl/losses.py`.
-- Policy objectives and their registry: `training/utils/rl/algorithm/`.
-- `forward_backward_custom` signature and behavior:
-  `fireworks.training.sdk.client.FiretitanTrainingClient.forward_backward_custom`.
+- Keep target tokens, prompt boundaries and logprob rows aligned.
+- Change the anchor only through `PolicyBatch.anchor_logprobs`; never overwrite
+  the rollout logprobs. Only `apply_tis` reweights advantages.
+- Use raw inference logprobs only for drift metrics.
+- Use the objective's `NORMALIZATION`
+  ([`rl-gradient-accumulation.md`](rl-gradient-accumulation.md)).
+- Vision datums keep Tinker's expanded coordinates: `model_input.length == N - 1`,
+  image positions are zero placeholders with zero weight and advantage.

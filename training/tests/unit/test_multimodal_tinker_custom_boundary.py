@@ -15,7 +15,8 @@ from tinker.lib.public_interfaces.api_future import APIFuture
 from tinker.lib.public_interfaces.training_client import TrainingClient
 from tinker.types import ImageChunk
 
-from training.utils.rl.algorithm.grpo import make_grpo_loss_fn
+from training.utils.rl.algorithm import grpo
+from training.utils.rl.losses import PolicyBatch
 from training.utils.supervised import build_multimodal_policy_datum
 
 
@@ -116,13 +117,13 @@ def test_tinker_custom_grpo_keeps_expanded_multimodal_wire_coordinates() -> None
     )
     client = _CapturingTrainingClient(forward_result)
 
-    grpo_loss = make_grpo_loss_fn(
-        [1.0],
-        [[0.0] * 6],
-        [5],
-        inf_logprobs=[list(expanded_forward_logprobs)],
-        kl_beta=0.0,
+    batch = PolicyBatch(
+        data=[datum],
+        advantages=[1.0],
+        prompt_lens=[5],
+        rollout_logprobs=[list(expanded_forward_logprobs)],
     )
+    grpo_loss = grpo.make_loss_fn(batch, grpo.GRPOConfig())
     observed_logprobs: list[torch.Tensor] = []
 
     def capture_loss(
@@ -132,7 +133,7 @@ def test_tinker_custom_grpo_keeps_expanded_multimodal_wire_coordinates() -> None
         return grpo_loss(data, logprobs)
 
     async def run_custom_path() -> tinker.ForwardBackwardOutput:
-        future = await client.forward_backward_custom_async([datum], capture_loss)
+        future = await client.forward_backward_custom_async(batch.data, capture_loss)
         return await future.result_async()
 
     result = asyncio.run(run_custom_path())

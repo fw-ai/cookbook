@@ -13,7 +13,6 @@ def _group(*rewards: float) -> PromptGroup:
     return PromptGroup(
         data=[],
         advantages=[],
-        ref_logprobs=None,
         prompt_len=0,
         rewards=list(rewards),
     )

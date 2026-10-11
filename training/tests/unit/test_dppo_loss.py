@@ -8,7 +8,8 @@ import pytest
 import tinker
 import torch
 
-from training.utils.rl.algorithm.dppo import DPPOConfig, make_dppo_loss_fn
+from training.utils.rl.algorithm.dppo import DPPOConfig, make_loss_fn
+from training.utils.rl.losses import PolicyBatch
 
 
 def _datum() -> tinker.Datum:
@@ -33,20 +34,21 @@ def _run(
     config: DPPOConfig | None = None,
     rollout_prob: float | None = None,
 ):
+    """One-token DPPO step; ``behavior_prob`` is the anchor, ``rollout_prob`` the sampler."""
     policy_logprob = torch.tensor(
         [math.log(policy_prob)], requires_grad=True
     )
-    rollout_logprob = math.log(
-        behavior_prob if rollout_prob is None else rollout_prob
-    )
-    loss_fn = make_dppo_loss_fn(
+    anchor = [[math.log(behavior_prob)]]
+    rollout = anchor if rollout_prob is None else [[math.log(rollout_prob)]]
+    batch = PolicyBatch(
+        data=[_datum()],
         advantages=[advantage],
-        ref_logprobs=[],
-        inf_logprobs=[[rollout_logprob]],
-        prompt_len=1,
-        dppo_config=config,
+        prompt_lens=[1],
+        rollout_logprobs=rollout,
+        anchor_logprobs=anchor,
     )
-    loss, metrics = loss_fn([_datum()], [policy_logprob])
+    loss_fn = make_loss_fn(batch, config or DPPOConfig())
+    loss, metrics = loss_fn(batch.data, [policy_logprob])
     loss.backward()
     return loss.detach(), policy_logprob.grad, metrics
 
@@ -71,7 +73,7 @@ def test_binary_tv_masks_large_advantage_improving_updates(
 
     assert loss.item() == pytest.approx(0.0)
     assert grad.item() == pytest.approx(0.0)
-    assert metrics["dppo_mask_frac"] == pytest.approx(1.0)
+    assert metrics["dppo_clip_frac"] == pytest.approx(1.0)
     assert metrics["dppo_divergence_mean"] == pytest.approx(0.2)
 
 
@@ -96,7 +98,8 @@ def test_binary_tv_preserves_large_updates_in_non_improving_direction(
 
     assert loss.item() == pytest.approx(-ratio * advantage)
     assert grad.item() == pytest.approx(-ratio * advantage)
-    assert metrics["dppo_mask_frac"] == pytest.approx(0.0)
+    # ``dppo_clip_frac`` counts tokens past the threshold, masked or not.
+    assert metrics["dppo_clip_frac"] == pytest.approx(1.0)
 
 
 def test_binary_kl_is_finite_and_can_mask() -> None:
@@ -133,7 +136,20 @@ def test_divergence_specific_default_thresholds() -> None:
     assert kl_loss.item() == pytest.approx(0.0)
 
 
-def test_sampling_policy_is_the_only_ratio_denominator() -> None:
+def test_anchor_is_the_ratio_denominator_not_the_sampler() -> None:
+    # Anchor 0.2 equals the policy, so nothing is masked even though the
+    # sampler (0.01) is far away.
+    loss, grad, metrics = _run(
+        policy_prob=0.2,
+        behavior_prob=0.2,
+        rollout_prob=0.01,
+        advantage=1.0,
+    )
+    assert loss.item() == pytest.approx(-1.0)
+    assert grad.item() == pytest.approx(-1.0)
+    assert metrics["dppo_clip_frac"] == pytest.approx(0.0)
+
+    # With the sampler as the anchor the same update is masked.
     loss, grad, metrics = _run(
         policy_prob=0.2,
         behavior_prob=0.01,
@@ -141,4 +157,4 @@ def test_sampling_policy_is_the_only_ratio_denominator() -> None:
     )
     assert loss.item() == pytest.approx(0.0)
     assert grad.item() == pytest.approx(0.0)
-    assert "dppo_mask_frac" in metrics
+    assert metrics["dppo_clip_frac"] == pytest.approx(1.0)

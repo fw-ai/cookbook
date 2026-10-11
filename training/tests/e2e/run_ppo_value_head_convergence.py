@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a tiny Qwen3-4B SAO/PPO actor-critic convergence check.
+"""Run a tiny Qwen3-4B SAO actor-critic convergence check.
 
 This is deliberately a batch-size-one overfit test: repeating one
 deterministic trajectory keeps the run small and makes movement in the critic
@@ -94,6 +94,9 @@ def run() -> dict[str, object]:
             ref_logprobs=None,
             prompt_len=2,
             rewards=[1.0],
+            # No sampler produced these tokens, so DIS may reject them; the
+            # check measures the critic.
+            inf_logprobs=[[0.0] * len(tokens)],
             completion_lens=[2],
             truncated=[False],
             completions=["<answer>4</answer>"],
@@ -106,8 +109,6 @@ def run() -> dict[str, object]:
             critic_base_model=base_model,
             actor_learning_rate=1e-6,
             critic_learning_rate=1e-4,
-            critic_warmup_batches=0,
-            critic_projection_head_dim=1,
             completions_per_prompt=1,
             prompt_groups_per_batch=1,
             max_completion_tokens=64,

@@ -1,119 +1,98 @@
-"""CISPO (Clipped Importance Sampling Policy Optimization) loss.
+"""CISPO (Clipped Importance Sampling Policy Optimization).
 
-Clips the importance-sampling ratio ``pi/pi_rollout`` to ``[1-eps_low,
-1+eps_high]`` and uses the clipped ratio as a *detached* weight on the
-log-probability.  This matches the Tinker kernel formula::
+Clips the ratio ``pi / anchor`` to ``[1 - eps_low, 1 + eps_high]`` and uses
+the clipped ratio as a *detached* weight on the log-probability, matching the
+Tinker kernel::
 
     clipped_ratio = clamp(ratio, 1 - eps_low, 1 + eps_high)
     per_token_loss = -(clipped_ratio.detach() * logprob * advantage)
 
-Gradient flows through ``logprob`` (not through ``ratio``), and the
-clipped ratio caps the effective learning signal for tokens whose
-policy has already moved far from the recorded sampling distribution.
+Gradient flows through ``logprob``, not the ratio. Same module surface as
+:mod:`training.utils.rl.algorithm.grpo`.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Union
 from dataclasses import dataclass
+from typing import Any, Dict, List, Tuple
 
 import torch
 import tinker
 
-from training.utils.rl.common import _normalize_prompt_lens, run_loss_loop
-from training.utils.rl.algorithm.base import ClientObjective, PolicyLoss, client_loss_kwargs
+from training.utils.client import GradAccNormalization
+from training.utils.rl.common import client_loss_metrics, policy_ratio_metrics, run_loss_loop
+from training.utils.rl.losses import PolicyBatch, build_policy_datums
+
+LOSS_FN = "cispo"
+"""Trainer built-in CISPO loss."""
+
+NORMALIZATION = GradAccNormalization.NUM_LOSS_TOKENS
+
+PREFIX = "cispo"
 
 
-@dataclass
+@dataclass(frozen=True)
 class CISPOConfig:
-    """CISPO clipping thresholds.
-
-    The ratio ``pi/pi_rollout`` is clamped to ``[1 - eps_low, 1 + eps_high]``.
-    ``ratio_log_cap`` clamps log-ratio before exp() for numerical stability.
-    """
+    """CISPO clipping thresholds; ``ratio_log_cap`` clamps the log-ratio before ``exp``."""
 
     eps_low: float = 0.2
     eps_high: float = 0.28
     ratio_log_cap: float = 20.0
 
-
-def validate_cispo_config(config: CISPOConfig) -> None:
-    """Validate CISPO settings before building the loss closure."""
-    if config.eps_low < 0 or config.eps_high < 0:
-        raise ValueError("CISPO eps_low and eps_high must be non-negative.")
-    if config.ratio_log_cap < 0:
-        raise ValueError("CISPO ratio_log_cap must be non-negative.")
+    def __post_init__(self) -> None:
+        if self.eps_low < 0 or self.eps_high < 0:
+            raise ValueError("CISPO eps_low and eps_high must be non-negative.")
+        if self.ratio_log_cap < 0:
+            raise ValueError("CISPO ratio_log_cap must be non-negative.")
 
 
-def make_cispo_loss_fn(
-    advantages: List[float],
-    ref_logprobs: List[List[float]],
-    inf_logprobs: List[List[float]],
-    prompt_len: Union[int, List[int]],
-    cispo_config: CISPOConfig | None = None,
-    *,
-    old_policy_logprobs: List[List[float]] | None = None,
-) -> ...:
-    """Build a CISPO loss closure with ratio clipping."""
-    if cispo_config is None:
-        cispo_config = CISPOConfig()
-    validate_cispo_config(cispo_config)
-    prompt_lens = _normalize_prompt_lens(prompt_len, len(advantages))
+def loss_fn_config(config: CISPOConfig) -> Dict[str, float]:
+    """``loss_fn_config`` for :data:`LOSS_FN`."""
+    return {
+        "clip_low_threshold": 1.0 - config.eps_low,
+        "clip_high_threshold": 1.0 + config.eps_high,
+        "ratio_log_cap": config.ratio_log_cap,
+    }
+
+
+def build_datums(batch: PolicyBatch, config: CISPOConfig) -> List[tinker.Datum]:
+    """Datums for the built-in :data:`LOSS_FN`."""
+    del config
+    return build_policy_datums(batch)
+
+
+def metrics(batch: PolicyBatch, result: Any, config: CISPOConfig) -> Dict[str, float]:
+    """``cispo_ratio_mean``, ``cispo_clip_frac`` (clamped weights) and ``cispo_kl``."""
+    low, high = 1.0 - config.eps_low, 1.0 + config.eps_high
+    return policy_ratio_metrics(
+        batch,
+        result,
+        loss_name="cispo",
+        prefix=PREFIX,
+        outside_trust_region=lambda ratio, *_: (ratio < low) | (ratio > high),
+    )
+
+
+def make_loss_fn(batch: PolicyBatch, config: CISPOConfig):
+    """Client-side CISPO loss: ``forward_backward_custom(batch.data, make_loss_fn(batch, config))``."""
 
     def policy_fn(ctx):
         log_ratio = torch.clamp(
-            ctx.resp_pi - ctx.resp_old_policy,
-            min=-cispo_config.ratio_log_cap,
-            max=cispo_config.ratio_log_cap,
+            ctx.resp_pi - ctx.resp_anchor, min=-config.ratio_log_cap, max=config.ratio_log_cap
         )
         ratio = torch.exp(log_ratio)
-
-        clip_lo = 1.0 - cispo_config.eps_low
-        clip_hi = 1.0 + cispo_config.eps_high
-        clipped_ratio = torch.clamp(ratio, clip_lo, clip_hi)
-        clip_frac = (clipped_ratio.detach() != ratio.detach()).float().mean().item()
-        ratio_mean = ratio.detach().mean().item()
-
-        per_token_loss = (
-            -(clipped_ratio.detach() * ctx.resp_pi * ctx.adv) * ctx.resp_mask
-        )
-        return per_token_loss, {"clip_frac": clip_frac, "ratio_mean": ratio_mean}
+        clipped_ratio = torch.clamp(ratio, 1.0 - config.eps_low, 1.0 + config.eps_high)
+        active = ctx.resp_mask > 0.5
+        per_token_loss = -(clipped_ratio.detach() * ctx.resp_pi * ctx.adv) * ctx.resp_mask
+        return per_token_loss, {
+            "clip_frac": (clipped_ratio.detach()[active] != ratio.detach()[active]).float().mean().item(),
+            "ratio_mean": ratio.detach()[active].mean().item(),
+        }
 
     def loss_fn(
-        data: List[tinker.Datum],
-        logprobs_list: List[torch.Tensor],
+        data: List[tinker.Datum], logprobs_list: List[torch.Tensor]
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        result = run_loss_loop(
-            advantages,
-            ref_logprobs,
-            inf_logprobs,
-            prompt_lens,
-            data,
-            logprobs_list,
-            "cispo",
-            policy_fn,
-            old_policy_logprobs=old_policy_logprobs,
-        )
-        metrics = dict(result.base_metrics)
-        ns = result.n_samples
-        metrics["cispo_clip_frac"] = result.extra_sums.get("clip_frac", 0.0) / ns
-        metrics["ppo_ratio_mean"] = result.extra_sums.get("ratio_mean", 0.0) / ns
-        return result.total_loss, metrics
+        result = run_loss_loop(batch, data, logprobs_list, "cispo", policy_fn)
+        return result.total_loss, client_loss_metrics(result, PREFIX)
 
     return loss_fn
-
-
-POLICY_LOSS = PolicyLoss(
-    name="cispo",
-    client=lambda inputs, options: ClientObjective(
-        inputs.data,
-        make_cispo_loss_fn(**client_loss_kwargs(inputs), cispo_config=options),
-    ),
-    builtin_name="cispo",
-    loss_fn_config=lambda options: {
-        "clip_low_threshold": 1.0 - options.eps_low,
-        "clip_high_threshold": 1.0 + options.eps_high,
-        "ratio_log_cap": options.ratio_log_cap,
-    },
-    validate=validate_cispo_config,
-)

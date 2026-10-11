@@ -50,13 +50,16 @@ deployment_shape = service.deployment_shape
 ```
 
 That is a **versioned** path (`accounts/fw/deploymentShapes/ds-x/versions/abc123`).
-The `to_deployment_config` helper in `training/utils/config.py` **rejects
-deployments with no shape** (raising with guidance on how to resolve one).
-Overriding individual fields on top of a shape — e.g. `replica_count` — is
+Recipes take the deployment shape from that training-shape profile; do not
+create deployments without one. Overriding individual fields on top of a shape — e.g. `replica_count` — is
 supported; the shape owns accelerator selection, so manual accelerator fields
 are never forwarded. If no shape fits a workload, [contact us](https://fireworks.ai/contact).
 
-## Reference-model shape (RL / DPO)
+## Reference-model shape (DPO and KL forks)
+
+A frozen reference is provisioned only for losses that consume reference
+logprobs, such as DPO, IGPO and RL forks that add reference KL. `rl_loop` and
+`async_rl_loop` train without one and reject reference settings.
 
 For **full-parameter** training with a frozen reference, leave `cfg.trainer.reference_training_shape_id` unset to let backend trainer creation auto-select a compatible `LORA_TRAINER` shape. Set it explicitly only when you need an override; it should be a LoRA-capable shape and can share the same shape as the policy.
 

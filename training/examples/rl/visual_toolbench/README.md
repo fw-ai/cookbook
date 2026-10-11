@@ -1,19 +1,33 @@
-# VisualToolBench serverless RL
+# VisualToolBench RL
 
-This example trains a vision-language policy on VisualToolBench-style tasks
-through a pooled Fireworks serverless trainer. The default policy is
-`accounts/fireworks/models/qwen3p6-27b` with the
-`qwen3_6_disable_thinking_interleaved` renderer.
+Trains a vision-language policy on VisualToolBench-style tasks. The rollout is
+multimodal and multi-turn: the policy can crop, zoom, rotate, or adjust an
+image, inspect the result, and continue. Each assistant turn is a trainable
+segment; prompt, user, and tool tokens stay loss-masked. A rubric LLM judge
+scores the final answer, and that one trajectory reward is broadcast to every
+segment before GRPO computes group-relative advantages.
 
-The rollout is genuinely multimodal and multi-turn: the policy can crop, zoom,
-rotate, or adjust an image, inspect the transformed result, and continue. Each
-assistant turn is a trainable segment; prompt, user, and tool tokens remain
-loss-masked. A rubric judge assigns one dense trajectory reward, which is
-broadcast to all segments before GRPO advantage calculation.
+## Layout
+
+| File | What it is |
+| --- | --- |
+| `rollout.py` | `make_rollout_fn(setup, *, task)`: the tool loop, sampler/trainer prompt-parity checks, Router Replay validation. |
+| `image_tools.py` | The four PIL image tools and their schemas. |
+| `reward.py` | `RubricJudge`: rubric grading, official score, critical-rubric pass. |
+| `task.py` | `TaskConfig` (renderer, system prompt, rollout / judge / eval-sampling settings), data loading, held-out evaluation metrics. |
+| `train_visual_toolbench.py` | Dedicated trainer + deployment: task + `recipes/async_rl_loop.py`. |
+| `train_visual_toolbench_serverless.py` | Pooled serverless training: task + `recipes/experiment/async_rl_loop_serverless.py`. |
+
+Both entry points pass the recipe the same pieces:
+`functools.partial(make_rollout_fn, task=TaskConfig(...))`, a filter that skips
+groups whose rollouts all score the same, and a held-out `evaluation_fn`. The
+recipe owns scheduling, GRPO, weight sync or snapshot publication, metrics,
+W&B and checkpoints.
 
 ## Input data
 
-Pass separate JSONL files for training and evaluation. Each row must contain:
+Pass separate JSONL files for training and evaluation (`--dataset`,
+`--eval-dataset`; their row ids must not overlap). Each row must contain:
 
 ```json
 {
@@ -34,55 +48,43 @@ Pass separate JSONL files for training and evaluation. Each row must contain:
 ```
 
 For multi-turn tasks, add a non-empty `turns` list whose entries each carry
-`prompt`, `golden_answer`, `images`, and `rubrics`. Top-level fields remain the
-single-turn/backward-compatible shape. Set `tool_alignment.eligible=true` only
-after verifying the task can be solved with the four supported image tools.
-Use `--no-require-tool-aligned-data` only for intentional experiments.
+`prompt`, `golden_answer`, `images`, and `rubrics`. Optional `category` and
+`eval_focus` fields break down the held-out official score. Set
+`tool_alignment.eligible=true` only after verifying the task can be solved with
+the four image tools; `--no-require-tool-aligned-data` is for intentional
+experiments only.
 
-## Launch scripts
+## Sampling and evaluation
 
-All launchers expect the same 214-row training split and disjoint 50-row
-evaluation split:
+- Training rollouts sample at temperature `1`, top-p `1`, top-k `0`, so the
+  sampler and trainer score the same distribution.
+- Held-out evaluation runs at the start, every `--evaluation-interval`
+  optimizer steps, and at the end, with `--eval-group-size` samples per row and
+  the benchmark's sampling (`--eval-temperature 1`, `--eval-top-p 0.95`,
+  `--eval-top-k 20`, `--eval-max-completion-tokens 26666`).
+- Eval metrics divide by the expected episode count, so a dropped episode
+  scores zero: `eval/reward`, `eval/official_score`, `eval/critical_fraction`,
+  `eval/judge_pass`, `eval/return_ratio`, and per-`category` / `eval_focus`
+  official scores.
+
+The judge defaults to Kimi K3 (`--judge-model`) with a 65,536-token budget and
+uses the same `FIREWORKS_API_KEY` as the run.
+
+## Serverless
+
+Provisions nothing; the 214-row training split and disjoint 50-row evaluation
+split are passed explicitly:
 
 ```bash
-cd cookbook
 export FIREWORKS_API_KEY=fw_...
-export VTB_DATASET=/absolute/path/to/train.jsonl
-export VTB_EVAL_DATASET=/absolute/path/to/eval.jsonl
+python -m training.examples.rl.visual_toolbench.train_visual_toolbench_serverless \
+  --dataset /abs/train.jsonl --eval-dataset /abs/eval.jsonl \
+  --base-model accounts/fireworks/models/qwen3p6-27b --tokenizer-model Qwen/Qwen3.6-27B \
+  --renderer-name qwen3_6_disable_thinking_interleaved
 ```
 
-Run Qwen3.6-27B:
-
-```bash
-bash training/examples/serverless_rl/runs/run_qwen3p6_serverless_2epoch.sh
-```
-
-Run Kimi K3 (override `KIMI_K3_TOKENIZER` with a pinned local snapshot when
-needed):
-
-```bash
-bash training/examples/serverless_rl/runs/run_kimi_k3_serverless_2epoch.sh
-```
-
-Run Muse Glimmer 30B (override `MUSE_GLIMMER_TOKENIZER` with a pinned local
-snapshot when needed):
-
-```bash
-bash training/examples/serverless_rl/runs/run_muse_glimmer_serverless_2epoch.sh
-```
-
-No launcher provisions a trainer, deployment, shape, or region; each connects
-to Fireworks pooled serverless training.
-
-All launchers preserve sampling/training distribution alignment:
-
-- training sampling: temperature `1`, top-p `1`, top-k `0`
-- evaluation: temperature `1`, top-p `0.95`, top-k `20`
-- training/eval generation caps: `32768` / `26666` tokens per assistant turn
-- token-count loss normalization, two epochs, upfront and every-5-step eval
-- resumable model and optimizer DCP checkpoints every two optimizer steps
-
-The model-specific settings are:
+Settings used for the reference runs (the per-model launchers are archived in
+[`../../archive/launchers/`](../../archive/launchers/)):
 
 | Policy | Renderer | Prompt groups × rollouts | Learning rate |
 | --- | --- | --- | --- |
@@ -90,16 +92,23 @@ The model-specific settings are:
 | Kimi K3 | `kimi_k3_disable_thinking` | 16 × 8 | `1e-4` |
 | Muse Glimmer 30B | `muse_glimmer` | 16 × 8 | `1e-4` |
 
-The run directory contains the exact command, input SHA-256 hashes, logs,
-metrics, eval completions, and checkpoint metadata. Override it with
-`VTB_RUN_DIR`; otherwise the script creates a timestamped directory in `/tmp`.
+Each ran two epochs with token-mean loss normalization, evaluation every five
+steps, and resumable training-state saves every two steps.
 
-The judge defaults to Kimi K3 with a 65,536-token completion budget and uses
-the same `FIREWORKS_API_KEY` as the training run.
-
-## Direct invocation
+## Dedicated trainer + deployment
 
 ```bash
-uv run --project training --extra eval python \
-  -m training.examples.serverless_rl.visual_toolbench_rl --help
+export FIREWORKS_API_KEY=fw_...
+python -m training.examples.rl.visual_toolbench.train_visual_toolbench \
+  --dataset /abs/train.jsonl --eval-dataset /abs/eval.jsonl \
+  --base-model accounts/fireworks/models/qwen3p6-27b \
+  --tokenizer-model Qwen/Qwen3.6-27B \
+  --training-shape-id <training-shape> --log-path ./vtb_dedicated
 ```
+
+`--lora-rank 0` (the default) trains all parameters. Reuse a running trainer
+and hot-load deployment with `--job-id <trainer-job-id> --deployment-id
+<deployment-id> --no-cleanup-on-exit`.
+
+`--help` on either entry point lists every flag; install the cookbook with the
+`eval` extra (`uv run --project training --extra eval ...`) for Pillow.

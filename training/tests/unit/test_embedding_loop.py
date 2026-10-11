@@ -4,6 +4,7 @@ import pytest
 import torch
 
 import training.recipes.embedding_loop as module
+from training.utils.embedding import bidirectional_info_nce_loss, info_nce_loss_fn
 from training.utils.runner import UserConfigError
 
 
@@ -122,19 +123,6 @@ def test_main_rejects_invalid_base_model(monkeypatch):
         module.main(cfg)
 
 
-def test_main_rejects_invalid_output_mode(monkeypatch, tmp_path):
-    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
-    cfg = module.Config(
-        log_path=str(tmp_path),
-        base_model="accounts/test/models/qwen3-embedding-8b",
-        dataset="/tmp/pairs.jsonl",
-        tokenizer_model="Qwen/Qwen3-Embedding-8B",
-        output_mode="not_a_mode",
-    )
-    with pytest.raises(ValueError, match="Unsupported output_mode"):
-        module.main(cfg)
-
-
 def test_main_rejects_small_batch_size(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(
@@ -175,22 +163,91 @@ def test_main_requests_cleanup_for_sdk_created_trainer(monkeypatch, tmp_path):
 def test_infonce_recall_is_perfect_for_aligned_pairs():
     q = torch.eye(4)
     d = torch.eye(4)
-    loss, metrics = module.bidirectional_info_nce_loss(q, d, temperature=0.02)
+    loss, metrics = bidirectional_info_nce_loss(q, d, temperature=0.02)
     assert metrics["in_batch_recall_at_1"] == pytest.approx(1.0)
     assert loss.item() >= 0.0
 
 
-def test_cos_similarity_matrix_closure_matches_embedding_closure():
+def test_info_nce_loss_fn_splits_queries_then_documents():
     torch.manual_seed(0)
     batch = 3
     vectors = torch.randn(2 * batch, 8)
 
-    emb_loss_fn = module._build_embedding_loss_fn(batch, temperature=0.05)
-    emb_loss, _ = emb_loss_fn(None, list(vectors))
+    loss, metrics = info_nce_loss_fn(batch, temperature=0.05)(None, list(vectors))
+    expected, _ = bidirectional_info_nce_loss(
+        vectors[:batch], vectors[batch:], temperature=0.05
+    )
 
-    normalized = torch.nn.functional.normalize(vectors, p=2, dim=-1)
-    sim_rows = list(normalized @ normalized.t())
-    cos_loss_fn = module._build_cosine_similarity_loss_fn(batch, temperature=0.05)
-    cos_loss, _ = cos_loss_fn(None, sim_rows)
+    assert loss.item() == pytest.approx(expected.item())
+    assert set(metrics) == {"loss", "loss_q2d", "loss_d2q", "in_batch_recall_at_1"}
 
-    assert cos_loss.item() == pytest.approx(emb_loss.item(), rel=1e-5, abs=1e-6)
+
+def test_main_trains_full_batches_with_client_side_info_nce(monkeypatch, tmp_path):
+    events: list[str] = []
+    logged: list[dict] = []
+
+    def tokenizer(texts, **_kwargs):
+        return {"input_ids": [[len(text) % 7 + 1, 2] for text in texts]}
+
+    class _Policy:
+        def forward_backward_custom(self, datums, loss_fn, *, output, pooling):
+            events.append(f"fwd-bwd:{len(datums)}:{output}:{pooling}")
+            # Each query embeds exactly like its paired document.
+            pairs = torch.eye(len(datums) // 2)
+            embeddings = list(torch.cat([pairs, pairs]))
+            _loss, metrics = loss_fn(datums, embeddings)
+            return type("Result", (), {"metrics": metrics})()
+
+        def optim_step(self, _params, **_kwargs):
+            events.append("optim")
+            return None
+
+    class _Service:
+        trainer_job_id = "trainer"
+
+        def create_training_client(self, *_args, **_kwargs):
+            return _Policy()
+
+        def close(self):
+            events.append("close")
+
+    class _Checkpoints:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def save(self, name, **kwargs):
+            events.append(f"checkpoint:{name}:{kwargs['data_consumed']}")
+
+    pairs = [{"query": f"q{i}", "positive": f"doc {i}"} for i in range(5)]
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    for name in ("setup_wandb", "validate_config", "log_metrics_json", "wandb_finish", "log_run_resources"):
+        monkeypatch.setattr(module, name, lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "build_service_client", lambda **_kwargs: _Service())
+    monkeypatch.setattr(
+        module,
+        "ReconnectableClient",
+        type("RC", (), {"from_training_client": staticmethod(lambda client, **_kwargs: client)}),
+    )
+    monkeypatch.setattr(module, "TrainingCheckpoints", _Checkpoints)
+    monkeypatch.setattr(module, "load_tokenizer", lambda *_args: tokenizer)
+    monkeypatch.setattr(module, "load_jsonl_dataset", lambda *_args: list(pairs))
+    monkeypatch.setattr(module, "log_metrics", lambda metrics, *, step: logged.append(dict(metrics)))
+
+    result = module.main(
+        module.Config(
+            log_path=str(tmp_path),
+            dataset="/tmp/pairs.jsonl",
+            tokenizer_model="Qwen/Qwen3-Embedding-8B",
+            batch_size=2,
+            epochs=2,
+        )
+    )
+
+    # 5 pairs -> 2 full batches per epoch; the odd pair is dropped each epoch.
+    assert result == {"steps": 4, "job_id": "trainer"}
+    assert events.count("fwd-bwd:4:embedding:last") == 4
+    assert events.count("optim") == 4
+    assert "checkpoint:step-4:8" in events
+    assert [record["train/step"] for record in logged] == [1, 2, 3, 4]
+    assert [record["train/epoch"] for record in logged] == [1, 1, 2, 2]
+    assert logged[0]["train/in_batch_recall_at_1"] == pytest.approx(1.0)

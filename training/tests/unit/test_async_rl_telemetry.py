@@ -8,7 +8,10 @@ from collections.abc import Callable
 
 import pytest
 
+from types import SimpleNamespace
+
 from training.utils.rl.async_rl.telemetry import (
+    AsyncRLTelemetry,
     ProducerMetricsReporter,
     ProducerStepMetricsReducer,
     producer_metric_values,
@@ -156,3 +159,49 @@ def test_metrics_failure_is_not_silent() -> None:
             await reporter.aclose()
 
     asyncio.run(scenario())
+
+
+def test_step_record_merges_sampler_and_weight_sync_metrics() -> None:
+    async def scenario() -> dict:
+        steps: list[tuple[dict, int]] = []
+        telemetry = AsyncRLTelemetry(
+            producer_metrics_fn=lambda _metrics: None,
+            step_metrics_fn=lambda metrics, step: steps.append((metrics, step)),
+        )
+        telemetry.start(_snapshot)
+        batch = SimpleNamespace(
+            batch_id=3,
+            submit_versions=[2, 2],
+            realized_chunks=1,
+            completed_rewards=[1.0, 0.0],
+            _train_started_at=None,
+            _train_finished_at=None,
+            _train_chunk_wait_time=0.0,
+            _chunk_wait_at_train_start=0.0,
+        )
+        telemetry.finish_step(
+            batch=batch,
+            trained_against_version=2,
+            prompt_groups=[],
+            fwd_bwd_results=[],
+            optim_result=None,
+            timing_metrics={"perf/fwd_bwd_time": 1.0},
+            step_time=2.0,
+            weight_update_time=0.5,
+            learning_rate=1e-5,
+            extra_metrics={
+                "sampler/requests": 4.0,
+                "perf/weight_sync_hotload_time": 0.25,
+            },
+        )
+        await telemetry.aclose()
+        [(metrics, step)] = steps
+        assert step == 3
+        return metrics
+
+    metrics = asyncio.run(scenario())
+
+    assert metrics["sampler/requests"] == 4.0
+    assert metrics["perf/weight_sync_hotload_time"] == 0.25
+    assert metrics["perf/weight_update_time"] == 0.5
+    assert metrics["rollout/step"] == 3

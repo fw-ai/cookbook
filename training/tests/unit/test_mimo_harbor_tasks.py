@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from training.examples.rl.harbor.datasets.mimo import unwrap_instance, write_harbor_task
+from training.examples.harbor_rl.tasks.mimo import unwrap_instance, write_harbor_task
 
 
 def _row() -> dict:
@@ -213,7 +213,7 @@ def test_general_agent_task_is_compose_with_mcp(tmp_path: Path) -> None:
 
 
 def test_music_without_abc2midi_is_not_a_zero() -> None:
-    from training.examples.rl.harbor.datasets.mimo import Abc2MidiMissing, score_music
+    from training.examples.harbor_rl.tasks.mimo import Abc2MidiMissing, score_music
 
     if shutil.which("abc2midi"):
         assert score_music("not abc at all") == 0.0

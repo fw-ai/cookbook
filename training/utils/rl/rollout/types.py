@@ -364,8 +364,7 @@ def rollout_to_prompt_group(
     rollout: Rollout,
     *,
     advantage_fn: Callable[[List[float]], List[float]] = compute_advantages,
-    with_reference: bool = False,
-    router_replay_completion_only: bool = False,
+    router_replay_completion_only: bool = True,
 ) -> PromptGroup | None:
     """Pack one :class:`Rollout` into a :class:`PromptGroup`.
 
@@ -380,8 +379,7 @@ def rollout_to_prompt_group(
     expert routing is replayed at training time (R3).
     ``router_replay_completion_only=True`` zeroes out prompt-position
     routing matrices so only completion-token routing is replayed (the
-    server picks its own routing for prompt tokens).  Reference-side
-    datums never carry routing matrices.
+    server picks its own routing for prompt tokens).
 
     Returns ``None`` when the group has no runs; raises on structural
     issues (mismatched lengths, empty runs, all-zero loss mask).
@@ -416,7 +414,6 @@ def rollout_to_prompt_group(
         return None
 
     policy_data: List[tinker.Datum] = []
-    reference_data: List[tinker.Datum] = []
     inf_logprobs_aligned: List[List[float]] = []
     raw_inf_logprobs_aligned: List[List[float]] = []
     inference_topk_token_ids_aligned: List[List[List[int]]] = []
@@ -444,7 +441,6 @@ def rollout_to_prompt_group(
                     s.prompt_model_input,
                     completion_tokens,
                 )
-                reference_model_input = datum.model_input
                 target_tokens = [
                     int(x) for x in datum.loss_fn_inputs["target_tokens"].data
                 ]
@@ -494,26 +490,6 @@ def rollout_to_prompt_group(
                     )
 
                 policy_data.append(datum)
-
-                if with_reference:
-                    mask_len = len(target_mask)
-                    reference_data.append(
-                        tinker.Datum(
-                            model_input=reference_model_input,
-                            loss_fn_inputs={
-                                "target_tokens": tinker.TensorData(
-                                    data=target_tokens,
-                                    dtype="int64",
-                                    shape=[target_len],
-                                ),
-                                "loss_mask": tinker.TensorData(
-                                    data=target_mask,
-                                    dtype="float32",
-                                    shape=[mask_len],
-                                ),
-                            },
-                        )
-                    )
 
                 inf_logprobs_aligned.append(target_logprobs)
                 raw_inf_logprobs_aligned.append(target_raw_logprobs)
@@ -584,25 +560,6 @@ def rollout_to_prompt_group(
                 )
             )
 
-            if with_reference:
-                reference_data.append(
-                    tinker.Datum(
-                        model_input=tinker.ModelInput.from_ints(s.tokens[:-1]),
-                        loss_fn_inputs={
-                            "target_tokens": tinker.TensorData(
-                                data=target_tokens,
-                                dtype="int64",
-                                shape=[target_len],
-                            ),
-                            "loss_mask": tinker.TensorData(
-                                data=target_mask,
-                                dtype="int64",
-                                shape=[target_len],
-                            ),
-                        },
-                    )
-                )
-
             inf_logprobs_aligned.append(target_logprobs)
             raw_inf_logprobs_aligned.append(target_raw_logprobs)
             inference_topk_token_ids_aligned.append(target_topk_token_ids)
@@ -615,9 +572,7 @@ def rollout_to_prompt_group(
     # is the authoritative per-segment list for heterogeneous rollouts.
     return PromptGroup(
         data=policy_data,
-        ref_data=reference_data,
         advantages=segment_advantages,
-        ref_logprobs=None,
         prompt_len=per_sample_prompt_lens[0],
         rewards=rewards,
         inf_logprobs=inf_logprobs_aligned,

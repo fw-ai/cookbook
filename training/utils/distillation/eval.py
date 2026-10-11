@@ -2,20 +2,43 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
+import logging
 import math
 import re
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from fireworks.training.sdk.deployment import DeploymentSampler
 from training.utils.data import prepare_sampling_messages
 from training.utils.distillation.sampling import (
-    _score_with_teacher,
-    _teacher_messages_for_row,
-    _tokenize_teacher_prompt,
+    score_with_teacher,
+    teacher_messages_for_row,
+    tokenize_teacher_prompt,
 )
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EvalContext:
+    """What ``distillation_loop.main(eval_fn=...)`` hands an eval callback."""
+
+    config: Any
+    """The recipe ``Config``."""
+    rows: list[dict[str, Any]]
+    """The training rows (before epoch repetition)."""
+    student_sampler: DeploymentSampler
+    """Serves the current student weights."""
+    teacher_sampler: DeploymentSampler
+    tokenizer: Any
+    step: int
+    max_seq_len: int | None
+
+
+EvalFn = Callable[[EvalContext], Awaitable[dict[str, Any]]]
 
 
 FINAL_ANSWER_LINE_RE = re.compile(r"^\s*Final:\s*([^\n\r]+?)\s*$", re.IGNORECASE)
@@ -188,34 +211,6 @@ def _span_nll(logprobs: list[float], start: int = 0, end: int | None = None) -> 
     return -sum(float(lp) for lp in span) / len(span)
 
 
-def _resolve_eval_teacher(
-    context: dict[str, Any],
-    row: dict[str, Any],
-) -> tuple[DeploymentSampler | None, str]:
-    teacher_messages_keys = context.get("teacher_messages_keys") or {}
-    if not context.get("is_multi_teacher", False):
-        teacher_messages_key = str(context.get("teacher_messages_key") or "teacher_messages")
-        if len(teacher_messages_keys) == 1:
-            teacher_messages_key = next(iter(teacher_messages_keys.values()))
-        return context["teacher_sampler"], teacher_messages_key
-
-    route_key = context.get("teacher_route_key")
-    if not isinstance(route_key, str) or not route_key:
-        raise RuntimeError("multi-teacher OPD eval requires teacher_route_key in context")
-
-    route_value = row.get(route_key)
-    if not isinstance(route_value, str):
-        return None, ""
-
-    teacher_samplers = context.get("teacher_samplers") or {}
-    teacher_sampler = teacher_samplers.get(route_value)
-    if teacher_sampler is None:
-        return None, ""
-
-    teacher_messages_key = teacher_messages_keys.get(route_value, "teacher_messages")
-    return teacher_sampler, teacher_messages_key
-
-
 async def _sample_eval_completion(
     sampler: DeploymentSampler,
     messages: list[dict[str, Any]],
@@ -248,13 +243,12 @@ async def _score_eval_response_tokens(
     completion_tokens: list[int],
     http_timeout: int,
 ) -> list[float]:
-    prompt_tokens = _tokenize_teacher_prompt(tokenizer, messages)
-    response_logprobs = await _score_with_teacher(
+    prompt_tokens = tokenize_teacher_prompt(tokenizer, messages)
+    response_logprobs = await score_with_teacher(
         sampler,
         list(prompt_tokens) + list(completion_tokens),
         prompt_len=len(prompt_tokens),
         response_len=len(completion_tokens),
-        top_logprobs=0,
         http_timeout=http_timeout,
     )
     if response_logprobs is None:
@@ -267,8 +261,8 @@ async def _score_eval_response_tokens(
     return [float(lp) for lp in response_logprobs]
 
 
-async def _evaluate_teacher_trace_logprob_gap_async(
-    context: dict[str, Any],
+async def evaluate_teacher_trace_logprob_gap(
+    context: EvalContext,
     *,
     trace_log_path: str | Path | None = None,
     min_pre_final_tokens: int = 0,
@@ -279,34 +273,27 @@ async def _evaluate_teacher_trace_logprob_gap_async(
     a trace from ``teacher_messages``; the same trace tokens are then scored
     under both the privileged teacher prompt and the ordinary student prompt.
     """
-    config: Any = context["config"]
-    student_sampler = context["student_sampler"]
-    tokenizer = context["tokenizer"]
-    rows = list(context["dataset"])
-    step = int(context.get("global_step", 0))
-    max_seq_len = context.get("max_seq_len")
+    config = context.config
+    student_sampler = context.student_sampler
+    teacher_sampler = context.teacher_sampler
+    tokenizer = context.tokenizer
+    step = context.step
+    max_seq_len = context.max_seq_len
 
     records: list[dict[str, Any]] = []
-    for row in rows:
+    for row in context.rows:
         student_messages = prepare_sampling_messages(row.get("messages", []))
         if not student_messages:
             raise RuntimeError(f"row is missing messages: {row!r}")
-        routed_teacher_sampler, teacher_messages_key = _resolve_eval_teacher(context, row)
-        if routed_teacher_sampler is None:
-            continue
 
         expected = expected_final_answer(row)
         if expected is None:
             raise RuntimeError(f"row is missing an expected answer: {row!r}")
 
-        teacher_messages = _teacher_messages_for_row(
-            row,
-            student_messages,
-            teacher_messages_key=teacher_messages_key,
-        )
+        teacher_messages = teacher_messages_for_row(row, student_messages)
 
         teacher_sample = await _sample_eval_completion(
-            routed_teacher_sampler,
+            teacher_sampler,
             teacher_messages,
             config,
             max_seq_len=max_seq_len,
@@ -325,7 +312,7 @@ async def _evaluate_teacher_trace_logprob_gap_async(
             )
 
         teacher_logprobs = await _score_eval_response_tokens(
-            routed_teacher_sampler,
+            teacher_sampler,
             tokenizer,
             teacher_messages,
             completion_tokens,
@@ -418,6 +405,14 @@ async def _evaluate_teacher_trace_logprob_gap_async(
                 "\n".join(json.dumps(record, separators=(",", ":")) for record in records) + "\n"
             )
 
+    logger.info(
+        "[step %d] teacher-trace eval: student-teacher NLL full=%.4f final=%.4f | "
+        "student_gen_acc=%.3f",
+        step,
+        student_nll - teacher_nll,
+        final_student_nll - final_teacher_nll,
+        student_generation_accuracy,
+    )
     return {
         "eval/opd_trace_teacher_nll": teacher_nll,
         "eval/opd_trace_student_nll": student_nll,
@@ -439,43 +434,28 @@ async def _evaluate_teacher_trace_logprob_gap_async(
     }
 
 
-def evaluate_teacher_trace_logprob_gap(
-    context: dict[str, Any],
-    *,
-    trace_log_path: str | Path | None = None,
-    min_pre_final_tokens: int = 0,
-) -> dict[str, Any]:
-    """Synchronous callback wrapper for ``Config.step_eval`` / ``post_training_eval``."""
-    return asyncio.run(
-        _evaluate_teacher_trace_logprob_gap_async(
-            context,
-            trace_log_path=trace_log_path,
-            min_pre_final_tokens=min_pre_final_tokens,
-        )
-    )
-
-
 def make_teacher_trace_logprob_gap_eval(
     *,
     trace_log_path: str | Path | None = None,
     min_pre_final_tokens: int = 0,
-) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """Create a no-argument eval callback suitable for ``Config.step_eval``."""
+) -> EvalFn:
+    """Create an eval callback for ``distillation_loop.main(eval_fn=...)``."""
 
-    def _callback(context: dict[str, Any]) -> dict[str, Any]:
-        return evaluate_teacher_trace_logprob_gap(
+    async def _eval(context: EvalContext) -> dict[str, Any]:
+        return await evaluate_teacher_trace_logprob_gap(
             context,
             trace_log_path=trace_log_path,
             min_pre_final_tokens=min_pre_final_tokens,
         )
 
-    return _callback
+    return _eval
 
 
 def validate_opd_trace_result(
     config: Any,
     result: dict[str, Any],
     *,
+    metrics_file: str | Path,
     expected_steps: int | None = None,
     min_abs_advantage: float = 1e-4,
     min_train_gap_improvement: float | None = None,
@@ -501,7 +481,7 @@ def validate_opd_trace_result(
                 f"expected resolved max_seq_len >= {min_max_seq_len}, got {resolved_max_seq_len}"
             )
 
-    metrics_path = Path(config.runner.metrics_file or "")
+    metrics_path = Path(metrics_file)
     records: list[dict[str, Any]] = []
     if not metrics_path.exists():
         errors.append(f"metrics file was not written: {metrics_path}")
@@ -550,12 +530,15 @@ def validate_opd_trace_result(
         eval_records = [
             record for record in records if "eval/opd_trace_teacher_nll" in record
         ]
-        expected_eval_records = expected_steps + (1 if config.eval_before_training else 0)
+        # The loop evaluates once before training, then every ``eval_every`` steps.
+        expected_eval_records = (
+            1 + expected_steps // config.eval_every if config.eval_every > 0 else 0
+        )
         if len(eval_records) < expected_eval_records:
             errors.append(
                 f"expected {expected_eval_records} teacher-trace eval records, got {len(eval_records)}"
             )
-        if config.eval_before_training and not any(record.get("step") == 0 for record in eval_records):
+        if config.eval_every > 0 and not any(record.get("step") == 0 for record in eval_records):
             errors.append("missing teacher-trace pre-training eval at step 0")
         trace_gaps = [
             float(record["eval/opd_trace_student_minus_teacher_nll"])

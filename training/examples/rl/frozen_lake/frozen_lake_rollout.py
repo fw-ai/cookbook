@@ -1,17 +1,22 @@
-"""FrozenLake multi-turn tool-call rollout processor.
+"""FrozenLake multi-turn tool-call rollout processor (eval-protocol).
 
-Uses the generic :class:`FireworksV1CompletionsClient` from eval-protocol
-with a FrozenLake-specific tool-call parser.
+Each turn renders the conversation to token ids, samples one ``lake_move``
+tool call from ``/v1/completions`` and steps the environment. The next prompt
+is built from tokens (prompt + completion + turn close + tool reply), so the
+episode's ``token_turn_traces`` pack into one training sample with
+:func:`training.utils.rl.rollout.turn_traces.turn_traces_to_sample`.
+
+Text observations use eval-protocol's :class:`FireworksV1CompletionsClient`;
+image observations use :class:`FireworksV1ImageCompletionsClient` below.
 """
 
 from __future__ import annotations
 
 import asyncio
-import inspect
+import functools
 import json
 import logging
 import time
-from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fireworks import AsyncFireworks
@@ -40,9 +45,11 @@ from training.examples.rl.frozen_lake.frozen_lake_schema import (
     parse_first_frozen_lake_tool_call_with_content,
     parse_tool_call_with_fallback,
 )
+from training.utils.rl.rollout.turn_traces import append_turn_close, tool_reply_ids
+from training.utils.supervised import build_renderer
+from training.utils.tokenizers import load_tokenizer
 
 logger = logging.getLogger(__name__)
-_TOKENIZER_CACHE: Dict[str, Any] = {}
 
 DEFAULT_SYSTEM_PROMPT_INSTRUCTIONS = (
     "You are an RL policy for FrozenLake.\n"
@@ -59,15 +66,19 @@ DEFAULT_VISUAL_PROMPT_TEMPLATE = (
 )
 
 
+@functools.lru_cache(maxsize=None)
 def _get_hf_tokenizer(tokenizer_name_or_path: str):
-    tok = _TOKENIZER_CACHE.get(tokenizer_name_or_path)
-    if tok is not None:
-        return tok
-    from transformers import AutoTokenizer
+    return load_tokenizer(tokenizer_name_or_path)
 
-    tok = AutoTokenizer.from_pretrained(tokenizer_name_or_path, trust_remote_code=True)
-    _TOKENIZER_CACHE[tokenizer_name_or_path] = tok
-    return tok
+
+@functools.lru_cache(maxsize=None)
+def _get_renderer(tokenizer_name_or_path: str):
+    """Cookbook renderer for the tokenizer; only its tool-call parser is used."""
+    return build_renderer(
+        _get_hf_tokenizer(tokenizer_name_or_path),
+        tokenizer_name_or_path,
+        load_image_processor=False,
+    )
 
 
 def _is_kimi_tokenizer_name(tokenizer_name_or_path: str) -> bool:
@@ -210,40 +221,17 @@ def _strip_trailing_token_suffix(token_ids: List[int], suffix_ids: List[int]) ->
     return normalized_token_ids, 0
 
 
-def _append_turn_suffix(core_ids: List[int], suffix_ids: List[int]) -> List[int]:
-    """Close an assistant turn for *framing* (next-prompt) purposes.
-
-    Used to build the next turn's prompt, NOT the trained completion span. The
-    model may finish a turn by emitting the end-of-turn marker itself, in which
-    case the server returns it inside ``core_ids``. Appending the suffix
-    unconditionally would duplicate it (e.g. ``<|im_end|><|im_end|>\\n``), so we
-    strip the longest tail of ``core_ids`` that overlaps the head of the suffix
-    before appending. The appended close lives in the next turn's prompt as
-    loss-masked context; it is never part of the loss-bearing completion span
-    (see the rollout loop and ``masking.compute_model_output_spans``).
-    """
-    core = [int(x) for x in core_ids]
-    suffix = [int(x) for x in suffix_ids]
-    for overlap in range(min(len(core), len(suffix)), 0, -1):
-        if core[-overlap:] == suffix[:overlap]:
-            core = core[:-overlap]
-            break
-    return core + suffix
+_KIMI_TOOL_CALL_PREFILL = "<|tool_calls_section_begin|>"
 
 
 def _build_kimi_toolcall_generation_prefill_token_ids(tokenizer_name_or_path: str) -> List[int]:
+    """Kimi tool calls start with a section marker; the rollout forces it as a prefill."""
     if not _is_kimi_tokenizer_name(tokenizer_name_or_path):
         return []
     tokenizer = _get_hf_tokenizer(tokenizer_name_or_path)
     return _normalize_token_id_sequence(
-        tokenizer.encode("<|tool_calls_section_begin|>", add_special_tokens=False)
+        tokenizer.encode(_KIMI_TOOL_CALL_PREFILL, add_special_tokens=False)
     )
-
-
-def _build_kimi_toolcall_generation_prefill_text(tokenizer_name_or_path: str) -> str:
-    if not _is_kimi_tokenizer_name(tokenizer_name_or_path):
-        return ""
-    return "<|tool_calls_section_begin|>"
 
 
 class FireworksV1ImageCompletionsClient:
@@ -695,75 +683,46 @@ def _looks_like_tool_parse_error_message(message: str) -> bool:
 def build_frozen_lake_tool_call_parser(
     *,
     allow_plaintext_action_fallback: bool = False,
-    tokenizer_getter=None,
-    model_id: str = "",
+    renderer: Any = None,
 ) -> Any:
-    """Return a ``ToolCallParserFn`` for the FrozenLake domain."""
+    """Return a ``ToolCallParserFn`` for the FrozenLake domain.
 
-    def _try_vllm_parser(
-        completion_text: str,
-        completion_token_ids: List[int],
-        tools: Optional[List[Dict[str, Any]]],
-    ) -> Optional[Dict[str, Any]]:
-        parser_name = ""
-        if not parser_name:
-            if "qwen3" in model_id.lower():
-                parser_name = "qwen3xml"
-        if not parser_name:
+    The cookbook ``renderer`` parses the model's native tool-call format
+    (Qwen3 JSON, Qwen3.5/3.6 XML functions, Kimi sections, ...); JSON payloads
+    and, optionally, a bare action word are the fallbacks.
+    """
+
+    def _try_renderer(completion_token_ids: List[int]) -> Optional[Dict[str, Any]]:
+        if renderer is None or not completion_token_ids:
             return None
         try:
-            from vllm.tool_parsers.abstract_tool_parser import ToolParserManager
-        except Exception:
-            return None
-        try:
-            tokenizer = tokenizer_getter() if tokenizer_getter else None
-            if tokenizer is None:
+            message, _ = renderer.parse_response(list(completion_token_ids))
+            first = (message.get("tool_calls") or [None])[0]
+            if first is None:
                 return None
-            parser_cls = ToolParserManager.get_tool_parser(parser_name)
-            parser = parser_cls(tokenizer)
-            request = SimpleNamespace(tools=tools or FROZEN_LAKE_TOOLS)
-            sig = inspect.signature(parser.extract_tool_calls)
-            if "token_ids" in sig.parameters:
-                extracted = parser.extract_tool_calls(
-                    model_output=completion_text, request=request,
-                    token_ids=completion_token_ids,
-                )
-            else:
-                extracted = parser.extract_tool_calls(
-                    model_output=completion_text, request=request,
-                )
-            extracted_tool_calls = list(getattr(extracted, "tool_calls", []) or [])
-            if not extracted_tool_calls:
-                return None
-            first = extracted_tool_calls[0]
-            function = getattr(first, "function", None)
             parsed = normalize_parsed_tool_call(
-                tool_call_id=getattr(first, "id", None),
-                name=getattr(function, "name", None),
-                arguments=getattr(function, "arguments", None),
+                tool_call_id=first.id,
+                name=first.function.name,
+                arguments=first.function.arguments,
             )
-            parsed_content = str(getattr(extracted, "content", "") or "")
-            return {
-                "parsed_tool_call": parsed,
-                "assistant_content": parsed_content,
-                "parser": f"vllm:{parser_name}",
-            }
         except Exception as exc:
-            logger.debug("vLLM tool parser '%s' failed: %s", parser_name, exc)
+            logger.debug("Renderer tool-call parse failed: %s", exc)
             return None
+        content = message.get("content")
+        return {
+            "parsed_tool_call": parsed,
+            "assistant_content": strip_chat_special_tokens(content if isinstance(content, str) else ""),
+            "parser": f"renderer:{type(renderer).__name__}",
+        }
 
     def parser_fn(
         completion_text: str,
         completion_token_ids: List[int],
         tools: Optional[List[Dict[str, Any]]],
     ) -> Dict[str, Any]:
-        vllm_result = _try_vllm_parser(completion_text, completion_token_ids, tools)
-        if vllm_result is not None:
-            content = strip_chat_special_tokens(str(vllm_result.get("assistant_content", "") or ""))
-            vllm_result["assistant_content"] = content
-            if content:
-                vllm_result["non_tool_content"] = content
-            return vllm_result
+        renderer_result = _try_renderer(completion_token_ids)
+        if renderer_result is not None:
+            return renderer_result
 
         try:
             parsed_tool_call, non_tool_content = parse_first_frozen_lake_tool_call_with_content(completion_text)
@@ -915,8 +874,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
 
             tool_call_parser = build_frozen_lake_tool_call_parser(
                 allow_plaintext_action_fallback=allow_plaintext_action_fallback,
-                tokenizer_getter=lambda: shared_tokenizer,
-                model_id=model_id,
+                renderer=_get_renderer(str(tokenizer_name_or_path)),
             )
             text_client = None
             image_client = None
@@ -950,9 +908,11 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                     default_tools=FROZEN_LAKE_TOOLS,
                 )
                 text_client._tokenizer = shared_tokenizer
+            # Same template switches the text client renders prompts with.
+            thinking_kwargs = (
+                {} if self.enable_thinking is None else {"enable_thinking": self.enable_thinking}
+            )
             usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            all_prompt_ids: List[int] = []
-            all_completion_ids: List[int] = []
             step_rewards: List[float] = []
             tool_call_traces: List[Dict[str, Any]] = []
             model_request_traces: List[Dict[str, Any]] = []
@@ -960,15 +920,12 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
             latest_finish_reason: Optional[str] = None
             latest_raw_output: Optional[Dict[str, Any]] = None
             rollout_error: Optional[str] = None
-            assistant_toolcall_prefill_ids: List[int] = []
-            assistant_toolcall_prefill_text = ""
-            if _is_kimi_tokenizer_name(str(tokenizer_name_or_path)):
-                assistant_toolcall_prefill_ids = _build_kimi_toolcall_generation_prefill_token_ids(
-                    str(tokenizer_name_or_path)
-                )
-                assistant_toolcall_prefill_text = _build_kimi_toolcall_generation_prefill_text(
-                    str(tokenizer_name_or_path)
-                )
+            assistant_toolcall_prefill_ids = _build_kimi_toolcall_generation_prefill_token_ids(
+                str(tokenizer_name_or_path)
+            )
+            assistant_toolcall_prefill_text = (
+                _KIMI_TOOL_CALL_PREFILL if assistant_toolcall_prefill_ids else ""
+            )
 
             try:
                 dataset_info = row.input_metadata.dataset_info or {}
@@ -1112,23 +1069,14 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                     else:
                         assistant_suffix_ids = text_client.encode_special_suffix()
                     # Trained completion = tool-call prefill + engine tokens verbatim.
-                    # The end-of-turn close is deliberately NOT part of the trained
-                    # span: on a clean stop the model's own close already sits inside
-                    # raw_completion_ids and stays trained with its real logprob; on a
-                    # length-truncated stop nothing synthetic is added, so we never
-                    # teach the model to stop at a forced cutoff. The canonical close is
-                    # re-attached below only as loss-masked framing for the next prompt.
+                    # The end-of-turn close is not trained: a clean stop already
+                    # carries the model's own close; a length-truncated stop gets
+                    # none. The close is appended to the next prompt as context only.
                     completion_ids = [
                         int(x) for x in list(assistant_toolcall_prefill_ids)
                     ] + list(raw_completion_ids)
-                    # Framing bridge for the next turn's prompt (loss_mask=0 context):
-                    # dedup-append the canonical close so the assistant turn is
-                    # byte-exactly closed before the tool turn, without duplicating a
-                    # close the engine already emitted.
-                    assistant_turn_ids = _append_turn_suffix(completion_ids, assistant_suffix_ids)
+                    assistant_turn_ids = append_turn_close(completion_ids, assistant_suffix_ids)
                     completion_text = str(completion.get("completion_text") or "")
-                    all_prompt_ids.extend(prompt_ids)
-                    all_completion_ids.extend(completion_ids)
                     if provider_prompt_ids and provider_prompt_ids != request_prompt_ids:
                         model_request_traces[-1]["provider_prompt_ids"] = provider_prompt_ids
 
@@ -1172,7 +1120,11 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                         turn_trace["observation_mode"] = "image"
                     completion_logprobs = completion.get("completion_logprobs")
                     if completion_logprobs:
-                        turn_trace["completion_logprobs"] = [float(lp) for lp in completion_logprobs]
+                        # One logprob per completion token: the forced prefill was
+                        # emitted with probability one.
+                        turn_trace["completion_logprobs"] = [0.0] * len(
+                            assistant_toolcall_prefill_ids
+                        ) + [float(lp) for lp in completion_logprobs]
                     token_turn_traces.append(turn_trace)
 
                     tool_result = {
@@ -1210,9 +1162,6 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                             tool_suffix_ids = image_client.build_tool_response_suffix_token_ids(
                                 tool_message=tool_message_payload,
                             )
-                            tool_suffix_text = image_client.build_tool_response_suffix_text(
-                                tool_message=tool_message_payload,
-                            )
                             tool_suffix_text = image_client.decode_token_ids(
                                 token_ids=tool_suffix_ids
                             )
@@ -1231,8 +1180,8 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                             current_prompt_ids = []
                             current_prompt_text = ""
                     else:
-                        tool_suffix_ids = text_client.build_tool_response_suffix_token_ids(
-                            tool_message=tool_message_payload
+                        tool_suffix_ids = tool_reply_ids(
+                            shared_tokenizer, tool_message_payload, **thinking_kwargs
                         )
                         current_prompt_ids = list(prompt_ids) + list(assistant_turn_ids) + list(tool_suffix_ids)
                         model_request_traces[-1]["assistant_turn_len"] = len(completion_ids)
@@ -1264,8 +1213,6 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                 row.execution_metadata.raw_output = latest_raw_output
 
                 extra = row.execution_metadata.extra if isinstance(row.execution_metadata.extra, dict) else {}
-                extra["prompt_ids"] = list(all_prompt_ids)
-                extra["completion_ids"] = list(all_completion_ids)
                 extra["step_rewards"] = list(step_rewards)
                 extra["tool_call_traces"] = list(tool_call_traces)
                 extra["tools_input"] = list(row.tools or [])

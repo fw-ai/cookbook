@@ -33,10 +33,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from functools import partial
-from typing import Literal
 
 from dotenv import load_dotenv
-from tinker_cookbook.recipes.sdft.datasets import SDFTDataset, load_sciknoweval, load_toolalpaca
+from tinker_cookbook.recipes.sdft.datasets import SDFTDataset, load_sciknoweval
 from tinker_cookbook.recipes.sdft.eval import SciKnowEvalEvaluator
 
 from training._vendor.tinker_cookbook_fw.distillation import sdft_serverless
@@ -61,10 +60,8 @@ class Config:
     """Serverless training is LoRA-only, so this must be > 0."""
 
     # Dataset
-    dataset: Literal["sciknoweval", "toolalpaca"] = "sciknoweval"
     sciknoweval_domain: str = "Chemistry"
-    toolalpaca_data_path: str | None = None
-    """Local Arrow dataset from the SDFT paper; ``None`` loads ToolAlpaca from HF."""
+    """SciKnowEval domain to train and evaluate on."""
 
     # Training
     learning_rate: float = 5e-4
@@ -95,34 +92,25 @@ def main(cfg: Config) -> None:
     renderer_name = resolve_renderer_name(cfg.tokenizer_model, cfg.renderer_name)
     renderer = get_renderer(renderer_name, load_tokenizer(cfg.tokenizer_model))
 
-    if cfg.dataset == "sciknoweval":
-        train_q, train_a, test_q, test_a = load_sciknoweval(domain=cfg.sciknoweval_domain)
-    elif cfg.dataset == "toolalpaca":
-        train_q, train_a, test_q, test_a = load_toolalpaca(data_path=cfg.toolalpaca_data_path)
-    else:
-        raise ValueError(f"Unknown dataset {cfg.dataset!r}; use 'sciknoweval' or 'toolalpaca'")
+    # (question, golden answer) pairs. To train on another dataset, swap the
+    # loader (e.g. ``load_toolalpaca``) and its evaluator.
+    train_q, train_a, test_q, test_a = load_sciknoweval(domain=cfg.sciknoweval_domain)
     train_dataset = SDFTDataset(
         questions=train_q,
         golden_answers=train_a,
         batch_size=cfg.groups_per_batch,
         group_size=1,
         renderer=renderer,
-        dataset_name=cfg.dataset,
+        dataset_name="sciknoweval",
     )
-
-    # Held-out accuracy (SciKnowEval only; ToolAlpaca has no evaluator here).
-    evaluator_builders = []
-    if cfg.dataset == "sciknoweval" and test_q:
-        n = len(test_q) if cfg.max_eval_examples is None else cfg.max_eval_examples
-        evaluator_builders.append(
-            partial(
-                SciKnowEvalEvaluator,
-                prompts=[[{"role": "user", "content": q}] for q in test_q[:n]],
-                answers=test_a[:n],
-                renderer=renderer,
-                max_tokens=cfg.max_tokens,
-            )
-        )
+    test_q, test_a = test_q[: cfg.max_eval_examples], test_a[: cfg.max_eval_examples]
+    evaluator = partial(
+        SciKnowEvalEvaluator,
+        prompts=[[{"role": "user", "content": q}] for q in test_q],
+        answers=test_a,
+        renderer=renderer,
+        max_tokens=cfg.max_tokens,
+    )
 
     asyncio.run(
         sdft_serverless.main(
@@ -135,7 +123,7 @@ def main(cfg: Config) -> None:
                 learning_rate=cfg.learning_rate,
                 max_tokens=cfg.max_tokens,
                 topk=cfg.topk,
-                evaluator_builders=evaluator_builders,
+                evaluator_builders=[evaluator] if test_q else [],
                 eval_every=cfg.eval_every,
                 save_every=cfg.save_every,
                 log_path=cfg.log_path,
@@ -155,7 +143,6 @@ if __name__ == "__main__":
             log_path="./sdft_logs",
             base_model="accounts/fireworks/models/glm-5p3-flash",
             tokenizer_model="zai-org/GLM-5.3-Flash",
-            dataset="sciknoweval",
             sciknoweval_domain="Chemistry",
             lora_rank=32,
             learning_rate=5e-4,

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Embedding fine-tuning getting-started example for the bundled retrieval pairs.
 
-Demonstrates the three SDK-backed contrastive modes via ``--output-mode``:
-``embedding`` (client-side InfoNCE), ``cos_similarity_matrix`` (client-side
-InfoNCE over the trainer's similarity matrix), and ``contrastive_loss``
-(server-side InfoNCE in a single round trip).
+Runs ``recipes/embedding_loop.py``: bidirectional in-batch InfoNCE computed
+client-side over the trainer's pooled embeddings.
 """
 
 from __future__ import annotations
@@ -12,7 +10,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import signal
 
 from dotenv import load_dotenv
 
@@ -28,15 +25,6 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
-FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-
-
-def _signal_handler(signum, frame):
-    name = signal.Signals(signum).name
-    logger.warning("Received %s — raising SystemExit for cleanup", name)
-    raise SystemExit(f"Terminated by {name}")
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Embedding fine-tuning on the bundled retrieval pairs")
@@ -45,11 +33,6 @@ def parse_args():
     parser.add_argument(
         "--dataset-path",
         default=os.path.join(os.path.dirname(__file__), "retrieval_pairs.jsonl"),
-    )
-    parser.add_argument(
-        "--output-mode",
-        default="embedding",
-        choices=("embedding", "cos_similarity_matrix", "contrastive_loss"),
     )
     parser.add_argument("--training-shape", default="")
     parser.add_argument("--output-model-id", default=None, help="Promote the final checkpoint to this model id")
@@ -66,14 +49,10 @@ def parse_args():
 
 
 def main():
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-
     args = parse_args()
     logger.info(
-        "Embedding training: model=%s mode=%s shape=%s",
+        "Embedding training: model=%s shape=%s",
         args.base_model,
-        args.output_mode,
         args.training_shape or "auto",
     )
 
@@ -83,15 +62,11 @@ def main():
             "Use the bundled retrieval_pairs.jsonl or pass --dataset-path explicitly."
         )
 
-    os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
-    os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
-
     config = embedding_loop.Config(
         log_path="./embedding_logs",
         base_model=args.base_model,
         dataset=args.dataset_path,
         tokenizer_model=args.tokenizer_model,
-        output_mode=args.output_mode,
         temperature=args.temperature,
         learning_rate=args.learning_rate,
         epochs=args.epochs,
@@ -105,7 +80,7 @@ def main():
         wandb=WandBConfig(
             project=args.wandb_project,
             entity=args.wandb_entity,
-            run_name=args.wandb_run_name or f"emb-{args.output_mode}-{args.base_model.rsplit('/', 1)[-1]}",
+            run_name=args.wandb_run_name or f"emb-{args.base_model.rsplit('/', 1)[-1]}",
         ),
     )
 
