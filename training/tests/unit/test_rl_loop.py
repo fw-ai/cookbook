@@ -585,7 +585,7 @@ def test_main_passes_renderer_name_to_rollout_renderer(monkeypatch):
             )
 
         def create_deployment_sampler(self, *_args, **_kwargs):
-            return object()
+            return SimpleNamespace(close=lambda: None)
 
         def close(self):
             pass
@@ -675,13 +675,17 @@ def test_default_rollout_preserves_images_and_sdk_routing(
 
         def create_deployment_sampler(self, **_kwargs: Any) -> SimpleNamespace:
             assert training_clients == [policy]
-            return SimpleNamespace(sample_with_prompt_tokens=sample_with_prompt_tokens)
+            return SimpleNamespace(
+                sample_with_prompt_tokens=sample_with_prompt_tokens,
+                close=lambda: sampler_closed.append(True),
+            )
 
         def close(self) -> None:
             pass
 
     row = {"messages": [{"role": "user", "content": "question"}]}
     groups = []
+    sampler_closed: list[bool] = []
 
     async def collect(_iterator: Any, *, sample_prompt: Any, **_kwargs: Any) -> None:
         groups.append(await sample_prompt(row, cursor_index=0))
@@ -726,6 +730,8 @@ def test_default_rollout_preserves_images_and_sdk_routing(
             rows=[row],
         )
 
+    # The recipe owns the sampler it created and closes it even on failure.
+    assert sampler_closed == [True]
     [(tokens, kwargs)] = sampling_calls
     assert tokens == [10, 11] + ([99] if multimodal else []) + [12]
     assert kwargs.get("images") == (["data:image/png;base64,aW1hZ2U="] if multimodal else None)

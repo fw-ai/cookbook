@@ -324,6 +324,7 @@ def main(
         response_renderer = None
         if sample_prompt_fn is None:
             sampler = service.create_deployment_sampler(tokenizer=tokenizer)
+            stack.callback(sampler.close)
             response_renderer = build_renderer(
                 tokenizer,
                 cfg.deployment.tokenizer_model,

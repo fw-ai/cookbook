@@ -579,6 +579,7 @@ def main(
             tokenizer=tokenizer,
             concurrency_controller=concurrency_controller,
         )
+        stack.callback(student_sampler.close)
         student_model = student_sampler.model
 
         teacher_runtime = _resolve_teacher_runtime(
@@ -590,6 +591,9 @@ def main(
             cancel_on_exit=cancel_on_exit,
         )
         teacher_entries = teacher_runtime.entries
+        # The loop owns every sampler it created; teachers may share one.
+        for teacher_sampler_to_close in {id(e.sampler): e.sampler for e in teacher_entries}.values():
+            stack.callback(teacher_sampler_to_close.close)
         route_to_entry = teacher_runtime.route_to_entry
         primary_teacher = teacher_runtime.primary
         teacher_model = primary_teacher.resolved_model
