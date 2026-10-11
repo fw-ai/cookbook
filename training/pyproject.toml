@@ -137,6 +137,15 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
+"training.examples.sft" = ["text2sql_dataset.jsonl", "food_reasoning.jsonl"]
+"training.examples.serverless_sft" = ["data/support_triage_train.jsonl"]
+"training.examples.rl.deepmath" = ["dataset.jsonl"]
+"training.examples.rl.frozen_lake" = ["seeds.jsonl", "assets/img/*.png"]
+"training.examples.rl.eval_protocol_chat" = ["train.jsonl"]
+"training.examples.rl.harbor.datasets.mimo.music_scorer" = ["baselines/ref_full4k.json"]
+"training.examples.embedding" = ["retrieval_pairs.jsonl"]
+"training.examples.distillation.serverless_k3_privileged" = ["data/gsm8k_privileged.jsonl", "data/gsm8k_200.jsonl"]
+"training.examples.serverless_rl" = ["data/countdown_train.jsonl"]
 "training._vendor.tinker_cookbook_0_4_3" = ["LICENSE"]
 "training._vendor.tinker_cookbook_fw" = ["LICENSE"]
 

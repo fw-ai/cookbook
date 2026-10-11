@@ -332,8 +332,13 @@ def _resolve_teacher_runtime(
     tokenizer: Any,
     base_url: str,
     cancel_on_exit: bool,
+    stack: ExitStack,
 ) -> _TeacherRuntime:
-    """Resolve teacher model specs to inference samplers used for scoring."""
+    """Resolve teacher model specs to inference samplers used for scoring.
+
+    Each sampler is registered on ``stack`` as soon as it exists, so a teacher
+    that fails later still closes the ones already created.
+    """
     single_teacher = len(teacher_specs) == 1
     resolved_models: dict[str, str] = {}
     samplers: dict[str, Any] = {}
@@ -350,6 +355,7 @@ def _resolve_teacher_runtime(
                 tokenizer=tokenizer,
                 inference_url=cfg.teacher_inference_url or base_url,
             )
+            stack.callback(samplers[spec.model].close)
             continue
 
         teacher_deployment_id = _teacher_deployment_id_for_spec(
@@ -381,6 +387,7 @@ def _resolve_teacher_runtime(
             cleanup_on_close=CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cancel_on_exit else None,
             tokenizer=tokenizer,
         )
+        stack.callback(sampler.close)
         resolved_models[spec.model] = sampler.model
         samplers[spec.model] = sampler
 
@@ -589,11 +596,9 @@ def main(
             tokenizer=tokenizer,
             base_url=base_url,
             cancel_on_exit=cancel_on_exit,
+            stack=stack,
         )
         teacher_entries = teacher_runtime.entries
-        # The loop owns every sampler it created; teachers may share one.
-        for teacher_sampler_to_close in {id(e.sampler): e.sampler for e in teacher_entries}.values():
-            stack.callback(teacher_sampler_to_close.close)
         route_to_entry = teacher_runtime.route_to_entry
         primary_teacher = teacher_runtime.primary
         teacher_model = primary_teacher.resolved_model

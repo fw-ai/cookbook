@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from contextlib import ExitStack
 from math import exp
 from pathlib import Path
 from types import SimpleNamespace
@@ -1096,6 +1097,7 @@ class _FakeTeacherRuntimeService:
     def __init__(self) -> None:
         self.direct_calls: list[dict] = []
         self.deployment_calls: list[dict] = []
+        self.closed: list[str] = []
 
     def create_deployment_sampler_for_model(
         self,
@@ -1111,7 +1113,7 @@ class _FakeTeacherRuntimeService:
                 "inference_url": inference_url,
             }
         )
-        return SimpleNamespace(model=model)
+        return SimpleNamespace(model=model, close=lambda: self.closed.append(model))
 
     def create_inference_deployment_sampler(
         self,
@@ -1129,7 +1131,10 @@ class _FakeTeacherRuntimeService:
                 "tokenizer": tokenizer,
             }
         )
-        return SimpleNamespace(model=f"accounts/test/deployments/{config.deployment_id}")
+        if config.base_model.endswith("broken"):
+            raise RuntimeError("teacher deployment never became ready")
+        model = f"accounts/test/deployments/{config.deployment_id}"
+        return SimpleNamespace(model=model, close=lambda: self.closed.append(model))
 
 
 def test_resolve_teacher_runtime_uses_existing_inference_model_directly() -> None:
@@ -1147,6 +1152,7 @@ def test_resolve_teacher_runtime_uses_existing_inference_model_directly() -> Non
         tokenizer="tok",
         base_url="https://api.test",
         cancel_on_exit=True,
+        stack=ExitStack(),
     )
 
     assert len(service.direct_calls) == 1
@@ -1186,6 +1192,7 @@ def test_resolve_teacher_runtime_reuses_duplicate_base_model_deployment() -> Non
         tokenizer="tok",
         base_url="https://api.test",
         cancel_on_exit=True,
+        stack=ExitStack(),
     )
 
     assert service.direct_calls == []
@@ -1854,3 +1861,32 @@ def test_opd_trace_result_validation_requires_gap_improvement(tmp_path) -> None:
             min_train_gap_improvement=0.2,
             min_trace_gap_improvement=0.2,
         )
+
+
+def test_resolve_teacher_runtime_closes_earlier_samplers_when_a_teacher_fails() -> None:
+    cfg = Config(
+        log_path="/tmp/opd",
+        teacher_model="",
+        multi_teacher=MultiTeacherConfig(
+            teachers=[
+                TeacherConfig(model="accounts/test/deployments/teacher-ok", route_value="math"),
+                TeacherConfig(model="accounts/fireworks/models/teacher-broken", route_value="code"),
+            ],
+            route_key="teacher_route",
+        ),
+    )
+    service = _FakeTeacherRuntimeService()
+
+    with pytest.raises(RuntimeError, match="never became ready"):
+        with ExitStack() as stack:
+            _resolve_teacher_runtime(
+                cfg=cfg,
+                teacher_specs=_resolve_teacher_specs(cfg),
+                service=service,
+                tokenizer="tok",
+                base_url="https://api.test",
+                cancel_on_exit=True,
+                stack=stack,
+            )
+
+    assert service.closed == ["accounts/test/deployments/teacher-ok"]

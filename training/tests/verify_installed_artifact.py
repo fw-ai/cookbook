@@ -55,6 +55,38 @@ def main() -> None:
                 f"Imported {module_name} from the checkout: {module_path}"
             )
 
+    # Example entry points default to these bundled files; a source checkout
+    # hides their absence, so compare the installed copies byte for byte.
+    bundled_files = [
+        "examples/sft/text2sql_dataset.jsonl",
+        "examples/sft/food_reasoning.jsonl",
+        "examples/serverless_sft/data/support_triage_train.jsonl",
+        "examples/rl/deepmath/dataset.jsonl",
+        "examples/rl/frozen_lake/seeds.jsonl",
+        "examples/rl/eval_protocol_chat/train.jsonl",
+        "examples/rl/harbor/datasets/mimo/music_scorer/baselines/ref_full4k.json",
+        "examples/embedding/retrieval_pairs.jsonl",
+        "examples/distillation/serverless_k3_privileged/data/gsm8k_privileged.jsonl",
+        "examples/distillation/serverless_k3_privileged/data/gsm8k_200.jsonl",
+        "examples/serverless_rl/data/countdown_train.jsonl",
+    ]
+    # Rendering names these assets directly. A glob would silently omit an
+    # asset missing from the checkout and let an incomplete wheel pass.
+    bundled_files.extend(
+        f"examples/rl/frozen_lake/assets/img/{name}.png"
+        for name in (
+            "ice", "hole", "cracked_hole", "goal", "stool",
+            "elf_left", "elf_down", "elf_right", "elf_up",
+        )
+    )
+    for relative in bundled_files:
+        source = CHECKOUT_PACKAGE / relative
+        if not source.is_file():
+            raise RuntimeError(f"Bundled example resource missing from checkout: {relative}")
+        installed = INSTALLED_PACKAGE / relative
+        if not installed.is_file() or installed.read_bytes() != source.read_bytes():
+            raise RuntimeError(f"Bundled example resource missing or changed: {relative}")
+    print(f"verified {len(bundled_files)} bundled example resources")
     print(f"cookbook: {version('fireworks-training-cookbook')} ({INSTALLED_PACKAGE})")
     print(f"fireworks-ai: {version('fireworks-ai')}")
     print(f"imported {len(modules)} installed cookbook modules")
