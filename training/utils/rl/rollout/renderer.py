@@ -262,6 +262,10 @@ def build_multimodal_completions_prompt_token_ids(
     renderer variants such as Qwen disable-thinking can intentionally differ
     from the tokenizer default (for example by omitting ``<think>\n``).
 
+    A renderer-native trace may supply token-in IDs, after checking that its
+    trainer ModelInput matches exactly. This avoids duplicating image affixes
+    that serving adds during expansion.
+
     The returned prompt is **unexpanded**: each image chunk becomes one image
     placeholder token and is paired with one base64 data URL. Serving expands
     the placeholder to the model-specific number of visual tokens.
@@ -271,6 +275,15 @@ def build_multimodal_completions_prompt_token_ids(
         raise MultimodalRenderingNotSupported(
             "multimodal ModelInput has no base64 images; cannot call completions with images"
         )
+
+    # Kimi's native trace distinguishes token-in image placeholders from
+    # trainer image affixes. Serving expands the placeholder with those affixes.
+    render_trace = getattr(renderer, "render_trace", None)
+    if callable(render_trace):
+        trace = render_trace(messages, add_generation_prompt=True)
+        if trace.model_input != model_input:
+            raise ValueError("Sampling ModelInput differs from the renderer trace")
+        return list(trace.token_in_ids), images
 
     image_placeholder_id = _image_placeholder_token_id(
         tokenizer,

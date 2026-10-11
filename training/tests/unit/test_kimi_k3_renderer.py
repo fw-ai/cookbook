@@ -675,9 +675,26 @@ def test_vision_symbolic_token_in_and_expanded_representations(
         tokenizer,
         renderer=vision_renderer,
     )
-    assert token_in_ids == list(trace.materialized_one_pad_ids)
+    assert token_in_ids == list(trace.token_in_ids)
     assert len(images) == 1
 
+
+def test_vision_token_in_rejects_mismatched_model_input(tokenizer, vision_renderer):
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": Image.new("RGB", (512, 512), "red")},
+                {"type": "text", "text": "Describe it."},
+            ],
+        }
+    ]
+    model_input = vision_renderer.build_generation_prompt(messages)
+    model_input.chunks.append(tinker.types.EncodedTextChunk(tokens=[1]))
+    with pytest.raises(ValueError, match="renderer trace"):
+        build_multimodal_completions_prompt_token_ids(
+            messages, model_input, tokenizer, renderer=vision_renderer
+        )
 
 def test_vision_multiple_images_across_turns_with_tools(
     tokenizer,
@@ -706,6 +723,14 @@ def test_vision_multiple_images_across_turns_with_tools(
     trace = vision_renderer.render_trace(
         _conversation(messages, tools=TOOLS),
     )
+    token_in_ids, images = build_multimodal_completions_prompt_token_ids(
+        _conversation(messages, tools=TOOLS),
+        trace.model_input,
+        tokenizer,
+        renderer=vision_renderer
+    )
+    assert token_in_ids == list(trace.token_in_ids)
+    assert len(images) == 3
     prompts = [item.image_prompt for item in trace.processed_media]
     assert len(prompts) == 3
     assert list(trace.materialized_one_pad_ids) == _oracle_ids(
