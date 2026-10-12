@@ -39,7 +39,9 @@ the user already named model + JSONL + method, skip research and go to
 Follow `references/methodology.md`. In short:
 
 1. **Inspect the cookbook first** — read `references/cookbook-catalog.md` and
-   open the closest README before asking questions the catalog can answer.
+   `references/starter-jobs.md`. Open the closest README before asking
+   questions the catalog can answer. For greenfield users, offer a starter
+   job before the full interview.
 2. **Interview one question at a time** — `references/interview-questions.md`;
    propose options grounded in what you read; let the user revise.
 3. **Eval before train** — every readiness package includes how success will be
@@ -96,6 +98,11 @@ For a vague first message, show the privacy notice, then offer Research,
 Configure, and Debug in the `welcome-entry` AskQuestion. Ask one question, then
 stop. Record the registered welcome option after the answer.
 
+When the user is greenfield, asks what they can try, or chooses Research without
+naming a task or dataset, read `references/starter-jobs.md` and ask the
+`research-starter` question before Q1. A starter selection bypasses the long
+interview and hands off a readiness package with the bundled dataset.
+
 Continue directly when the user clearly asks to explore a task, method,
 dataset, evaluation, or example. The privacy notice still precedes the first
 research interview question.
@@ -134,6 +141,7 @@ Never tell the user to paste a canned configure prompt.
 | Need | Reference |
 |---|---|
 | Full cookbook index | `references/cookbook-catalog.md` |
+| Preloaded starter jobs | `references/starter-jobs.md` |
 | Interview scripts and completion gate | `references/interview-questions.md` |
 | Methodology (inspect → interview → eval) | `references/methodology.md` |
 | Turn shapes and readiness package | `references/output-template.md` |

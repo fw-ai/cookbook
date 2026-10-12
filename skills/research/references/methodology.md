@@ -8,22 +8,24 @@ and LangChain
 
 ## Principles
 
-1. **Inspect before you ask.** Read `cookbook-catalog.md` and the closest
-   README. Do not ask questions the catalog already answers.
-2. **One question per turn.** Use AskQuestion; STOP and wait. Interview, not
+1. **Inspect before you ask.** Read `cookbook-catalog.md`, `starter-jobs.md`,
+   and the closest README. Do not ask questions the catalog already answers.
+2. **Offer starters to greenfield users.** When there is no dataset yet, ask
+   `research-starter` before the long interview.
+3. **One question per turn.** Use AskQuestion; STOP and wait. Interview, not
    interrogation.
-3. **Ground proposals in evidence.** Cite cookbook paths, bundled datasets, or HF
+4. **Ground proposals in evidence.** Cite cookbook paths, bundled datasets, or HF
    hits — not generic advice.
-4. **Eval before train.** No handoff to configure without an eval plan (metric
+5. **Eval before train.** No handoff to configure without an eval plan (metric
    class + baseline yes/no + cookbook hook or explicit gap).
-5. **User approves the package.** Present one recommendation; offer alternatives
+6. **User approves the package.** Present one recommendation; offer alternatives
    only when two entries are genuinely close.
 
 ## Arc
 
 ```text
-Inspect cookbook (+ optional HF search)
-  → Interview (task, data, eval, path)
+Inspect cookbook (+ starter-jobs.md)
+  → Starter menu (greenfield) or Interview (task, data, eval, path)
   → Readiness package (method, entry, dataset_plan, eval_plan)
   → User approves handoff
   → configure
@@ -34,6 +36,7 @@ Inspect cookbook (+ optional HF search)
 | Input | Action |
 |---|---|
 | User message | Tentative match from catalog |
+| Greenfield / "what can I try?" | Offer `starter-jobs.md` before Q1 |
 | Repo context | Note local JSONL, notebooks, prior runs |
 | `training/case-studies/<slug>/README.md` | "Is this you?" paragraph |
 | `training/examples/*/README.md` | Minimal fork when no case study fits |

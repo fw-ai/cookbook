@@ -6,6 +6,9 @@ the task shape fits but no case study does.
 
 Cookbook root: `training/`. Live table: [`training/README.md`](https://github.com/fw-ai/cookbook/blob/main/training/README.md).
 
+For greenfield users, offer the preloaded menu in `starter-jobs.md` before
+walking the full catalog interview.
+
 ## Tier 1 — Case studies (`training/case-studies/`)
 
 End-to-end notebooks with eval. See `case-studies.md` for slugs and match rules.

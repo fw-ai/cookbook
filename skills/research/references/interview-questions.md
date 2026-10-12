@@ -29,13 +29,23 @@ Do **not** present the final recommendation until:
 3. **Q-eval** (how to measure success) is answered, **and**
 4. Any applicable follow-up (Q1b, domain, Q3) is answered.
 
-**Exception:** user says "skip questions", "just pick one", or names a cookbook
-slug. Set `completion_gate_bypassed: true`.
+**Exception:** user says "skip questions", "just pick one", names a cookbook
+slug, or selects a starter from `starter-jobs.md` (any option except
+`explore_custom`). Set `completion_gate_bypassed: true`.
 
 **Novel domains** (finance, legal, healthcare): always run **Q1 + Q2 + Q-eval +
 one follow-up**.
 
 ## Question sequence
+
+### Starter — What should we try first?
+
+When the user is greenfield or asks what they can try, run this before Q1.
+Telemetry and options: `starter-jobs.md` (`question_id: research-starter`).
+
+If the answer is a concrete starter ID, skip Q1 / Q2 / Q-eval, present the
+starter readiness package, and fire **Handoff**. If the answer is
+`explore_custom`, continue with Q1.
 
 ### Q1 — What are you trying to improve?
 

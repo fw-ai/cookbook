@@ -63,6 +63,9 @@ def test_question_ids_are_stable() -> None:
         "research-q1": read(
             SKILLS_DIR / "research" / "references" / "interview-questions.md"
         ),
+        "research-starter": read(
+            SKILLS_DIR / "research" / "references" / "starter-jobs.md"
+        ),
         "configure-q-path": read(
             SKILLS_DIR / "configure" / "references" / "path-intake.md"
         ),
@@ -72,6 +75,16 @@ def test_question_ids_are_stable() -> None:
     }
     for question, text in documents.items():
         assert question in text
+
+
+def test_starter_jobs_are_linked() -> None:
+    getting_started = read(SKILLS_DIR / "GETTING-STARTED.md")
+    research = read(SKILLS_DIR / "research" / "SKILL.md")
+    starters = read(SKILLS_DIR / "research" / "references" / "starter-jobs.md")
+    assert "starter-jobs.md" in getting_started
+    assert "starter-jobs.md" in research
+    assert "support_triage_train.jsonl" in starters
+    assert "Do not invent a free tier" in starters
 
 
 def test_debug_reuses_existing_session() -> None:
@@ -88,6 +101,7 @@ TESTS = (
     test_install_includes_reference_carrier,
     test_entry_routes_and_carrier_references,
     test_question_ids_are_stable,
+    test_starter_jobs_are_linked,
     test_debug_reuses_existing_session,
 )
 

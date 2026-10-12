@@ -39,7 +39,22 @@ npx --yes skills add fw-ai/cookbook -g \
 Open a new chat and describe your goal. Do not mention a skill name unless you
 want to force a specific workflow.
 
-Examples:
+If you are just getting started, ask for a starter job. Research should offer
+preloaded cookbook datasets before a long interview:
+
+```text
+What can I try first with a preloaded dataset?
+```
+
+Built-in starters (see `research/references/starter-jobs.md`):
+
+| Starter | Preloaded data |
+|---|---|
+| Support-triage SFT | `training/examples/sft/data/support_triage_train.jsonl` |
+| Food-reasoning SFT | `training/examples/sft/food_reasoning.jsonl` |
+| DeepMath RL smoke | `training/examples/rl/deepmath/dataset.jsonl` |
+
+Other examples:
 
 ```text
 I have customer-support questions and expected policy documents. Help me decide
