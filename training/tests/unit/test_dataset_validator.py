@@ -2,7 +2,53 @@
 
 from __future__ import annotations
 
-from training.dataset_validator import image_issue, register_image_rule
+import subprocess
+import sys
+from pathlib import Path
+
+from training.dataset_utils.validation import image_issue, register_image_rule
+
+
+def test_dataset_checks_import_without_training_dependencies() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "from training.dataset_utils.validation import image_issue; "
+            "assert image_issue('qwen3_vl', width=1, height=201) is not None",
+        ],
+        cwd=Path(__file__).resolve().parents[3],
+        check=True,
+    )
+
+
+def test_legacy_imports_share_checks_without_training_dependencies() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "from training import dataset_validator, image_geometry; "
+            "from training.dataset_utils import validation, image_geometry as geometry; "
+            "assert dataset_validator.image_issue is validation.image_issue; "
+            "assert dataset_validator.register_image_rule is validation.register_image_rule; "
+            "assert image_geometry.ImageGeometryError is geometry.ImageGeometryError; "
+            "assert image_geometry.reject_qwen_vl_aspect_ratio is geometry.reject_qwen_vl_aspect_ratio; "
+            "assert dataset_validator.image_issue('qwen3_vl', width=1, height=201) is not None",
+        ],
+        cwd=Path(__file__).resolve().parents[3],
+        check=True,
+    )
+
+
+def test_dataset_helpers_do_not_shadow_hugging_face_datasets() -> None:
+    # CI and editable installs also run with the training directory on sys.path.
+    subprocess.run(
+        [sys.executable, "-c", "from datasets import load_dataset; assert callable(load_dataset)"],
+        cwd=Path(__file__).resolve().parents[2],
+        check=True,
+    )
 
 
 def test_qwen_family_rejects_extreme_aspect_ratio() -> None:

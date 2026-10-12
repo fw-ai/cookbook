@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from training.image_geometry import ImageGeometryError
+from training.dataset_utils.image_geometry import ImageGeometryError
 from training.utils import fileio
 
 logger = logging.getLogger(__name__)

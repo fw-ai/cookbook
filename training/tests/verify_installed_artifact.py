@@ -1,9 +1,9 @@
 """Verify that the built cookbook artifact imports with published dependencies.
 
 Run this script from outside the checkout after ``pip install .``. It discovers
-the base modules shipped from ``training.recipes`` and ``training.utils`` in the
-checkout, then imports them from the installed wheel. No credentials, network,
-or GPU are required.
+the base modules shipped from ``training.dataset_utils``, ``training.recipes``, and
+``training.utils`` in the checkout, then imports them from the installed wheel.
+No credentials, network, or GPU are required.
 """
 
 from __future__ import annotations
@@ -42,8 +42,8 @@ def main() -> None:
             "Imported training from the checkout instead of the installed artifact"
         )
 
-    modules = []
-    for package_name in ("recipes", "utils"):
+    modules = ["training.dataset_validator", "training.image_geometry"]
+    for package_name in ("dataset_utils", "recipes", "utils"):
         modules.extend(_checkout_modules(CHECKOUT_PACKAGE / package_name))
 
     for module_name in modules:

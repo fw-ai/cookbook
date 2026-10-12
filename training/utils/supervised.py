@@ -47,7 +47,7 @@ import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers
 import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
 import training.renderer.qwen2_5 as _qwen2_5_renderer  # noqa: F401 — triggers register_renderer
-from training.image_geometry import ImageGeometryError
+from training.dataset_utils.image_geometry import ImageGeometryError
 from training.utils.runner import DatasetError
 from training.renderer.thinking_trace import (
     ResolvedThinkingTraceRendererPlan,

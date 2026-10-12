@@ -295,9 +295,6 @@ cython_debug/
 .idea/
 wandb/
 *_dev.sh
-sft_logs/
-deepmath_logs/
-verify_logs/
 
 # dev scripts
 *_dev.sh
@@ -305,3 +302,9 @@ verify_logs/
 
 # BFCL raw-data cache left by running bfcl_data.py with cwd=training/; regenerate by re-running.
 /training/bfcl_data/
+
+# Local training run outputs (datasets and fixtures remain tracked).
+*_logs/
+
+# Rebuilt by the archived Chroma notebook's PersistentClient.
+/archived/learn/rag/project_simple-rag-with-chroma/chromadb/

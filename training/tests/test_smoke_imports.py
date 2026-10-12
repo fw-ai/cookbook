@@ -251,6 +251,10 @@ def test_utils_rl_all_resolvable():
 
 
 FIREWORKS_OWNED_MODULES = [
+    "training.dataset_validator",
+    "training.image_geometry",
+    "training.dataset_utils.validation",
+    "training.dataset_utils.image_geometry",
     "training.renderer.tokenizer",
     "training.renderer.supervised",
     "training.renderer",

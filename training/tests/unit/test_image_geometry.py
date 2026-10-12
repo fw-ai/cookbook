@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from training.image_geometry import ImageGeometryError, qwen_vl_aspect_ratio_message
+from training.dataset_utils.image_geometry import ImageGeometryError, qwen_vl_aspect_ratio_message
 from training.utils.runner import DatasetError
 from training.utils.streaming import (
     JSONL_ROW_INDEX_KEY,

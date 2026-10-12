@@ -22,6 +22,7 @@ examples/             Task code + one recipe call; no loop logic
   archive/            Deprecated examples, kept importable; do not extend
 case-studies/         End-to-end notebooks (data -> eval -> train -> eval)
 renderer/             Chat renderers and parity verifier
+datasets/             Lightweight dataset validation and image geometry checks
 tests/                Unit and smoke tests
 ```
 
@@ -29,6 +30,8 @@ Inside an example folder, `train_<task>.py` runs on a dedicated trainer +
 deployment and `train_<task>_serverless.py` on the shared serverless pool with
 the same task code. A new task belongs in `examples/`; a new objective in a
 forked recipe; anything two recipes need in `utils/`.
+Dataset checks shared with preflight validation belong in `datasets/`, which
+stays independent of the renderer registry and training runtime.
 
 ## Recipes
 
