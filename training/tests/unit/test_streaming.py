@@ -381,6 +381,7 @@ def test_gcs_dataset_with_indices_view(monkeypatch):
     view = full.with_indices([3, 1])
 
     assert [view[i]["id"] for i in range(len(view))] == [3, 1]
+    assert [view.raw_row(i) for i in range(len(view))] == [{"i": 3}, {"i": 1}]
     assert len(full) == 4
 
 

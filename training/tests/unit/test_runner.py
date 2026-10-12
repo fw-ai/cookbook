@@ -6,6 +6,7 @@ import errno
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -68,6 +69,24 @@ class TestRunnerConfig:
 
 
 class TestRunnerIOStatus:
+    @pytest.mark.parametrize("terminal_status", [RunStatus.COMPLETED, RunStatus.FAILED])
+    def test_evaluation_transition_survives_final_status(self, tmp_path, terminal_status):
+        path = tmp_path / "status.json"
+        runner = RunnerIO(RunnerConfig(status_file=str(path)))
+        runner.write_status(RunStatus.EVALUATION, step=2, total_steps=2)
+        transition = json.loads(path.read_text())["details"][0]
+        assert transition["@type"] == "type.googleapis.com/gateway.JobStateTimestamp"
+        assert transition["state"] == "JOB_STATE_EVALUATION"
+        assert datetime.fromisoformat(transition["transitionTime"]).utcoffset().total_seconds() == 0
+
+        runner.write_status(RunStatus.EVALUATION, step=2, total_steps=2)
+        runner.write_status(terminal_status, step=2, total_steps=2)
+        data = json.loads(path.read_text())
+        assert data["details"] == [transition, {
+            "@type": "type.googleapis.com/gateway.JobProgress", "percent": 100,
+        }]
+        assert data["message"] == terminal_status.value
+
     def test_write_status_creates_file(self, tmp_path):
         path = str(tmp_path / "status.json")
         runner = RunnerIO(RunnerConfig(status_file=path))

@@ -12,10 +12,11 @@ from training.utils import serverless as serverless_utils
 
 
 class _LegacyFakeService:
-    def __init__(self, *, base_url, api_key, default_headers):
+    def __init__(self, *, base_url, api_key, default_headers, managed_additional_headers):
         self.base_url = base_url
         self.api_key = api_key
         self.default_headers = default_headers
+        self.managed_additional_headers = managed_additional_headers
         self.training_session_id = "ts-1234"
         self.events = []
 
@@ -98,6 +99,7 @@ def test_setup_serverless_training_uses_service_training_session_id(
         )
 
     assert session_id == "ts-1234"
+    assert _service.managed_additional_headers == {"x-test": "1"}
     assert max_seq_len == 512
     expected_events = ["enable-supervised-retry"] if service_cls is _FakeService else []
     assert _service.events == expected_events + ["create-training-client"]

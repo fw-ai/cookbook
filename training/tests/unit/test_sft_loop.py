@@ -588,7 +588,7 @@ class _ResolvedFuture:
         return self._value
 
 
-def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info):
+def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generation_eval=False):
     """Run ``main`` for one epoch of 4 rows (batch_size=2) against a fake trainer.
 
     Returns the ordered train/eval events and the eval rows of metrics.jsonl.
@@ -622,7 +622,8 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info):
             return object()
 
         def close(self):
-            pass
+            if generation_eval:
+                events.append("close")
 
     class FakeCheckpoints:
         def __init__(self, *args, **kwargs):
@@ -630,6 +631,9 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info):
 
         def resume(self, **kwargs):
             return resume_info
+
+        def save(self, *args, **kwargs):
+            events.append("save")
 
     def fake_run_eval(*, eval_data, client, batch_size, step, epoch):
         events.append(f"eval(step={step}, epoch={epoch})")
@@ -656,6 +660,18 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info):
         ],
     )
     monkeypatch.setattr(module, "run_eval", fake_run_eval)
+    if generation_eval:
+        def setup_serverless(*args, **kwargs):
+            return FakeService(), FakeClient(), FakeCheckpoints(), "session-1", 32
+
+        monkeypatch.setattr(module, "setup_serverless_training", setup_serverless)
+        monkeypatch.setattr(module, "prepare_generation_eval", lambda *args, **kwargs: ["prompt"])
+        monkeypatch.setattr(module, "run_generation_eval", lambda **kwargs: events.append("generate"))
+        complete = module.write_completed
+        def record_completed(*args, **kwargs):
+            events.append("completed")
+            complete(*args, **kwargs)
+        monkeypatch.setattr(module, "write_completed", record_completed)
 
     module.main(
         module.Config(
@@ -667,13 +683,27 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info):
             epochs=1,
             batch_size=2,
             render_workers=1,
-            save_final_checkpoint=False,
+            save_final_checkpoint=generation_eval,
+            serverless=generation_eval,
+            generation_eval=generation_eval,
             runner=RunnerConfig(metrics_file=str(metrics_path)),
         )
     )
 
-    records = [json.loads(line) for line in metrics_path.read_text().splitlines()]
+    records = [json.loads(line) for line in metrics_path.read_text().splitlines()] if metrics_path.exists() else []
     return events, [record for record in records if "eval/loss" in record]
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+def test_generation_eval_finishes_before_completion_and_session_close(tmp_path, monkeypatch, resumed):
+    events, _ = _run_main_with_fake_trainer(
+        tmp_path, monkeypatch, generation_eval=True,
+        resume_info=SimpleNamespace(step=2, data_consumed=4) if resumed else None,
+    )
+    assert events[-3:] == ["generate", "completed", "close"]
+    assert events.count("close") == 1
+    assert events.count("train") == (0 if resumed else 2)
+    assert events.count("save") == (0 if resumed else 1)
 
 
 @pytest.mark.parametrize(
@@ -837,10 +867,30 @@ class TestPrepareDatasets:
             lambda r: f"d-{r['messages'][0]['content']}",
         )
 
-        train_ds, eval_data = module._prepare_datasets(self._cfg(tmp_path, path))
+        train_ds, eval_data, _ = module._prepare_datasets(self._cfg(tmp_path, path))
 
         assert len(train_ds) == 5
         assert eval_data == []
+
+    @pytest.mark.parametrize("loss_eval", [False, True])
+    @pytest.mark.parametrize("ratio,max_seqs,expected_eval", [(0.1, 3, 3), (1.0, 100, 20)])
+    def test_generation_holdout_excludes_all_twenty_percent_even_when_sampling_is_capped(self, tmp_path, monkeypatch, loss_eval, ratio, max_seqs, expected_eval):
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(100)])
+        monkeypatch.setattr(module, "_render_one_worker", lambda row: row["messages"][0]["content"])
+        cfg = self._cfg(tmp_path, path, generation_eval=True, eval_auto_carveout=loss_eval, eval_carve_ratio=ratio, max_eval_seqs=max_seqs, seed=7)
+        train_ds, eval_data, generation_ds = module._prepare_datasets(cfg)
+        assert len(train_ds) == 80
+        assert len(generation_ds) == 20
+        assert len(eval_data) == (expected_eval if loss_eval else 0)
+        assert set(train_ds).isdisjoint(generation_ds)
+        assert [generation_ds.raw_row(i)["messages"][0]["content"] for i in range(20)] == list(generation_ds)
+        _, _, repeated = module._prepare_datasets(cfg)
+        assert list(repeated) == list(generation_ds)
+
+    def test_generation_holdout_rejects_too_small_dataset(self, tmp_path):
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(4)])
+        with pytest.raises(DatasetError, match="at least 5"):
+            module._prepare_datasets(self._cfg(tmp_path, path, generation_eval=True))
 
     def test_raises_on_empty_dataset(self, tmp_path, monkeypatch):
         path = _write_jsonl_at(tmp_path / "empty.jsonl", [])
@@ -859,7 +909,7 @@ class TestPrepareDatasets:
         )
 
         cfg = self._cfg(tmp_path, train, evaluation_dataset=str(eval_path))
-        train_ds, eval_data = module._prepare_datasets(cfg)
+        train_ds, eval_data, _ = module._prepare_datasets(cfg)
 
         assert len(train_ds) == 5
         assert eval_data == ["d-u100", "d-u101", "d-u102"]
@@ -874,7 +924,7 @@ class TestPrepareDatasets:
         )
 
         cfg = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3)
-        train_ds, eval_data = module._prepare_datasets(cfg)
+        train_ds, eval_data, _ = module._prepare_datasets(cfg)
 
         eval_indices = _expected_eval_indices(total_rows=20, carveout_count=2, seed=cfg.seed)
         assert eval_data == [f"d-u{i}" for i in eval_indices]
@@ -893,7 +943,7 @@ class TestPrepareDatasets:
         monkeypatch.setattr(module, "_render_one_worker", render)
 
         cfg = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3)
-        train_ds, eval_data = module._prepare_datasets(cfg)
+        train_ds, eval_data, _ = module._prepare_datasets(cfg)
 
         eval_indices = _expected_eval_indices(total_rows=20, carveout_count=2, seed=cfg.seed)
         expected_eval = [f"d-u{i}" for i in eval_indices if i != 1]
@@ -912,9 +962,9 @@ class TestPrepareDatasets:
         cfg_b = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3, seed=7)
         cfg_c = self._cfg(tmp_path, path, eval_auto_carveout=True, max_eval_seqs=3, seed=8)
 
-        train_a, eval_a = module._prepare_datasets(cfg_a)
-        train_b, eval_b = module._prepare_datasets(cfg_b)
-        train_c, eval_c = module._prepare_datasets(cfg_c)
+        train_a, eval_a, _ = module._prepare_datasets(cfg_a)
+        train_b, eval_b, _ = module._prepare_datasets(cfg_b)
+        train_c, eval_c, _ = module._prepare_datasets(cfg_c)
 
         assert eval_a == eval_b
         assert [train_a[i] for i in range(len(train_a))] == [train_b[i] for i in range(len(train_b))]
@@ -926,7 +976,7 @@ class TestPrepareDatasets:
 
         cfg = self._cfg(tmp_path, path, eval_auto_carveout=True)
         with caplog.at_level("WARNING"):
-            train_ds, eval_data = module._prepare_datasets(cfg)
+            train_ds, eval_data, _ = module._prepare_datasets(cfg)
 
         assert eval_data == []
         assert len(train_ds) == 1
@@ -979,7 +1029,7 @@ def _write_shard_dataset(root):
 def test_prepare_datasets_accepts_multi_shard_directory(tmp_path):
     """SFT's ``_prepare_datasets`` accepts a staged multi-shard directory."""
     cfg = module.Config(log_path="", dataset=_write_shard_dataset(tmp_path), eval_auto_carveout=False)
-    training_ds, eval_data = module._prepare_datasets(cfg)
+    training_ds, eval_data, _ = module._prepare_datasets(cfg)
     # All rows from all shards, in deterministic shard order. (Row bodies are
     # checked by the streaming-suite tests; here we pin the count and the
     # raw-file-order property the carve-out math depends on.)

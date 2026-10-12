@@ -42,6 +42,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -54,6 +55,7 @@ logger = logging.getLogger(__name__)
 class RunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    EVALUATION = "evaluation"
     COMPLETED = "completed"
     FAILED = "failed"
 
@@ -75,6 +77,7 @@ _SIGNAL_CANCELLATION_MESSAGES = frozenset({"Terminated by SIGINT", "Terminated b
 _STATUS_TO_GRPC_CODE: dict[RunStatus, int] = {
     RunStatus.PENDING: _GRPC_OK,
     RunStatus.RUNNING: _GRPC_OK,
+    RunStatus.EVALUATION: _GRPC_OK,
     RunStatus.COMPLETED: _GRPC_OK,
     RunStatus.FAILED: _GRPC_FAILED_PRECONDITION,
 }
@@ -226,6 +229,7 @@ class RunnerIO:
         self._last_total_steps: int = 0
         self._serverless: bool = False
         self._reference_checkpoint: str | None = None
+        self._evaluation_started_at: str | None = None
 
     # -- context manager -------------------------------------------------------
 
@@ -301,6 +305,16 @@ class RunnerIO:
             "message": status_message,
         }
         details: list[dict[str, Any]] = []
+        if status == RunStatus.EVALUATION and self._evaluation_started_at is None:
+            self._evaluation_started_at = datetime.now(timezone.utc).isoformat()
+        # Retain the transition in the final status so short evaluations are
+        # visible even when they finish between orchestrator polls.
+        if self._evaluation_started_at is not None:
+            details.append({
+                "@type": "type.googleapis.com/gateway.JobStateTimestamp",
+                "state": "JOB_STATE_EVALUATION",
+                "transitionTime": self._evaluation_started_at,
+            })
         if total_steps > 0:
             percent = int(step / total_steps * 100)
             details.append({"@type": _JOB_PROGRESS_TYPE_URL, "percent": percent})

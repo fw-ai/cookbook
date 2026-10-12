@@ -87,6 +87,7 @@ from training.utils import (
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.serverless import setup_serverless_training
+from training.utils.sft_generation_eval import prepare_generation_eval, run_generation_eval
 from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
 from training.utils.metrics import optimizer_metrics
 from training.utils.resource_autosizing import select_render_worker_count
@@ -548,6 +549,7 @@ def _render_one_worker(
 
 DEFAULT_EVAL_CARVE_RATIO = 0.1
 DEFAULT_MAX_EVAL_SEQS = 100
+GENERATION_EVAL_HOLDOUT_RATIO = 0.2
 
 
 def compute_eval_carveout(
@@ -635,8 +637,12 @@ def _flatten_rendered_batch(
 
 def _prepare_datasets(
     cfg: "Config",
-) -> tuple[JsonlRenderDataset | GcsJsonlRenderDataset, List[tinker.Datum]]:
-    """Build the training dataset and (optional) eval set.
+) -> tuple[
+    JsonlRenderDataset | GcsJsonlRenderDataset,
+    List[tinker.Datum],
+    JsonlRenderDataset | GcsJsonlRenderDataset | None,
+]:
+    """Build the training dataset, (optional) eval set, and generation set.
 
     Eval can come from an explicit ``cfg.evaluation_dataset`` or be
     carved out from a seeded random subset of the training dataset. In
@@ -665,7 +671,28 @@ def _prepare_datasets(
             len(eval_data),
             cfg.evaluation_dataset,
         )
-        return training_ds, eval_data
+        return training_ds, eval_data, eval_ds
+
+    if cfg.generation_eval:
+        # Exclude a seeded holdout from training. It shares the auto carve-out
+        # shuffle, so loss eval (if enabled) keeps the rows it would use anyway.
+        n = int(len(training_ds) * GENERATION_EVAL_HOLDOUT_RATIO)
+        if n == 0:
+            raise DatasetError(
+                "Generation evaluation needs at least 5 rows for a 20% holdout, "
+                "or an explicit evaluation_dataset."
+            )
+        carveout = (
+            min(int(len(training_ds) * cfg.eval_carve_ratio), cfg.max_eval_seqs)
+            if cfg.eval_auto_carveout
+            else 0
+        )
+        shuffled_indices = list(range(len(training_ds)))
+        random.Random(cfg.seed).shuffle(shuffled_indices)
+        generation_ds = training_ds.with_indices(shuffled_indices[:n])
+        training_ds = training_ds.with_indices(sorted(shuffled_indices[n:]))
+        logger.info("Generation holdout: %d rows, %d training examples (seed=%d)", n, len(training_ds), cfg.seed)
+        return training_ds, _render_eagerly(generation_ds, min(carveout, n)), generation_ds
 
     if cfg.eval_auto_carveout:
         n = compute_eval_carveout(
@@ -691,10 +718,10 @@ def _prepare_datasets(
                 len(training_ds),
                 cfg.seed,
             )
-            return training_ds, eval_data
+            return training_ds, eval_data, None
         logger.warning("Dataset too small for auto carve-out, skipping eval")
 
-    return training_ds, []
+    return training_ds, [], None
 
 
 # ---------------------------------------------------------------------------
@@ -863,6 +890,11 @@ class Config:
     max_eval_seqs: int = DEFAULT_MAX_EVAL_SEQS
     """Max number of eval sequences for carve-out."""
 
+    generation_eval: bool = False
+    """Save base/LoRA answers before completing a serverless SFT job. Uses an
+    explicit evaluation_dataset or holds out 20% of rows (seeded, excluded from
+    training). Samples up to max_eval_seqs text conversations, without scoring."""
+
     render_workers: int | None = None
     """Number of worker processes for streaming dataset rendering. ``None``
     auto-selects from the container cgroup and bound-node memory budgets. Set
@@ -1001,6 +1033,11 @@ def main(
             "grad_norm_metrics must be 'off', 'basic', or 'detailed'; got "
             f"{cfg.grad_norm_metrics!r}."
         )
+    if cfg.generation_eval:
+        if not cfg.serverless:
+            raise ValueError("generation_eval requires serverless SFT with a pooled sampler.")
+        if cfg.max_eval_seqs <= 0:
+            raise ValueError("Generation evaluation sample limit must be positive.")
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for chat template formatting. "
@@ -1121,7 +1158,17 @@ def main(
         )
         _init_render_worker(*base_init_args)
 
-        training_dataset, eval_data = _prepare_datasets(cfg)
+        training_dataset, eval_data, generation_dataset = _prepare_datasets(cfg)
+        generation_examples = (
+            prepare_generation_eval(
+                generation_dataset,
+                renderer=_worker_state["renderer"],
+                max_examples=cfg.max_eval_seqs,
+                max_seq_len=max_seq_len,
+                train_on_what=cfg.train_on_what,
+            )
+            if cfg.generation_eval else []
+        )
         num_workers = (
             cfg.render_workers
             if cfg.render_workers is not None
@@ -1486,6 +1533,18 @@ def main(
                     checkpoint=cp_name,
                     job_id=job_id,
                 )
+
+        if cfg.generation_eval:
+            run_generation_eval(
+                cfg=cfg,
+                examples=generation_examples,
+                renderer=_worker_state["renderer"],
+                tokenizer=_worker_state["tokenizer"],
+                service=service,
+                client=client,
+                runner=runner,
+                step=step,
+            )
 
         write_completed(runner, step=step, total_steps=step)
         logger.info("Training complete: %d optimizer steps", step)
