@@ -418,6 +418,7 @@ class TrainingCheckpoints:
         resumable: bool,
         promotable: bool,
         data_consumed: int | None = None,
+        sampler_metadata: Any | None = None,
     ) -> None:
         """Save a checkpoint with the requested capabilities.
 
@@ -431,7 +432,8 @@ class TrainingCheckpoints:
         ``data_consumed`` and the recipe step are persisted to
         ``dataloader.json`` under the resolved control-plane checkpoint name.
         That record commits the client half of the recovery point. Ignored
-        when ``resumable=False``.
+        when ``resumable=False``. ``sampler_metadata`` rides on the sampler
+        save (a decision calibration writes the checkpoint's ``decision.json``).
         """
         if not (resumable or promotable):
             raise ValueError("save() requires at least one of resumable/promotable")
@@ -497,6 +499,11 @@ class TrainingCheckpoints:
 
         if promotable:
             if self._promotable_exists(name):
+                if sampler_metadata is not None:
+                    raise RuntimeError(
+                        f"Sampler checkpoint '{name}' already exists; a save that carries "
+                        "sampler_metadata is never skipped, so use a new checkpoint name."
+                    )
                 logger.info(
                     "Sampler checkpoint '%s' already promotable on control plane — "
                     "skipping redundant save.",
@@ -506,7 +513,10 @@ class TrainingCheckpoints:
                 t1 = time.time()
                 sampler_save_started = datetime.now(timezone.utc)
                 logger.info("Saving sampler checkpoint '%s'...", name)
-                self._client.save_weights_for_sampler(name, checkpoint_type="base")
+                if sampler_metadata is None:
+                    self._client.save_weights_for_sampler(name, checkpoint_type="base")
+                else:
+                    self._client.save_weights_for_sampler(name, checkpoint_type="base", metadata=sampler_metadata)
                 logger.info(
                     "Sampler checkpoint '%s' saved (%.1fs)", name, time.time() - t1
                 )
@@ -932,6 +942,10 @@ class TrainingCheckpoints:
         if self._serverless:
             return _logical_name_for_run(short, self._current_run_id)
         return _logical_name(short)
+
+    def has_promotable(self, name: str) -> bool:
+        """Whether ``name`` is already a promotable checkpoint of this run on the control plane."""
+        return self._promotable_exists(name)
 
     def _promotable_exists(self, name: str) -> bool:
         """Check if ``name`` is already on the control plane as promotable.

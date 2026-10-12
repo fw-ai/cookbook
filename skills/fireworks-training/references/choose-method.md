@@ -73,6 +73,16 @@ Classification is SFT where the assistant turn is the label. Two extra checks ma
 
 If `ground_truth` is a separate field rather than the final assistant turn, map it onto the assistant message before upload.
 
+### Decision rows (typed probabilities from one prefill)
+
+When the classifier will be served as a decision model — typed `noul` (yes/no), `choice`, and `score` questions about one `state`, answered by reading one option-code logit per option — use decision rows instead of chat rows. They train with `training/recipes/decision_loop.py` (managed: `loss_method="decision"`), not `sft_loop.py`:
+
+```json
+{"state": "...", "questions": {"unsafe": {"type": "noul", "instructions": "...", "label": true}, "kind": {"type": "choice", "instructions": "...", "criteria": {"benign": "...", "exfiltration": "..."}, "label": "exfiltration"}, "risk": {"type": "score", "instructions": "...", "criteria": ["none", "low", "high"], "label": 2}}}
+```
+
+Each labeled question becomes one datum on the single option code at the answer position, tokenized the way packed decision serving tokenizes it (`training/utils/decision.py`); choice options are sorted by key, noul is `A` = true / `B` = false, score levels are 0-based. Every row must be a decision row. `decision_loop.py` trains with K-way cross-entropy (each datum carries its options in `loss_fn_inputs.candidate_tokens`, sent with `loss_fn_config={"target_logprob_support": "candidates"}`), requires a calibration split (`evaluation_dataset`, or a seeded carve-out), fits one temperature per question type on it after training, and saves them into the final sampler checkpoint `step-N-calibrated` (its `decision.json`), which is the checkpoint it promotes.
+
 ## Hyperparameter sweep + promotion gate
 
 For anything past a smoke run, do not hand-pick one config: run the small grid

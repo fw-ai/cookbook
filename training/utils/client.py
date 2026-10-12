@@ -305,6 +305,7 @@ class ReconnectableClient:
         checkpoint_type: str | None = None,
         export_precision: str | None = None,
         timeout: int = DCP_TIMEOUT_S,
+        metadata: Any | None = None,
     ) -> Any:
         """Save sampler weights; merged-base output defaults to source format.
 
@@ -318,6 +319,8 @@ class ReconnectableClient:
         }
         if export_precision is not None:
             save_kwargs["export_precision"] = export_precision
+        if metadata is not None:
+            save_kwargs["metadata"] = metadata
         return self._require_client().save_weights_for_sampler(
             name,
             **save_kwargs,
