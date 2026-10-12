@@ -459,6 +459,10 @@ class JsonlRenderDataset(torch_data.Dataset):
         )
 
     def __getitem__(self, i: int) -> Any:
+        return self._render_fn(self.raw_row(i))
+
+    def raw_row(self, i: int) -> dict:
+        """Read an unrendered row, respecting this dataset's index view."""
         shard_path, offset = self._locate(self._index_map[i])
         with open(shard_path, "rb") as f:
             f.seek(offset)
@@ -466,7 +470,7 @@ class JsonlRenderDataset(torch_data.Dataset):
         row = json.loads(line.decode("utf-8"))
         if self._row_index_key is not None:
             row[self._row_index_key] = self._index_map[i]
-        return self._render_fn(row)
+        return row
 
     def with_indices(self, indices: List[int]) -> "JsonlRenderDataset":
         """Return a view of this dataset restricted to ``indices``.
@@ -633,13 +637,17 @@ class GcsJsonlRenderDataset(torch_data.Dataset):
         return b"".join(chunks)
 
     def __getitem__(self, i: int) -> Any:
+        return self._render_fn(self.raw_row(i))
+
+    def raw_row(self, i: int) -> dict:
+        """Read an unrendered row, respecting this dataset's index view."""
         row_index = self._index_map[i]
         shard_index, offset, length = self._locate(row_index)
         line = self._read_range(shard_index, offset, length)
         row = json.loads(line.decode("utf-8"))
         if self._row_index_key is not None:
             row[self._row_index_key] = row_index
-        return self._render_fn(row)
+        return row
 
     def iter_raw_rows(self) -> Iterator[tuple[str, int, dict]]:
         """Yield ``(uri, line_number, row)`` for validation without staging."""

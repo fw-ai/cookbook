@@ -119,6 +119,7 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
         base_url=serverless_base_url(base_url),
         api_key=api_key,
         default_headers=additional_headers or None,
+        managed_additional_headers=additional_headers,
     )
     stack.callback(service.close)
     # This helper is shared by the serverless SFT and DPO recipes only. Opt the
