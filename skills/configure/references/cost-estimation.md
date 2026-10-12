@@ -30,11 +30,17 @@ deployment, or jobs started at or after the deadline. Put excluded operations
 on separate cost lines. If the current UTC time is at or after the deadline,
 ignore this section and resolve the live published rate normally.
 
+The product term was last confirmed `2026-10-12` and does not yet have a
+public promotion URL. Before asserting a payable `$0`, verify the account's
+current entitlement or serverless pool terms. If verification is unavailable,
+state that promotional eligibility is pending account confirmation; do not
+mislabel the public list rate as `$0`.
+
 For a qualifying text or vision starter, report:
 
 - **Estimate type:** `Promotional`
 - **Cost result:** `$0` for the SFT training line
-- **Rate certainty:** `published promotion`
+- **Rate certainty:** `product promotion`
 - **Usage certainty:** dataset-derived or inferred
 
 Vision token accounting remains required for capacity and context validation,
@@ -247,7 +253,7 @@ Return in the final plan **Cost** block (see `output-template.md`):
 - **Estimate type:** Promotional, Planning range, Unpadded baseline, or Not calculated
 - **Cost result:** two decimals below $100, whole dollars at $100 or more,
   `<$0.01` for a positive sub-cent result, or "Not calculated"
-- **Rate certainty:** published or unavailable
+- **Rate certainty:** product promotion, published, or unavailable
 - **Usage certainty:** dataset-derived, observed, inferred, or unknown
 - **Supplied inputs**
 - **Inferred inputs:** value and source
@@ -272,8 +278,8 @@ estimated_cost:
   pricing_fetched_at_utc:
   recommended_path:
   estimate_type: promotional | planning_range | unpadded_baseline | not_calculated
-  cost_result: Not calculated | $low–$high | Baseline $value | <$0.01
-  rate_certainty: published_promotion | published | unavailable
+  cost_result: Not calculated | $0 | $low–$high | Baseline $value | <$0.01
+  rate_certainty: product_promotion | published | unavailable
   usage_certainty: dataset-derived | observed | inferred | unknown
   supplied_inputs: {}
   inferred_inputs: []

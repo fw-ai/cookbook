@@ -40,7 +40,7 @@ Open a new chat and describe your goal. Do not mention a skill name unless you
 want to force a specific workflow.
 
 If you are just getting started, ask for a starter job. Research should offer
-preloaded cookbook datasets before a long interview:
+eligible account-preloaded datasets before a long interview:
 
 ```text
 What can I try first with a preloaded dataset?
@@ -54,10 +54,12 @@ Built-in starters (see `research/references/starter-jobs.md`):
 | Muse Glimmer receipt-extraction SFT | account-relative dataset ID `onboarding-cord-receipts` |
 | DeepMath RL smoke | `training/examples/rl/deepmath/dataset.jsonl` |
 
-Muse Glimmer Serverless Training API SFT is promotional `$0` for jobs started
-before `2026-11-01T00:00:00Z`. The offer is limited to that model, method, and
-surface. Research loads the current terms from `starter-jobs.md`; Configure
-still checks account access, availability, and the complete plan before spend.
+For eligible onboarding accounts, Muse Glimmer Serverless Training API SFT is
+promotional `$0` for jobs started before `2026-11-01T00:00:00Z`. The offer is
+limited to that model, method, and surface. At or after the deadline, do not
+advertise it as free; resolve live pricing instead. Research loads the current
+terms from `starter-jobs.md`; Configure still checks account access,
+availability, promotional entitlement, and the complete plan before spend.
 
 Other examples:
 

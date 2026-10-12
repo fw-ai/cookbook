@@ -68,19 +68,25 @@ Training API loops when the customer needs a custom harness.
 
 ## Handoff block for configure
 
-After interview completion and user approval:
+After interview completion and user approval, use the canonical readiness
+package in `methodology.md`:
 
 ```yaml
 entry_skill: research
-case_study: <slug>              # omit if tier = example | recipe
+starter_job_id:             # when a built-in starter was selected
+case_study: <slug>          # omit if tier = example | recipe
 cookbook_entry_tier: case_study | example | recipe
 cookbook_entry_path: training/...
 implied_method: sft | dpo | orpo | rft | igpo | distillation | embedding
 suggested_path: managed | serverless | training_api_dedicated
-notebook: ...                   # when applicable
-readme: ...
-dataset_plan: ...
-eval_plan: ...
+dataset_plan:
+  source: local | account_preloaded | cookbook_bundled | huggingface | labeling_required
+  candidates: []
+eval_plan:
+  metric:
+  baseline_required: true
+  cookbook_eval_hook: eval-protocol | recipe_inline | gap
+  cookbook_eval_entry: training/...  # optional adaptation source
 ```
 
 Then hand off to **configure**. Research recommends a coarse path; Configure

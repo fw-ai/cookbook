@@ -117,11 +117,13 @@ class CostEstimationContractTest(unittest.TestCase):
             "accounts/fireworks/models/muse-glimmer-30b",
             "2026-11-01T00:00:00Z",
             "Promotional",
-            "published_promotion",
+            "product_promotion",
+            "promotional eligibility is pending account confirmation",
         ):
             self.assertIn(marker, REFERENCE)
         self.assertIn("price excluded operations separately", SKILL)
         self.assertIn("Promotional / Planning range", OUTPUT_TEMPLATE)
+        self.assertIn("| Cost result | $0 /", OUTPUT_TEMPLATE)
 
     def test_manifest_uses_canonical_estimated_cost_key(self) -> None:
         self.assertIn("estimated_cost:", REFERENCE)

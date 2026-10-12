@@ -115,6 +115,7 @@ execution_surface: firectl | sdk | training_api
 implied_method: sft | dpo | orpo | rft | igpo | distillation | embedding
 inherited_from_research: true | false
 research_handoff:  # when present (legacy: discover_handoff)
+  starter_job_id: <built-in starter ID>  # when present
   case_study: <slug>
   cookbook_entry_tier: case_study | example | recipe
   cookbook_entry_path: training/...
@@ -122,12 +123,13 @@ research_handoff:  # when present (legacy: discover_handoff)
   readme: training/...    # when present
   suggested_path: <from discover>
   dataset_plan:
-    source: local | cookbook_bundled | huggingface | labeling_required
+    source: local | account_preloaded | cookbook_bundled | huggingface | labeling_required
     candidates: []
   eval_plan:
     metric:
     baseline_required: true
     cookbook_eval_hook: eval-protocol | recipe_inline | gap
+    cookbook_eval_entry: training/...  # optional adaptation source
 ```
 
 Set `inherited_from_research: true` only when the user had already selected one

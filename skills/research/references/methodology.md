@@ -59,6 +59,7 @@ selects `plan_configure`:
 
 ```yaml
 entry_skill: research
+starter_job_id:             # when a built-in starter was selected
 case_study:               # omit for example or recipe
 cookbook_entry_tier: case_study | example | recipe
 cookbook_entry_path: training/...
@@ -68,12 +69,13 @@ supervision_signal:
 notebook:                # when applicable
 readme:
 dataset_plan:
-  source: local | cookbook_bundled | huggingface | labeling_required
+  source: local | account_preloaded | cookbook_bundled | huggingface | labeling_required
   candidates: []
 eval_plan:
   metric:
   baseline_required: true
   cookbook_eval_hook: eval-protocol | recipe_inline | gap
+  cookbook_eval_entry: training/...  # optional adaptation source
 match_confidence: high | medium | low
 ```
 

@@ -81,12 +81,21 @@ def test_starter_jobs_are_linked() -> None:
     getting_started = read(SKILLS_DIR / "GETTING-STARTED.md")
     research = read(SKILLS_DIR / "research" / "SKILL.md")
     starters = read(SKILLS_DIR / "research" / "references" / "starter-jobs.md")
+    methodology = read(SKILLS_DIR / "research" / "references" / "methodology.md")
+    catalog = read(SKILLS_DIR / "research" / "references" / "cookbook-catalog.md")
+    path_intake = read(SKILLS_DIR / "configure" / "references" / "path-intake.md")
     assert "starter-jobs.md" in getting_started
     assert "starter-jobs.md" in research
     assert "onboarding-prompt-router" in starters
     assert "onboarding-cord-receipts" in starters
     assert "accounts/michael-s-zhu" not in starters
     assert "2026-11-01T00:00:00Z" in starters
+    assert "account_preloaded" in methodology
+    assert "account_preloaded" in path_intake
+    assert "cookbook_eval_entry" in starters
+    assert "cookbook_eval_entry" in methodology
+    assert "cookbook_eval_entry" in path_intake
+    assert "canonical readiness\npackage in `methodology.md`" in catalog
 
 
 def test_debug_reuses_existing_session() -> None:
