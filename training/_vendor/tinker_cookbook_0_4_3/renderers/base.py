@@ -31,7 +31,7 @@ from PIL import Image
 
 from training._vendor.tinker_cookbook_0_4_3.exceptions import RendererError
 from training._vendor.tinker_cookbook_0_4_3.tokenizer_utils import Tokenizer
-from training.image_geometry import reject_qwen_vl_aspect_ratio
+from training.dataset_utils.image_geometry import reject_qwen_vl_aspect_ratio
 
 logger = logging.getLogger(__name__)
 

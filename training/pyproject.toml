@@ -77,6 +77,7 @@ packages = [
     "training.case-studies.multilora_fleet",
     "training.case-studies.reasoning_rl.grpo_math_evaluator",
     "training.case-studies.sft_bfcl_toolcalls",
+    "training.dataset_utils",
     "training.examples",
     "training.examples.archive",
     "training.examples.archive.countdown",
