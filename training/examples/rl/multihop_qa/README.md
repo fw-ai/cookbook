@@ -47,6 +47,12 @@ Each step:
 ### 1. Set up environment
 
 Follow the setup instructions in [../../../README.md](../../../README.md).
+This example also requires the optional eval-protocol integration. From
+`cookbook/training`, install the eval extra:
+
+```bash
+uv pip install -e '.[eval]'
+```
 
 ### 2. Prepare dataset
 

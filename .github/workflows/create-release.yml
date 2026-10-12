@@ -63,6 +63,18 @@ jobs:
             tests/unit/test_serverless.py \
             tests/unit/test_service.py
 
+      - name: Verify eval-extra compatibility
+        env:
+          SDK_MINIMUM: ${{ steps.sdk.outputs.minimum }}
+        run: |
+          python -m pip install '.[eval]' "fireworks-ai[training]==${SDK_MINIMUM}"
+          python -m pip check
+          python tests/verify_sdk_minimum.py --assert-installed
+          python -c "import eval_protocol"
+          python -m pytest -q \
+            tests/test_smoke_imports.py \
+            tests/unit/test_multihop_qa_igpo.py
+
   release:
     name: create release
     if: github.event_name == 'push'

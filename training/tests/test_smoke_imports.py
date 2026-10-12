@@ -91,7 +91,6 @@ EXAMPLE_MODULES = [
     "training.examples.rl.deepmath.prepare_data",
     "training.examples.rl.deepmath.train_deepmath",
     "training.examples.rl.deepmath.train_deepmath_serverless",
-    "training.examples.rl.multihop_qa.train_multihop_qa_igpo",
     "training.examples.rl.visual_toolbench.train_visual_toolbench",
     "training.examples.rl.visual_toolbench.train_visual_toolbench_serverless",
     "training.examples.archive.single_turn_token_in.rollout",
@@ -112,6 +111,11 @@ EXAMPLE_MODULES = [
 @pytest.mark.parametrize("module", EXAMPLE_MODULES)
 def test_example_imports_without_env(module: str):
     importlib.import_module(module)
+
+
+def test_multihop_qa_imports_with_eval_extra() -> None:
+    pytest.importorskip("eval_protocol")
+    importlib.import_module("training.examples.rl.multihop_qa.train_multihop_qa_igpo")
 
 
 @pytest.mark.parametrize(
