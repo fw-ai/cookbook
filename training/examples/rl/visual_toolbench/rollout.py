@@ -24,25 +24,17 @@ from __future__ import annotations
 
 import base64
 import logging
-import time
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 import tinker
 from fireworks.training.sdk.routing import routing_has_gaps
 
-from training.examples.rl.vanilla_sampler import build_deployment_sampler
 from training.examples.rl.visual_toolbench.image_tools import (
     TOOL_SPECS,
     execute_tool_call,
 )
-from training.examples.rl.visual_toolbench.reward import (
-    DEFAULT_CRITICAL_REWARD_WEIGHT,
-    DEFAULT_JUDGE_MAX_CONCURRENCY,
-    DEFAULT_JUDGE_MAX_TOKENS,
-    DEFAULT_JUDGE_MODEL,
-    DEFAULT_JUDGE_TIMEOUT_S,
-    RubricJudge,
-)
+from training.examples.rl.visual_toolbench.reward import RubricJudge
+from training.examples.rl.visual_toolbench.task import TaskConfig
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 from training.utils.rl.rollout.renderer import (
     _completion_logprobs_from_sampled_completion,
@@ -55,18 +47,6 @@ if TYPE_CHECKING:
     from training.recipes.async_rl_loop import RolloutFn, RolloutSetup
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a visual analysis assistant. The user's images may hide the "
-    "detail you need at full resolution: crop into the relevant region, zoom, "
-    "rotate, or adjust brightness/contrast/sharpness with the provided tools, "
-    "inspect the transformed image, and only then answer. When you are "
-    "confident, give the final answer directly without calling a tool."
-)
-
-DEFAULT_MAX_TURNS = 4
-DEFAULT_MAX_WORKSPACE_IMAGES = 6
-DEFAULT_MAX_PROMPT_TOKENS = 28672
 
 
 def _resolve_image_pad_id(tokenizer: Any, renderer: Any | None = None) -> int:
@@ -202,67 +182,39 @@ def _build_user_message(row: Dict[str, Any]) -> Dict[str, Any]:
     return {"role": "user", "content": parts}
 
 
-def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
-    # Current recipes inject one borrowed sampler for dedicated and serverless
-    # runs. Keep endpoint reconstruction only for legacy/manual setups.
+def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
+    """Build the per-trajectory rollout for ``async_rl_loop`` / ``async_rl_loop_serverless``.
+
+    Bind the task settings first:
+    ``functools.partial(make_rollout_fn, task=TaskConfig(...))``. Calls with
+    ``evaluation=True`` sample with ``task.eval_sample_kwargs()``.
+    """
+    # Dedicated and serverless recipes inject one borrowed sampler; do not close it.
     sampler = setup.sampler
-    if sampler is None:
-        sampler = build_deployment_sampler(setup)
     tokenizer = setup.tokenizer
-    renderer = build_renderer(
-        tokenizer,
-        setup.tokenizer_id,
-        str(setup.extras.get("renderer_name", "") or ""),
-    )
+    renderer = build_renderer(tokenizer, setup.tokenizer_id, task.renderer_name)
     image_pad_id = _resolve_image_pad_id(tokenizer, renderer)
 
-    sample_kwargs = dict(setup.sample_kwargs)
-    max_tokens = int(sample_kwargs.pop("max_tokens", 1024))
-    temperature = float(sample_kwargs.pop("temperature", 1.0))
+    train_sample_kwargs = dict(setup.sample_kwargs)
     # Set explicitly below; drop recipe-provided copies to avoid kwarg clashes.
-    sample_kwargs.pop("logprobs", None)
-    sample_kwargs.pop("return_token_ids", None)
-    router_replay_requested = bool(sample_kwargs.get("include_routing_matrix", False))
-    router_replay_completion_only = router_replay_requested and not bool(
-        sample_kwargs.get("echo", False)
-    )
-    filter_truncated_rollouts = bool(
-        setup.extras.get("filter_truncated_rollouts", True)
-    )
-    max_turns = int(setup.extras.get("max_turns", DEFAULT_MAX_TURNS))
-    if max_turns < 1:
-        raise ValueError(f"max_turns must be >= 1, got {max_turns}")
-    max_workspace_images = int(
-        setup.extras.get("max_workspace_images", DEFAULT_MAX_WORKSPACE_IMAGES)
-    )
-    max_prompt_tokens = int(
-        setup.extras.get("max_prompt_tokens", DEFAULT_MAX_PROMPT_TOKENS)
-    )
-    tool_image_dim = int(setup.extras.get("tool_image_dim", 1024))
-    system_prompt = str(setup.extras.get("system_prompt", DEFAULT_SYSTEM_PROMPT))
-    event_sink = setup.extras.get("event_sink")
-    if event_sink is not None and not callable(event_sink):
-        raise TypeError("RolloutSetup.extras['event_sink'] must be callable")
-
-    def _emit_event(event: str, **fields: Any) -> None:
-        if event_sink is None:
-            return
-        try:
-            event_sink({"event": event, **fields})
-        except Exception as exc:  # observability must not change the rollout
-            logger.warning("VisualToolBench event sink failed: %s", exc)
+    train_sample_kwargs.pop("logprobs", None)
+    train_sample_kwargs.pop("return_token_ids", None)
+    # Held-out evaluation samples with the benchmark's settings and needs no
+    # Router Replay.
+    eval_sample_kwargs = {
+        key: value
+        for key, value in train_sample_kwargs.items()
+        if key not in ("include_routing_matrix", "echo")
+    }
+    eval_sample_kwargs.update(task.eval_sample_kwargs())
 
     judge = RubricJudge(
         api_key=setup.api_key,
-        model=str(setup.extras.get("judge_model", DEFAULT_JUDGE_MODEL)),
-        max_tokens=int(setup.extras.get("judge_max_tokens", DEFAULT_JUDGE_MAX_TOKENS)),
-        max_concurrency=int(
-            setup.extras.get("judge_max_concurrency", DEFAULT_JUDGE_MAX_CONCURRENCY)
-        ),
-        timeout_s=float(setup.extras.get("judge_timeout_s", DEFAULT_JUDGE_TIMEOUT_S)),
-        critical_reward_weight=float(
-            setup.extras.get("critical_reward_weight", DEFAULT_CRITICAL_REWARD_WEIGHT)
-        ),
+        model=task.judge_model,
+        max_tokens=task.judge_max_tokens,
+        max_concurrency=task.judge_max_concurrency,
+        timeout_s=task.judge_timeout_s,
+        critical_reward_weight=task.critical_reward_weight,
     )
 
     stop_ids = renderer.get_stop_sequences()
@@ -292,7 +244,14 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
             }
         ]
 
-    async def rollout_fn(sample_prompt: dict) -> RolloutRun | None:
+    async def rollout_fn(
+        sample_prompt: dict, *, evaluation: bool = False
+    ) -> RolloutRun | None:
+        sample_kwargs = eval_sample_kwargs if evaluation else train_sample_kwargs
+        router_replay_requested = bool(sample_kwargs.get("include_routing_matrix"))
+        router_replay_completion_only = router_replay_requested and not bool(
+            sample_kwargs.get("echo", False)
+        )
         turns = _turns_from_prompt(sample_prompt)
         if not any(t.get("rubrics") for t in turns):
             return None
@@ -308,7 +267,7 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
         # loss-masked prefix and only the current response is trained.
         messages: List[Dict[str, Any]] = list(
             renderer.create_conversation_prefix_with_tools(
-                list(TOOL_SPECS), system_prompt
+                list(TOOL_SPECS), task.system_prompt
             )
         )
         workspace_images: List[str] = []
@@ -330,7 +289,7 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
 
             turn_answer = ""
             # Inner tool loop for this single user turn.
-            for tool_turn in range(max_turns):
+            for tool_turn in range(task.max_turns):
                 model_input = renderer.build_generation_prompt(messages)
                 prompt_ids, images = build_multimodal_completions_prompt_token_ids(
                     messages,
@@ -347,15 +306,10 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                         "Renderer sampling images differ from trainer ModelInput images."
                     )
                 estimated_prompt_tokens = len(prompt_ids) + len(images) * 1500
-                if estimated_prompt_tokens > max_prompt_tokens:
+                if estimated_prompt_tokens > task.max_prompt_tokens:
                     # Context budget exhausted (rough expanded-vision estimate);
                     # never train on the resulting partial trajectory when
                     # truncation filtering is enabled.
-                    _emit_event(
-                        "prompt_budget_exhausted",
-                        estimated_prompt_tokens=estimated_prompt_tokens,
-                        max_prompt_tokens=max_prompt_tokens,
-                    )
                     budget_exhausted = True
                     break
 
@@ -363,8 +317,6 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                     completions = await sampler.sample_with_prompt_tokens(
                         prompt_ids,
                         n=1,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
                         stop=stop_strings,
                         images=images,
                         logprobs=True,
@@ -372,7 +324,6 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                         **sample_kwargs,
                     )
                 except Exception as exc:
-                    _emit_event("sampling_error", error=type(exc).__name__)
                     logger.warning("Rollout sampling failed: %s", str(exc)[:200])
                     return None
                 if not completions:
@@ -447,12 +398,7 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                         )
 
                 finish_reason = str(getattr(completion, "finish_reason", "stop"))
-                _emit_event(
-                    "sample",
-                    completion_tokens=len(out_tokens),
-                    finish_reason=finish_reason,
-                )
-                if filter_truncated_rollouts and finish_reason.lower() == "length":
+                if task.filter_truncated_rollouts and finish_reason.lower() == "length":
                     return None
                 segments.append(
                     {
@@ -473,7 +419,7 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                 # tool responses AND the next user turn see it (masked prefix).
                 messages.append(parsed_message)
 
-                if not tool_calls or tool_turn + 1 >= max_turns:
+                if not tool_calls or tool_turn + 1 >= task.max_turns:
                     break
 
                 for tool_call in tool_calls:
@@ -481,7 +427,7 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                     name = str(getattr(function, "name", "") or "")
                     arguments = getattr(function, "arguments", "") or "{}"
                     num_tool_calls += 1
-                    if len(workspace_images) >= max_workspace_images:
+                    if len(workspace_images) >= task.max_workspace_images:
                         new_image, result_text = (
                             None,
                             (
@@ -490,7 +436,7 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                         )
                     else:
                         new_image, result_text = execute_tool_call(
-                            name, arguments, workspace_images, max_dim=tool_image_dim
+                            name, arguments, workspace_images, max_dim=task.tool_image_dim
                         )
                     content: List[Dict[str, Any]] = [
                         {"type": "text", "text": result_text}
@@ -528,11 +474,10 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                             }
                         )
 
-            if budget_exhausted and filter_truncated_rollouts:
+            if budget_exhausted and task.filter_truncated_rollouts:
                 return None
 
             # Grade this turn against its own rubrics.
-            judge_started = time.monotonic()
             result = await judge.grade(
                 {
                     "prompt": turn_dict.get("prompt", ""),
@@ -540,11 +485,6 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
                     "rubrics": turn_dict.get("rubrics") or [],
                 },
                 turn_answer,
-            )
-            _emit_event(
-                "judge",
-                latency_s=time.monotonic() - judge_started,
-                success=result is not None,
             )
             if result is None:
                 logger.warning("Dropping rollout: rubric judge failed to grade a turn")
@@ -593,27 +533,12 @@ def make_rollout_fn(setup: "RolloutSetup") -> "RolloutFn":
             segments=rollout_samples,
             metadata={
                 "num_turns": len(turns),
-                "num_segments": len(segments),
                 "num_tool_calls": num_tool_calls,
                 # Benchmark-style task pass = every user turn's critical rubrics met.
-                "judge_passed": bool(all(per_turn_passed))
-                if per_turn_passed
-                else False,
-                # Backward-compatible name from the original recipe. This is
-                # the official benchmark score, not the shaped train reward.
-                "mean_turn_score": float(official_score),
-                "mean_turn_reward": float(reward),
+                "judge_passed": all(per_turn_passed),
+                # The official benchmark score, not the shaped training reward.
                 "mean_official_score": float(official_score),
                 "mean_critical_fraction": float(critical_fraction),
-                "metrics": {
-                    "rollout/reward": float(reward),
-                    "rollout/official_score": float(official_score),
-                    "rollout/critical_fraction": float(critical_fraction),
-                    "rollout/judge_pass": float(
-                        bool(all(per_turn_passed)) if per_turn_passed else False
-                    ),
-                    "rollout/mean_tool_calls": float(num_tool_calls),
-                },
             },
         )
 

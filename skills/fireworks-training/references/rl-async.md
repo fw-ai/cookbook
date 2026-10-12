@@ -30,15 +30,15 @@ Users provide:
 - `rollout_fn_factory(setup) -> rollout_fn`;
 - environment interaction, scoring, and one or more trainer-ready trajectories
   per successful rollout call;
-- algorithm and scheduling config;
-- optional `dynamic_filter_fn` and `evaluation_fn` callbacks.
+- scheduling config and the GRPO clip range (`eps_clip`, `eps_clip_high`);
+- optional `advantage_fn`, `dynamic_filter_fn` and `evaluation_fn` callbacks.
 
 The recipe owns trainer/deployment/sampler lifecycle, rollout fan-out and
-admission, group assembly, advantages, reference and old-policy forwards,
-GRPO/TIS/KL, training chunks, the optimizer, sampler hotload, version
-publication, metrics, checkpointing, and cleanup. Dedicated async GRPO may opt
-into the trainer's built-in PPO kernel with `server_side_grpo=True`; this is not
-a general loss selector and requires `kl_beta=0`.
+admission, group assembly, advantages, training chunks, the server-side GRPO
+forward/backward, the optimizer, sampler hotload, version publication,
+metrics, checkpointing, and cleanup. It has no loss, anchor or KL options; to
+change the objective, fork `train_chunk` as described in
+[`rl-custom-loss.md`](rl-custom-loss.md).
 
 Keep custom environment logic in the rollout function. Do not put scheduler or
 trainer lifecycle state in the rollout.
@@ -102,13 +102,15 @@ to the caller; the recipe does not automatically convert binary rewards to
 `-1/+1`. This choice is independent of token-level score centering and gradient
 accumulation normalization.
 
-`RolloutSetup` contains the recipe-owned sampler, tokenizer, tokenizer ID,
-sampling kwargs, inference base URL, API key, deployment model, group size, and
-caller-provided `extras`. Treat `setup.sampler` as borrowed: reuse it for every
-training and evaluation trajectory and do not close it. The endpoint, model,
-and key fields remain available for older rollout factories and manually
-constructed setups, but a factory must not construct another sampler or
-adaptive-concurrency controller when `setup.sampler` is present.
+`RolloutSetup` (`training.utils.rl.rollout.setup`) contains the recipe-owned
+sampler, tokenizer, tokenizer ID, sampling kwargs (`default_sample_kwargs`),
+group size, and the deployment's base URL, API key and model for rollouts that
+call it over HTTP themselves. Task settings are not part of the setup: close the
+factory over a typed config, e.g. `functools.partial(make_rollout_fn,
+task=task_config)`. Treat `setup.sampler` as borrowed: reuse it for every
+trajectory and do not close it or build another sampler. The recipes call the
+factory once; evaluation reuses that rollout with `evaluation=True`, so sandbox
+pools and judges keep one concurrency budget.
 
 R3 uses the same sampler setup. Format negotiation belongs in the SDK: it
 selects Parquet when the SDK, trainer, and inference support it and the trainer
@@ -178,7 +180,7 @@ The scheduler is split by one owner per concern:
 | `AsyncRLCoordinator` | The producer/batch handoff, one serialized trainer worker, failure boundaries, and publication |
 | `OverlappedEvaluation` | One version-scoped evaluation task, interval/deduplication, joining, and cancellation |
 | `AsyncRLTelemetry` | Rate-limited producer snapshots, completed-batch metric reduction, and reporting |
-| `async_rl_loop.main` | Sampler and service lifecycle plus visible algorithm phases: reference/old-policy forwards, forward/backward, optimizer, hotload, telemetry handoff, and checkpoints |
+| `async_rl_loop.main` | Sampler and service lifecycle plus visible algorithm phases: `train_chunk` forward/backward, optimizer, hotload, telemetry handoff, and checkpoints |
 
 Blocking trainer calls run on the coordinator's single worker thread. The event
 loop remains free to retire rollout tasks and refill the producer while trainer
@@ -216,11 +218,20 @@ Use these symbols when reasoning about capacity:
 | `max_head_offpolicy_versions` | `O` | published versions | Admission headroom beyond the current policy version; `0` is fully on-policy |
 | `max_concurrency_rollout_sample` | `C` | rollout calls | Optional hard cap on in-flight rollout calls |
 
-Router Replay (R3) is a numerics-alignment setting, not a scheduling knob.
-Both RL recipes default `router_replay=True` and
-`router_replay_completion_only=True`, replaying MoE routes for generated
-tokens without the serving cost of `echo=True`. Use full-sequence replay only
-when the extra alignment is worth that throughput cost. For Harbor/TITO prompt
+The loss clips against the rollout logprobs. With `O > 0` those come from a
+policy up to `O` versions stale, so PPO clips against the behavior policy rather
+than a proximal snapshot (AReaL's decoupled PPO). The default `O = 0` keeps the
+two nearly identical; for off-policy runs a fork can recompute the anchor and
+add truncated IS ([`rl-custom-loss.md`](rl-custom-loss.md#recompute-the-anchor)).
+
+Router Replay (R3) is a numerics-alignment setting, not a scheduling knob, and
+has no `Config` field. For an MoE base model both RL recipes add
+`include_routing_matrix=True, echo=False` to the sampling kwargs, replaying
+routes for generated tokens without the serving cost of `echo=True`. A fork
+that needs full-sequence replay sets `echo=True` and passes
+`router_replay_completion_only=False` to `AsyncRLCoordinator` (default `True`);
+expect lower throughput, because `echo=True` with logprobs disables prompt
+KV-cache reuse. For Harbor/TITO prompt
 capture, see the [agentic rollout example](rl-agentic.md#cookbook-example).
 
 Dense models skip R3 automatically. The MoE decision comes from the trainer:
@@ -230,20 +241,17 @@ its `create_model` response advertises `supports_router_replay`, exposed as
 bound training client decide R3 without GETting the base model (a private
 early-access base model rejects that GET with 403). The model probe still runs
 when there is no trainer answer: a trainer that predates the field (`None`), or
-a path with no trainer at all -- e.g. the Harbor TextWorld sampling-only
-evaluation, which calls the resolver without `training_client`. There a 403/404
+a path with no trainer at all -- e.g. Harbor sampling-only scoring
+(`harbor_rl/common.py`), which calls the resolver without `training_client`. There a 403/404
 takes the last-resort path below rather than failing. `routing_matrix_format`
 (`parquet_v1`) is the R3 wire format and is advertised for dense models too, so
 it is not an on/off signal.
 
-A clear answer always wins over the recipe's `router_replay` flag: a dense
-model turns R3 off even when `router_replay=True`, and a MoE model follows the
-flag. The flag decides alone only as a last resort, when the trainer did not
-report and the model probe returns 403/404 (the record is not visible to the
-caller); that path logs a warning, and if the model is actually dense the first
-sample rejects the routing request, so rerun with `--router-replay false`. Any
-other probe failure (control-plane error, or a record with no MoE flag) still
-raises.
+When the trainer did not report and the model probe returns 403/404 (the
+record is not visible to the caller), the recipes request R3 and log a warning.
+If the model is actually dense, the first sample rejects the routing request;
+remove the routing kwargs in a fork. Any other probe failure (control-plane
+error, or a record with no MoE flag) still raises.
 
 One optimizer batch requests `B = P × G` logical rollout results. The number of
 trainer trajectories can be larger when a result contains multiple
@@ -314,7 +322,7 @@ For each optimizer batch:
 1. The first ready chunk exposes the `OptimizerBatch` to the recipe.
 2. `async for chunk in batch.chunks()` waits only for the next predetermined
    chunk. Later chunks can queue while the current chunk trains.
-3. Each chunk runs reference/old-policy work and forward/backward.
+3. Each chunk runs `train_chunk`: one server-side GRPO forward/backward.
 4. After the final chunk, the recipe performs one optimizer step.
 5. The recipe joins any evaluation of the current sampler version.
 6. The recipe synchronizes sampler weights through [negotiated RDMA or save → FILE hotload](rl-hotload.md#transport-negotiation).
@@ -403,22 +411,29 @@ table.
 
 ## Loss path
 
-The async recipe has one client-side GRPO path; it does not expose a
-`policy_loss` selector. `anchor_logp="old_policy"` snapshots trainer logprobs and
-applies TIS against rollout behavior logprobs. `anchor_logp="rollout"` skips the
-old-policy forward and makes the TIS ratio identity.
-
-`TISConfig` controls correction and clipping. Reference KL is enabled when
-`kl_beta > 0`. Raw inference-logprob drift metrics are observational and never
-replace behavior logprobs in PPO or TIS.
+`train_chunk` trains the trainer's built-in GRPO loss, clipped against the
+rollout logprobs, with no reference model or KL. Advantages are not
+reweighted, and raw inference logprobs feed drift metrics only. Late-arriving
+off-policy tokens are therefore clipped against the policy version that
+sampled them. To use another objective, reference KL, a recomputed trainer
+anchor, TIS or sampling-support replay, fork `train_chunk`; see
+[`rl-custom-loss.md`](rl-custom-loss.md).
 
 ## Examples and related references
 
-- `training/examples/rl/single_turn_token_in/` — minimal token-in/token-out
-  rollout
-- `training/examples/rl/harbor/opencode/` — OpenCode/Harbor multi-turn TITO rollout
-- `training/examples/rl/harbor/pi/` — Pi multi-turn TITO rollout
-- `training/examples/rl/harbor/mini_swe/` — Mini-SWE-Agent multi-turn TITO rollout
+- `training/examples/rl/deepmath/` — single-turn renderer rollout with a
+  `dynamic_filter_fn` that drops zero-variance groups
+- `training/examples/rl/frozen_lake/` — multi-turn tool environment as an
+  eval-protocol `@evaluation_test`, adapted with
+  `make_eval_protocol_rollout_fn_factory`
+- `training/examples/rl/deepmath/train_deepmath_serverless.py` — the same rollout contract on
+  `recipes/experiment/async_rl_loop_serverless.py`
+- `training/examples/harbor_rl/` — multi-turn TITO rollouts: one shared
+  `tito.rollout.HarborRollout` with OpenCode, Pi, Mini-SWE-Agent, and mimoagent
+  harness adapters under `harnesses/`; task entry points under `tasks/`
+- `training/recipes/rl_loop.py` — the strict on-policy loop takes the same
+  `rollout_fn_factory(setup)` seam; with `prepare_batch_fn=igpo.prepare_batch(...)`
+  it runs IGPO (`training/examples/rl/multihop_qa/`)
 - [`rl-hotload.md`](rl-hotload.md) — sampler weight transfer
 - [`rl-sampling-timeouts.md`](rl-sampling-timeouts.md) — sampler timeout diagnosis
 - [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md) — optimizer gradient

@@ -8,13 +8,13 @@ from pathlib import Path
 import pytest
 
 from fireworks.training.sdk import TITOChatRequest, TITOParsedAssistant
-from training.examples.rl.harbor.opencode.artifacts import (
+from training.examples.harbor_rl.harnesses.opencode.artifacts import (
     tool_timeout_count as opencode_tool_timeout_count,
 )
-from training.examples.rl.harbor.pi.artifacts import (
+from training.examples.harbor_rl.harnesses.pi.artifacts import (
     tool_timeout_count as pi_tool_timeout_count,
 )
-from training.examples.rl.harbor.tito.sidecar import (
+from training.examples.harbor_rl.tito.sidecar import (
     build_call_classifier,
 )
 from training.renderer.tito.shared import (
@@ -107,7 +107,7 @@ def test_all_policy_classifier_does_not_inspect_harness_messages() -> None:
 
 def test_mini_swe_keeps_task_image_working_directory() -> None:
     pytest.importorskip("harbor")
-    from training.examples.rl.harbor.mini_swe.agent import ConfigurableMiniSweAgent
+    from training.examples.harbor_rl.harnesses.mini_swe.agent import ConfigurableMiniSweAgent
 
     agent = ConfigurableMiniSweAgent(
         logs_dir="/tmp/logs",
@@ -130,7 +130,7 @@ def test_tito_layers_do_not_import_or_name_concrete_harnesses() -> None:
     training_root = Path(__file__).parents[2]
     layer_roots = (
         training_root / "tito",
-        training_root / "examples" / "rl" / "harbor" / "tito",
+        training_root / "examples" / "harbor_rl" / "tito",
     )
     concrete_harnesses = ("opencode", "mini_swe", "mini-swe", "pi")
     concrete_harness_pattern = re.compile(r"opencode|mini[_-]swe|\bpi\b", re.I)
@@ -162,7 +162,7 @@ def test_tito_layers_do_not_import_or_name_concrete_harnesses() -> None:
 
 
 def test_harness_packages_do_not_import_each_other() -> None:
-    harbor_root = Path(__file__).parents[2] / "examples" / "rl" / "harbor"
+    harbor_root = Path(__file__).parents[2] / "examples" / "harbor_rl" / "harnesses"
     harnesses = ("opencode", "pi", "mini_swe")
     for harness in harnesses:
         for path in (harbor_root / harness).glob("*.py"):

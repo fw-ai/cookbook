@@ -71,15 +71,3 @@ def load_cursor() -> type:
     """Return ``RawRowCursor`` loaded directly (no SDK deps)."""
     m = _load_module("dataloader_cursor_test_load", "utils/dataloader_cursor.py")
     return m.RawRowCursor
-
-
-def load_rl_train(
-    unique_suffix: str,
-    *,
-    prompt_group_cls: type = _TestPromptGroup,
-) -> tuple[type, Any]:
-    """Return ``(TrainStepFns, run_rl_loop)`` loaded under a unique importlib name."""
-    _stub_fireworks_sdk()
-    _stub_rl_losses(prompt_group_cls)
-    m = _load_module(f"rl_train_test_{unique_suffix}", "utils/rl/train.py")
-    return m.TrainStepFns, m.run_rl_loop

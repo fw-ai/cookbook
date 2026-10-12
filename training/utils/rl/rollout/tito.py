@@ -93,6 +93,8 @@ class _SampleBuilder:
     inference_topk_logprobs: list[list[float]] | None
     response_routes: list[str] | RoutingReferences | None
     initial_routes: list[str] | RoutingReferences | None = None
+    # Completion-only like response_routes: prompt and tool-suffix positions are gaps.
+    response_top_sampling: list[str] | RoutingReferences | None = None
     turns: list[TITOTurn] = field(default_factory=list)
     masked_fail_closed_turns: int = 0
     realigned_masked_tokens: int = 0
@@ -130,6 +132,9 @@ class _SampleBuilder:
             ),
             response_routes=[] if turn.routing_matrices is not None else None,
             completion_origin=[False] * len(prompt),
+            response_top_sampling=(
+                [] if getattr(turn, "top_sampling_references", None) is not None else None
+            ),
         )
 
     def can_append(self, turn: TITOTurn) -> bool:
@@ -158,6 +163,11 @@ class _SampleBuilder:
     def realign(self, turn: TITOTurn, *, trainable: bool = True) -> None:
         if not self.can_realign(turn):
             raise ValueError("turn has invalid bounded realignment evidence")
+        top_sampling = getattr(turn, "top_sampling_references", None)
+        if (self.response_top_sampling is None) != (top_sampling is None):
+            raise ValueError(
+                "top-K sampling references must be present for every turn in one TITO segment"
+            )
         start = turn.realign_from_token
         assert start is not None
         # Only sampled completions at and after `start` leave training; the
@@ -182,12 +192,16 @@ class _SampleBuilder:
             self.inference_topk_logprobs[start:] = [[] for _ in replacement]
         if self.raw_logprobs is not None:
             self.raw_logprobs[start:] = [0.0] * len(replacement)
+        route_start = start - len(self.prompt_ids)
+        if route_start < 0 and (self.response_routes is not None or self.response_top_sampling is not None):
+            raise ValueError("realignment cannot replace the initial prompt")
         if self.response_routes is not None:
-            route_start = start - len(self.prompt_ids)
-            if route_start < 0:
-                raise ValueError("realignment cannot replace the initial prompt")
             self.response_routes = concat_routing(
                 self.response_routes[:route_start], [""] * len(replacement)
+            )
+        if self.response_top_sampling is not None:
+            self.response_top_sampling = concat_routing(
+                self.response_top_sampling[:route_start], [""] * len(replacement)
             )
         self.realigned_masked_tokens += turn.realigned_masked_tokens
         self._append_completion(turn, trainable=trainable)
@@ -230,6 +244,8 @@ class _SampleBuilder:
                         "incremental checkpoint trim exceeds response routes"
                     )
                 self.response_routes = self.response_routes[:-trim_tokens]
+            if self.response_top_sampling is not None:
+                self.response_top_sampling = self.response_top_sampling[:-trim_tokens]
             self.incremental_checkpoint_trimmed_tokens += trim_tokens
         suffix = prompt[len(self.tokens) :]
         self.tokens.extend(suffix)
@@ -255,6 +271,17 @@ class _SampleBuilder:
             )
         elif turn.routing_matrices is not None:
             raise ValueError("R3 cannot begin partway through one TITO segment")
+        top_sampling = getattr(turn, "top_sampling_references", None)
+        if self.response_top_sampling is not None:
+            if top_sampling is None:
+                raise ValueError(
+                    "top-K sampling references must be present for every turn in one TITO segment"
+                )
+            self.response_top_sampling = concat_routing(self.response_top_sampling, [""] * len(suffix))
+        elif top_sampling is not None:
+            raise ValueError(
+                "top-K sampling references cannot begin partway through one TITO segment"
+            )
 
         self._append_completion(turn, trainable=trainable)
 
@@ -323,6 +350,13 @@ class _SampleBuilder:
             self.response_routes = concat_routing(
                 self.response_routes, turn.routing_matrices
             )
+        if self.response_top_sampling is not None:
+            references = getattr(turn, "top_sampling_references", None)
+            if references is None or len(references) != len(completion):
+                raise ValueError(
+                    f"turn {turn.turn_id} has completion-misaligned top-K sampling references"
+                )
+            self.response_top_sampling = concat_routing(self.response_top_sampling, references)
         self.turns.append(turn)
 
     def build(self, reward: float) -> RolloutSample:
@@ -343,6 +377,15 @@ class _SampleBuilder:
                 raise ValueError(
                     "materialized R3 does not align with model-input positions"
                 )
+        top_sampling = None
+        if self.response_top_sampling is not None:
+            top_sampling = concat_routing(
+                [""] * (len(self.prompt_ids) - 1), self.response_top_sampling
+            )
+            if len(top_sampling) != len(self.tokens) - 1:
+                raise ValueError(
+                    "materialized top-K sampling references do not align with model-input positions"
+                )
         return RolloutSample(
             tokens=list(self.tokens),
             logprobs=list(self.logprobs),
@@ -361,6 +404,7 @@ class _SampleBuilder:
                 else None
             ),
             routing_matrices=routing,
+            top_sampling_references=top_sampling,
             reward=reward,
             finish_reason=self.turns[-1].finish_reason,
             text="\n".join(_assistant_text(turn) for turn in self.turns),

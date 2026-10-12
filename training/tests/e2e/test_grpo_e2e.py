@@ -1,7 +1,7 @@
 """E2E test for synchronous GRPO training.
 
 Full pipeline: policy + reference trainers, deployment hotload, Router Replay
-(R3), and Truncated Importance Sampling (TIS).
+(R3), and rollout-policy ratios.
 
 Requires:
   FIREWORKS_API_KEY     -- API key with training/deployment access
@@ -17,7 +17,6 @@ import time
 import pytest
 
 from training.utils import TrainerConfig, DeployConfig
-from training.utils.rl import TISConfig
 from training.tests.e2e.conftest import GSM8K_SAMPLE_URL
 from training.recipes.rl_loop import Config, main
 
@@ -36,7 +35,7 @@ def _gsm8k_reward(completion: str, row: dict) -> float:
 @pytest.mark.e2e
 @pytest.mark.timeout(3600)
 class TestGRPOE2E:
-    """Strictly on-policy GRPO with R3, TIS, and per-step weight sync."""
+    """Strictly on-policy GRPO with R3 and per-step weight sync."""
 
     def test_grpo_full_pipeline(
         self,
@@ -63,7 +62,6 @@ class TestGRPOE2E:
             completions_per_prompt=4,
             max_rows=10,
             epochs=1,
-            tis=TISConfig(cap=10.0),
             trainer=TrainerConfig(
                 custom_image_tag=custom_image_tag,
             ),

@@ -169,8 +169,9 @@ user runs the dry-run and returns its output before final approval.
 
 For Training API SFT and RL, explicitly pass `emit_grad_norm_metrics=True` to
 each `optim_step` and log `result.metrics` with the optimizer step. Telemetry
-defaults to off; verify it appears after the first step. For `async_rl_loop`,
-set `grad_norm_metrics="basic"` (or `"detailed"`). See
+defaults to off; verify it appears after the first step. The RL loops always
+request it. `sft_loop` exposes `grad_norm_metrics` (`"off"`, `"basic"`, or
+`"detailed"`) and defaults it to `"basic"`. See
 [gradient norm metrics](../fireworks-training/references/training-api.md#gradient-norm-metrics-sft-and-rl).
 
 ## Progressive references
@@ -197,9 +198,10 @@ set `grad_norm_metrics="basic"` (or `"detailed"`). See
 | SDK migration and shapes | `../fireworks-training/references/sdk-migrate.md`, `../fireworks-training/references/sdk-shapes.md` |
 | Checkpoints and tools | `../fireworks-training/references/sdk-checkpoints.md`, `../fireworks-training/references/sdk-tools.md` |
 | Distillation | `../fireworks-training/references/sdk-distillation.md` |
-| RL losses | `../fireworks-training/references/rl-loss-paths.md`, `../fireworks-training/references/rl-custom-loss.md`, `../fireworks-training/references/rl-gradient-accumulation.md` |
+| RL objectives | `../fireworks-training/references/rl-custom-loss.md`, `../fireworks-training/references/rl-gradient-accumulation.md` |
 | Async and agentic RL | `../fireworks-training/references/rl-async.md`, `../fireworks-training/references/rl-agentic.md`, `../fireworks-training/references/rl-concurrency.md`, `../fireworks-training/references/rl-dynamic-filter.md` |
 | Async RL metrics | `../fireworks-training/references/async-rl-metrics.md` |
+| Step metrics for custom loops | `../fireworks-training/references/step-metrics.md` |
 | Client phase tracing and Perfetto export | `../fireworks-training/references/client-phase-tracing.md` |
 | Hotload and sampling | `../fireworks-training/references/rl-hotload.md`, `../fireworks-training/references/rl-sampling-timeouts.md` |
 | Renderer work | `../fireworks-training/references/renderer.md` |

@@ -322,6 +322,8 @@ def main() -> None:
         save_kwargs = {"checkpoint_type": "merged_base"}
         if cfg.export_precision != "source":
             save_kwargs["export_precision"] = cfg.export_precision
+        # SDK FiretitanTrainingClient method (not the removed cookbook shim):
+        # snapshot_name is the checkpoint id list_checkpoints rows carry.
         save = policy.save_weights_for_sampler_ext(cfg.snapshot_name, **save_kwargs)
         logger.info("Saved: path=%s snapshot_name=%s", save.path, save.snapshot_name)
 

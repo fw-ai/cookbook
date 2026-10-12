@@ -86,7 +86,7 @@ For `metrics.jsonl`, parse every line and separate records by the presence of
 
 ## Read rollout filtering
 
-The optimizer record exposes exactly five rollout-quality metrics:
+The optimizer record exposes these rollout-quality metrics:
 
 | Metric | Meaning |
 |---|---|
@@ -95,6 +95,8 @@ The optimizer record exposes exactly five rollout-quality metrics:
 | `rollout/raw_samples` | Successfully assembled logical rollout results before filtering |
 | `rollout/filtered_samples` | Logical rollout results retained after filtering |
 | `rollout/filter_ratio` | `1 - filtered_samples / raw_samples` |
+| `rollout/completion_tokens_mean` / `_max` | Completion length of trained sequences |
+| `rollout/truncated_ratio` | Trained sequences that hit `max_completion_tokens` |
 
 These counts follow `RolloutRun` rewards, so a run containing multiple
 `RolloutSample` trajectories still contributes one sample. Trainer-facing
@@ -103,11 +105,15 @@ sequence metrics count the contained trajectories instead. In particular,
 `rollout/filtered_samples`; that is expected and does not mean the GRPO group
 was expanded or its advantage recomputed.
 
-Raw inference-logprob drift metrics are optional: when the sampler does not
-return the distinct raw model-logprob field, the coverage and drift series are
-absent rather than reported as a misleading constant zero. Other optional
-metrics follow the same rule; an unsupported capability does not produce a
-sentinel or constant-zero series.
+The GRPO train step adds `train/ppo_ratio_mean`, `train/ppo_clip_frac` and
+`train/ppo_kl` against the rollout logprobs; see
+[`step-metrics.md`](step-metrics.md#policy-objectives). Drift metrics
+(`train/inference_k1`, `train/inference_k3`,
+`train/raw_inference_logprob_coverage`) are optional: when the sampler does not
+return the distinct raw model-logprob field, they are absent rather than
+reported as a misleading constant zero. Other optional metrics follow the same
+rule; an unsupported capability does not produce a sentinel or constant-zero
+series.
 
 Optimizer telemetry keeps `train/grad_norm` and `train/grad_norm_rms`.
 `train/grad_norm_post_clip` appears only when clipping changes the norm. API
@@ -126,7 +132,7 @@ utilization.
 | `perf/train_wait_time` | `max(perf/step_time - perf/train_time, 0)`: all client-loop time outside active training. |
 | `perf/wait_time_ratio` | `perf/train_wait_time / perf/step_time`. This is not a GPU-idle ratio. |
 | `perf/train_chunk_wait_time` | The subset of pipeline time spent waiting for a later rollout chunk. |
-| `perf/weight_update_time` | Sampler weight publication. For serverless sampling this includes snapshot creation and draining the replaced sampling client. |
+| `perf/weight_update_time` | Sampler weight publication. For serverless sampling this includes snapshot creation and draining the replaced sampling client. RDMA publication adds its phases as `perf/weight_sync_capture_time` and `perf/weight_sync_hotload_time`. |
 | `perf/step_samples_per_s` / `perf/step_tokens_per_s` | Optimizer-update cadence computed with `perf/step_time`. These are not raw sampler throughput. |
 
 Post-publication evaluation and checkpoint records expose `eval/wall_time` and
@@ -143,6 +149,14 @@ Each completed evaluation record includes `eval/failed`: `0` on success and `1`
 when the callback raised. A failed callback is logged and training continues;
 its `eval/wall_time` still records time spent before failure. Cancellation
 during shutdown is not converted into an evaluation failure.
+
+Each optimizer record also carries the trainer's own execution time
+(`perf/trainer_fwd_bwd_time`, `perf/trainer_optim_step_time`) and the
+deployment's per-request timings since the previous record (`sampler/*`). See
+[`step-metrics.md`](step-metrics.md) for both glossaries. Use them to split a
+slow step: a high `sampler/prefill_queue_s_mean` means the deployment is
+saturated, while client time far above trainer time means transport or request
+queueing.
 
 ## Compare producer gauges with optimizer steps
 

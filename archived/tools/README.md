@@ -25,7 +25,7 @@ Optional: point at the dev gateway when working against a dev account:
 
 ```bash
 export FIREWORKS_API_KEY="fw_..."   # dev-scoped key
-python3 list_low_token_deployments.py --account my-account-dev --server gateway-dev.fireworks.ai:443
+python3 list_low_token_deployments.py --account my-account-dev --server gateway.fireworks.ai:443
 ```
 
 ## Download without cloning
@@ -93,7 +93,7 @@ python3 list_low_token_deployments.py \
 | `--min-replicas` | `0` | Only include deployments with at least this many replicas |
 | `--output` | `text` | `text` (tab-separated table) or `json` |
 | `--firectl` | `firectl` | Path to the `firectl` binary if it is not on `PATH` |
-| `--server` | *(prod)* | Gateway host, e.g. `gateway-dev.fireworks.ai:443` for dev accounts |
+| `--server` | *(prod)* | Gateway host, e.g. `gateway.fireworks.ai:443` for dev accounts |
 | `--dry-run` | off | Print the underlying `firectl` commands without running them |
 
 #### Output

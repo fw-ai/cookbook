@@ -154,7 +154,7 @@ def _tokenizer_selection_is_ambiguous(
     revision: str | None,
     local_files_only: bool,
 ) -> bool:
-    """Serving's tokenizer-backend rule, ported from ``py/fireworks/text/tokenizer.py``.
+    """Select the tokenizer backend that preserves the published tokenization artifact.
 
     Transformers >= 5.9 honors ``tokenizer_config.json``'s declared
     ``tokenizer_class`` and rebuilds the tokenizer from that class's hardcoded

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import signal
 
 from dotenv import load_dotenv
 
@@ -21,15 +20,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 load_dotenv()
-
-FIREWORKS_API_KEY = os.environ["FIREWORKS_API_KEY"]
-FIREWORKS_BASE_URL = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-
-
-def _signal_handler(signum, frame):
-    name = signal.Signals(signum).name
-    logger.warning("Received %s — raising SystemExit for cleanup", name)
-    raise SystemExit(f"Terminated by {name}")
 
 
 def parse_args():
@@ -49,7 +39,7 @@ def parse_args():
     parser.add_argument("--lora-rank", type=int, default=0)
     parser.add_argument("--renderer-name", default="")
     parser.add_argument("--no-checkpoint", action="store_true",
-                        help="Skip final checkpoint save")
+                        help="Skip the final checkpoint save (and promotion)")
     parser.add_argument("--grad-clip-norm", type=float, default=0.0,
                         help="Max gradient norm for clipping (0 = no clipping)")
     parser.add_argument("--wandb-project", default="sft-tinker")
@@ -59,9 +49,6 @@ def parse_args():
 
 
 def main():
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-
     args = parse_args()
     logger.info(
         "SFT text2sql training: model=%s shape=%s",
@@ -74,9 +61,6 @@ def main():
             f"Dataset not found at {args.dataset_path}. "
             "Use the bundled text2sql_dataset.jsonl or pass --dataset-path explicitly."
         )
-
-    os.environ["FIREWORKS_API_KEY"] = FIREWORKS_API_KEY
-    os.environ["FIREWORKS_BASE_URL"] = FIREWORKS_BASE_URL
 
     config = sft_loop.Config(
         log_path="./text2sql_logs",
@@ -91,7 +75,7 @@ def main():
         lora_rank=args.lora_rank,
         output_model_id=args.output_model_id,
         grad_clip_norm=args.grad_clip_norm,
-        dcp_save_interval=-1 if args.no_checkpoint else 0,
+        save_final_checkpoint=not args.no_checkpoint,
         trainer=TrainerConfig(
             training_shape_id=args.training_shape,
         ),

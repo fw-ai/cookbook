@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack
 from importlib import import_module
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -57,9 +58,10 @@ class _FakeFireworksClient:
     "service_cls", [_FakeService, _LegacyFakeService], ids=["retry-hook", "legacy-sdk"]
 )
 def test_setup_serverless_training_uses_service_training_session_id(
-    monkeypatch, tmp_path, service_cls
+    monkeypatch, tmp_path, caplog, service_cls
 ):
     created = {}
+    caplog.set_level("INFO", logger=serverless_utils.__name__)
 
     monkeypatch.setattr(serverless_utils, "FiretitanServiceClient", service_cls)
     monkeypatch.setattr(serverless_utils, "FireworksClient", _FakeFireworksClient)
@@ -108,6 +110,8 @@ def test_setup_serverless_training_uses_service_training_session_id(
             "pageSize": 200,
         }
     ]
+    # Another process continues this run with the fully qualified reference.
+    assert "init_from_checkpoint='test-account-id/run-abcdef/<checkpoint>'" in caplog.text
 
 
 def test_enable_supervised_retry_uses_optional_sdk_hook():
@@ -150,66 +154,75 @@ def test_enable_supervised_retry_does_not_hide_hook_failure():
 
 
 @pytest.mark.parametrize(
-    ("module_name", "run_cls"),
+    ("module_name", "recipe_name"),
     [
-        ("serverless_sft.support_triage_sft", "ServerlessTriageSFT"),
-        ("serverless_dpo.ultrafeedback_dpo", "ServerlessUltraFeedbackDPO"),
+        ("sft.train_sft_serverless", "sft_loop"),
+        ("dpo.train_dpo_serverless", "dpo_loop"),
     ],
     ids=["sft", "dpo"],
 )
-@pytest.mark.parametrize(
-    "resume_from", ["", "acct/run-example/checkpoint-0002"], ids=["fresh", "resume"]
-)
-@pytest.mark.parametrize(
-    "with_retry_hook", [True, False], ids=["retry-hook", "legacy-sdk"]
-)
-def test_standalone_supervised_example_opts_in_before_create_or_resume(
-    monkeypatch, tmp_path, module_name, run_cls, resume_from, with_retry_hook
+def test_serverless_supervised_examples_run_recipe_in_serverless_mode(
+    monkeypatch, tmp_path, module_name, recipe_name
 ):
+    # The examples are assemblies: CLI flags -> recipe Config(serverless=True)
+    # -> recipe main. setup_serverless_training (tested above) owns the session.
     module = import_module(f"training.examples.{module_name}")
-    events = []
+    recipe = import_module(f"training.recipes.{recipe_name}")
+    received = []
+    monkeypatch.setattr(recipe, "main", lambda cfg: received.append(cfg) or {"steps": 0})
+    dataset = tmp_path / "rows.jsonl"
+    dataset.write_text("{}\n")
+    reference = "acct/run-" + "a" * 32 + "/step-3"
 
-    class StopAfterTrainingClientRequest(Exception):
-        pass
-
-    class FakeService:
-        def __init__(self, *, api_key, base_url):
-            assert base_url == "https://api.example.test/training/v1/serverless"
-
-        def create_lora_training_client(self, *, base_model, rank):
-            events.append("create")
-            raise StopAfterTrainingClientRequest
-
-        def create_training_client_from_state_with_optimizer(self, checkpoint):
-            assert checkpoint == resume_from
-            events.append("resume")
-            raise StopAfterTrainingClientRequest
-
-    if with_retry_hook:
-        monkeypatch.setattr(
-            FakeService,
-            "_enable_serverless_supervised_409_retry",
-            lambda self: events.append("enable-supervised-retry"),
-            raising=False,
-        )
-    monkeypatch.setattr(module, "FiretitanServiceClient", FakeService)
-    monkeypatch.setattr(module, "_load_rows", lambda path: [{"messages": []}] * 2)
-    monkeypatch.setattr(module, "get_tokenizer", lambda model: object())
-    monkeypatch.setattr(module, "build_renderer", lambda *args: object())
-    dataset = tmp_path / "dataset.jsonl"
-    dataset.touch()
-    cfg = module.Config(
-        api_key="fw-test-key",
-        api_base_url="https://api.example.test",
-        dataset=str(dataset),
-        renderer_name="test-renderer",
-        resume_from=resume_from,
+    module.main(
+        [
+            "--dataset",
+            str(dataset),
+            "--log-path",
+            str(tmp_path / "logs"),
+            "--init-from-checkpoint",
+            reference,
+            "--output-model-id",
+            "triage-model",
+        ]
     )
-    if hasattr(cfg, "eval_pairs"):
-        cfg.eval_pairs = 0
 
-    with pytest.raises(StopAfterTrainingClientRequest):
-        getattr(module, run_cls)(cfg)
+    (cfg,) = received
+    assert isinstance(cfg, recipe.Config)
+    assert cfg.serverless is True
+    assert cfg.lora_rank > 0
+    assert cfg.max_seq_len and cfg.max_seq_len > 0
+    assert cfg.base_model == "accounts/fireworks/models/kimi-k3"
+    assert cfg.tokenizer_model == "moonshotai/Kimi-K3"
+    assert cfg.dataset == str(dataset)
+    assert cfg.log_path == str(tmp_path / "logs")
+    assert cfg.init_from_checkpoint == reference
+    assert cfg.output_model_id == "triage-model"
+    assert cfg.wandb.entity is None
 
-    expected_events = ["enable-supervised-retry"] if with_retry_hook else []
-    assert events == expected_events + ["resume" if resume_from else "create"]
+
+def test_serverless_sft_example_defaults_to_bundled_dataset():
+    module = import_module("training.examples.sft.train_sft_serverless")
+
+    cfg = module.build_config(module.parse_args([]))
+
+    assert Path(cfg.dataset).is_file()
+    assert cfg.output_model_id is None
+    assert cfg.init_from_checkpoint is None
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://api.fireworks.ai",
+        "https://api.fireworks.ai/",
+        "https://api.fireworks.ai/training/v1",
+        "https://api.fireworks.ai/training/v1/serverless",
+        "https://api.fireworks.ai/training/v1/serverless/",
+    ],
+)
+def test_serverless_urls_accept_a_root_or_surface_base_url(base_url):
+    from training.utils.serverless import gateway_root_url, serverless_base_url
+
+    assert serverless_base_url(base_url) == "https://api.fireworks.ai/training/v1/serverless"
+    assert gateway_root_url(base_url) == "https://api.fireworks.ai"

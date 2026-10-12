@@ -79,7 +79,7 @@ def test_deleted_legacy_examples_and_server_do_not_return() -> None:
         *legacy_example.glob("*.py"),
         *legacy_example.glob("*.md"),
         *legacy_example.glob("*.sh"),
-        _ROOT / "training/examples/rl/harbor/openai_policy.py",
+        _ROOT / "training/examples/harbor_rl/openai_policy.py",
     ]
     assert [str(path) for path in forbidden_sources if path.exists()] == []
 

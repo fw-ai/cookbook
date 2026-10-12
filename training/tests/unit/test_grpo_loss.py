@@ -5,8 +5,24 @@ from __future__ import annotations
 import pytest
 import torch
 
-from training.utils.rl.grpo import make_grpo_loss_fn
-from training.utils.rl.observability import compute_inference_observability_metrics
+from training.utils.rl.algorithm.grpo import GRPOConfig, make_loss_fn
+from training.utils.rl.losses import PolicyBatch
+
+
+def make_grpo_loss_fn(
+    *, advantages, ref_logprobs, prompt_len, inf_logprobs, kl_beta, raw_inf_logprobs=()
+):
+    """Client GRPO loss over a bare :class:`PolicyBatch` (no datum masks)."""
+    n = len(advantages)
+    batch = PolicyBatch(
+        data=[],
+        advantages=advantages,
+        prompt_lens=prompt_len if isinstance(prompt_len, list) else [prompt_len] * n,
+        rollout_logprobs=inf_logprobs,
+        ref_logprobs=ref_logprobs,
+        raw_inference_logprobs=list(raw_inf_logprobs),
+    )
+    return make_loss_fn(batch, GRPOConfig(kl_beta=kl_beta))
 
 
 class TestGRPOMetrics:
@@ -20,13 +36,12 @@ class TestGRPOMetrics:
             ref_logprobs=[],
             prompt_len=[1, 1],
             inf_logprobs=[[-1.0, -1.0], [-1.0, -1.0]],
-            old_policy_logprobs=[[-1.0, -1.0], [-1.0, -1.0]],
             kl_beta=0.0,
         )
 
         _, metrics = fn([], pi_rows)
 
-        # At ratio=TIS=1, the two datum coefficients are -1 and +1.
+        # At ratio=1, the two datum coefficients are -1 and +1.
         assert metrics["policy_gradient/coefficient_variance_proxy"] == pytest.approx(
             2.0
         )
@@ -46,7 +61,6 @@ class TestGRPOMetrics:
             ref_logprobs=[ref_vals],
             prompt_len=1,
             inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
             kl_beta=0.0,
         )
 
@@ -68,7 +82,6 @@ class TestGRPOMetrics:
             ref_logprobs=[],
             prompt_len=1,
             inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
             kl_beta=0.0,
         )
 
@@ -89,7 +102,6 @@ class TestGRPOMetrics:
             ref_logprobs=[ref_vals],
             prompt_len=1,
             inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
             kl_beta=beta,
         )
 
@@ -105,54 +117,6 @@ class TestGRPOMetrics:
             beta * expected_per_token_kl.mean().item()
         )
 
-    def test_reports_raw_inference_observability_metrics(self):
-        pi_vals = [-1.0, -1.2]
-        raw_inf_vals = [-1.1, -1.0]
-        pi = torch.tensor(pi_vals, requires_grad=True)
-
-        fn = make_grpo_loss_fn(
-            advantages=[1.0],
-            ref_logprobs=[],
-            prompt_len=1,
-            inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
-            kl_beta=0.0,
-            raw_inf_logprobs=[raw_inf_vals],
-        )
-
-        _, metrics = fn([], [pi])
-
-        diff = torch.tensor(pi_vals) - torch.tensor(raw_inf_vals)
-        expected_k3 = (torch.exp(diff) - diff - 1.0).mean().item()
-        assert metrics["raw_inference_logprob_coverage"] == 1.0
-        assert metrics["inference_k1"] == pytest.approx(diff.mean().item())
-        assert metrics["inference_k3"] == pytest.approx(expected_k3)
-        assert not {
-            "inference_diff",
-            "inference_kld",
-            "k1",
-            "k3",
-        }.intersection(metrics)
-
-    def test_omits_raw_inference_metrics_when_sampler_does_not_provide_them(self):
-        pi_vals = [-1.0, -1.2]
-        pi = torch.tensor(pi_vals, requires_grad=True)
-        fn = make_grpo_loss_fn(
-            advantages=[1.0],
-            ref_logprobs=[],
-            prompt_len=1,
-            inf_logprobs=[pi_vals],
-            old_policy_logprobs=[pi_vals],
-            kl_beta=0.0,
-            raw_inf_logprobs=[[]],
-        )
-
-        _, metrics = fn([], [pi])
-
-        assert "raw_inference_logprob_coverage" not in metrics
-        assert "inference_k1" not in metrics
-        assert "inference_k3" not in metrics
-
     def test_raw_inference_logprobs_do_not_change_loss_or_gradient(self):
         pi_vals = [-1.0, -1.2]
 
@@ -163,7 +127,6 @@ class TestGRPOMetrics:
                 ref_logprobs=[],
                 prompt_len=1,
                 inf_logprobs=[pi_vals],
-                old_policy_logprobs=[pi_vals],
                 kl_beta=0.0,
                 raw_inf_logprobs=[raw_inf_vals],
             )
@@ -176,20 +139,23 @@ class TestGRPOMetrics:
 
         assert torch.equal(loss_a, loss_b)
         assert torch.equal(grad_a, grad_b)
-        assert metrics_a["inference_k3"] != metrics_b["inference_k3"]
+        # Client losses no longer compute inference drift; see inference_drift_metrics.
+        assert not {"inference_k1", "inference_k3", "raw_inference_logprob_coverage"} & metrics_a.keys()
 
-    def test_inference_drift_preserves_per_sequence_macro_average(self):
-        metrics = compute_inference_observability_metrics(
+    def test_token_advantages_weight_each_response_token(self):
+        pi_vals = [-1.0, -1.0, -1.0]
+        pi = torch.tensor(pi_vals, requires_grad=True)
+        batch = PolicyBatch(
             data=[],
-            logprobs_list=[torch.tensor([1.0]), torch.tensor([0.0, 0.0, 0.0])],
-            raw_inf_logprobs=[[0.0], [0.0, 0.0, 0.0]],
-            prompt_lens=[1, 1],
-            policy_loss="grpo",
+            advantages=[100.0],
+            prompt_lens=[1],
+            rollout_logprobs=[pi_vals],
+            token_advantages=[[2.0, -1.0, 0.5]],
         )
 
-        # The one-token and three-token sequences have equal weight. A
-        # token-weighted reduction would return 0.25 instead of 0.5.
-        assert metrics["inference_k1"] == pytest.approx(0.5)
-        assert metrics["inference_k3"] == pytest.approx(
-            (torch.exp(torch.tensor(1.0)).item() - 2.0) / 2.0
-        )
+        loss, _ = make_loss_fn(batch, GRPOConfig())([], [pi])
+        loss.backward()
+
+        # At ratio 1 the per-token gradient is -A_t; the scalar advantage is unused.
+        assert pi.grad.tolist() == pytest.approx([-2.0, 1.0, -0.5])
+        assert loss.item() == pytest.approx(-1.5)

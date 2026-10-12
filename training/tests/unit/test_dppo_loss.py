@@ -8,8 +8,8 @@ import pytest
 import tinker
 import torch
 
-from training.utils.rl.dppo import DPPOConfig, make_dppo_loss_fn
-from training.utils.rl.tis import TISConfig
+from training.utils.rl.algorithm.dppo import DPPOConfig, make_loss_fn
+from training.utils.rl.losses import PolicyBatch
 
 
 def _datum() -> tinker.Datum:
@@ -33,25 +33,22 @@ def _run(
     advantage: float,
     config: DPPOConfig | None = None,
     rollout_prob: float | None = None,
-    tis_config: TISConfig | None = None,
 ):
+    """One-token DPPO step; ``behavior_prob`` is the anchor, ``rollout_prob`` the sampler."""
     policy_logprob = torch.tensor(
         [math.log(policy_prob)], requires_grad=True
     )
-    behavior_logprob = math.log(behavior_prob)
-    rollout_logprob = math.log(
-        behavior_prob if rollout_prob is None else rollout_prob
-    )
-    loss_fn = make_dppo_loss_fn(
+    anchor = [[math.log(behavior_prob)]]
+    rollout = anchor if rollout_prob is None else [[math.log(rollout_prob)]]
+    batch = PolicyBatch(
+        data=[_datum()],
         advantages=[advantage],
-        ref_logprobs=[],
-        inf_logprobs=[[rollout_logprob]],
-        prompt_len=1,
-        old_policy_logprobs=[[behavior_logprob]],
-        dppo_config=config,
-        tis_config=tis_config,
+        prompt_lens=[1],
+        rollout_logprobs=rollout,
+        anchor_logprobs=anchor,
     )
-    loss, metrics = loss_fn([_datum()], [policy_logprob])
+    loss_fn = make_loss_fn(batch, config or DPPOConfig())
+    loss, metrics = loss_fn(batch.data, [policy_logprob])
     loss.backward()
     return loss.detach(), policy_logprob.grad, metrics
 
@@ -76,7 +73,7 @@ def test_binary_tv_masks_large_advantage_improving_updates(
 
     assert loss.item() == pytest.approx(0.0)
     assert grad.item() == pytest.approx(0.0)
-    assert metrics["dppo_mask_frac"] == pytest.approx(1.0)
+    assert metrics["dppo_clip_frac"] == pytest.approx(1.0)
     assert metrics["dppo_divergence_mean"] == pytest.approx(0.2)
 
 
@@ -101,7 +98,8 @@ def test_binary_tv_preserves_large_updates_in_non_improving_direction(
 
     assert loss.item() == pytest.approx(-ratio * advantage)
     assert grad.item() == pytest.approx(-ratio * advantage)
-    assert metrics["dppo_mask_frac"] == pytest.approx(0.0)
+    # ``dppo_clip_frac`` counts tokens past the threshold, masked or not.
+    assert metrics["dppo_clip_frac"] == pytest.approx(1.0)
 
 
 def test_binary_kl_is_finite_and_can_mask() -> None:
@@ -138,23 +136,25 @@ def test_divergence_specific_default_thresholds() -> None:
     assert kl_loss.item() == pytest.approx(0.0)
 
 
-def test_rollout_tis_weight_is_not_applied() -> None:
-    aligned_loss, aligned_grad, aligned_metrics = _run(
+def test_anchor_is_the_ratio_denominator_not_the_sampler() -> None:
+    # Anchor 0.2 equals the policy, so nothing is masked even though the
+    # sampler (0.01) is far away.
+    loss, grad, metrics = _run(
         policy_prob=0.2,
-        behavior_prob=0.1,
-        rollout_prob=0.1,
+        behavior_prob=0.2,
+        rollout_prob=0.01,
         advantage=1.0,
     )
-    with pytest.warns(DeprecationWarning, match="ignores tis_config"):
-        mismatched_loss, mismatched_grad, mismatched_metrics = _run(
-            policy_prob=0.2,
-            behavior_prob=0.1,
-            rollout_prob=0.01,
-            advantage=1.0,
-            tis_config=TISConfig(cap=0.1),
-        )
+    assert loss.item() == pytest.approx(-1.0)
+    assert grad.item() == pytest.approx(-1.0)
+    assert metrics["dppo_clip_frac"] == pytest.approx(0.0)
 
-    assert mismatched_loss.item() == pytest.approx(aligned_loss.item())
-    assert mismatched_grad.item() == pytest.approx(aligned_grad.item())
-    assert not any(key.startswith("tis/") for key in aligned_metrics)
-    assert not any(key.startswith("tis/") for key in mismatched_metrics)
+    # With the sampler as the anchor the same update is masked.
+    loss, grad, metrics = _run(
+        policy_prob=0.2,
+        behavior_prob=0.01,
+        advantage=1.0,
+    )
+    assert loss.item() == pytest.approx(0.0)
+    assert grad.item() == pytest.approx(0.0)
+    assert metrics["dppo_clip_frac"] == pytest.approx(1.0)

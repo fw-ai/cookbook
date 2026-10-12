@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Async RL recipe with per-run rollouts and recipe-owned training.
+"""Async RL recipe with per-run rollouts and server-side GRPO.
 
 EXPERIMENTAL -- under active development.  API surface (``Config`` field
-names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is intentionally minimal-surface: the
-only thing most users need to write is the rollout function; everything
-else (gate, advantage, optional reference KL, weight sync, TIS, pipeline chunking,
-checkpoints) is handled by ``main()``.  See
+names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is
+intentionally minimal-surface: the only thing most users need to write is the
+rollout function; everything else (gate, advantage, weight sync, pipeline
+chunking, checkpoints) is handled by ``main()``.  Each optimizer batch trains
+with the trainer's built-in GRPO loss, clipped against the rollout logprobs.
+To change the objective, fork ``train_chunk``; the modules in
+``training.utils.rl.algorithm`` share one interface.  See
 ``skills/fireworks-training/references/rl-async.md`` for the full contract.
 
 Acknowledgements -- prior art referenced while designing this loop:
@@ -20,23 +23,22 @@ once it crosses the dataset/sampling seam.  The recipe fans each dataset
 row out to ``completions_per_prompt`` parallel calls and assembles the
 resulting runs into a PromptGroup inside the loop.
 
-Rollout dependencies (tokenizer, sampler, request gate, etc.) flow
-through :class:`RolloutSetup`.  The user supplies a
-``rollout_fn_factory(setup) -> rollout_fn`` callable that closes over
-the setup; this matches AReaL's workflow construction pattern.
+Rollout dependencies (tokenizer, sampler, sampling kwargs) flow through
+:class:`RolloutSetup`.  The user supplies a ``rollout_fn_factory(setup) ->
+rollout_fn`` callable that closes over the setup and its own typed task
+config; this matches AReaL's workflow construction pattern.
 """
 
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import math
 import os
 import signal
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Callable
 
 import tinker
 from fireworks.training.sdk.training_spec import (
@@ -47,7 +49,6 @@ from fireworks.training.sdk.training_spec import (
 )
 
 from training.utils.termination import TerminatedBySignal
-from training.utils.client import GradAccNormalization
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
@@ -70,8 +71,8 @@ from training.utils import (
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.dataloader import CursorDataLoader
 from training.utils.data import compute_advantages
-from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
-from training.utils.rl import PromptGroup
+from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS, log_run_resources
+from training.utils.metrics import sampler_metrics, weight_sync_metrics
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
@@ -79,48 +80,20 @@ from training.utils.rl.async_rl import (
     TrainingChunk,
     RolloutRow,
 )
-from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
-from training.utils.rl.cispo import (
-    CISPOConfig,
-    make_cispo_loss_fn,
-    validate_cispo_config,
-)
-from training.utils.rl.dapo import (
-    DAPOConfig,
-    make_dapo_loss_fn,
-    validate_dapo_config,
-)
-from training.utils.rl.dppo import (
-    DPPOConfig,
-    make_dppo_loss_fn,
-    validate_dppo_config,
-)
-from training.utils.rl.dro import (
-    DROConfig,
-    make_dro_loss_fn,
-    validate_dro_config,
-)
-from training.utils.rl.gspo import (
-    GSPOConfig,
-    make_gspo_loss_fn,
-    validate_gspo_config,
-)
-from training.utils.rl.score_centering import (
-    ScoreCenteringConfig,
-    build_score_centering_datums,
-    make_score_centering_loss_fn,
-    validate_score_centering_config,
-)
-from training.utils.rl.losses import build_grpo_datums, combine_prompt_groups
-from training.utils.rl.observability import (
-    compute_server_grpo_observability_metrics,
-    compute_server_gspo_observability_metrics,
-)
-from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
-from training.utils.rl.tis import TISConfig
-from training.train_loop import DynamicFilterFn
-from training.utils.rl.rollout import RolloutRun
+from training.utils.rl.algorithm import grpo as objective
+from training.utils.rl.common import inference_drift_metrics
+from training.utils.rl.heldout import RolloutEvaluationFn, run_evaluation as evaluate_rollouts
+from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
+from training.utils.rl.rollout.setup import (
+    DynamicFilterFn,
+    RolloutFn,
+    RolloutFnFactory,
+    RolloutSetup,
+    call_rollout_fn,
+    default_sample_kwargs,
+    rollout_context_names,
+)
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
 logger = logging.getLogger(__name__)
@@ -131,7 +104,6 @@ __all__ = [
     "RolloutEvaluationFn",
     "RolloutFnFactory",
     "RolloutSetup",
-    "make_evaluation_rollout_fn",
     "main",
 ]
 
@@ -145,10 +117,8 @@ class Config:
 
     learning_rate: float = 1e-5
     lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
-    """Per-step LR scheduler spec for managed and local async RL runs."""
+    """Per-step LR scheduler spec."""
 
-    kl_beta: float = 0.001
-    """Reference-KL coefficient. Set to ``0`` to skip reference provisioning."""
     completions_per_prompt: int = 4
     max_completion_tokens: int = 1024
     temperature: float = 1.0
@@ -175,80 +145,18 @@ class Config:
     """Minimum surviving rollout runs per row to emit a PromptGroup."""
     max_incomplete_group_retries: int = 0
     """Rebuild a row this many times when fewer than ``min_group_size`` runs land."""
-
-    router_replay: bool = True
-    router_replay_completion_only: bool = True
-    """Replay serving expert routes for MoE alignment.
-
-    Completion-only replay avoids the serving cost of ``echo=True`` while
-    aligning the generated tokens used by the policy loss and KLD metrics.
-    """
-
-    grad_accumulation_normalization: GradAccNormalization | str | None = None
-    """Optional server-side normalization for accumulated gradients.
-    ``None`` leaves accumulated gradients unchanged."""
-
-    grad_clip_norm: float = 0.0
-    """Max gradient norm for clipping. 0 disables clipping."""
-    grad_norm_metrics: Literal["off", "basic", "detailed"] = "off"
-    """Trainer-side grad-norm telemetry emitted by ``optim_step``."""
-
-    eps_clip: float = 0.2
-    """Lower/upper PPO clip epsilon used by the GRPO update."""
-    eps_clip_high: float | None = None
-    """Optional asymmetric upper clip epsilon; defaults to ``eps_clip``."""
-    server_side_grpo: bool = False
-    """Use the trainer's built-in PPO kernel for the GRPO policy update.
-
-    This is a narrow execution-path opt-in, not an algorithm selector. It
-    requires ``kl_beta=0`` because the built-in kernel has no reference-KL
-    input. Group-relative advantages, PPO anchoring, and TIS remain recipe
-    owned.
-    """
-    policy_loss: Literal[
-        "grpo", "gspo", "dapo", "dro", "cispo", "dppo", "score_centering"
-    ] = "grpo"
-    """Policy surrogate applied to group-relative advantages.
-
-    ``"grpo"`` uses token-level PPO clipping. ``"gspo"`` uses a sequence-level
-    ratio through either the built-in trainer loss or the portable two-pass
-    client loss selected by ``gspo_execution``.
-    """
-    gspo: GSPOConfig = field(default_factory=GSPOConfig)
-    """GSPO sequence-ratio clipping configuration."""
-    gspo_execution: Literal["builtin", "two_pass"] = "builtin"
-    """GSPO execution path; built-in remains the cookbook default.
-
-    ``"two_pass"`` uses the public custom-loss API and works independently of
-    built-in GSPO availability.
-    """
-    dapo: DAPOConfig = field(default_factory=DAPOConfig)
-    """DAPO asymmetric and optional dual-clipping configuration."""
-    dro: DROConfig = field(default_factory=DROConfig)
-    """DRO quadratic trust-region configuration."""
-    cispo: CISPOConfig = field(default_factory=CISPOConfig)
-    """CISPO detached clipped-ratio configuration."""
-    dppo: DPPOConfig = field(default_factory=DPPOConfig)
-    """Divergence-PPO binary trust-region configuration."""
-    score_centering: ScoreCenteringConfig = field(
-        default_factory=ScoreCenteringConfig
-    )
-    """Top-k score-centering configuration."""
     pipeline_chunks_per_step: int = 1
     """Scheduler chunk cap per global optimizer batch.
 
     The scheduler creates balanced chunk targets and exposes the batch once its
     first target is full. Later chunks can fill while the trainer is active.
     """
-    tis: TISConfig = field(default_factory=TISConfig)
-    """TIS (Train-Inference IS) weight correction config."""
-    anchor_logp: Literal["old_policy", "rollout"] = "old_policy"
-    """PPO anchor source.
 
-    ``"old_policy"`` snapshots trainer logprobs and applies TIS against the
-    rollout behavior policy. ``"rollout"`` skips that forward, anchors PPO on
-    rollout logprobs, and makes the TIS ratio identity.
-    """
+    grad_clip_norm: float = 0.0
+    """Max gradient norm for clipping. 0 disables clipping."""
+    eps_clip: float = 0.2
+    """GRPO lower clip epsilon; also the upper one unless ``eps_clip_high`` is set."""
+    eps_clip_high: float | None = None
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     deployment: DeployConfig = field(default_factory=DeployConfig)
@@ -271,88 +179,6 @@ class Config:
     """Save a resumable+promotable checkpoint at the end of training."""
     output_model_id: str | None = None
     """Promote the final checkpoint to this 4-segment model id on clean exit."""
-
-
-@dataclass
-class RolloutSetup:
-    """Dependencies the recipe hands the rollout factory once at startup.
-
-    Borrowed sampler, inference endpoint metadata, tokenizer, sampling kwargs,
-    plus an ``extras`` dict for caller state. See
-    ``skills/fireworks-training/references/rl-async.md``.
-    """
-
-    tokenizer: Any
-    tokenizer_id: str
-    sample_kwargs: dict[str, Any]
-    inference_base_url: str
-    api_key: str
-    model: str
-    completions_per_prompt: int
-    extras: dict[str, Any] = field(default_factory=dict)
-    sampler: Any | None = None
-    """Optional borrowed sampler owned by the recipe.
-
-    Current dedicated and serverless recipes inject their sampler here so every
-    rollout shares the same inference transport and concurrency controller.
-    Rollout factories must not close it. The optional type and endpoint fields
-    remain for compatibility with externally constructed setups and older
-    rollout factories.
-    """
-
-
-RolloutFn = Callable[..., Awaitable[RolloutRun | None]]
-RolloutFnFactory = Callable[[RolloutSetup], RolloutFn]
-RolloutEvaluationFn = Callable[[int, RolloutFn], Awaitable[dict[str, Any] | None]]
-
-
-_ROLLOUT_CONTEXT_KWARGS = frozenset(
-    {
-        "cursor_index",
-        "row_index",
-        "epoch",
-        "rollout_idx",
-        "sample_index",
-        "end_of_epoch",
-        "evaluation",
-    }
-)
-
-
-def _rollout_fn_accepts_any_context_kwargs(rollout_fn: RolloutFn) -> bool:
-    return any(
-        param.kind == inspect.Parameter.VAR_KEYWORD
-        for param in inspect.signature(rollout_fn).parameters.values()
-    )
-
-
-def _rollout_fn_context_param_names(rollout_fn: RolloutFn) -> frozenset[str]:
-    if _rollout_fn_accepts_any_context_kwargs(rollout_fn):
-        return _ROLLOUT_CONTEXT_KWARGS
-    return _ROLLOUT_CONTEXT_KWARGS & inspect.signature(rollout_fn).parameters.keys()
-
-
-def make_evaluation_rollout_fn(rollout_fn: RolloutFn) -> RolloutFn:
-    """Set evaluation context without changing rollout sampling limits.
-
-    The wrapper calls the same rollout object created from the training
-    ``RolloutSetup``. Evaluation therefore inherits both ``max_tokens`` and
-    ``max_seq_len`` from ``sample_kwargs``; there is intentionally no second
-    length config.
-    """
-
-    context_names = _rollout_fn_context_param_names(rollout_fn)
-
-    async def evaluation_rollout_fn(sample_prompt: dict, **context: Any):
-        context["evaluation"] = True
-        if context_names:
-            return await rollout_fn(
-                sample_prompt,
-                **{name: context[name] for name in context_names if name in context},
-            )
-        return await rollout_fn(sample_prompt)
-
-    return evaluation_rollout_fn
 
 
 def _save_checkpoint(
@@ -378,162 +204,6 @@ def _save_checkpoint(
     logger.info("[%s] dcp_save: done (%.1fs)", name, span.elapsed)
 
 
-def _run_server_side_policy_loss(
-    policy: ReconnectableClient,
-    *,
-    data,
-    advantages,
-    prompt_lens,
-    rollout_logprobs,
-    raw_inference_logprobs,
-    old_policy_logprobs,
-    config: Config,
-):
-    """Run a built-in policy kernel with recipe-owned group preparation."""
-    use_gspo = config.policy_loss == "gspo"
-    server_data = build_grpo_datums(
-        data,
-        advantages,
-        old_policy_logprobs,
-        rollout_logprobs,
-        prompt_lens,
-        config.tis,
-        include_response_mask=use_gspo,
-    )
-    if use_gspo:
-        loss_fn = "gspo"
-        loss_fn_config = {
-            "clip_low_threshold": 1.0 - config.gspo.clip_ratio_low,
-            "clip_high_threshold": 1.0 + config.gspo.clip_ratio_high,
-            "seq_ratio_log_cap": config.gspo.seq_ratio_log_cap,
-        }
-    else:
-        loss_fn = "ppo"
-        eps_high = (
-            config.eps_clip
-            if config.eps_clip_high is None
-            else config.eps_clip_high
-        )
-        loss_fn_config = {
-            "clip_low_threshold": 1.0 - config.eps_clip,
-            "clip_high_threshold": 1.0 + eps_high,
-        }
-    # Match the SDK call boundary: submission through decoded result retrieval.
-    # Recipe preparation and local diagnostics do not measure trainer throughput.
-    with elapsed_timer("fwd_bwd"):
-        result = policy.forward_backward(
-            server_data,
-            loss_fn,
-            loss_fn_config=loss_fn_config,
-        )
-    policy_logprobs = [
-        output["logprobs"].to_torch() for output in result.loss_fn_outputs
-    ]
-    if use_gspo:
-        observability = compute_server_gspo_observability_metrics(
-            data,
-            policy_logprobs,
-            old_policy_logprobs,
-            raw_inference_logprobs,
-            prompt_lens,
-            clip_ratio_low=config.gspo.clip_ratio_low,
-            clip_ratio_high=config.gspo.clip_ratio_high,
-            seq_ratio_log_cap=config.gspo.seq_ratio_log_cap,
-        )
-    else:
-        observability = compute_server_grpo_observability_metrics(
-            data,
-            policy_logprobs,
-            old_policy_logprobs,
-            raw_inference_logprobs,
-            prompt_lens,
-            eps_clip=config.eps_clip,
-            eps_clip_high=config.eps_clip_high,
-        )
-    result.metrics.update(observability)
-    return result
-
-
-def _effective_grad_accumulation_normalization(
-    config: Config,
-) -> GradAccNormalization | str | None:
-    if config.policy_loss == "gspo":
-        return "num_sequences"
-    if config.policy_loss == "score_centering":
-        return "num_loss_tokens"
-    return config.grad_accumulation_normalization
-
-
-def _trainer_loss_label(config: Config) -> str:
-    if config.policy_loss == "gspo":
-        execution = "server" if config.gspo_execution == "builtin" else "client"
-        return f"{execution}_gspo"
-    if config.server_side_grpo:
-        return "server_ppo"
-    return f"client_{config.policy_loss}"
-
-
-def policy_loss_metadata(config: Config) -> dict[str, Any]:
-    """Return stable policy-loss metadata shared by logs and launch manifests."""
-    return {
-        "trainer_loss": _trainer_loss_label(config),
-        "server_side_grpo": config.server_side_grpo,
-        "policy_loss": config.policy_loss,
-        "gspo": (
-            {
-                "clip_ratio_low": config.gspo.clip_ratio_low,
-                "clip_ratio_high": config.gspo.clip_ratio_high,
-                "seq_ratio_log_cap": config.gspo.seq_ratio_log_cap,
-                "token_reduction": config.gspo.token_reduction,
-                "execution": config.gspo_execution,
-            }
-            if config.policy_loss == "gspo"
-            else None
-        ),
-        "dapo": (
-            {
-                "eps_clip": config.dapo.eps_clip,
-                "eps_clip_high": config.dapo.eps_clip_high,
-                "eps_clip_c": config.dapo.eps_clip_c,
-                "ratio_log_cap": config.dapo.ratio_log_cap,
-            }
-            if config.policy_loss == "dapo"
-            else None
-        ),
-        "dro": (
-            {"beta": config.dro.beta}
-            if config.policy_loss == "dro"
-            else None
-        ),
-        "cispo": (
-            {
-                "eps_low": config.cispo.eps_low,
-                "eps_high": config.cispo.eps_high,
-                "ratio_log_cap": config.cispo.ratio_log_cap,
-            }
-            if config.policy_loss == "cispo"
-            else None
-        ),
-        "dppo": (
-            {
-                "divergence": config.dppo.divergence,
-                "threshold": config.dppo.threshold,
-                "ratio_log_cap": config.dppo.ratio_log_cap,
-            }
-            if config.policy_loss == "dppo"
-            else None
-        ),
-        "score_centering": (
-            {
-                "top_k": config.score_centering.top_k,
-                "tail_mass_epsilon": config.score_centering.tail_mass_epsilon,
-            }
-            if config.policy_loss == "score_centering"
-            else None
-        ),
-    }
-
-
 def _run_optimizer_step(
     policy: ReconnectableClient,
     config: Config,
@@ -545,42 +215,9 @@ def _run_optimizer_step(
     adam_params = tinker.AdamParams(learning_rate=learning_rate, **adam_kwargs)
     return policy.optim_step(
         adam_params,
-        grad_accumulation_normalization=(
-            _effective_grad_accumulation_normalization(config)
-        ),
-        emit_grad_norm_metrics=config.grad_norm_metrics,
+        grad_accumulation_normalization=objective.NORMALIZATION,
+        emit_grad_norm_metrics=True,
     )
-
-
-def _run_two_pass_gspo(
-    policy: ReconnectableClient,
-    *,
-    data,
-    advantages,
-    ref_logprobs,
-    prompt_lens,
-    rollout_logprobs,
-    old_policy_logprobs,
-    precomputed_forward,
-    config: Config,
-):
-    """Run the local GSPO loss against trainer-returned sequence logprobs."""
-
-    loss_fn = make_gspo_loss_fn(
-        advantages=advantages,
-        ref_logprobs=ref_logprobs,
-        inf_logprobs=rollout_logprobs,
-        prompt_len=prompt_lens,
-        old_policy_logprobs=old_policy_logprobs,
-        gspo_config=config.gspo,
-        tis_config=config.tis,
-    )
-    with elapsed_timer("fwd_bwd"):
-        return policy.forward_backward_custom(
-            data,
-            loss_fn,
-            precomputed_forward=precomputed_forward,
-        )
 
 
 def main(
@@ -592,7 +229,6 @@ def main(
     evaluation_fn: RolloutEvaluationFn | None = None,
     evaluation_interval: int = 1,
     rows: list[dict] | None = None,
-    rollout_extras: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the async RL loop with a user-supplied rollout factory.
 
@@ -612,86 +248,11 @@ def main(
     cfg = config
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be >= 1")
-    validate_grpo_config(
-        kl_beta=cfg.kl_beta,
-        eps_clip=cfg.eps_clip,
-        eps_clip_high=cfg.eps_clip_high,
-        reference_training_shape_id=cfg.trainer.reference_training_shape_id,
-        reference_job_id=cfg.trainer.reference_job_id,
-        anchor_logp=cfg.anchor_logp,
-    )
-    if cfg.policy_loss not in {
-        "grpo",
-        "gspo",
-        "dapo",
-        "dro",
-        "cispo",
-        "dppo",
-        "score_centering",
-    }:
+    policy_loss = objective.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
+    if cfg.trainer.reference_training_shape_id or cfg.trainer.reference_job_id:
         raise ValueError(
-            "unsupported policy_loss; expected grpo, gspo, dapo, dro, cispo, "
-            "dppo, or score_centering; got "
-            f"{cfg.policy_loss!r}."
-        )
-    if cfg.policy_loss == "gspo":
-        validate_gspo_config(cfg.gspo)
-        if cfg.gspo_execution not in {"builtin", "two_pass"}:
-            raise ValueError(
-                "gspo_execution must be 'builtin' or 'two_pass'; got "
-                f"{cfg.gspo_execution!r}."
-            )
-        if cfg.gspo_execution == "builtin" and not cfg.server_side_grpo:
-            raise ValueError(
-                "gspo_execution='builtin' requires server_side_grpo=True."
-            )
-        if (
-            cfg.gspo_execution == "builtin"
-            and cfg.gspo.token_reduction != "mean"
-        ):
-            raise ValueError(
-                "built-in GSPO supports only token_reduction='mean'; "
-                "use gspo_execution='two_pass' for token-sum."
-            )
-        normalization = getattr(
-            cfg.grad_accumulation_normalization,
-            "value",
-            cfg.grad_accumulation_normalization,
-        )
-        if normalization not in (None, "num_sequences"):
-            raise ValueError(
-                "policy_loss='gspo' requires "
-                "grad_accumulation_normalization='num_sequences'."
-            )
-    elif cfg.policy_loss == "dapo":
-        validate_dapo_config(cfg.dapo)
-    elif cfg.policy_loss == "dro":
-        validate_dro_config(cfg.dro)
-    elif cfg.policy_loss == "cispo":
-        validate_cispo_config(cfg.cispo)
-    elif cfg.policy_loss == "dppo":
-        validate_dppo_config(cfg.dppo)
-    elif cfg.policy_loss == "score_centering":
-        validate_score_centering_config(cfg.score_centering)
-    if cfg.server_side_grpo and cfg.policy_loss not in {"grpo", "gspo"}:
-        raise ValueError(
-            "server_side_grpo supports only policy_loss='grpo' or 'gspo'."
-        )
-    if cfg.kl_beta != 0:
-        if cfg.server_side_grpo:
-            raise ValueError("server_side_grpo requires kl_beta=0.")
-        if cfg.policy_loss in {
-            "dapo",
-            "dro",
-            "cispo",
-            "dppo",
-            "score_centering",
-        }:
-            raise ValueError(f"policy_loss={cfg.policy_loss!r} requires kl_beta=0.")
-    if cfg.grad_norm_metrics not in {"off", "basic", "detailed"}:
-        raise ValueError(
-            "grad_norm_metrics must be 'off', 'basic', or 'detailed'; got "
-            f"{cfg.grad_norm_metrics!r}."
+            "async_rl_loop trains without a reference model; unset "
+            "trainer.reference_training_shape_id and trainer.reference_job_id."
         )
     logger.warning(
         "async_rl_loop is EXPERIMENTAL and under active development; "
@@ -751,11 +312,10 @@ def main(
             "shuffle": cfg.shuffle,
             "seed": cfg.seed,
             "algorithm": "grpo",
-            **policy_loss_metadata(cfg),
-            "kl_beta": cfg.kl_beta,
-            "anchor_logp": cfg.anchor_logp,
+            "trainer_loss": f"server_{objective.LOSS_FN}",
+            "eps_clip": policy_loss.eps_clip,
+            "eps_clip_high": policy_loss.upper_eps,
             "grad_clip_norm": cfg.grad_clip_norm,
-            "grad_norm_metrics": cfg.grad_norm_metrics,
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
         },
@@ -785,7 +345,6 @@ def main(
                 if cfg.cleanup_on_exit
                 else None
             ),
-            reference_required=cfg.kl_beta > 0,
         )
         stack.callback(service.close)
         training_client = service.create_training_client(
@@ -797,20 +356,13 @@ def main(
         # the authoritative MoE signal, so no GET model is needed (private
         # early-access base models reject that with 403).
         router_replay_enabled = resolve_router_replay_enabled(
-            requested=cfg.router_replay,
+            requested=True,
             api_key=api_key,
             base_url=base_url,
             additional_headers=additional_headers,
             base_model=cfg.base_model,
             training_client=training_client,
         )
-        if cfg.router_replay and not router_replay_enabled:
-            logger.info("Router Replay skipped for dense model %s", cfg.base_model)
-        if router_replay_enabled:
-            warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
-        sampler = service.create_deployment_sampler(tokenizer=tokenizer)
-        stack.callback(sampler.close)
-        rollout_model = sampler.model
         log_metrics({"rollout/step": 0}, step=0)
 
         policy = ReconnectableClient.from_training_client(
@@ -821,19 +373,6 @@ def main(
             service=service,
         )
         publish_weights = make_weight_sync(policy, service, cfg.deployment)
-        reference = None
-        if cfg.kl_beta > 0:
-            reference_training_client = service.create_reference_client(
-                policy_client=training_client,
-            )
-            reference = ReconnectableClient.from_training_client(
-                reference_training_client,
-                base_model=cfg.base_model,
-                lora_rank=0,
-                job_id=service.reference_client_job_id,
-                service=service,
-                base_only=True,
-            )
 
         ckpt = TrainingCheckpoints(
             policy,
@@ -863,6 +402,7 @@ def main(
             span.elapsed,
         )
         flush_timing()
+        log_run_resources(service)
 
         if rows is None:
             rows = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
@@ -883,79 +423,35 @@ def main(
             remaining_rows / max(1, cfg.prompt_groups_per_step)
         )
 
-        trainer_loss = _trainer_loss_label(cfg)
-        logger.info(
-            "algorithm=grpo policy_loss=%s trainer_loss=%s kl_beta=%g",
-            cfg.policy_loss,
-            trainer_loss,
-            cfg.kl_beta,
-        )
-
-        sample_kwargs: dict = dict(
+        sample_kwargs = default_sample_kwargs(
             max_tokens=cfg.max_completion_tokens,
             temperature=cfg.temperature,
-            # Full-distribution on-policy sampling. Without explicit top_p/top_k
-            # the serving stack applies the model's generation_config.json
-            # defaults (e.g. Qwen3.5: top_k=20/top_p=0.95), which truncate
-            # rollouts and bias the policy-gradient estimator.
-            top_p=1.0,
-            top_k=0,
-            # Single total prompt-plus-output limit. Direct sampler rollouts use
-            # it for preflight/post-completion guards; TITO uses the same value
-            # for admission and materialization without forwarding a duplicate
-            # sampler guard.
             max_seq_len=service.max_context_length,
             http_timeout=cfg.deployment.sample_timeout,
-            logprobs=True,
+            router_replay=router_replay_enabled,
         )
-        if router_replay_enabled:
-            sample_kwargs.update(
-                include_routing_matrix=True,
-                echo=not cfg.router_replay_completion_only,
+        sampler = service.create_deployment_sampler(tokenizer=tokenizer)
+        stack.callback(sampler.close)
+        # One rollout object serves training and evaluation, so stateful
+        # rollouts (sandbox pools, judges) keep a single concurrency budget.
+        # Evaluation overlaps training here, so sampler/* includes its requests.
+        rollout_fn = rollout_fn_factory(
+                RolloutSetup(
+                    sampler=sampler,
+                    tokenizer=tokenizer,
+                    tokenizer_id=cfg.deployment.tokenizer_model,
+                    sample_kwargs=sample_kwargs,
+                    completions_per_prompt=cfg.completions_per_prompt,
+                    inference_base_url=sampler.base_url,
+                    api_key=api_key,
+                    model=sampler.model,
+                )
             )
-        if cfg.policy_loss == "score_centering":
-            sample_kwargs["top_logprobs"] = cfg.score_centering.top_k
-
-        rollout_setup = RolloutSetup(
-            tokenizer=tokenizer,
-            tokenizer_id=cfg.deployment.tokenizer_model,
-            sample_kwargs=sample_kwargs,
-            inference_base_url=sampler.base_url,
-            api_key=api_key,
-            model=rollout_model,
-            completions_per_prompt=cfg.completions_per_prompt,
-            extras=dict(rollout_extras or {}),
-            sampler=sampler,
-        )
-        rollout_fn = rollout_fn_factory(rollout_setup)
-        rollout_context_param_names = _rollout_fn_context_param_names(rollout_fn)
-        evaluation_rollout_fn = make_evaluation_rollout_fn(rollout_fn)
+        rollout_context_param_names = rollout_context_names(rollout_fn)
 
         async def run_evaluation(step: int) -> None:
-            if evaluation_fn is None:
-                return
-            with wall_timer(
-                "evaluation",
-                category="evaluation",
-                attributes={"step": step},
-            ) as span:
-                try:
-                    metrics = await evaluation_fn(step, evaluation_rollout_fn)
-                except Exception:
-                    logger.exception("evaluation failed at policy step %d", step)
-                    metrics = None
-                    failed = 1.0
-                else:
-                    failed = 0.0
-            log_metrics(
-                {
-                    "rollout/step": step,
-                    "eval/wall_time": span.elapsed,
-                    **(metrics or {}),
-                    "eval/failed": failed,
-                },
-                step=step,
-            )
+            metrics = await evaluate_rollouts(step, evaluation_fn, rollout_fn)
+            log_metrics({"rollout/step": step, **metrics}, step=step)
 
         evaluations = OverlappedEvaluation(
             run_evaluation if evaluation_fn is not None else None,
@@ -991,14 +487,9 @@ def main(
                         "end_of_epoch": end_of_epoch,
                         "evaluation": False,
                     }
-                    if rollout_context_param_names:
-                        return rollout_fn(
-                            sample_prompt,
-                            **{
-                                key: context[key] for key in rollout_context_param_names
-                            },
-                        )
-                    return rollout_fn(sample_prompt)
+                    return call_rollout_fn(
+                        rollout_fn, sample_prompt, context, rollout_context_param_names
+                    )
 
                 yield RolloutRow(
                     row_id=idx,
@@ -1007,190 +498,26 @@ def main(
                     on_resolved=lambda _reason, idx=idx: row_loader.mark_resolved(idx),
                 )
 
-        def ref_forward(groups: list[PromptGroup]) -> None:
-            if reference is None:
-                return
-            all_ref_data = [d for pg in groups for d in pg.ref_data]
-            ref_fwd = reference.forward(all_ref_data, "cross_entropy")
-            idx = 0
-            for pg in groups:
-                n = len(pg.ref_data)
-                pg.ref_logprobs = [
-                    ref_fwd.loss_fn_outputs[idx + i]["logprobs"].data for i in range(n)
-                ]
-                idx += n
-
-        def fwd_bwd_batch(
-            data,
-            adv,
-            ref_lp,
-            prompt_lens,
-            inf_lp,
-            raw_inf_lp,
-            old_policy_logprobs,
-            precomputed_forward,
-            sampler_topk_token_ids,
-            sampler_topk_logprobs,
-        ):
-            """Run GRPO through the configured client or built-in server path."""
-            if cfg.policy_loss == "score_centering":
-                score_data, aligned_sampler_logprobs = (
-                    build_score_centering_datums(
-                        data,
-                        sampler_topk_token_ids,
-                        sampler_topk_logprobs,
-                        cfg.score_centering,
-                    )
-                )
-                loss_fn = make_score_centering_loss_fn(
-                    advantages=adv,
-                    sampler_topk_logprobs=aligned_sampler_logprobs,
-                    config=cfg.score_centering,
-                )
-                with elapsed_timer("fwd_bwd"):
-                    score_forward = policy.forward(score_data, "cross_entropy")
-                    return policy.forward_backward_custom(
-                        score_data,
-                        loss_fn,
-                        precomputed_forward=score_forward,
-                    )
-            if cfg.policy_loss == "gspo" and cfg.gspo_execution == "two_pass":
-                return _run_two_pass_gspo(
-                    policy,
-                    data=data,
-                    advantages=adv,
-                    ref_logprobs=ref_lp,
-                    prompt_lens=prompt_lens,
-                    rollout_logprobs=inf_lp,
-                    old_policy_logprobs=old_policy_logprobs,
-                    precomputed_forward=precomputed_forward,
-                    config=cfg,
-                )
-
-            if cfg.server_side_grpo:
-                return _run_server_side_policy_loss(
-                    policy,
-                    data=data,
-                    advantages=adv,
-                    prompt_lens=prompt_lens,
-                    rollout_logprobs=inf_lp,
-                    raw_inference_logprobs=raw_inf_lp,
-                    old_policy_logprobs=old_policy_logprobs,
-                    config=cfg,
-                )
-
-            common_loss_kwargs = {
-                "advantages": adv,
-                "ref_logprobs": ref_lp,
-                "prompt_len": prompt_lens,
-                "inf_logprobs": inf_lp,
-                "old_policy_logprobs": old_policy_logprobs,
-                "tis_config": cfg.tis,
-            }
-            if cfg.policy_loss == "dapo":
-                loss_fn = make_dapo_loss_fn(
-                    **common_loss_kwargs,
-                    dapo_config=cfg.dapo,
-                )
-            elif cfg.policy_loss == "dro":
-                loss_fn = make_dro_loss_fn(
-                    **common_loss_kwargs,
-                    dro_config=cfg.dro,
-                )
-            elif cfg.policy_loss == "cispo":
-                loss_fn = make_cispo_loss_fn(
-                    **common_loss_kwargs,
-                    cispo_config=cfg.cispo,
-                )
-            elif cfg.policy_loss == "dppo":
-                loss_fn = make_dppo_loss_fn(
-                    advantages=adv,
-                    ref_logprobs=ref_lp,
-                    inf_logprobs=inf_lp,
-                    prompt_len=prompt_lens,
-                    old_policy_logprobs=old_policy_logprobs,
-                    dppo_config=cfg.dppo,
-                )
-            else:
-                loss_fn = make_grpo_loss_fn(
-                    **common_loss_kwargs,
-                    kl_beta=cfg.kl_beta,
-                    eps_clip=cfg.eps_clip,
-                    eps_clip_high=cfg.eps_clip_high,
-                    raw_inf_logprobs=raw_inf_lp,
-                )
-            # The custom-loss SDK call also owns its differentiable callback.
-            with elapsed_timer("fwd_bwd"):
-                return policy.forward_backward_custom(
-                    data,
-                    loss_fn,
-                    precomputed_forward=precomputed_forward,
-                )
-
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
-            """Run the visible GRPO forward/backward phase for one chunk."""
-
-            prompt_groups = list(chunk.groups)
-            with elapsed_timer("ref_forward"):
-                ref_forward(prompt_groups)
-
-            (
-                data,
-                adv,
-                ref_lp,
-                prompt_lens,
-                inf_lp,
-                raw_inf_lp,
-                sampler_topk_token_ids,
-                sampler_topk_logprobs,
-            ) = combine_prompt_groups(
-                prompt_groups,
-                include_raw=True,
-                include_topk=True,
-            )
-            precomputed_forward = None
-            if cfg.anchor_logp == "old_policy":
-                with elapsed_timer("old_policy_forward"):
-                    old_policy_fwd = policy.forward(data, "cross_entropy")
-                    old_policy_logprobs = [
-                        old_policy_fwd.loss_fn_outputs[i]["logprobs"].data
-                        for i in range(len(data))
-                    ]
-                precomputed_forward = old_policy_fwd
-            else:
-                if len(inf_lp) != len(data):
-                    raise ValueError(
-                        "anchor_logp='rollout' requires one rollout_logprobs "
-                        f"row per datum; got {len(inf_lp)} rows for {len(data)} datums."
-                    )
-                if any(not row for row in inf_lp):
-                    raise ValueError(
-                        "anchor_logp='rollout' requires non-empty rollout_logprobs."
-                    )
-                old_policy_logprobs = inf_lp
-
-            fwd_bwd_result = fwd_bwd_batch(
-                data,
-                adv,
-                ref_lp,
-                prompt_lens,
-                inf_lp,
-                raw_inf_lp,
-                old_policy_logprobs,
-                precomputed_forward,
-                sampler_topk_token_ids,
-                sampler_topk_logprobs,
-            )
-            if not cfg.server_side_grpo or (
-                cfg.policy_loss == "gspo" and cfg.gspo_execution == "two_pass"
-            ):
-                fwd_bwd_result.metrics["custom_forward_reused"] = float(
-                    precomputed_forward is not None
+            """One server-side GRPO forward/backward, clipped against the rollout logprobs."""
+            batch = combine_prompt_groups(list(chunk.groups))
+            # Fork recipes (pseudo code; utils in training.utils.rl):
+            #   Recompute the anchor on the trainer (a proximal snapshot when off-policy):
+            #     batch, _ = anchor.recompute_anchor(policy, batch)
+            #     extra = anchor.anchor_drift_metrics(batch)
+            #   Then correct the sampler/trainer mismatch with truncated IS:
+            #     datums, tis_metrics = tis.apply_tis(datums, batch, cap=2.0)  # after build_datums
+            #   Another objective (CISPO, DAPO, GSPO, DRO, IS, ...): import it as `objective`
+            #   and build its Config; client side: policy.forward_backward_custom(
+            #     batch.data, objective.make_loss_fn(batch, policy_loss)).
+            datums = objective.build_datums(batch, policy_loss)
+            with elapsed_timer("fwd_bwd"):
+                result = policy.forward_backward(
+                    datums, objective.LOSS_FN, loss_fn_config=objective.loss_fn_config(policy_loss)
                 )
-            return {
-                "prompt_groups": prompt_groups,
-                "fwd_bwd_result": fwd_bwd_result,
-            }
+            result.metrics.update(objective.metrics(batch, result, policy_loss))
+            result.metrics.update(inference_drift_metrics(batch, result))
+            return {"prompt_groups": batch.groups, "fwd_bwd_result": result}
 
         def optimizer_step(step: int) -> dict[str, Any]:
             """Apply exactly one optimizer mutation for one rollout batch."""
@@ -1202,20 +529,16 @@ def main(
                 total_steps=total_steps_estimate,
             )
             with elapsed_timer("optim_step"):
-                result = _run_optimizer_step(
-                    policy,
-                    cfg,
-                    learning_rate=step_lr,
-                )
+                result = _run_optimizer_step(policy, cfg, learning_rate=step_lr)
             return {
                 "result": result,
                 "learning_rate": step_lr,
             }
 
-        def sync_weights(step: int) -> float:
+        def sync_weights(step: int) -> tuple[float, dict[str, float]]:
             with wall_timer() as span:
-                publish_weights(f"step-{step}")
-            return span.elapsed
+                result = publish_weights(f"step-{step}")
+            return span.elapsed, weight_sync_metrics(result)
 
         async def run_training() -> tuple[int, dict[str, Any]]:
             def _step_metrics(metrics: dict[str, Any], step: int) -> None:
@@ -1239,8 +562,6 @@ def main(
                 training_chunks_per_step=cfg.pipeline_chunks_per_step,
                 max_head_off_policy_versions=cfg.max_head_offpolicy_versions,
                 max_concurrent_rollouts=cfg.max_concurrency_rollout_sample,
-                with_reference=(reference is not None),
-                router_replay_completion_only=cfg.router_replay_completion_only,
                 min_group_size=cfg.min_group_size,
                 max_incomplete_group_retries=cfg.max_incomplete_group_retries,
                 dynamic_filter_fn=dynamic_filter_fn,
@@ -1293,7 +614,7 @@ def main(
                         # A producer failure here can only affect a future batch.
                         # Finish this optimizer's hotload and publication so trainer
                         # and sampler versions cannot diverge on shutdown.
-                        sync_wall_time = await coordinator.run_blocking(
+                        sync_wall_time, sync_metrics = await coordinator.run_blocking(
                             "weight_sync",
                             sync_weights,
                             batch.batch_id,
@@ -1317,6 +638,10 @@ def main(
                             step_time=published.step_time,
                             weight_update_time=sync_wall_time,
                             learning_rate=optimizer["learning_rate"],
+                            extra_metrics={
+                                **sync_metrics,
+                                **sampler_metrics(sampler.drain_metrics()),
+                            },
                         )
                         evaluations.start(batch.batch_id)
 
@@ -1389,6 +714,5 @@ def main(
         return {
             "steps": global_step,
             "policy_job_id": service.trainer_job_id,
-            "reference_job_id": service.reference_trainer_job_id,
             "deployment_id": service.deployment_id,
         }

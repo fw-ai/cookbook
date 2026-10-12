@@ -12,6 +12,7 @@ Locks in the token / logprob alignment contract:
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
@@ -179,3 +180,108 @@ def test_agent_routes_use_full_model_input_after_leading_response_is_masked(
         "route-30",
     ]
     assert "R3: routing_matrices length" not in caplog.text
+
+
+def _top_sampling_refs(length):
+    from fireworks.training.sdk.routing import RoutingReferences
+
+    return RoutingReferences(
+        length,
+        ({"store_id": "s", "file_id": "f", "format": "parquet_v1", "row_count": length},),
+        ({"input_token_start": 0, "count": length, "file_index": 0, "file_row_start": 0},),
+    )
+
+
+def _covered_positions(references):
+    return [
+        position
+        for span in references.spans
+        if span.get("file_index") is not None
+        for position in range(span["input_token_start"], span["input_token_start"] + span["count"])
+    ]
+
+
+def test_agent_top_sampling_references_follow_trained_outputs_in_model_input_coordinates():
+    from training.utils.rl.agent.trajectory import TurnRecord, TurnSegment, merge_turn_segments
+
+    def turn(prompt, output):
+        return TurnRecord(
+            prompt_ids=prompt,
+            output_ids=output,
+            finish_reason="stop",
+            output_log_probs=[-0.5] * len(output),
+            output_top_sampling_references=_top_sampling_refs(len(output)),
+        )
+
+    first = turn([1, 2], [10, 11])
+    second = turn([1, 2, 10, 11, 5], [20])
+    (segment,) = merge_turn_segments([TurnSegment(turns=[first, second], train_outputs=[False, True])])
+    assert _covered_positions(segment.top_sampling_references) == [3]
+    sample = token_segment_to_sample(segment, reward=1.0)
+    assert sample.tokens == [1, 2, 10, 11, 5, 20]
+    assert len(sample.top_sampling_references) == len(sample.tokens) - 1
+    assert _covered_positions(sample.top_sampling_references) == [4]
+    group = rollout_to_prompt_group(
+        Rollout(runs=[RolloutRun(segments=[sample])]),
+        advantage_fn=lambda _rewards: [1.0],
+    )
+    assert group.top_sampling_references == [sample.top_sampling_references]
+    assert group.data[0].loss_fn_inputs["weights"].data[4] == 1
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("missing_first", [False, True])
+@pytest.mark.parametrize("train_missing", [False, True])
+def test_agent_preserves_support_around_missing_turns(
+    split: bool, missing_first: bool, train_missing: bool
+) -> None:
+    from training.utils.rl.agent.trajectory import TurnRecord, TurnSegment, merge_turn_segments
+
+    turns = [
+        TurnRecord(
+            prompt_ids=[1], output_ids=[10], finish_reason="stop", output_log_probs=[-0.5]
+        ),
+        TurnRecord(
+            prompt_ids=[2] if split else [1, 10, 5],
+            output_ids=[20], finish_reason="stop", output_log_probs=[-0.5],
+        ),
+    ]
+    supported = int(missing_first)
+    turns[supported] = dataclasses.replace(
+        turns[supported], output_top_sampling_references=_top_sampling_refs(1)
+    )
+    masks = [train_missing, train_missing]
+    masks[supported] = True
+    segments = merge_turn_segments([TurnSegment(turns=turns, train_outputs=masks)])
+    if split:
+        assert segments[1 - supported].top_sampling_references is None
+        assert _covered_positions(segments[supported].top_sampling_references) == [0]
+    else:
+        (segment,) = segments
+        assert _covered_positions(segment.top_sampling_references) == [2 if supported else 0]
+        assert len(segment.top_sampling_references) == len(segment.response_ids)
+        assert segment.loss_mask == [int(masks[0]), 0, int(masks[1])]
+
+
+def test_single_turn_completion_carries_model_input_top_sampling_references():
+    from training.utils.rl.rollout.renderer import sampled_completion_to_rollout_run
+    from training.utils.rl.rollout.types import RolloutSample
+
+    completion = SimpleNamespace(
+        prompt_len=3,
+        full_tokens=[1, 2, 3, 7, 8],
+        sampling_logprobs=[-0.1, -0.2],
+        inference_logprobs=None,
+        logprobs_echoed=False,
+        top_sampling_references=_top_sampling_refs(2),
+    )
+    run = sampled_completion_to_rollout_run(completion, reward=1.0)
+    references = run.segments[0].top_sampling_references
+    assert len(references) == 4 and _covered_positions(references) == [2, 3]
+
+    misaligned = RolloutSample(
+        tokens=[1, 2, 3], logprobs=[0.0, -0.1, -0.2], loss_mask=[0, 1, 1], reward=1.0,
+        top_sampling_references=_top_sampling_refs(3),
+    )
+    with pytest.raises(ValueError, match="model-input positions"):
+        rollout_to_prompt_group(Rollout(runs=[RolloutRun(segments=[misaligned])]), advantage_fn=lambda r: r)

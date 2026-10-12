@@ -100,11 +100,14 @@ One unpinned first LoRA SFT pass: `lora_rank 8`, `learning_rate ~1.5e-4`, 1 epoc
 | 2 | 16 | 1.0e-4 |
 | 3 | 32 | 5.0e-5 |
 
-## RL loss methods (RFT)
+## RL objectives (Training API)
 
-- **GRPO** (default) — group-relative, symmetric clip `[0.8,1.2]`, small KL penalty. Conservative baseline; start here.
-- **DAPO** — asymmetric clip `[0.8,1.28]`, no KL; more aggressive/faster.
-- **GSPO-token** — sequence-level IS, tight clipping; stability + long-form, may need more steps.
+- **GRPO** (default) — what `rl_loop.py` and `async_rl_loop.py` train: the trainer's built-in loss with group-relative advantages, symmetric clip `[0.8, 1.2]` against the rollout logprobs, and no reference KL. Start here.
+- **DAPO** — asymmetric clip `[0.8, 1.28]`; more aggressive.
+- **GSPO** — sequence-level ratio with tight clipping; for stability on long outputs, may need more steps.
+- **CISPO, DRO, DPPO, importance sampling, REINFORCE, score centering** — research objectives.
+
+Every objective other than GRPO, and GRPO with a reference KL penalty, is a fork of the loop's train step that calls `training.utils.rl.algorithm.<name>`; see `rl-custom-loss.md`.
 
 ## Critical rules
 

@@ -2,19 +2,22 @@
 
 When the user wants "something that just runs", point them at `training/examples/`. Most subdirectories import from `training/recipes/` and ship a ready-to-run `Config`; the agentic examples may own a custom loop plus rollout code.
 
+Each task folder pairs a dedicated entry point (`train_*.py`) with a
+serverless twin (`train_*_serverless.py`) where both exist.
+
 | Task | Path |
 |------|------|
-| SFT | `training/examples/sft/` |
-| DPO | `training/examples/dpo/` |
+| SFT (text, vision via `run_vl.sh`; dedicated + serverless) | `training/examples/sft/` |
+| DPO (dedicated + serverless) | `training/examples/dpo/` |
 | ORPO (IFEval) | `training/examples/orpo/ifeval/` |
-| GRPO on DeepMath | `training/examples/rl/deepmath/` |
-| Tool-use RL (Frozen Lake) | `training/examples/rl/frozen_lake/` |
-| Async RL single-turn (token-in rollout) | `training/examples/rl/single_turn_token_in/` |
-| Async RL multi-turn (OpenCode/TITO) | `training/examples/rl/harbor/opencode/` |
-| Async RL multi-turn (Pi/TITO) | `training/examples/rl/harbor/pi/` |
-| Async RL multi-turn (Mini-SWE-Agent/TITO) | `training/examples/rl/harbor/mini_swe/` |
-| Multi-hop QA async RL (+ optional IGPO) | `training/examples/multihop_qa/` |
-| Manual hotload-scope tests (PER_TRAINER re-attach, PER_DEPLOYMENT) | `training/examples/manual/` |
+| Text single-turn GRPO (DeepMath; dedicated + serverless) | `training/examples/rl/deepmath/` |
+| Vision multi-turn tool GRPO (VisualToolBench; dedicated + serverless) | `training/examples/rl/visual_toolbench/` |
+| Tool-use RL environment (Frozen Lake, text or image) | `training/examples/rl/frozen_lake/` |
+| Multi-hop QA with IGPO turn-level rewards | `training/examples/rl/multihop_qa/` |
+| Agentic RL in sandboxes (Harbor + TITO; OpenCode, Pi, Mini-SWE-Agent) | `training/examples/harbor_rl/` |
+| Distillation (dedicated + serverless) | `training/examples/distillation/` |
+
+`training/examples/archive/` is deprecated; do not start new work from it.
 
 ## What to read
 

@@ -82,12 +82,17 @@ cfg = rl_loop.Config(
     ...,
     trainer=TrainerConfig(
         training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200",
-        reference_training_shape_id="accounts/fireworks/trainingShapes/qwen3-8b-128k-h200-lora",
         replica_count=2,
     ),
     dcp_save_interval=10,     # top-level (all recipes)
 )
 ```
+
+`rl_loop` and `async_rl_loop` train without a reference model and reject
+`reference_training_shape_id` / `reference_job_id`; drop the old reference
+shape. Recipes that use a reference, such as `dpo_loop`, keep
+`TrainerConfig.reference_training_shape_id`. For reference KL in RL, fork the
+loop as described in [`rl-custom-loss.md`](rl-custom-loss.md#add-reference-kl).
 
 The GRPO recipes now own their sampler-sync invariant: initial sync and one
 hotload per optimizer batch. Research recipes with a different scheduling
@@ -130,8 +135,8 @@ try:
     policy = ReconnectableClient.from_training_client(
         training_client, base_model=base_model,
         job_id=service.trainer_job_id, service=service)
-    if kl_beta > 0:
-        reference_client = service.create_reference_client(base_model, lora_rank=0)
+    # Only when your loss consumes reference logprobs (DPO, reference KL):
+    reference_client = service.create_reference_client(policy_client=training_client)
     sampler = service.create_deployment_sampler(tokenizer=tokenizer)
     # ... train ...
 finally:
@@ -154,6 +159,5 @@ grep -rn -E 'InfraConfig|setup_infra|ResourceCleanup|create_base_reference|make_
 python -c "import training.recipes.rl_loop as r; r.Config(log_path='x')"
 ```
 
-`InfraConfig` is still importable for back-compat and emits a
-`DeprecationWarning` when constructed, but recipe `Config` objects no longer
-accept it.
+`InfraConfig` has been removed; importing it fails, so the grep above must come
+back empty.

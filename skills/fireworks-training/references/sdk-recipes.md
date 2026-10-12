@@ -9,10 +9,10 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | ORPO | `training/recipes/orpo_loop.py` |
 | **RL (primary)** — write a rollout function; recipe owns the loop. Async by default; strict on-policy scheduling via `max_head_offpolicy_versions=0` | `training/recipes/async_rl_loop.py` — see [`rl-async.md`](rl-async.md) |
 | Async RL on the shared serverless pool (experimental) | `training/recipes/experiment/async_rl_loop_serverless.py` — same rollout contract; serverless snapshot publication |
-| RL (simpler, synchronous GRPO scaffold) | `training/recipes/rl_loop.py` |
-| SAO / token-level PPO with a separate value-head critic (experimental; not validated for every model) | `training/recipes/experiment/ppo_value_head_loop.py` — runnable Qwen3-4B example in `training/examples/rl/SAO/qwen3_4b_sao.py` |
-| Information Gain-based Policy Optimization (IGPO) | `training/recipes/igpo_loop.py` |
-| Distillation / OPD / SDFT | `training/recipes/distillation_loop.py` — see [`sdk-distillation.md`](sdk-distillation.md) |
+| RL (simpler, synchronous GRPO reference loop) | `training/recipes/rl_loop.py` |
+| SAO / token-level PPO with a separate value-head critic (experimental; not validated for every model) | `training/recipes/experiment/ppo_value_head_loop.py` — runnable Qwen3-4B example in `training/examples/rl/experiment/sao/qwen3_4b_sao.py` |
+| Information Gain-based Policy Optimization (IGPO) | `training/recipes/rl_loop.py` with `prepare_batch_fn=igpo.prepare_batch(gamma=...)` — strict on-policy; each run sets `metadata[TURN_SPANS]` and `metadata[ANSWER_TOKENS]`; multi-turn example in `training/examples/rl/multihop_qa/` |
+| Distillation / OPD | `training/recipes/distillation_loop.py` — see [`sdk-distillation.md`](sdk-distillation.md) |
 | SDFT on the shared serverless pool (no trainer job or deployment) | `training/recipes/sdft_loop.py` — runs the vendored tinker-cookbook SDFT loop |
 
 For `sdft_loop.py`, install the optional SDFT dependencies from `training/` with
@@ -48,9 +48,15 @@ The SAO/PPO recipe uses `actor_trainer` and `critic_trainer` instead of one
 `trainer`; configure the two shapes and resume IDs independently.
 
 RL-specific: use `async_rl_loop.py` for the primary rollout-function workflow,
-`rl_loop.py` for a simpler synchronous GRPO scaffold, and
+`rl_loop.py` for a simpler synchronous loop, and
 `recipes/experiment/ppo_value_head_loop.py` when the method needs a separately trained critic. Projection-head SAO is experimental and is not validated for every model.
 See [`rl-async.md`](rl-async.md) for the async workflow.
+
+Both GRPO loops train the trainer's built-in GRPO loss against the rollout
+logprobs, with no reference model or KL. Their only objective fields are
+`eps_clip` and `eps_clip_high`. Other objectives, reference KL, a recomputed
+trainer anchor and sampling-support replay are forks of the train step; see
+[`rl-custom-loss.md`](rl-custom-loss.md).
 
 Forward/backward metrics retain Tinker's reducer suffixes after SDK request
 chunking. Runtime input-sharding telemetry therefore appears as
@@ -60,7 +66,7 @@ path must require min and max to agree, then use the summed rank-local input
 count. Do not change these to `:last`: Tinker does not support that reducer for
 chunked forward/backward results and silently drops those metrics.
 
-Distillation-specific: use `distillation_loop.py` for OPD/SDFT. Open [`sdk-distillation.md`](sdk-distillation.md) before changing its config, dataset format, teacher routing, or top-K objective plumbing.
+Distillation-specific: use `distillation_loop.py` for sampled-token OPD and `sdft_loop.py` for top-K SDFT on serverless. Open [`sdk-distillation.md`](sdk-distillation.md) before changing its config, dataset format, or teacher scoring.
 
 ## Resume
 
@@ -85,12 +91,11 @@ cross-run reference format.
 
 ## RL specifics
 
-RL details stay in this skill. Open only the relevant reference when working with `rl_loop.py`:
+RL details stay in this skill. Open only the relevant reference when working with the RL loops:
 
-- [`rl-loss-paths.md`](rl-loss-paths.md) — server-side built-in vs client-side custom (and why one costs an extra forward)
+- [`rl-custom-loss.md`](rl-custom-loss.md) — what the loops train; swap the objective, add reference KL, recompute the anchor, replay sampling support
 - [`rl-gradient-accumulation.md`](rl-gradient-accumulation.md) — `optim_step` normalization; the trap custom losses fall into
 - [`rl-dynamic-filter.md`](rl-dynamic-filter.md) — `should_accept`, why zero-variance groups get dropped
-- [`rl-custom-loss.md`](rl-custom-loss.md) — interface + reference implementation + RL `Config` fields
 - [`rl-hotload.md`](rl-hotload.md) — strict sync hotload, `weight_sync_timeout`, on-policy vs off-policy, base/delta chain
 - [`rl-concurrency.md`](rl-concurrency.md) — sync batch concurrency vs async sample-level admission
 - [`rl-sampling-timeouts.md`](rl-sampling-timeouts.md) — diagnose `DeploymentSamplerTimeoutError` from request shape and serving metrics

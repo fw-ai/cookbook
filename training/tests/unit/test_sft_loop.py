@@ -608,7 +608,7 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info):
             events.append("train")
             return _ResolvedFuture(SimpleNamespace(metrics={"loss:sum": 1.0}))
 
-        def submit_optim_step(self, adam_params):
+        def submit_optim_step(self, adam_params, emit_grad_norm_metrics=None):
             return _ResolvedFuture(SimpleNamespace(metrics={}))
 
     class FakeService:

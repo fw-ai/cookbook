@@ -1,237 +1,80 @@
-"""Tests that the training loss mask and UI display mask stay aligned.
+"""Which tokens of a FrozenLake episode are trained.
 
-Both masks are derived from the same ``compute_model_output_spans`` function,
-so by construction they agree on *which* tokens are model-generated.
-
-This test verifies the property explicitly: for every position that the
-training loss mask marks as 1.0 (model-generated), the UI mask must mark it
-with a nonzero turn index — and vice-versa, after accounting for the
-1-position shift between token-coordinate and logprob-coordinate.
+The rollout records one trace per turn and builds each next prompt from tokens:
+previous prompt + completion + turn close + tool reply. ``episode_to_sample``
+packs the episode into one sequence where only the model's tool calls carry
+loss; the close that frames a turn and the tool replies are context.
 """
 
 from __future__ import annotations
 
 import pytest
+from eval_protocol.models import EvaluationRow, InputMetadata
 
-from training.examples.rl.frozen_lake.masking import (
-    build_training_loss_mask,
-    build_ui_token_mask,
-    compute_model_output_spans,
+from training.examples.rl.frozen_lake.train_frozen_lake import (
+    episode_to_sample,
+    frozen_lake_reward,
 )
-from training.utils.supervised import build_datum_from_token_mask
+from training.utils.rl.rollout import PrefixMismatch
+from training.utils.rl.rollout.turn_traces import append_turn_close
+
+CLOSE = [90, 91]  # e.g. "<|im_end|>", "\n"
+TOOL_REPLY = [20, 21]
 
 
-def _make_traces(turns: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Build minimal token_turn_traces and model_request_traces from a spec.
-
-    Each element of ``turns`` is a dict with:
-      - prompt_ids: list[int]
-      - completion_ids: list[int]
-      - assistant_turn_len: int (optional, for intermediate turns)
-    """
-    token_turn_traces = []
-    model_request_traces = []
-    for t in turns:
-        token_turn_traces.append({
-            "prompt_ids": t["prompt_ids"],
-            "completion_ids": t["completion_ids"],
-        })
-        if "assistant_turn_len" in t:
-            model_request_traces.append({"assistant_turn_len": t["assistant_turn_len"]})
-        else:
-            model_request_traces.append({})
-    return token_turn_traces, model_request_traces
+def _episode(traces: list[dict]) -> EvaluationRow:
+    row = EvaluationRow(input_metadata=InputMetadata(row_id="seed_1"))
+    row.execution_metadata.extra = {
+        "token_turn_traces": traces,
+        "step_rewards": [0.0] * (len(traces) - 1) + [1.0],
+    }
+    return frozen_lake_reward(row)
 
 
-SINGLE_TURN = [
-    {
-        "prompt_ids": [1, 2, 3, 4, 5],
-        "completion_ids": [10, 11, 12],
-    },
-]
-
-MULTI_TURN_2 = [
-    {
-        "prompt_ids": [1, 2, 3],
-        "completion_ids": [10, 11],
-        "assistant_turn_len": 2,
-    },
-    {
-        "prompt_ids": [1, 2, 3, 10, 11, 20, 21, 22],
-        "completion_ids": [30, 31, 32],
-    },
-]
-
-MULTI_TURN_3 = [
-    {
-        "prompt_ids": [1, 2],
-        "completion_ids": [10],
-        "assistant_turn_len": 1,
-    },
-    {
-        "prompt_ids": [1, 2, 10, 20, 21],
-        "completion_ids": [30],
-        "assistant_turn_len": 1,
-    },
-    {
-        "prompt_ids": [1, 2, 10, 20, 21, 30, 40, 41, 42],
-        "completion_ids": [50, 51],
-    },
-]
-
-# Trained spans exclude the synthesized end-of-turn close. Turn 1's trained
-# completion is [prefill=99, raw tool-call token=10]; the close (90) is appended
-# only into turn 2's prompt as loss-masked framing and must NOT be trained.
-KIMI_STYLE_MULTI_TURN = [
-    {
-        "prompt_ids": [1, 2, 3],
-        "completion_ids": [99, 10],  # prefill, raw tool call token(s) -- no close
-        "assistant_turn_len": 2,
-    },
-    {
-        # prompt = turn1 prompt + framed assistant turn [99, 10, 90] + tool [20, 21]
-        "prompt_ids": [1, 2, 3, 99, 10, 90, 20, 21],
-        "completion_ids": [99, 30],
-    },
-]
+def _two_turns(first_completion: list[int], first_logprobs: list[float]) -> list[dict]:
+    prompt = [1, 2, 3]
+    return [
+        {"prompt_ids": prompt, "completion_ids": first_completion, "completion_logprobs": first_logprobs},
+        {
+            "prompt_ids": prompt + append_turn_close(first_completion, CLOSE) + TOOL_REPLY,
+            "completion_ids": [30],
+            "completion_logprobs": [-0.3],
+        },
+    ]
 
 
-@pytest.mark.parametrize("scenario", [SINGLE_TURN, MULTI_TURN_2, MULTI_TURN_3],
-                         ids=["single", "multi_2", "multi_3"])
-def test_training_and_ui_masks_agree(scenario):
-    """The training mask (logprob coord) and UI mask (token coord) must agree.
+def test_clean_stop_trains_the_close_the_model_emitted():
+    sample = episode_to_sample(_episode(_two_turns([10, 90], [-0.1, -0.2])))
 
-    Specifically: position p in UI mask is model-generated (>0) iff position
-    p-1 in the training mask is 1.0 — because the training mask is shifted by
-    one to predict the *next* token.
-    """
-    ttt, mrt = _make_traces(scenario)
-    spans = compute_model_output_spans(ttt, mrt)
-
-    last = ttt[-1]
-    full_ids = list(last["prompt_ids"]) + list(last["completion_ids"])
-    full_len = len(full_ids)
-    model_input_len = full_len - 1
-
-    ui_mask = build_ui_token_mask(spans, full_len)
-    train_mask = build_training_loss_mask(spans, model_input_len)
-
-    for p in range(full_len):
-        ui_is_model = ui_mask[p] > 0
-        if p == 0:
-            assert not ui_is_model, "position 0 should always be prompt"
-            continue
-        train_is_model = train_mask[p - 1] > 0.5
-        assert ui_is_model == train_is_model, (
-            f"Mismatch at token position {p}: "
-            f"ui_mask[{p}]={ui_mask[p]}, train_mask[{p-1}]={train_mask[p-1]}"
-        )
+    # The model's own "<|im_end|>" (90) is trained; only the missing "\n" is framing.
+    assert sample.tokens == [1, 2, 3, 10, 90, 91, 20, 21, 30]
+    assert sample.loss_mask == [0, 0, 0, 1, 1, 0, 0, 0, 1]
+    assert sample.logprobs == [0.0, 0.0, 0.0, -0.1, -0.2, 0.0, 0.0, 0.0, -0.3]
 
 
-@pytest.mark.parametrize("scenario", [SINGLE_TURN, MULTI_TURN_2, MULTI_TURN_3],
-                         ids=["single", "multi_2", "multi_3"])
-def test_spans_are_shared(scenario):
-    """Both masks use the exact same spans — the key alignment invariant."""
-    ttt, mrt = _make_traces(scenario)
-    spans = compute_model_output_spans(ttt, mrt)
+def test_truncated_turn_never_trains_a_synthesized_close():
+    sample = episode_to_sample(_episode(_two_turns([10, 11], [-0.1, -0.2])))
 
-    last = ttt[-1]
-    full_ids = list(last["prompt_ids"]) + list(last["completion_ids"])
-    full_len = len(full_ids)
-    model_input_len = full_len - 1
-
-    ui_mask = build_ui_token_mask(spans, full_len)
-    train_mask = build_training_loss_mask(spans, model_input_len)
-
-    ui_model_positions = {p for p in range(full_len) if ui_mask[p] > 0}
-    train_model_positions = {(p + 1) for p in range(model_input_len) if train_mask[p] > 0.5}
-
-    assert ui_model_positions == train_model_positions, (
-        f"Model token positions differ:\n"
-        f"  UI:    {sorted(ui_model_positions)}\n"
-        f"  Train: {sorted(train_model_positions)}"
-    )
+    assert sample.tokens == [1, 2, 3, 10, 11, 90, 91, 20, 21, 30]
+    assert sample.loss_mask == [0, 0, 0, 1, 1, 0, 0, 0, 0, 1]
 
 
-def test_single_turn_mask_values():
-    """Verify exact mask values for the single-turn case."""
-    ttt, mrt = _make_traces(SINGLE_TURN)
-    spans = compute_model_output_spans(ttt, mrt)
+def test_kimi_tool_call_prefill_is_trained_with_probability_one():
+    # The rollout forces the tool-call section marker (99) before sampling.
+    sample = episode_to_sample(_episode(_two_turns([99, 10], [0.0, -0.1])))
 
-    assert spans == [(5, 3, 1)]
-
-    ui_mask = build_ui_token_mask(spans, 8)
-    assert ui_mask == [0, 0, 0, 0, 0, 1, 1, 1]
-
-    train_mask = build_training_loss_mask(spans, 7)
-    assert train_mask == [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    assert sample.loss_mask[3:5] == [1, 1]
+    assert sample.logprobs[3:5] == [0.0, -0.1]
 
 
-def test_multi_turn_mask_values():
-    """Verify exact mask values for the 2-turn case."""
-    ttt, mrt = _make_traces(MULTI_TURN_2)
-    spans = compute_model_output_spans(ttt, mrt)
+def test_re_rendered_prompt_is_rejected_instead_of_misaligned():
+    traces = _two_turns([10, 11], [-0.1, -0.2])
+    traces[1]["prompt_ids"] = [1, 2, 3, 12, 90, 91, 20, 21]  # re-tokenized turn 1
 
-    assert spans == [(3, 2, 1), (8, 3, 2)]
-
-    full_len = 11
-    model_input_len = 10
-
-    ui_mask = build_ui_token_mask(spans, full_len)
-    assert ui_mask == [0, 0, 0, 1, 1, 0, 0, 0, 2, 2, 2]
-
-    train_mask = build_training_loss_mask(spans, model_input_len)
-    assert train_mask == [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    with pytest.raises(PrefixMismatch):
+        episode_to_sample(_episode(traces))
 
 
-def test_empty_traces():
-    """Empty traces should produce empty spans and masks."""
-    spans = compute_model_output_spans([], [])
-    assert spans == []
-    assert build_training_loss_mask(spans, 0) == []
-    assert build_ui_token_mask(spans, 0) == []
-
-
-def test_fallback_when_assistant_turn_len_missing():
-    """When model_request_traces is empty, falls back to completion_ids length."""
-    ttt, _ = _make_traces(MULTI_TURN_2)
-    spans_with_mrt = compute_model_output_spans(ttt, [{"assistant_turn_len": 2}])
-    spans_no_mrt = compute_model_output_spans(ttt, [])
-
-    assert spans_no_mrt[0] == (3, 2, 1), "should fall back to completion_ids len"
-    assert spans_with_mrt[0] == spans_no_mrt[0]
-
-
-def test_kimi_style_prefill_trained_but_close_is_framing():
-    """Tool-call prefill is trained; the inter-turn close is framing (loss=0).
-
-    The synthesized end-of-turn close that bridges turn 1 to turn 2 (token 90 at
-    position 5) lives in turn 2's prompt and must be excluded from every span, so
-    neither the UI mask nor the training mask marks it as model output.
-    """
-    ttt, mrt = _make_traces(KIMI_STYLE_MULTI_TURN)
-    spans = compute_model_output_spans(ttt, mrt)
-
-    assert spans == [(3, 2, 1), (8, 2, 2)]
-
-    ui_mask = build_ui_token_mask(spans, 10)
-    assert ui_mask == [0, 0, 0, 1, 1, 0, 0, 0, 2, 2]
-    assert ui_mask[5] == 0, "inter-turn close must not be trained as model output"
-
-    train_mask = build_training_loss_mask(spans, 9)
-    assert train_mask == [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0]
-
-
-def test_shared_weighted_datum_matches_training_loss_mask():
-    """The shared datum helper should use the exact same shifted mask as training."""
-    ttt, mrt = _make_traces(KIMI_STYLE_MULTI_TURN)
-    spans = compute_model_output_spans(ttt, mrt)
-
-    full_ids = list(ttt[-1]["prompt_ids"]) + list(ttt[-1]["completion_ids"])
-    ui_mask = build_ui_token_mask(spans, len(full_ids))
-    train_mask = build_training_loss_mask(spans, len(full_ids) - 1)
-
-    rendered = build_datum_from_token_mask(full_ids, ui_mask, include_loss_mask=True)
-
-    assert rendered.datum.loss_fn_inputs["weights"].data == train_mask
-    assert rendered.datum.loss_fn_inputs["loss_mask"].data == train_mask
+def test_missing_logprobs_are_rejected():
+    with pytest.raises(ValueError, match="output_logprobs length"):
+        episode_to_sample(_episode(_two_turns([10, 11], [-0.1])))

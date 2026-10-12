@@ -43,7 +43,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal
 
 import tinker
 import torch
@@ -88,6 +88,7 @@ from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.serverless import setup_serverless_training
 from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
+from training.utils.metrics import optimizer_metrics
 from training.utils.resource_autosizing import select_render_worker_count
 from training.utils.streaming import (
     dataset_error_for_rendered_row,
@@ -797,6 +798,9 @@ class Config:
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 = no clipping."""
 
+    grad_norm_metrics: Literal["off", "basic", "detailed"] = "basic"
+    """Trainer-side grad-norm telemetry emitted by ``optim_step``."""
+
     adam_beta2: float | None = None
     """Override Adam beta2 (default 0.95 via DEFAULT_ADAM). Lower values
     make the variance estimate track recent gradients more closely —
@@ -992,6 +996,11 @@ def main(
     signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
+    if cfg.grad_norm_metrics not in {"off", "basic", "detailed"}:
+        raise ValueError(
+            "grad_norm_metrics must be 'off', 'basic', or 'detailed'; got "
+            f"{cfg.grad_norm_metrics!r}."
+        )
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for chat template formatting. "
@@ -1022,6 +1031,7 @@ def main(
             "lr_schedule": lr_scheduler.type,
             "epochs": cfg.epochs,
             "batch_size": cfg.batch_size,
+            "grad_norm_metrics": cfg.grad_norm_metrics,
         },
     )
 
@@ -1276,7 +1286,9 @@ def main(
                     data_consumed,
                     t_submit,
                     client.submit_forward_backward(batch, loss_fn="cross_entropy"),
-                    client.submit_optim_step(adam),
+                    client.submit_optim_step(
+                        adam, emit_grad_norm_metrics=cfg.grad_norm_metrics,
+                    ),
                 )
             )
             return step
@@ -1343,9 +1355,7 @@ def main(
             last_optim_time = opt_time
             step_metrics["perf/fwd_bwd_time"] = fb_time
             step_metrics["perf/optim_step_time"] = opt_time
-            if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
-                for k, v in optim_result.metrics.items():
-                    step_metrics[f"train/{k}"] = v
+            step_metrics.update(optimizer_metrics(optim_result))
 
             step_metrics["train/total_tokens"] = tokens
             step_metrics["train/tokens_per_sec"] = tps

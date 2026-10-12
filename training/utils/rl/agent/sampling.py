@@ -100,6 +100,11 @@ def token_segment_to_sample(
         and len(segment.routing_matrices) != response_len
     ):
         raise ValueError("agent segment routing matrices are misaligned")
+    if (
+        segment.top_sampling_references is not None
+        and len(segment.top_sampling_references) != response_len
+    ):
+        raise ValueError("agent segment top-K sampling references are misaligned")
 
     prompt_len = len(segment.prompt_ids)
     raw_logprobs = (
@@ -110,6 +115,11 @@ def token_segment_to_sample(
     routing_matrices = (
         concat_routing([""] * max(0, prompt_len - 1), segment.routing_matrices)
         if segment.routing_matrices is not None
+        else None
+    )
+    top_sampling = (
+        concat_routing([""] * max(0, prompt_len - 1), segment.top_sampling_references)
+        if isinstance(segment.top_sampling_references, RoutingReferences)
         else None
     )
     return RolloutSample(
@@ -124,6 +134,7 @@ def token_segment_to_sample(
         # completion suffix from the first trainable token is ambiguous after
         # a short response rewrite masks an earlier generated span.
         routing_matrices=routing_matrices,
+        top_sampling_references=top_sampling,
     )
 
 

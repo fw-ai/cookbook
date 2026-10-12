@@ -2,7 +2,7 @@
 
 Validates:
 - Clipping behavior (positive/negative/zero advantage)
-- Equivalence between int and list prompt_len
+- Per-sample prompt boundaries
 - Gradient flow through logprobs
 - Metric reporting (cispo_clip_frac, mean_kl)
 - Config defaults
@@ -13,7 +13,20 @@ from __future__ import annotations
 import torch
 import pytest
 
-from training.utils.rl.cispo import CISPOConfig, make_cispo_loss_fn
+from training.utils.rl.algorithm.cispo import CISPOConfig, make_loss_fn
+from training.utils.rl.losses import PolicyBatch
+
+
+def make_cispo_loss_fn(advantages, ref_logprobs, inf_logprobs, prompt_len, cispo_config=None):
+    """Client CISPO loss over a :class:`PolicyBatch` anchored on ``inf_logprobs``."""
+    batch = PolicyBatch(
+        data=[],
+        advantages=advantages,
+        prompt_lens=[prompt_len] * len(advantages),
+        rollout_logprobs=inf_logprobs,
+        ref_logprobs=ref_logprobs,
+    )
+    return make_loss_fn(batch, cispo_config or CISPOConfig())
 
 
 def _make_logprobs(seq_len: int, seed: int = 0) -> torch.Tensor:
@@ -25,7 +38,11 @@ class TestCISPOClipping:
     """Test that CISPO clips the ratio to [1-eps_low, 1+eps_high]."""
 
     def _build_and_call(
-        self, adv: float, pi_offset: float, eps_low: float = 0.2, eps_high: float = 0.28,
+        self,
+        adv: float,
+        pi_offset: float,
+        eps_low: float = 0.2,
+        eps_high: float = 0.28,
     ):
         """Build a single-response-token CISPO loss where pi - pi_old = pi_offset.
 
@@ -46,7 +63,6 @@ class TestCISPOClipping:
             ref_logprobs=[ref_lp],
             inf_logprobs=[inf_lp],
             prompt_len=prompt_len,
-            old_policy_logprobs=[inf_lp],
             cispo_config=cfg,
         )
         loss, metrics = fn([], [pi_logprobs])
@@ -82,25 +98,16 @@ class TestCISPOClipping:
         assert loss.item() == pytest.approx(0.0, abs=1e-6)
 
 
+    def test_gradient_uses_detached_clipped_weight(self):
+        """d(loss)/d(logprob) is -clip(ratio) * A: the ratio itself is not differentiated."""
+        pi = torch.tensor([0.0, 1.0], requires_grad=True)
+        fn = make_cispo_loss_fn([2.0], [], [[0.0, 0.0]], prompt_len=2)
+        loss, _ = fn([], [pi])
+        loss.backward()
+        assert pi.grad.tolist() == pytest.approx([0.0, -1.28 * 2.0])
+
+
 class TestCISPOBatched:
-    def test_int_vs_list_prompt_len(self):
-        """Loss with prompt_len=10 should equal prompt_lens=[10, 10]."""
-        adv = [1.0, -0.5]
-        ref = [[0.1] * 20, [0.2] * 20]
-        inf = [[0.05] * 20, [0.15] * 20]
-        lp0 = _make_logprobs(20, seed=42)
-        lp1 = _make_logprobs(20, seed=43)
-
-        old_policy = [[0.05] * 20, [0.15] * 20]
-        fn_int = make_cispo_loss_fn(adv, ref, inf, prompt_len=10, old_policy_logprobs=old_policy)
-        fn_list = make_cispo_loss_fn(adv, ref, inf, prompt_len=[10, 10], old_policy_logprobs=old_policy)
-
-        loss_int, met_int = fn_int([], [lp0.detach().requires_grad_(True), lp1.detach().requires_grad_(True)])
-        loss_list, met_list = fn_list([], [lp0.detach().requires_grad_(True), lp1.detach().requires_grad_(True)])
-
-        assert torch.allclose(loss_int, loss_list, atol=1e-6)
-        assert abs(met_int["mean_kl"] - met_list["mean_kl"]) < 1e-6
-
     def test_mixed_prompt_lens(self):
         """Different prompt_lens should produce different losses."""
         adv = [1.0]
@@ -108,9 +115,8 @@ class TestCISPOBatched:
         inf = [[0.0] * 10]
         lp = _make_logprobs(10, seed=0)
 
-        old_policy = [[0.0] * 10]
-        fn_short = make_cispo_loss_fn(adv, ref, inf, prompt_len=2, old_policy_logprobs=old_policy)
-        fn_long = make_cispo_loss_fn(adv, ref, inf, prompt_len=8, old_policy_logprobs=old_policy)
+        fn_short = make_cispo_loss_fn(adv, ref, inf, prompt_len=2)
+        fn_long = make_cispo_loss_fn(adv, ref, inf, prompt_len=8)
 
         loss_short, _ = fn_short([], [lp.detach().requires_grad_(True)])
         loss_long, _ = fn_long([], [lp.detach().requires_grad_(True)])
@@ -125,13 +131,11 @@ class TestCISPOBatched:
         lp = _make_logprobs(5, seed=0)
         lp_grad = lp.detach().requires_grad_(True)
 
-        old_policy = [[0.0] * 5]
         fn = make_cispo_loss_fn(
             adv,
             ref,
             inf,
             prompt_len=1,
-            old_policy_logprobs=old_policy,
         )
         loss, _ = fn([], [lp_grad])
         loss.backward()
@@ -145,7 +149,6 @@ class TestCISPOMetrics:
         adv = [1.0]
         ref = [[0.0] * 5]
         inf = [[0.0] * 5]
-        old_policy = [[0.0] * 5]
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
         fn = make_cispo_loss_fn(
@@ -153,7 +156,6 @@ class TestCISPOMetrics:
             ref,
             inf,
             prompt_len=1,
-            old_policy_logprobs=old_policy,
         )
         _, metrics = fn([], [lp])
 
@@ -165,10 +167,9 @@ class TestCISPOMetrics:
         adv = [1.0]
         ref = [[0.0] * 5]
         inf = [[]]
-        old_policy = [[0.0] * 5]
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
-        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1)
         with pytest.raises(ValueError, match="CISPO requires rollout_logprobs"):
             fn([], [lp])
 
@@ -177,9 +178,8 @@ class TestCISPOMetrics:
         adv = [1.0]
         ref = [[0.0] * 5]
         inf = [[0.0] * 2]
-        old_policy = [[0.0] * 5]
         lp = _make_logprobs(5, seed=0).detach().requires_grad_(True)
 
-        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1, old_policy_logprobs=old_policy)
+        fn = make_cispo_loss_fn(adv, ref, inf, prompt_len=1)
         with pytest.raises(ValueError, match="CISPO requires at least"):
             fn([], [lp])

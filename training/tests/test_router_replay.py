@@ -77,19 +77,3 @@ def test_validate_r3_routing_matrices_rejects_invalid_count() -> None:
             prompt_len=3,
             model_input_len=6,
         )
-
-
-def test_warn_if_full_sequence_router_replay(caplog) -> None:
-    router_replay = _load_router_replay_module()
-
-    with caplog.at_level(logging.WARNING):
-        router_replay.warn_if_full_sequence_router_replay(completion_only=True)
-    assert "router_replay_completion_only=False" not in caplog.text
-
-    with caplog.at_level(logging.WARNING):
-        router_replay.warn_if_full_sequence_router_replay(completion_only=False)
-    assert "router_replay_completion_only=False" in caplog.text
-    assert (
-        "disables prompt KV-cache reuse unless serving enables --cache-logprobs"
-        in caplog.text
-    )

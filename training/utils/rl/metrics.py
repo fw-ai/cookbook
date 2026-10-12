@@ -1,4 +1,9 @@
-"""Reusable metric helpers for RL cookbook loops."""
+"""RL step metrics: rollout statistics plus the shared trainer helpers.
+
+Loops call :func:`rollout_metrics` beside the generic helpers in
+:mod:`training.utils.metrics`. :func:`compute_step_metrics` composes them for
+loops that pass their batch statistics as one ``loop_stats`` mapping.
+"""
 
 from __future__ import annotations
 
@@ -8,11 +13,10 @@ from typing import Any, Sequence
 
 import tinker
 
+from training.utils.metrics import forward_backward_metrics, optimizer_metrics
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.trial_events import drain as _drain_trial_events
 
-_SKIP_REMOTE_KEYS = {"step_id", "step", "response_tokens", "total_tokens"}
-_SUM_REMOTE_KEYS = {"active_tokens", "total_resp_tokens"}
 _LOOP_STAT_PASSTHROUGH_KEYS = (
     "async/version_offset_mean",
     "async/version_offset_max",
@@ -30,18 +34,6 @@ _LOOP_STAT_PASSTHROUGH_KEYS = (
     "perf/train_chunk_wait_time",
 )
 
-_CANONICAL_OPTIMIZER_METRICS = (
-    "grad_norm_pre_norm",
-    "grad_norm",
-    "grad_norm_rms",
-    "grad_norm_attn",
-    "grad_norm_mlp",
-    "grad_norm_embed",
-    "grad_norm_norm",
-    "grad_norm_lora",
-    "grad_norm_other",
-    "lr",
-)
 _TITO_METRIC_ROOT = "tito/"
 _TITO_DEBUG_METRIC_ROOT = "debug/tito/"
 _DISTRIBUTION_SUFFIXES = ("_count", "_sum", "_mean", "_min", "_max")
@@ -362,24 +354,52 @@ def total_target_tokens(prompt_groups: Sequence[PromptGroup]) -> int:
     return sum(datum_target_len(datum) for pg in prompt_groups for datum in pg.data)
 
 
-def add_optimizer_metrics(metrics: dict[str, Any], optim_result: Any) -> None:
-    """Keep one customer-facing value for each useful optimizer diagnostic."""
+def rollout_metrics(
+    prompt_groups: Sequence[PromptGroup],
+    *,
+    raw_rewards: Sequence[float] | None = None,
+) -> dict[str, float]:
+    """Rewards and completion statistics for the groups trained this step.
 
-    raw = getattr(optim_result, "metrics", None) if optim_result else None
-    if not raw:
-        return
-    for key in _CANONICAL_OPTIMIZER_METRICS:
-        value = raw.get(key, raw.get(f"{key}:last"))
-        if value is not None:
-            metrics[f"train/{key}"] = value
+    ``raw_rewards`` holds every sampled reward before group filtering. When it
+    is given, filtered and unfiltered rewards and the filter ratio are
+    reported. Sample counts are logical trajectories, not trainer segments.
+    """
+    metrics: dict[str, float] = {}
+    rewards = [reward for pg in prompt_groups for reward in pg.rewards]
+    if raw_rewards:
+        metrics["rollout/raw_reward"] = sum(raw_rewards) / len(raw_rewards)
+        metrics["rollout/filtered_reward"] = (
+            sum(rewards) / len(rewards) if rewards else 0.0
+        )
+        metrics["rollout/raw_samples"] = len(raw_rewards)
+        metrics["rollout/filtered_samples"] = len(rewards)
+        metrics["rollout/filter_ratio"] = 1.0 - len(rewards) / len(raw_rewards)
 
-    # Post-clip norm is useful only when clipping changed the gradient. The
-    # trainer reports it even when clipping is disabled, where it duplicates
-    # the canonical pre-clip norm exactly.
-    post_clip = raw.get("grad_norm_post_clip", raw.get("grad_norm_post_clip:last"))
-    grad_norm = metrics.get("train/grad_norm")
-    if post_clip is not None and post_clip != grad_norm:
-        metrics["train/grad_norm_post_clip"] = post_clip
+    completion_lens = [n for pg in prompt_groups for n in pg.completion_lens]
+    if completion_lens:
+        metrics["rollout/completion_tokens_mean"] = sum(completion_lens) / len(
+            completion_lens
+        )
+        metrics["rollout/completion_tokens_max"] = max(completion_lens)
+    truncated = [flag for pg in prompt_groups for flag in pg.truncated]
+    if truncated:
+        metrics["rollout/truncated_ratio"] = sum(truncated) / len(truncated)
+
+    trainable_tokens = [
+        float(metadata["trainable_tokens"])
+        for pg in prompt_groups
+        for metadata in pg.run_metadata
+        if isinstance(metadata.get("trainable_tokens"), (int, float))
+        and math.isfinite(float(metadata["trainable_tokens"]))
+    ]
+    if trainable_tokens:
+        metrics["rollout/trainable_tokens_mean"] = sum(trainable_tokens) / len(
+            trainable_tokens
+        )
+        metrics["rollout/trainable_tokens_max"] = max(trainable_tokens)
+        metrics["rollout/trainable_tokens_min"] = min(trainable_tokens)
+    return metrics
 
 
 def add_train_perf_metrics(metrics: dict[str, Any], *, total_model_tokens: int) -> None:
@@ -395,160 +415,70 @@ def add_train_perf_metrics(metrics: dict[str, Any], *, total_model_tokens: int) 
         metrics["perf/train_tokens_per_s"] = total_model_tokens / train_time
 
 
+def _step_samples_and_tokens(prompt_groups: Sequence[PromptGroup]) -> tuple[int, int]:
+    samples = sum(len(pg.rewards) for pg in prompt_groups)
+    completion_tokens = sum(n for pg in prompt_groups for n in pg.completion_lens)
+    return samples, completion_tokens
+
+
+def sync_step_perf_metrics(
+    loop_stats: Mapping[str, Any], prompt_groups: Sequence[PromptGroup]
+) -> dict[str, float]:
+    """Wall-time split and throughput for one synchronous collect-then-train step."""
+    samples, completion_tokens = _step_samples_and_tokens(prompt_groups)
+    metrics: dict[str, float] = {}
+    rollout = float(loop_stats.get("rollout_batch_wall_time", 0.0))
+    train = float(loop_stats.get("train_wall_time", 0.0))
+    step = rollout + train
+    if rollout > 0:
+        metrics["perf/rollout_batch_wall_time"] = rollout
+        metrics["perf/rollout_batch_samples_per_s"] = samples / rollout
+        metrics["perf/rollout_batch_tokens_per_s"] = completion_tokens / rollout
+    if train > 0:
+        metrics["perf/train_step_wall_time"] = train
+    if step > 0:
+        metrics["perf/scheduler_step_wall_time"] = step
+        metrics["perf/step_samples_per_s"] = samples / step
+        metrics["perf/step_tokens_per_s"] = completion_tokens / step
+        if rollout > 0:
+            metrics["perf/rollout_batch_wall_ratio"] = rollout / step
+    return metrics
+
+
+def async_step_perf_metrics(
+    loop_stats: Mapping[str, Any], prompt_groups: Sequence[PromptGroup]
+) -> dict[str, float]:
+    """The async scheduler's staleness/wait statistics and step throughput."""
+    metrics = {key: loop_stats[key] for key in _LOOP_STAT_PASSTHROUGH_KEYS if key in loop_stats}
+    step_time = float(loop_stats.get("perf/step_time", 0.0))
+    if step_time > 0:
+        samples, completion_tokens = _step_samples_and_tokens(prompt_groups)
+        metrics["perf/step_samples_per_s"] = samples / step_time
+        metrics["perf/step_tokens_per_s"] = completion_tokens / step_time
+    return metrics
+
+
 def compute_step_metrics(
     *,
     prompt_groups: Sequence[PromptGroup],
     fwd_bwd_results: Sequence,
     optim_result: Any,
-    n_accum: int,
     timing_metrics: dict[str, Any],
-    loop_stats: dict | None = None,
+    raw_rewards: Sequence[float] | None = None,
 ) -> dict[str, Any]:
-    """Compute all per-step wandb metrics from prompt groups and remote results.
+    """Compose one optimizer step's train, rollout and timing metrics.
 
-    Consolidates rollout quality, optimizer telemetry, and scheduler timing
-    into one record per optimizer step.
+    Loop-specific wall-time and throughput metrics come from
+    :func:`sync_step_perf_metrics` or :func:`async_step_perf_metrics`, which
+    the loop adds itself. ``raw_rewards`` are every sampled reward, including
+    groups the filter dropped.
     """
     metrics = dict(timing_metrics)
-
     total_model_tokens = total_target_tokens(prompt_groups)
     metrics["train/target_tokens"] = total_model_tokens
-    if not loop_stats or "async/realized_training_chunks" not in loop_stats:
-        metrics["train/effective_accumulation_steps"] = n_accum
     add_train_perf_metrics(metrics, total_model_tokens=total_model_tokens)
-
-    add_optimizer_metrics(metrics, optim_result)
-
-    # Reduce every physical forward/backward result to one optimizer-step
-    # record. Counts add; scalar diagnostics average only over chunks that
-    # actually reported them, so optional metrics are never diluted by zero.
-    if fwd_bwd_results:
-        accum: dict[str, float] = {}
-        counts: dict[str, int] = {}
-        reducers: dict[str, str] = {}
-        for result in fwd_bwd_results:
-            for k, v in result.metrics.items():
-                base, separator, reducer = k.partition(":")
-                if base in _SKIP_REMOTE_KEYS or reducer == "last":
-                    continue
-                if separator and reducer not in {"sum", "min", "max"}:
-                    continue
-                reducers[k] = reducer
-                if reducer == "min":
-                    accum[k] = min(accum.get(k, v), v)
-                elif reducer == "max":
-                    accum[k] = max(accum.get(k, v), v)
-                else:
-                    accum[k] = accum.get(k, 0.0) + v
-                counts[k] = counts.get(k, 0) + 1
-        for k, v in accum.items():
-            base = k.partition(":")[0]
-            metrics[f"train/{k}"] = (
-                v
-                if base in _SUM_REMOTE_KEYS or reducers[k] in {"sum", "min", "max"}
-                else v / counts[k]
-            )
-        active_tokens = metrics.get("train/active_tokens")
-        response_tokens = metrics.get("train/total_resp_tokens")
-        if active_tokens is not None and response_tokens:
-            metrics["train/mask_ratio"] = active_tokens / response_tokens
-
-    all_rewards: list[float] = []
-
-    for pg in prompt_groups:
-        all_rewards.extend(pg.rewards)
+    metrics.update(optimizer_metrics(optim_result))
+    metrics.update(forward_backward_metrics(fwd_bwd_results))
     add_tito_sidecar_metrics(metrics, prompt_groups)
-    filtered_samples = len(all_rewards)
-    completion_tokens = sum(
-        completion_len for pg in prompt_groups for completion_len in pg.completion_lens
-    )
-    trainable_tokens = [
-        float(metadata["trainable_tokens"])
-        for pg in prompt_groups
-        for metadata in pg.run_metadata
-        if isinstance(metadata.get("trainable_tokens"), (int, float))
-        and math.isfinite(float(metadata["trainable_tokens"]))
-    ]
-    if trainable_tokens:
-        metrics.update(
-            {
-                "rollout/trainable_tokens_mean": sum(trainable_tokens)
-                / len(trainable_tokens),
-                "rollout/trainable_tokens_max": max(trainable_tokens),
-                "rollout/trainable_tokens_min": min(trainable_tokens),
-            }
-        )
-
-    if loop_stats:
-        raw_rewards = loop_stats["all_raw_rewards"]
-        raw_samples = len(raw_rewards)
-        if raw_samples:
-            metrics["rollout/raw_reward"] = sum(raw_rewards) / raw_samples
-            metrics["rollout/filtered_reward"] = (
-                sum(all_rewards) / filtered_samples if filtered_samples else 0.0
-            )
-            metrics["rollout/raw_samples"] = raw_samples
-            metrics["rollout/filtered_samples"] = filtered_samples
-            metrics["rollout/filter_ratio"] = 1.0 - filtered_samples / raw_samples
-        for key in _LOOP_STAT_PASSTHROUGH_KEYS:
-            if key in loop_stats:
-                metrics[key] = loop_stats[key]
-
-        if "async/realized_training_chunks" in loop_stats:
-            step_time = float(loop_stats.get("perf/step_time", 0.0))
-            if step_time > 0:
-                metrics["perf/step_samples_per_s"] = filtered_samples / step_time
-                metrics["perf/step_tokens_per_s"] = completion_tokens / step_time
-        else:
-            rollout_wall_time = float(loop_stats.get("rollout_batch_wall_time", 0.0))
-            if rollout_wall_time > 0:
-                metrics["perf/rollout_batch_wall_time"] = rollout_wall_time
-
-            train_wall_time = float(loop_stats.get("train_wall_time", 0.0))
-            if train_wall_time > 0:
-                metrics["perf/train_step_wall_time"] = train_wall_time
-
-            trainer_wait_for_sampler_time = float(
-                loop_stats.get("trainer_wait_for_sampler_time", 0.0)
-            )
-            if trainer_wait_for_sampler_time > 0:
-                metrics["perf/trainer_wait_for_sampler_time"] = (
-                    trainer_wait_for_sampler_time
-                )
-            sampler_wait_for_trainer_time = float(
-                loop_stats.get("sampler_wait_for_trainer_time", 0.0)
-            )
-            if sampler_wait_for_trainer_time > 0:
-                metrics["perf/sampler_wait_for_trainer_time"] = (
-                    sampler_wait_for_trainer_time
-                )
-
-            scheduler_step_wall_time = float(
-                loop_stats.get("scheduler_step_wall_time", 0.0)
-            )
-            if scheduler_step_wall_time <= 0:
-                scheduler_step_wall_time = (
-                    rollout_wall_time + trainer_wait_for_sampler_time + train_wall_time
-                )
-            if scheduler_step_wall_time > 0:
-                metrics["perf/scheduler_step_wall_time"] = scheduler_step_wall_time
-                metrics["perf/step_samples_per_s"] = (
-                    filtered_samples / scheduler_step_wall_time
-                )
-                metrics["perf/step_tokens_per_s"] = (
-                    completion_tokens / scheduler_step_wall_time
-                )
-                if rollout_wall_time > 0:
-                    metrics["perf/rollout_batch_wall_ratio"] = (
-                        rollout_wall_time / scheduler_step_wall_time
-                    )
-
-            if rollout_wall_time > 0:
-                metrics["perf/rollout_batch_samples_per_s"] = (
-                    filtered_samples / rollout_wall_time
-                )
-                metrics["perf/rollout_batch_tokens_per_s"] = (
-                    completion_tokens / rollout_wall_time
-                )
-
+    metrics.update(rollout_metrics(prompt_groups, raw_rewards=raw_rewards))
     return metrics

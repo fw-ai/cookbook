@@ -31,6 +31,7 @@ from typing import Callable, List
 
 import tinker
 from fireworks.training.sdk.routing import (
+    RoutingReferences,
     routing_model_input_kwargs,
 )
 
@@ -92,14 +93,18 @@ class RolloutSample:
     """Optional raw model logprobs aligned with ``tokens`` for observability.
 
     ``logprobs`` remains the rollout/sampling logprob source used by loss
-    ratios and TIS. When present, ``raw_logprobs`` is packed into
+    ratios. When present, ``raw_logprobs`` is packed into
     ``PromptGroup.raw_inf_logprobs`` for optional train/inference drift metrics.
-    It never replaces behavior logprobs in the loss or TIS.
+    It never replaces behavior logprobs in the loss.
     """
     inference_topk_token_ids: List[List[int]] | None = None
     """Sampler top-k token ids aligned with ``tokens``; prompt/context rows are empty."""
     inference_topk_logprobs: List[List[float]] | None = None
     """Sampler top-k logprobs aligned with ``inference_topk_token_ids``."""
+    top_sampling_references: RoutingReferences | None = None
+    """Parquet references to the sampler's top-K distribution over model-input
+    positions (``tokens[:-1]``): position ``t`` holds the distribution that
+    produced ``tokens[t + 1]``; positions without a sampled token are gaps."""
 
 
 @dataclass
@@ -205,7 +210,7 @@ def _align_multimodal_inf_logprobs(
     Canonical multimodal datums use one shared shifted coordinate space for
     ``target_tokens``, weights, forward logprobs, and built-in loss inputs.
     Samplers return completion-only logprobs, so scatter those values onto the
-    trained positions and fill prompt/image positions with zeros. GRPO/TIS can
+    trained positions and fill prompt/image positions with zeros. GRPO can
     then slice the result with ``prompt_lens`` without changing coordinates.
     """
     active_indices = [i for i, w in enumerate(shifted_weights) if w > 0]
@@ -283,6 +288,13 @@ def _validate_segment(
                     f"row {position} is misaligned ({len(ids)} / {len(lps)})."
                 )
 
+    top_sampling = segment.top_sampling_references
+    if top_sampling is not None and not isinstance(top_sampling, RoutingReferences):
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: top_sampling_references "
+            "must be Parquet RoutingReferences."
+        )
+
     if segment.prompt_model_input is not None:
         n = len(segment.tokens)
         if len(segment.logprobs) != n or len(segment.loss_mask) != n:
@@ -291,6 +303,17 @@ def _validate_segment(
                 "tokens/logprobs/loss_mask mismatch "
                 f"({n} / {len(segment.logprobs)} / {len(segment.loss_mask)})."
             )
+        if top_sampling is not None:
+            prompt_text_len = sum(
+                len(chunk.tokens) for chunk in segment.prompt_model_input.chunks
+                if isinstance(chunk, tinker.types.EncodedTextChunk)
+            )
+            expected = segment.prompt_model_input.length + n - prompt_text_len - 1
+            if len(top_sampling) != expected:
+                raise ValueError(
+                    f"Run {run_index} segment {segment_index}: top-K sampling "
+                    f"references must cover multimodal model-input positions ({len(top_sampling)} / {expected})."
+                )
         _validate_optional_logprobs(segment.raw_logprobs, n=n)
         _validate_topk(n=n)
         if n < 2:
@@ -324,6 +347,11 @@ def _validate_segment(
         raise ValueError(
             f"Run {run_index} segment {segment_index}: tokens must have length >= 2.",
         )
+    if top_sampling is not None and len(top_sampling) != n - 1:
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: top-K sampling references "
+            f"must cover model-input positions ({len(top_sampling)} / {n - 1})."
+        )
     if not any(mask_value > 0 for mask_value in segment.loss_mask):
         raise ValueError(
             f"Run {run_index} segment {segment_index}: loss_mask is all zeros "
@@ -336,8 +364,7 @@ def rollout_to_prompt_group(
     rollout: Rollout,
     *,
     advantage_fn: Callable[[List[float]], List[float]] = compute_advantages,
-    with_reference: bool = False,
-    router_replay_completion_only: bool = False,
+    router_replay_completion_only: bool = True,
 ) -> PromptGroup | None:
     """Pack one :class:`Rollout` into a :class:`PromptGroup`.
 
@@ -352,8 +379,7 @@ def rollout_to_prompt_group(
     expert routing is replayed at training time (R3).
     ``router_replay_completion_only=True`` zeroes out prompt-position
     routing matrices so only completion-token routing is replayed (the
-    server picks its own routing for prompt tokens).  Reference-side
-    datums never carry routing matrices.
+    server picks its own routing for prompt tokens).
 
     Returns ``None`` when the group has no runs; raises on structural
     issues (mismatched lengths, empty runs, all-zero loss mask).
@@ -388,11 +414,11 @@ def rollout_to_prompt_group(
         return None
 
     policy_data: List[tinker.Datum] = []
-    reference_data: List[tinker.Datum] = []
     inf_logprobs_aligned: List[List[float]] = []
     raw_inf_logprobs_aligned: List[List[float]] = []
     inference_topk_token_ids_aligned: List[List[List[int]]] = []
     inference_topk_logprobs_aligned: List[List[List[float]]] = []
+    top_sampling_references: List[RoutingReferences | None] = []
     completion_lens: List[int] = []
     truncated: List[bool] = []
     per_sample_prompt_lens: List[int] = []
@@ -415,7 +441,6 @@ def rollout_to_prompt_group(
                     s.prompt_model_input,
                     completion_tokens,
                 )
-                reference_model_input = datum.model_input
                 target_tokens = [
                     int(x) for x in datum.loss_fn_inputs["target_tokens"].data
                 ]
@@ -442,7 +467,7 @@ def rollout_to_prompt_group(
                 # ``run_loss_loop`` uses ``response_start = prompt_len - 1`` on
                 # shifted datum weights.  The text path records the first active
                 # index in the *unshifted* loss_mask; map shifted weights the
-                # same way (+1) so multimodal GRPO/TIS slices align.
+                # same way (+1) so multimodal GRPO slices align.
                 shifted_first_active = next(
                     (i for i, w in enumerate(target_mask) if w > 0),
                     0,
@@ -466,30 +491,11 @@ def rollout_to_prompt_group(
 
                 policy_data.append(datum)
 
-                if with_reference:
-                    mask_len = len(target_mask)
-                    reference_data.append(
-                        tinker.Datum(
-                            model_input=reference_model_input,
-                            loss_fn_inputs={
-                                "target_tokens": tinker.TensorData(
-                                    data=target_tokens,
-                                    dtype="int64",
-                                    shape=[target_len],
-                                ),
-                                "loss_mask": tinker.TensorData(
-                                    data=target_mask,
-                                    dtype="float32",
-                                    shape=[mask_len],
-                                ),
-                            },
-                        )
-                    )
-
                 inf_logprobs_aligned.append(target_logprobs)
                 raw_inf_logprobs_aligned.append(target_raw_logprobs)
                 inference_topk_token_ids_aligned.append([])
                 inference_topk_logprobs_aligned.append([])
+                top_sampling_references.append(s.top_sampling_references)
                 completion_lens.append(sum(1 for w in target_mask if w > 0))
                 truncated.append(s.finish_reason == "length")
                 continue
@@ -554,29 +560,11 @@ def rollout_to_prompt_group(
                 )
             )
 
-            if with_reference:
-                reference_data.append(
-                    tinker.Datum(
-                        model_input=tinker.ModelInput.from_ints(s.tokens[:-1]),
-                        loss_fn_inputs={
-                            "target_tokens": tinker.TensorData(
-                                data=target_tokens,
-                                dtype="int64",
-                                shape=[target_len],
-                            ),
-                            "loss_mask": tinker.TensorData(
-                                data=target_mask,
-                                dtype="int64",
-                                shape=[target_len],
-                            ),
-                        },
-                    )
-                )
-
             inf_logprobs_aligned.append(target_logprobs)
             raw_inf_logprobs_aligned.append(target_raw_logprobs)
             inference_topk_token_ids_aligned.append(target_topk_token_ids)
             inference_topk_logprobs_aligned.append(target_topk_logprobs)
+            top_sampling_references.append(s.top_sampling_references)
             completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
             truncated.append(s.finish_reason == "length")
 
@@ -584,15 +572,14 @@ def rollout_to_prompt_group(
     # is the authoritative per-segment list for heterogeneous rollouts.
     return PromptGroup(
         data=policy_data,
-        ref_data=reference_data,
         advantages=segment_advantages,
-        ref_logprobs=None,
         prompt_len=per_sample_prompt_lens[0],
         rewards=rewards,
         inf_logprobs=inf_logprobs_aligned,
         raw_inf_logprobs=raw_inf_logprobs_aligned,
         inference_topk_token_ids=inference_topk_token_ids_aligned,
         inference_topk_logprobs=inference_topk_logprobs_aligned,
+        top_sampling_references=top_sampling_references,
         completion_lens=completion_lens,
         truncated=truncated,
         prompt=None,

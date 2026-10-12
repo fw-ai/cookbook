@@ -11,9 +11,12 @@ from training.examples.rl.frozen_lake.frozen_lake_rollout import (
     FireworksV1ImageCompletionsClient,
     FrozenLakeToolRolloutProcessor,
     _build_visual_user_prompt,
+    _get_hf_tokenizer,
+    _get_renderer,
     build_frozen_lake_tool_call_parser,
 )
 from training.examples.rl.frozen_lake.frozen_lake_schema import FROZEN_LAKE_TOOLS
+from training.utils.rl.rollout.turn_traces import turn_traces_to_sample
 
 
 class _FakeImageClient:
@@ -128,7 +131,7 @@ def test_visual_user_prompt_includes_text_observation_without_placeholder():
 
 
 def test_frozen_lake_tool_call_parser_accepts_json_schema_output_with_suffix():
-    parser = build_frozen_lake_tool_call_parser(model_id="accounts/fireworks/models/kimi-k2p5")
+    parser = build_frozen_lake_tool_call_parser()
 
     parsed = parser(
         '{\n"tool_calls":[{"name":"lake_move","arguments":{"action":"RIGHT"}}]\n}<|im_end|>',
@@ -143,7 +146,7 @@ def test_frozen_lake_tool_call_parser_accepts_json_schema_output_with_suffix():
 
 
 def test_frozen_lake_tool_call_parser_accepts_kimi_native_output():
-    parser = build_frozen_lake_tool_call_parser(model_id="accounts/fireworks/models/kimi-k2p5")
+    parser = build_frozen_lake_tool_call_parser()
 
     parsed = parser(
         '<|tool_call_begin|>functions.lake_move:0<|tool_call_argument_begin|>{"action":"DOWN"}<|tool_call_end|><|tool_calls_section_end|>',
@@ -153,6 +156,31 @@ def test_frozen_lake_tool_call_parser_accepts_kimi_native_output():
 
     assert parsed["parsed_tool_call"].name == "lake_move"
     assert parsed["parsed_tool_call"].arguments == {"action": "DOWN"}
+
+
+@pytest.mark.parametrize(
+    ("tokenizer_name", "output"),
+    [
+        (
+            "Qwen/Qwen3.6-35B-A3B",
+            "<tool_call>\n<function=lake_move>\n<parameter=action>\nRIGHT\n</parameter>\n"
+            "</function>\n</tool_call><|im_end|>",
+        ),
+        (
+            "Qwen/Qwen3-8B",
+            '<tool_call>\n{"name": "lake_move", "arguments": {"action": "RIGHT"}}\n</tool_call><|im_end|>',
+        ),
+    ],
+)
+def test_frozen_lake_tool_call_parser_reads_native_tool_calls(tokenizer_name, output):
+    tokenizer = _get_hf_tokenizer(tokenizer_name)
+    parser = build_frozen_lake_tool_call_parser(renderer=_get_renderer(tokenizer_name))
+
+    parsed = parser(output, tokenizer.encode(output, add_special_tokens=False), None)
+
+    assert parsed["parser"].startswith("renderer:")
+    assert parsed["parsed_tool_call"].name == "lake_move"
+    assert parsed["parsed_tool_call"].arguments == {"action": "RIGHT"}
 
 
 def test_kimi_visual_prompt_includes_empty_think_block_when_thinking_disabled():
@@ -259,6 +287,12 @@ async def test_visual_rollout_preserves_prior_completion_tokens(monkeypatch):
     assert token_turn_traces[0]["completion_ids"] == [tool_prefill_id, 101]
     assert token_turn_traces[1]["prompt_ids"] == [10, 11, 12, tool_prefill_id, 101, 90, 91, 92]
     assert token_turn_traces[1]["completion_ids"] == [tool_prefill_id, 102]
+    # The forced prefill carries logprob 0.0 (probability one), so the episode
+    # packs into one sample with the model's tokens aligned to their logprobs.
+    sample = turn_traces_to_sample(token_turn_traces, reward=1.0)
+    assert sample.tokens == [10, 11, 12, tool_prefill_id, 101, 90, 91, 92, tool_prefill_id, 102]
+    assert sample.loss_mask == [0, 0, 0, 1, 1, 0, 0, 0, 1, 1]
+    assert sample.logprobs == [0.0, 0.0, 0.0, 0.0, -0.1, 0.0, 0.0, 0.0, 0.0, -0.1]
 
     assert _FakeImageClient.requested_prompt_ids == [
         [10, 11, 12, tool_prefill_id],

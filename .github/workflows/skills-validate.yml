@@ -10,7 +10,7 @@ on:
       - ".claude-plugin/**"
       - ".codex-plugin/**"
       - "training/recipes/**"
-      - "training/examples/serverless_rl/**"
+      - "training/examples/**"
   push:
     branches: [main]
     paths:
@@ -18,7 +18,7 @@ on:
       - ".claude-plugin/**"
       - ".codex-plugin/**"
       - "training/recipes/**"
-      - "training/examples/serverless_rl/**"
+      - "training/examples/**"
   workflow_dispatch:
 
 permissions:

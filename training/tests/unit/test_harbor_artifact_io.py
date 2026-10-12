@@ -4,7 +4,7 @@ import asyncio
 import contextvars
 import threading
 
-from training.examples.rl.harbor.tito._artifact_io import run_artifact_task
+from training.examples.harbor_rl.tito._artifact_io import run_artifact_task
 
 
 def test_artifact_worker_preserves_context():

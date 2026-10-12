@@ -1,185 +1,45 @@
 from __future__ import annotations
 
-import dataclasses
-
-import pytest
-
-import training.utils.config as config_module
-from fireworks.training.sdk.deployment import DeploymentConfig
 
 
-@pytest.mark.parametrize(
-    ("field_name", "value"),
-    [
-        ("accelerator_type", "NVIDIA_B200"),
-        ("accelerator_count", 8),
-    ],
-)
-def test_legacy_infra_config_rejects_removed_accelerator_fields(field_name, value):
-    with pytest.raises(
-        TypeError, match=rf"InfraConfig no longer supports `{field_name}`"
-    ):
-        config_module.InfraConfig(**{field_name: value})
 
 
-def test_legacy_infra_config_does_not_expose_removed_accelerator_fields():
-    field_names = {
-        field.name for field in dataclasses.fields(config_module.InfraConfig)
-    }
+def test_sampling_support_request_keeps_references_and_choice_on_wire():
+    import tinker
+    from tinker.lib._pydantic_conv import to_pydantic_input
+    from tinker.types.forward_backward_input import ForwardBackwardInput
 
-    assert "accelerator_type" not in field_names
-    assert "accelerator_count" not in field_names
+    from fireworks.training.sdk.routing import RoutingReferences
+    from training.utils.rl.losses import PolicyBatch, build_policy_datums
+    from training.utils.rl.sampling_support import attach_top_sampling_references
 
-
-def test_to_deployment_config_includes_extra_values():
-    deploy_cfg = config_module.DeployConfig(
-        deployment_id="dep-123",
-        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
-        extra_values={"testValue": "test-value"},
+    datum = tinker.Datum(
+        model_input=tinker.ModelInput.from_ints([10, 11]),
+        loss_fn_inputs={
+            "target_tokens": tinker.TensorData(data=[11, 12], dtype="int64", shape=[2]),
+            "weights": tinker.TensorData(data=[0, 1], dtype="int64", shape=[2]),
+        },
+    )
+    references = RoutingReferences(2, (), ({"input_token_start": 0, "count": 2},))
+    data = attach_top_sampling_references(
+        build_policy_datums(
+            PolicyBatch(
+                data=[datum], advantages=[3.0], prompt_lens=[1], rollout_logprobs=[[0.0, -0.2]]
+            )
+        ),
+        [references],
+    )
+    request = ForwardBackwardInput(
+        data=data,
+        loss_fn="ppo",
+        loss_fn_config={"target_logprob_support": "sampling_support"},
     )
 
-    deployment_config = deploy_cfg.to_deployment_config(
-        "accounts/test/models/qwen3-4b",
-        config_module.InfraConfig(),
-    )
+    body = to_pydantic_input(request).model_dump(mode="json")
 
-    assert isinstance(deployment_config, DeploymentConfig)
-    assert deployment_config.deployment_id == "dep-123"
-    assert deployment_config.region is None
-    assert deployment_config.disable_speculative_decoding is False
-    assert deployment_config.extra_values == {"testValue": "test-value"}
-
-
-def test_to_deployment_config_omits_region():
-    deploy_cfg = config_module.DeployConfig(
-        deployment_id="dep-123",
-        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
-    )
-
-    deployment_config = deploy_cfg.to_deployment_config(
-        "accounts/test/models/qwen3-4b",
-        config_module.InfraConfig(),
-    )
-
-    assert isinstance(deployment_config, DeploymentConfig)
-    assert deployment_config.region is None
-
-
-def test_to_deployment_config_uses_explicit_trainer_region():
-    deploy_cfg = config_module.DeployConfig(
-        deployment_id="dep-123",
-        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
-    )
-
-    deployment_config = deploy_cfg.to_deployment_config(
-        "accounts/test/models/qwen3-4b",
-        config_module.InfraConfig(region="US_OHIO_1"),
-    )
-
-    assert isinstance(deployment_config, DeploymentConfig)
-    assert deployment_config.region == "US_OHIO_1"
-
-
-def test_to_deployment_config_sets_fixed_replica_count():
-    deploy_cfg = config_module.DeployConfig(
-        deployment_id="dep-123",
-        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
-        replica_count=3,
-    )
-
-    deployment_config = deploy_cfg.to_deployment_config(
-        "accounts/test/models/qwen3-4b",
-        config_module.InfraConfig(),
-    )
-
-    assert isinstance(deployment_config, DeploymentConfig)
-    assert deployment_config.min_replica_count == 3
-    assert deployment_config.max_replica_count == 3
-
-
-def test_to_deployment_config_drops_hotload_fields_when_disabled():
-    deploy_cfg = config_module.DeployConfig(
-        deployment_id="dep-123",
-        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
-        enable_hot_load=False,
-        hot_load_bucket_type="FW_HOSTED",
-        hot_load_trainer_job="accounts/test/rlorTrainerJobs/job-123",
-        hot_load_transition_type="SYNC",
-    )
-
-    deployment_config = deploy_cfg.to_deployment_config(
-        "accounts/test/models/qwen3-4b",
-        config_module.InfraConfig(),
-    )
-
-    assert isinstance(deployment_config, DeploymentConfig)
-    assert deployment_config.enable_hot_load is False
-    assert deployment_config.hot_load_bucket_type is None
-    assert deployment_config.hot_load_trainer_job is None
-    assert deployment_config.hot_load_transition_type is None
-
-
-def test_to_deployment_config_forwards_hot_load_transition_type():
-    deploy_cfg = config_module.DeployConfig(
-        deployment_id="dep-123",
-        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
-        hot_load_transition_type="sync",
-    )
-
-    deployment_config = deploy_cfg.to_deployment_config(
-        "accounts/test/models/qwen3-4b",
-        config_module.InfraConfig(),
-    )
-
-    assert deployment_config.hot_load_transition_type == "SYNC"
-
-
-def test_to_deployment_config_leaves_hot_load_transition_type_unset_by_default():
-    deploy_cfg = config_module.DeployConfig(
-        deployment_id="dep-123",
-        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
-    )
-
-    deployment_config = deploy_cfg.to_deployment_config(
-        "accounts/test/models/qwen3-4b",
-        config_module.InfraConfig(),
-    )
-
-    assert deployment_config.hot_load_transition_type is None
-
-
-def test_to_deployment_config_rejects_missing_deployment_shape():
-    deploy_cfg = config_module.DeployConfig(deployment_id="dep-123")
-
-    with pytest.raises(ValueError, match="deployment_shape is required"):
-        deploy_cfg.to_deployment_config(
-            "accounts/test/models/qwen3-4b",
-            config_module.InfraConfig(),
-        )
-
-
-def test_to_deployment_config_no_longer_exposes_accelerator_field():
-    field_names = {
-        field.name for field in dataclasses.fields(config_module.DeployConfig)
-    }
-
-    assert "deployment_accelerator_type" not in field_names
-
-
-def test_to_deployment_config_forwards_deployment_shape():
-    deploy_cfg = config_module.DeployConfig(
-        deployment_id="dep-123",
-        deployment_shape="accounts/test/deploymentShapes/ds-x/versions/abc123",
-    )
-
-    deployment_config = deploy_cfg.to_deployment_config(
-        "accounts/test/models/qwen3-4b",
-        config_module.InfraConfig(),
-    )
-
+    assert body["loss_fn_config"] == {"target_logprob_support": "sampling_support"}
+    assert body["data"][0]["loss_fn_inputs"]["advantages"]["data"] == [0.0, 3.0]
     assert (
-        deployment_config.deployment_shape
-        == "accounts/test/deploymentShapes/ds-x/versions/abc123"
+        body["data"][0]["model_input"]["top_sampling_references"]
+        == references.to_dict()
     )
-    # Accelerator selection is owned by the shape (the SDK may resolve it
-    # server-side); the cookbook never hand-sets it.

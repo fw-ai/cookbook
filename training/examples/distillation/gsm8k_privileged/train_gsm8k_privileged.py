@@ -20,7 +20,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import cast
 
 from dotenv import load_dotenv
 
@@ -29,18 +29,18 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 import training.recipes.distillation_loop as distillation_loop
-from training.utils import DeployConfig, RunnerConfig, TrainerConfig, WandBConfig
+from training.utils import DeployConfig, TrainerConfig, WandBConfig
 from training.utils.distillation.eval import (
     make_teacher_trace_logprob_gap_eval,
     validate_opd_trace_result,
     validate_privileged_opd_dataset,
 )
+from training.utils.distillation.teacher import DEPLOYMENT_ID_MAX_LENGTH
 
 
 DATASET_PATH = Path(__file__).with_name("dataset.jsonl")
 LOG_ROOT = Path(__file__).resolve().parents[2] / "distillation_logs"
-DEPLOYMENT_ID_MAX_LENGTH = distillation_loop.DEPLOYMENT_ID_MAX_LENGTH
-DEPLOYMENT_ID_HASH_CHARS = distillation_loop.TEACHER_ID_HASH_CHARS
+DEPLOYMENT_ID_HASH_CHARS = 10
 
 
 @dataclass
@@ -51,8 +51,6 @@ class TrainArgs:
     training_shape: str = ""
     region: str | None = None
     teacher_base_model: str | None = None
-    distill_mode: str = "sampled_reverse_kl"
-    sdft_top_k: int = 5
     max_rows: int = 8
     epochs: int = 25
     prompt_groups_per_step: int = 8
@@ -79,8 +77,6 @@ def parse_args() -> TrainArgs:
     parser.add_argument("--training-shape", required=True)
     parser.add_argument("--region")
     parser.add_argument("--teacher-base-model")
-    parser.add_argument("--distill-mode", choices=[mode.value for mode in distillation_loop.DistillMode])
-    parser.add_argument("--sdft-top-k", type=int)
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--prompt-groups-per-step", type=int)
@@ -116,41 +112,6 @@ def _teacher_deployment_id(run_id: str) -> str:
     return f"{safe[:prefix_len].rstrip('-')}-{suffix}"
 
 
-def _validate_sampled_reverse_kl_result(
-    cfg: distillation_loop.Config,
-    result: dict[str, Any],
-) -> None:
-    validate_opd_trace_result(
-        cfg,
-        result,
-        min_abs_advantage=1e-4,
-        min_teacher_final_accuracy=1.0,
-    )
-
-
-def _skip_result_validation(
-    cfg: distillation_loop.Config,
-    result: dict[str, Any],
-) -> None:
-    pass
-
-
-_RESULT_VALIDATORS: dict[
-    distillation_loop.DistillMode,
-    Callable[[distillation_loop.Config, dict[str, Any]], None],
-] = {
-    distillation_loop.DistillMode.SAMPLED_REVERSE_KL: _validate_sampled_reverse_kl_result,
-}
-
-
-def _validate_result(
-    distill_mode: distillation_loop.DistillMode,
-    cfg: distillation_loop.Config,
-    result: dict[str, Any],
-) -> None:
-    _RESULT_VALIDATORS.get(distill_mode, _skip_result_validation)(cfg, result)
-
-
 def main() -> None:
     load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -166,29 +127,21 @@ def main() -> None:
 
     log_dir = LOG_ROOT / args.run_id
     metrics_file = log_dir / "metrics.jsonl"
-    step_eval = (
-        None
-        if args.skip_trace_eval
-        else make_teacher_trace_logprob_gap_eval(
-            trace_log_path=log_dir / "teacher_trace_eval.jsonl",
-            min_pre_final_tokens=args.min_pre_final_tokens,
-        )
+    # The recipe appends every metric record to this JSONL file.
+    os.environ["COOKBOOK_METRICS_FILE"] = str(metrics_file)
+    eval_fn = make_teacher_trace_logprob_gap_eval(
+        trace_log_path=log_dir / "teacher_trace_eval.jsonl",
+        min_pre_final_tokens=args.min_pre_final_tokens,
     )
-
-    distill_mode = distillation_loop.DistillMode(args.distill_mode)
-    teacher_base_model = args.teacher_base_model or args.base_model
 
     cfg = distillation_loop.Config(
         log_path=str(log_dir),
         base_model=args.base_model,
-        teacher_model=teacher_base_model,
+        teacher_model=args.teacher_base_model or args.base_model,
         teacher_deployment_id=_teacher_deployment_id(args.run_id),
         dataset=str(dataset_path),
         trainer=TrainerConfig(training_shape_id=args.training_shape, region=args.region),
         deployment=DeployConfig(tokenizer_model=args.tokenizer_model),
-        distill_mode=distill_mode,
-        sdft_top_k=args.sdft_top_k,
-        runner=RunnerConfig(metrics_file=str(metrics_file)),
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
@@ -196,9 +149,7 @@ def main() -> None:
         )
         if args.wandb
         else WandBConfig(project=None),
-        step_eval=step_eval,
-        step_eval_interval=0 if args.skip_trace_eval else 1,
-        eval_before_training=not args.skip_trace_eval,
+        eval_every=0 if args.skip_trace_eval else 1,
         lora_rank=args.lora_rank,
         learning_rate=args.learning_rate,
         temperature=args.temperature,
@@ -211,9 +162,15 @@ def main() -> None:
         save_final_checkpoint=False,
     )
 
-    result = distillation_loop.main(cfg, cancel_on_exit=not args.skip_cleanup)
+    result = distillation_loop.main(cfg, eval_fn=eval_fn, cancel_on_exit=not args.skip_cleanup)
     if not args.skip_trace_eval:
-        _validate_result(distill_mode, cfg, result)
+        validate_opd_trace_result(
+            cfg,
+            result,
+            metrics_file=metrics_file,
+            min_abs_advantage=1e-4,
+            min_teacher_final_accuracy=1.0,
+        )
 
 
 if __name__ == "__main__":

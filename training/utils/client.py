@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import os
-import warnings
 from enum import Enum
 from types import SimpleNamespace
 from typing import Any
@@ -297,34 +296,6 @@ class ReconnectableClient:
         Weights-only (no optimizer, no LR schedule, no data cursor).
         """
         return self._client.load_adapter(adapter_path).result(timeout=timeout)
-
-    def save_weights_for_sampler_ext(
-        self,
-        name: str,
-        checkpoint_type: str | None = None,
-        export_precision: str | None = None,
-        timeout: int = DCP_TIMEOUT_S,
-    ) -> Any:
-        """Deprecated compatibility shim.
-
-        New cookbook code should call :meth:`save_weights_for_sampler`, which
-        returns the SDK's standard ``path`` field. This wrapper exists only for
-        old callers that still read ``snapshot_name``.
-        """
-        warnings.warn(
-            "ReconnectableClient.save_weights_for_sampler_ext() is deprecated; "
-            "use save_weights_for_sampler() and read the returned .path instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        save_kwargs = {
-            "checkpoint_type": checkpoint_type,
-            "timeout": timeout,
-        }
-        if export_precision is not None:
-            save_kwargs["export_precision"] = export_precision
-        saved = self.save_weights_for_sampler(name, **save_kwargs)
-        return SimpleNamespace(path=saved.path, snapshot_name=saved.path)
 
     def save_weights_for_sampler(
         self,

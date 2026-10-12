@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Async RL on the Fireworks serverless training and sampling pool.
 
-The scheduler, rollout contract, batching, telemetry, and one-update-per-batch
-semantics match :mod:`training.recipes.async_rl_loop`. The resource lifecycle is
-serverless: no trainer job or inference deployment is provisioned. A training
-session publishes each policy version with ``save_weights_for_sampler`` and the
-next rollout version samples through a session-bound sampling client.
+The scheduler, rollout contract, batching, telemetry, one-update-per-batch
+semantics and objective match :mod:`training.recipes.async_rl_loop`: each chunk
+trains with the trainer's built-in GRPO loss, clipped against the rollout
+logprobs. The resource lifecycle is serverless: no trainer job or inference
+deployment is provisioned. A training session publishes each policy version with
+``save_weights_for_sampler`` and the next rollout version samples through a
+session-bound sampling client.
 """
 
 # TODO: Fold this experiment into ``training.recipes.async_rl_loop`` once
@@ -17,14 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import inspect
 import logging
 import math
 import os
 import re
 import signal
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 import tinker
 from fireworks.training.sdk import FiretitanServiceClient
@@ -35,14 +36,16 @@ from fireworks.training.sdk.training_spec import (
     normalize_lr_scheduler_spec,
 )
 
-from training.recipes.async_rl_loop import (
-    RolloutEvaluationFn,
-    RolloutFn,
+from training.utils.rl.heldout import RolloutEvaluationFn, evaluation_rollout_fn
+from training.utils.rl.heldout import run_evaluation as evaluate_rollouts
+from training.utils.rl.rollout.setup import (
+    DynamicFilterFn,
     RolloutFnFactory,
     RolloutSetup,
-    make_evaluation_rollout_fn,
+    call_rollout_fn,
+    default_sample_kwargs,
+    rollout_context_names,
 )
-from training.train_loop import DynamicFilterFn
 from training.utils.termination import TerminatedBySignal
 from training.utils import (
     DEFAULT_ADAM,
@@ -57,6 +60,7 @@ from training.utils import (
 )
 from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
+from training.utils.serverless import serverless_base_url
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
@@ -64,12 +68,10 @@ from training.utils.rl.async_rl import (
     RolloutRow,
     TrainingChunk,
 )
-from training.utils.rl.grpo import make_grpo_loss_fn, validate_grpo_config
+from training.utils.rl.algorithm import grpo as objective
+from training.utils.rl.common import inference_drift_metrics
 from training.utils.rl.losses import combine_prompt_groups
-from training.utils.rl.metrics import datum_target_len
-from training.utils.rl.router_replay import warn_if_full_sequence_router_replay
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
-from training.utils.rl.tis import TISConfig
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
 logger = logging.getLogger(__name__)
@@ -81,17 +83,6 @@ __all__ = [
     "run_sampling_preflight",
 ]
 
-_ROLLOUT_CONTEXT_KWARGS = frozenset(
-    {
-        "cursor_index",
-        "row_index",
-        "epoch",
-        "rollout_idx",
-        "sample_index",
-        "end_of_epoch",
-        "evaluation",
-    }
-)
 _MAX_SNAPSHOT_NAME_LENGTH = 54
 
 
@@ -106,7 +97,6 @@ class Config:
 
     learning_rate: float = 3e-5
     lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
-    kl_beta: float = 0.0
     completions_per_prompt: int = 8
     prompt_groups_per_step: int = 8
     pipeline_chunks_per_step: int = 2
@@ -118,6 +108,8 @@ class Config:
     seed: int = 0
     max_rows: int = 320
     lora_rank: int = 64
+    lora_alpha: int = 32
+    """LoRA scaling factor; ``32`` matches the SDK's ``DEFAULT_LORA_ALPHA``."""
 
     adam_beta2: float = DEFAULT_ADAM["beta2"]
     adam_epsilon: float = DEFAULT_ADAM["eps"]
@@ -128,14 +120,10 @@ class Config:
     min_group_size: int = 8
     max_incomplete_group_retries: int = 2
 
-    router_replay: bool = True
-    router_replay_completion_only: bool = True
-    grad_accumulation_normalization: str | None = "num_loss_tokens"
     grad_clip_norm: float = 0.0
     eps_clip: float = 0.2
+    """GRPO lower clip epsilon; also the upper one unless ``eps_clip_high`` is set."""
     eps_clip_high: float | None = None
-    tis: TISConfig = field(default_factory=TISConfig)
-    anchor_logp: Literal["old_policy", "rollout"] = "old_policy"
     sample_timeout: float = 2400.0
     snapshot_prefix: str = "async-rl"
     metrics_file: str | None = None
@@ -222,27 +210,7 @@ class ServerlessSampler:
         return self._client
 
 
-def _serverless_base_url(base_url: str) -> str:
-    root = base_url.rstrip("/")
-    if root.endswith("/training/v1/serverless"):
-        return root
-    if root.endswith("/training/v1"):
-        return f"{root}/serverless"
-    return f"{root}/training/v1/serverless"
-
-
 def _validate_config(cfg: Config) -> None:
-    validate_grpo_config(
-        kl_beta=cfg.kl_beta,
-        eps_clip=cfg.eps_clip,
-        eps_clip_high=cfg.eps_clip_high,
-        anchor_logp=cfg.anchor_logp,
-    )
-    if cfg.kl_beta != 0:
-        raise ValueError(
-            "serverless async RL does not provision a reference model; "
-            "kl_beta must be 0"
-        )
     positive = {
         "completions_per_prompt": cfg.completions_per_prompt,
         "prompt_groups_per_step": cfg.prompt_groups_per_step,
@@ -285,6 +253,8 @@ def _validate_config(cfg: Config) -> None:
         raise ValueError("max_completion_tokens must be smaller than max_seq_len")
     if cfg.lora_rank < 1:
         raise ValueError("serverless async RL requires lora_rank >= 1")
+    if cfg.lora_alpha < 1:
+        raise ValueError("lora_alpha must be >= 1")
     if not 0.0 <= cfg.adam_beta2 < 1.0:
         raise ValueError("adam_beta2 must be in [0, 1)")
     if cfg.adam_epsilon <= 0.0:
@@ -293,27 +263,13 @@ def _validate_config(cfg: Config) -> None:
         raise ValueError("weight_decay must be >= 0")
     if cfg.dcp_save_interval < 0:
         raise ValueError("dcp_save_interval must be >= 0")
-    if cfg.grad_accumulation_normalization not in {None, "num_loss_tokens"}:
-        raise ValueError(
-            "grad_accumulation_normalization must be None or 'num_loss_tokens'"
-        )
-
-
-def _rollout_context_param_names(rollout_fn: RolloutFn) -> frozenset[str]:
-    parameters = inspect.signature(rollout_fn).parameters
-    if any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
-    ):
-        return _ROLLOUT_CONTEXT_KWARGS
-    return _ROLLOUT_CONTEXT_KWARGS & parameters.keys()
 
 
 def _make_service(api_key: str, base_url: str) -> FiretitanServiceClient:
     headers = read_api_extra_headers_env()
     return FiretitanServiceClient(
         api_key=api_key,
-        base_url=_serverless_base_url(base_url),
+        base_url=serverless_base_url(base_url),
         default_headers=headers,
     )
 
@@ -360,11 +316,12 @@ def _wandb_config(cfg: Config, *, mode: str) -> dict[str, Any]:
     return {
         "mode": mode,
         "algorithm": "grpo",
-        "trainer_loss": "client",
+        "trainer_loss": f"server_{objective.LOSS_FN}",
         "base_model": cfg.base_model,
         "tokenizer_model": cfg.tokenizer_model,
         "tokenizer_revision": cfg.tokenizer_revision,
         "lora_rank": cfg.lora_rank,
+        "lora_alpha": cfg.lora_alpha,
         "learning_rate": cfg.learning_rate,
         "adam_beta2": cfg.adam_beta2,
         "adam_epsilon": cfg.adam_epsilon,
@@ -380,15 +337,8 @@ def _wandb_config(cfg: Config, *, mode: str) -> dict[str, Any]:
         "step_offset": cfg.step_offset,
         "resolved_rows_offset": cfg.resolved_rows_offset,
         "dcp_save_interval": cfg.dcp_save_interval,
-        "grad_accumulation_normalization": cfg.grad_accumulation_normalization,
-        "router_replay_completion_only": cfg.router_replay_completion_only,
-        "kl_beta": cfg.kl_beta,
         "eps_clip": cfg.eps_clip,
         "eps_clip_high": cfg.eps_clip_high,
-        "tis_cap": cfg.tis.cap,
-        "tis_level": cfg.tis.level,
-        "tis_icepop_threshold": cfg.tis.icepop_threshold,
-        "anchor_logp": cfg.anchor_logp,
     }
 
 
@@ -398,50 +348,38 @@ def _rollout_setup(
     tokenizer: Any,
     sampler: ServerlessSampler,
     api_key: str,
-    extras: dict[str, Any] | None,
     router_replay_enabled: bool,
 ) -> RolloutSetup:
-    sample_kwargs: dict[str, Any] = {
-        "max_tokens": cfg.max_completion_tokens,
-        "temperature": cfg.temperature,
-        "top_p": 1.0,
-        "top_k": 0,
-        "max_seq_len": cfg.max_seq_len,
-        "http_timeout": cfg.sample_timeout,
-        "logprobs": True,
-    }
-    if router_replay_enabled:
-        sample_kwargs.update(
-            include_routing_matrix=True,
-            echo=not cfg.router_replay_completion_only,
-        )
     return RolloutSetup(
+        sampler=sampler,
         tokenizer=tokenizer,
         tokenizer_id=cfg.tokenizer_model,
-        sample_kwargs=sample_kwargs,
+        sample_kwargs=default_sample_kwargs(
+            max_tokens=cfg.max_completion_tokens,
+            temperature=cfg.temperature,
+            max_seq_len=cfg.max_seq_len,
+            http_timeout=cfg.sample_timeout,
+            router_replay=router_replay_enabled,
+        ),
+        completions_per_prompt=cfg.completions_per_prompt,
         inference_base_url=sampler.base_url,
         api_key=api_key,
         model=sampler.model,
-        completions_per_prompt=cfg.completions_per_prompt,
-        extras=dict(extras or {}),
-        sampler=sampler,
     )
 
 
 def _router_replay_enabled(
-    cfg: Config, *, api_key: str, base_url: str, training_client: Any | None = None
+    cfg: Config, *, api_key: str, base_url: str, training_client: Any
 ) -> bool:
-    enabled = resolve_router_replay_enabled(
-        requested=cfg.router_replay,
+    """R3 for MoE policies, decided from the bound trainer's create response."""
+    return resolve_router_replay_enabled(
+        requested=True,
         api_key=api_key,
         base_url=base_url,
         additional_headers=read_api_extra_headers_env(),
         base_model=cfg.base_model,
         training_client=training_client,
     )
-    if enabled:
-        warn_if_full_sequence_router_replay(cfg.router_replay_completion_only)
-    return enabled
 
 
 def run_sampling_preflight(
@@ -449,7 +387,6 @@ def run_sampling_preflight(
     *,
     rollout_fn_factory: RolloutFnFactory,
     evaluation_fn: RolloutEvaluationFn,
-    rollout_extras: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate a zero-update LoRA snapshot without mutating training state."""
 
@@ -470,6 +407,7 @@ def run_sampling_preflight(
         training_client = service.create_lora_training_client(
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
+            alpha=cfg.lora_alpha,
         )
         sampling_client, _snapshot = _create_snapshot_sampling_client(
             service=service,
@@ -483,7 +421,6 @@ def run_sampling_preflight(
             tokenizer=tokenizer,
             sampler=sampler,
             api_key=api_key,
-            extras=rollout_extras,
             router_replay_enabled=_router_replay_enabled(
                 cfg,
                 api_key=api_key,
@@ -492,11 +429,10 @@ def run_sampling_preflight(
             ),
         )
         rollout_fn = rollout_fn_factory(setup)
-        evaluation_rollout_fn = make_evaluation_rollout_fn(rollout_fn)
 
         async def evaluate() -> dict[str, Any]:
             try:
-                metrics = await evaluation_fn(0, evaluation_rollout_fn)
+                metrics = await evaluation_fn(0, evaluation_rollout_fn(rollout_fn))
                 result = dict(metrics or {})
                 log_metrics(
                     {"rollout/step": 0, **result},
@@ -521,53 +457,6 @@ def run_sampling_preflight(
             wandb_finish(metrics_file=cfg.metrics_file)
 
 
-def _require_aligned_logprobs(
-    data: list[tinker.Datum],
-    logprobs: list[list[float]],
-    *,
-    source: str,
-) -> None:
-    if len(logprobs) != len(data):
-        raise ValueError(
-            f"serverless client GRPO requires one {source} row per datum; "
-            f"got {len(logprobs)} rows for {len(data)} datums"
-        )
-    for index, (datum, row) in enumerate(zip(data, logprobs, strict=True)):
-        expected = datum_target_len(datum)
-        if not row or len(row) != expected:
-            raise ValueError(
-                f"serverless client GRPO {source} row {index} must align with "
-                f"target_tokens; got {len(row)} values for {expected} targets"
-            )
-
-
-def _require_inference_metrics(result: Any) -> None:
-    metrics = getattr(result, "metrics", None) or {}
-    required = (
-        "inference_k1",
-        "inference_k3",
-        "raw_inference_logprob_coverage",
-    )
-    missing = [name for name in required if name not in metrics]
-    if missing:
-        raise RuntimeError(
-            "serverless client GRPO did not report train/inference metrics: "
-            + ", ".join(missing)
-        )
-    for name in required:
-        value = float(metrics[name])
-        if not math.isfinite(value):
-            raise RuntimeError(
-                f"serverless client GRPO metric {name} is not finite: {value}"
-            )
-    if float(metrics["inference_k3"]) < 0:
-        raise RuntimeError("serverless client GRPO inference_k3 must be non-negative")
-    if float(metrics["raw_inference_logprob_coverage"]) != 1.0:
-        raise RuntimeError(
-            "serverless client GRPO raw inference logprob coverage must be 1.0"
-        )
-
-
 def main(
     config: Config,
     *,
@@ -576,12 +465,12 @@ def main(
     evaluation_fn: RolloutEvaluationFn | None = None,
     evaluation_interval: int = 1,
     rows: list[dict[str, Any]] | None = None,
-    rollout_extras: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Train with shared async scheduling and serverless weight publication."""
 
     cfg = config
     _validate_config(cfg)
+    policy_loss = objective.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be >= 1")
 
@@ -610,6 +499,7 @@ def main(
         training_client = service.create_lora_training_client(
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
+            alpha=cfg.lora_alpha,
         )
         if cfg.init_from_checkpoint:
             training_client.load_state_with_optimizer(cfg.init_from_checkpoint).result()
@@ -631,12 +521,10 @@ def main(
             tokenizer=tokenizer,
             sampler=sampler,
             api_key=api_key,
-            extras=rollout_extras,
             router_replay_enabled=router_replay_enabled,
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
-        rollout_context_names = _rollout_context_param_names(rollout_fn)
-        evaluation_rollout_fn = make_evaluation_rollout_fn(rollout_fn)
+        context_names = rollout_context_names(rollout_fn)
         if rows is None:
             rows = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
         else:
@@ -682,12 +570,7 @@ def main(
                         "end_of_epoch": row_index == rows_per_epoch - 1,
                         "evaluation": False,
                     }
-                    if rollout_context_names:
-                        return rollout_fn(
-                            sample_prompt,
-                            **{name: context[name] for name in rollout_context_names},
-                        )
-                    return rollout_fn(sample_prompt)
+                    return call_rollout_fn(rollout_fn, sample_prompt, context, context_names)
 
                 yield RolloutRow(
                     row_id=index,
@@ -699,66 +582,18 @@ def main(
                 )
 
         def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
-            groups = list(chunk.groups)
-            (
-                data,
-                advantages,
-                ref_logprobs,
-                prompt_lens,
-                rollout_logprobs,
-                raw_inference_logprobs,
-            ) = combine_prompt_groups(groups, include_raw=True)
-            _require_aligned_logprobs(
-                data,
-                rollout_logprobs,
-                source="rollout behavior logprob",
-            )
-            _require_aligned_logprobs(
-                data,
-                raw_inference_logprobs,
-                source="raw inference logprob",
-            )
-            precomputed_forward = None
-            if cfg.anchor_logp == "old_policy":
-                with elapsed_timer("old_policy_forward"):
-                    old_policy_result = training_client.forward(
-                        data,
-                        "cross_entropy",
-                    ).result()
-                old_policy_logprobs = [
-                    output["logprobs"].data
-                    for output in old_policy_result.loss_fn_outputs
-                ]
-                _require_aligned_logprobs(
-                    data,
-                    old_policy_logprobs,
-                    source="old-policy logprob",
-                )
-                precomputed_forward = old_policy_result
-            else:
-                old_policy_logprobs = rollout_logprobs
+            """One server-side GRPO forward/backward, clipped against the rollout logprobs."""
+            batch = combine_prompt_groups(list(chunk.groups))
+            # Fork recipes: see the commented block in recipes/async_rl_loop.py
+            # (recompute the anchor, truncated IS, another objective).
+            datums = objective.build_datums(batch, policy_loss)
             with elapsed_timer("fwd_bwd"):
-                result = training_client.forward_backward_custom(
-                    data,
-                    make_grpo_loss_fn(
-                        advantages=advantages,
-                        ref_logprobs=ref_logprobs,
-                        prompt_len=prompt_lens,
-                        inf_logprobs=rollout_logprobs,
-                        old_policy_logprobs=old_policy_logprobs,
-                        kl_beta=cfg.kl_beta,
-                        eps_clip=cfg.eps_clip,
-                        eps_clip_high=cfg.eps_clip_high,
-                        tis_config=cfg.tis,
-                        raw_inf_logprobs=raw_inference_logprobs,
-                    ),
-                    precomputed_forward=precomputed_forward,
+                result = training_client.forward_backward(
+                    datums, objective.LOSS_FN, loss_fn_config=objective.loss_fn_config(policy_loss)
                 ).result()
-                result.metrics["custom_forward_reused"] = float(
-                    precomputed_forward is not None
-                )
-            _require_inference_metrics(result)
-            return {"prompt_groups": groups, "fwd_bwd_result": result}
+            result.metrics.update(objective.metrics(batch, result, policy_loss))
+            result.metrics.update(inference_drift_metrics(batch, result))
+            return {"prompt_groups": batch.groups, "fwd_bwd_result": result}
 
         def optimizer_step(step: int) -> dict[str, Any]:
             learning_rate = compute_lr(
@@ -774,11 +609,11 @@ def main(
             adam_kwargs["weight_decay"] = cfg.weight_decay
             params = tinker.AdamParams(learning_rate=learning_rate, **adam_kwargs)
             with elapsed_timer("optim_step"):
+                # Chunks add token-summed losses; normalize the step to a
+                # per-token mean. Global/RMS grad norms only.
                 result = training_client.optim_step(
                     params,
-                    grad_accumulation_normalization=(
-                        cfg.grad_accumulation_normalization
-                    ),
+                    grad_accumulation_normalization=objective.NORMALIZATION,
                     emit_grad_norm_metrics=True,
                 ).result()
             return {"result": result, "learning_rate": learning_rate}
@@ -804,31 +639,8 @@ def main(
             return str(path)
 
         async def run_evaluation(step: int) -> None:
-            if evaluation_fn is None:
-                return
-            with wall_timer(
-                "evaluation",
-                category="evaluation",
-                attributes={"step": step},
-            ) as span:
-                try:
-                    metrics = await evaluation_fn(step, evaluation_rollout_fn)
-                except Exception:
-                    logger.exception("evaluation failed at policy step %d", step)
-                    metrics = None
-                    failed = 1.0
-                else:
-                    failed = 0.0
-            log_metrics(
-                {
-                    "rollout/step": step,
-                    "eval/wall_time": span.elapsed,
-                    **(metrics or {}),
-                    "eval/failed": failed,
-                },
-                step=step,
-                metrics_file=cfg.metrics_file,
-            )
+            metrics = await evaluate_rollouts(step, evaluation_fn, rollout_fn)
+            log_metrics({"rollout/step": step, **metrics}, step=step, metrics_file=cfg.metrics_file)
 
         evaluations = OverlappedEvaluation(
             run_evaluation if evaluation_fn is not None else None,
@@ -857,7 +669,6 @@ def main(
                     training_chunks_per_step=cfg.pipeline_chunks_per_step,
                     max_head_off_policy_versions=cfg.max_head_offpolicy_versions,
                     max_concurrent_rollouts=cfg.max_concurrency_rollout_sample,
-                    router_replay_completion_only=(cfg.router_replay_completion_only),
                     min_group_size=cfg.min_group_size,
                     max_incomplete_group_retries=(cfg.max_incomplete_group_retries),
                     dynamic_filter_fn=dynamic_filter_fn,

@@ -41,8 +41,9 @@ window immediately; a short cooldown avoids repeated reductions from one burst.
 
 ## Deployment sizing
 
-Harbor Mini-SWE and Pi materialize TITO artifacts in one owned, spawned CPU
-process and return the normal `RolloutRun`. This is independent of
+Every Harbor harness (`tito.rollout.HarborRollout`) materializes TITO
+artifacts in one owned, spawned CPU process and returns the normal
+`RolloutRun`. This is independent of
 the negotiated communication version. Keep script entrypoints under `if __name__ == "__main__":`;
 close runners with `aclose()` to release the worker. Cancellation drains a
 running conversion before its temporary files are removed.

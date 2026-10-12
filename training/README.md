@@ -1,23 +1,64 @@
 # Fireworks Training Cookbook
 
-Ready-to-run training recipes for reinforcement learning, preference optimization, supervised fine-tuning, and embedding (retrieval) fine-tuning on [Fireworks](https://fireworks.ai).
-Each recipe is a single Python file you can fork and customize.
+Training loops for RL, preference optimization, SFT and embedding fine-tuning
+on [Fireworks](https://fireworks.ai). Full docs: [Training API](https://docs.fireworks.ai/fine-tuning/training-api/introduction).
 
-> **Full documentation**: For detailed guides on each recipe, configuration reference, and the underlying SDK, see the [Training API documentation](https://docs.fireworks.ai/fine-tuning/training-api/introduction).
+## Layout
+
+The tree is layered so each kind of change has one home:
+
+```
+recipes/              One file per training loop; fork to change the algorithm
+recipes/experiment/   Loops not yet stable (serverless async RL, SAO/PPO)
+utils/                Reusable pieces recipes assemble: config, data, losses,
+                      rollout helpers, metrics (structured, per step)
+examples/             Task code + one recipe call; no loop logic
+  sft/ dpo/ orpo/ embedding/ distillation/
+  rl/                 deepmath (text) · visual_toolbench (vision) ·
+                      frozen_lake (multi-turn env) · multihop_qa (IGPO) ·
+                      experiment/sao
+  harbor_rl/          Sandboxed agentic RL: tasks/ × harnesses/ over tito/
+  tools/              Standalone checkpoint, promotion and trainer utilities
+  archive/            Deprecated examples, kept importable; do not extend
+case-studies/         End-to-end notebooks (data -> eval -> train -> eval)
+renderer/             Chat renderers and parity verifier
+tests/                Unit and smoke tests
+```
+
+Inside an example folder, `train_<task>.py` runs on a dedicated trainer +
+deployment and `train_<task>_serverless.py` on the shared serverless pool with
+the same task code. A new task belongs in `examples/`; a new objective in a
+forked recipe; anything two recipes need in `utils/`.
 
 ## Recipes
 
-| Recipe | File | Description |
+| Recipe | File | What it does |
 | --- | --- | --- |
-| GRPO | `recipes/rl_loop.py` | Opinionated synchronous RL using group-normalized advantages and a direct client-side GRPO loss. |
-| SAO / PPO + value head (experimental) | `recipes/experiment/ppo_value_head_loop.py` | Token-level PPO with separate actor and critic trainers and an independent critic projection head; `sao_config()` switches to SAO (DIS, adaptive GAE, faster critic updates, value pretraining). Not validated for every model. |
-| Async GRPO | `recipes/async_rl_loop.py` | The same client-side GRPO update with rollout/train overlap and bounded off-policy staleness. |
-| IGPO (multi-turn turn-level Information Gain) | `recipes/igpo_loop.py` | GRPO + per-turn IG rewards for agent trajectories (Wang et al., ICLR 2026). |
-| Distillation / OPD | `recipes/distillation_loop.py` | Sampled-token on-policy distillation. The student rolls out on policy, one or more teachers score those same tokens, and training uses the server-side importance-sampling loss. |
-| DPO | `recipes/dpo_loop.py` | Direct preference optimization with cached reference logprobs. |
-| ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization -- no reference model needed. |
-| SFT | `recipes/sft_loop.py` | Supervised fine-tuning with response-only cross-entropy loss. |
-| Embedding | `recipes/embedding_loop.py` | Retrieval/embedding fine-tuning with bidirectional in-batch InfoNCE on `(query, positive)` pairs. Three interchangeable trainer modes: `embedding`, `cos_similarity_matrix`, `contrastive_loss`. |
+| GRPO | `recipes/rl_loop.py` | Synchronous on-policy RL; trainer's built-in GRPO loss clipped against rollout logprobs. IGPO runs here via `prepare_batch_fn` |
+| Async GRPO | `recipes/async_rl_loop.py` | Same update with rollout/train overlap and bounded staleness |
+| Distillation / OPD | `recipes/distillation_loop.py` | On-policy distillation from a frozen teacher's token scores |
+| SDFT | `recipes/sdft_loop.py` | Top-K self-distillation on serverless |
+| DPO | `recipes/dpo_loop.py` | Preference optimization with cached reference logprobs |
+| ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization; no reference model |
+| SFT | `recipes/sft_loop.py` | Response-only cross-entropy; `serverless=True` uses the shared pool |
+| Embedding | `recipes/embedding_loop.py` | In-batch InfoNCE on `(query, positive)` pairs |
+| SAO / PPO (experimental) | `recipes/experiment/ppo_value_head_loop.py` | Actor-critic with a value-head critic; see [`examples/rl/experiment/sao/`](examples/rl/experiment/sao/) |
+| Serverless async RL (experimental) | `recipes/experiment/async_rl_loop_serverless.py` | Async GRPO on the shared LoRA pool |
+
+For each prompt group, GRPO centers and scales rewards into advantages
+$A_i=(R_i-\bar R)/(s_R+\varepsilon)$. For a sampled token, let
+$\rho_{i,t}=\exp(\ell_{\theta,i,t}-\ell_{\mathrm{rollout},i,t})$. The
+clipped objective is $-\sum_{i,t}m_{i,t}\min(\rho_{i,t}A_i,
+\operatorname{clip}(\rho_{i,t},1-\epsilon,1+\epsilon)A_i)$, where the
+mask $m$ selects completion tokens. Forward/backward accumulates this sum;
+`optim_step(NUM_LOSS_TOKENS)` divides the accumulated gradient by
+$\sum_{i,t}m_{i,t}$ once before clipping and updating. Async chunks share
+that denominator across the whole optimizer step. The default loop uses no
+frozen-reference KL term. Per-step `train/*`, `perf/*` and `sampler/*` metrics
+separate optimization, timing and sampling behavior.
+
+To train another RL objective, fork a recipe and replace its `forward_backward`
+call; see [`rl-custom-loss.md`](../skills/fireworks-training/references/rl-custom-loss.md).
 
 ## Case studies
 
@@ -35,280 +76,24 @@ Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each 
 | [multilora_fleet](case-studies/multilora_fleet) | LoRA SFT + multi-LoRA serving (Python SDK) | MASSIVE (51 locales) | One deployment, a per-tenant specialist for every locale | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/multilora_fleet/multilora_fleet.ipynb) |
 | [grpo_countdown](case-studies/grpo_countdown) | Serverless non-agentic GRPO (Training API SDK) | TinyZero Countdown | Own the single-turn GRPO loop on serverless; same algorithm as a dedicated config swap | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/grpo_countdown/countdown_grpo.ipynb) |
 
-**Setup.** Most are independent of the cookbook install above — just `pip install fireworks-ai eval-protocol` (a couple add extras, noted in their own READMEs) and a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). Exceptions: case studies that import the cookbook's `training.*` modules — currently `grpo_countdown` (imports `examples/serverless_rl`) — need the cookbook training install (`uv pip install -e .`, which pulls `tinker`). Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
+**Setup.** Most are independent of the cookbook install above — just `pip install fireworks-ai eval-protocol` (a couple add extras, noted in their own READMEs) and a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). Exceptions: case studies that import the cookbook's `training.*` modules — currently `grpo_countdown` (imports `examples/archive/countdown`) — need the cookbook training install (`uv pip install -e .`, which pulls `tinker`). Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
 
 ## Getting started
 
-### 1. Clone and install
-
 ```bash
-git clone https://github.com/fw-ai/cookbook.git
-cd cookbook/training
-
-# Install uv (skip if already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Create and activate a virtual environment
-uv venv --python 3.12
-source .venv/bin/activate
-
-# Install this package in editable mode.
-# Dependencies, including the Fireworks training SDK, are pulled from pyproject.toml.
-uv pip install -e .
+git clone https://github.com/fw-ai/cookbook.git && cd cookbook/training
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install -e .                      # pulls fireworks-ai[training]>=1.2.22,<2
+export FIREWORKS_API_KEY=...             # or put it in training/.env
+python -m training.examples.sft.train_sft --help
 ```
 
-> **Training uses the 1.x SDK.** This cookbook requires
-> `fireworks-ai[training]>=1.2.21,<2`, which is available as a stable release;
-> `--pre` is not required. The legacy `0.19.20` package has no
-> `fireworks.training` module. Install the cookbook dependencies above before
-> running recipes.
-
-### 2. Set your credentials
-
-Create a `.env` file in the `training/` directory (picked up automatically via `python-dotenv`):
-
-```bash
-FIREWORKS_API_KEY="your-api-key"
-```
-
-Or export it directly:
-
-```bash
-export FIREWORKS_API_KEY="..."
-```
-
-### 3. Configure your recipe
-
-Each recipe has a `Config` dataclass at the top of the file. Open the recipe you want to run and edit the `if __name__ == "__main__"` block at the bottom. Here are the fields you **must** set:
-
-**All recipes:**
-
-| Field | What to set |
-| --- | --- |
-| `dataset` | Path to your JSONL training data |
-| `base_model` | Fireworks model ID (e.g. `"accounts/fireworks/models/qwen3-8b"`) |
-| `max_seq_len` | Max token length for training examples |
-| `trainer` | Optional trainer job and shape overrides. Leave as `TrainerConfig()` for SDK-managed defaults, or set `training_shape_id` when you need a specific shape. |
-
-**SFT** (`recipes/sft_loop.py`) -- also requires:
-
-| Field | What to set |
-| --- | --- |
-| `tokenizer_model` | HuggingFace model name matching your base model (e.g. `"Qwen/Qwen3-8B"`) |
-
-**Embedding** (`recipes/embedding_loop.py`) -- also requires:
-
-| Field | What to set |
-| --- | --- |
-| `tokenizer_model` | HuggingFace model name matching your base model (e.g. `"Qwen/Qwen3-Embedding-8B"`) |
-| `output_mode` | `embedding` (default), `cos_similarity_matrix`, or `contrastive_loss` -- three points on the client/server compute split for the same bidirectional InfoNCE loss |
-
-Dataset rows are `(query, positive)` pairs, one JSON object per line:
-`{"query": "...", "positive": "..."}`. Training uses in-batch negatives, so
-`batch_size` must be `>= 2` and the dataset must contain at least `batch_size`
-pairs (it fails loudly otherwise). `cos_similarity_matrix` additionally requires
-the whole batch to fit in a single request (single-GPU / DP=1 trainer).
-
-This recipe truncates each side with `max_query_len` / `max_doc_len` rather than
-a single `max_seq_len`; the trainer context is provisioned to fit the larger of
-the two.
-
-**RL** (`recipes/rl_loop.py`) -- also requires:
-
-| Field | What to set |
-| --- | --- |
-| `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for inference rollouts |
-
-The synchronous recipe always hotloads before the first rollout and after
-every optimizer step. It has no sampler-refresh cadence knob.
-
-**SAO / PPO with an independent value head** (experimental;
-`recipes/experiment/ppo_value_head_loop.py`) trains two models from the same base model:
-
-- the actor samples responses and learns from token-level advantages;
-- the critic predicts one value per token through a separate projection head;
-- actor and critic checkpoints are saved independently.
-
-The default `critic_projection_head_dim=1` produces one raw scalar per token.
-For a categorical critic, set a dimension greater than one and provide an
-equally sized `critic_value_support`; the recipe decodes the value as the
-softmax expectation over that support.
-
-Set `critic_projection_head_dim` to a positive value to create the critic's
-projection head. `critic_trainer.training_shape_id` can identify any compatible
-validated training shape; the shape does not configure the head. Alternatively,
-set `critic_trainer.job_id` to reattach a trainer created with the same head
-dimension.
-
-The default `Config` is that reference-PPO baseline. `sao_config(log_path,
-**overrides)` applies the SAO settings (`SAO_SETTINGS`; SAO is Single-rollout
-Asynchronous Optimization, arXiv 2607.07508):
-
-- DIS actor loss against rollout logprobs;
-- response-length-adaptive GAE;
-- two critic updates per rollout batch and post-update actor advantages;
-- MLP-only critic LoRA;
-- optional value pretraining with held-out checkpoint selection.
-
-See the [Qwen3-4B SAO example](examples/rl/SAO/QWEN3_4B_SAO.md) for a runnable
-four-prompt smoke test and a DeepMath starting point.
-
-Weight sync automatically uses RDMA for dedicated full-parameter training when
-the trainer and every inference replica advertise RDMA support. LoRA and older
-images use save-weights followed by file hotload. Missing capability fields
-mean unsupported; setting `weight_sync_transport="RDMA"` does not bypass this
-check. The negotiated result is available as `policy.supports_rdma_weight_sync`.
-Errors during an RDMA transfer are surfaced instead of retrying with files.
-Deployments using gateway shard fan-out also use FILE hotload.
-
-Recipes create the publication callback once, after attaching the policy client:
-
-```python
-from training.utils.service import make_weight_sync
-
-# policy is the cookbook's ReconnectableClient; service owns the deployment.
-publish_weights = make_weight_sync(policy, service, cfg.deployment)
-
-# Before the first rollout and after each optimizer step:
-publish_weights(f"step-{step}")
-```
-
-The `if` is centralized in [`make_weight_sync`](utils/service.py):
-
-| Negotiated capability at setup | Publication calls |
-| --- | --- |
-| `supports_rdma_weight_sync is True` | `policy.weight_sync()` |
-| False or missing, including LoRA and older SDKs | `saved = policy.save_weights_for_sampler(name)`, then `service.hotload_sampler_snapshot(saved.path)` |
-
-These cookbook calls wait for completion. Keep using the same callback throughout
-the run: the SDK's `weight_sync()` rechecks runtime support and performs the two
-FILE steps itself if support disappears. Recipes do not need another `if` inside
-the training loop. See the [RL recipe](recipes/rl_loop.py) and
-[FrozenLake example](examples/rl/frozen_lake/train_frozen_lake.py).
-
-**Distillation / OPD** (`recipes/distillation_loop.py`) -- also requires:
-
-| Field | What to set |
-| --- | --- |
-| `teacher_model` | Fireworks teacher model or deployment ID using the same tokenizer as the student |
-| `deployment` | `DeployConfig(tokenizer_model="Qwen/Qwen3-8B")` for student rollouts |
-
-If `teacher_model` is a base model resource such as
-`accounts/fireworks/models/qwen3p5-9b`, the distillation recipe creates or reuses a
-separate teacher inference deployment for scoring during provisioning. Set
-`teacher_deployment_id` to pin that deployment name. If `teacher_model` is
-already a deployment/deployed model resource, the recipe uses it directly.
-
-Distillation rows can include `teacher_messages` for privileged teacher context. The
-student samples from `messages`; the frozen teacher scores the sampled response
-under `teacher_messages`. If `teacher_messages` is absent, the recipe falls
-back to the student prompt. The aliases `privileged_messages` and
-`teacher_prompt_messages` are also accepted.
-
-For multi-teacher SDFT (`distill_mode="topk_forward_kl"`), every teacher scores
-the same sampled response and the recipe blends teacher top-K probability mass
-over the union of token ids. Set `TeacherConfig.blend_weight` to weight a
-teacher in that blend; omitted weights default to `1.0`. Sampled reverse-KL OPD
-still routes each row to one teacher and does not blend.
-
-The recipes create SDK-managed training and sampling clients directly.
-They do not require explicit trainer-job, deployment, or sampler setup.
-When `training_shape_id` is not set, the SDK selects validated runtime
-defaults. Explicit `training_shape_id`, `reference_training_shape_id`, and
-deployment-shape overrides still take precedence.
-
-**Do not create deployments without a [shape](https://docs.fireworks.ai/faq-new/deployment-infrastructure/what-is-a-deployment-shape).** Shapeless deployments are the most common cause of failed deployment creations, and the shapeless path will be deprecated. Find deployable shapes for a model with `firectl deployment-shape-version match --model <MODEL>` (or pass `default` to let the server pick one). The cookbook resolves the deployment shape from the training shape profile automatically. Fields such as replica count override a shape when set; the shape owns accelerator selection.
-
-To launch trainers with replicated HSDP, set the run-level replica count on
-`TrainerConfig`; it is not part of the validated training shape:
-
-```python
-config = rl_loop.Config(
-    base_model="accounts/fireworks/models/qwen3-8b",
-    trainer=TrainerConfig(
-        training_shape_id="accounts/fireworks/trainingShapes/your-shape",
-        replica_count=2,
-    ),
-    deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
-)
-```
-
-The example entrypoints expose the same setting as `--trainer-replicas 2`.
-It applies to trainer jobs the recipe creates for that run; a pre-created
-`trainer.job_id` value is reused as-is.
-
-Trainers default to reservation-first placement
-(`TrainerConfig(use_reservation=True)`). Set `use_reservation=False` to use
-shared trainer capacity instead. DPO policy and dedicated reference trainers
-inherit the setting and try independently. A pre-created `trainer.job_id` is
-reused as-is.
-
-**LoRA RL** -- set `lora_rank` to train an adapter:
-
-| Field | What to set |
-| --- | --- |
-| `lora_rank` | Rank of the LoRA adapter (e.g. `64`, `128`) |
-
-The generic GRPO recipes default to `kl_beta=0.001` and provision a reference
-for the direct client loss. Set `kl_beta=0` to skip it. To switch to the trainer
-built-in or another research loss, follow
-[`custom-loss.md`](../skills/fireworks-training/references/rl-custom-loss.md)
-in the canonical training skill.
-
-**DPO / ORPO** -- also requires:
-
-| Field | What to set |
-| --- | --- |
-| `tokenizer_model` | HuggingFace model name matching your base model |
-
-### 4. Run
-
-```bash
-cd cookbook/training
-python -m recipes.sft_loop      # or whichever recipe you configured
-```
-
-## Useful examples
-
-- `examples/tools/promote_checkpoint.py` queries the control plane (`list_checkpoints(job_id)`) for the trainer job's promotable rows and calls the promotion API. No `checkpoints.jsonl`, no temporary trainer — pass `--job-id <id>` and `--base-model <model>` and pick which checkpoint via `--checkpoint-name` / `--step` (default: newest promotable).
-- `examples/tools/merge_lora_and_promote.py` merges a LoRA/PEFT adapter into its base (`checkpoint_type="merged_base"`) and promotes the result as a full `HF_BASE_MODEL`. Pass `--adapter-model accounts/<acct>/models/<lora-id>` (a `gs://` path still works via `--adapter-gcs`). Source-format export is the recommended default and is discovered from model metadata. Optional `--export-precision` is an advanced output override for BF16, NVFP4, MXFP8, or block-128 FP8; use it at your own risk because an explicit format may not match the model or downstream serving precision, and validate serving load before promotion.
-- `examples/tools/reconnect_and_adjust_lr.py` shows how to reconnect to an already-running trainer job and resume training with a different learning rate.
-
-## Documentation
-
-For detailed guides, configuration reference, and examples, see the official documentation:
-
-- [Introduction & Quickstart](https://docs.fireworks.ai/fine-tuning/training-api/introduction)
-- [Cookbook recipes (SFT, RL, DPO, ORPO)](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/overview)
-- [Configuration reference](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/reference)
-
-## Directory layout
-
-```
-recipes/                                Training loop scripts (fork these)
-recipes/experiment/                     Experimental recipe variants, including async serverless RL and SAO/PPO
-utils/                                  Shared config, data loading, loss functions, metrics
-examples/sft/                           Worked example: SFT getting started
-examples/embedding/                     Worked example: embedding (retrieval) fine-tuning
-examples/dpo/                           Worked example: DPO
-examples/orpo/ifeval/                   Worked example: IFEval with ORPO
-examples/rl/SAO/                        Experimental Qwen3-4B SAO/PPO example
-examples/rl/deepmath/                   GRPO on DeepMath (rl_loop)
-examples/rl/frozen_lake/                Frozen Lake tool-use RL (custom loop)
-examples/rl/single_turn_token_in/       Async RL single-turn, token-in rollout
-examples/rl/harbor/opencode/            Multi-turn OpenCode through a TITO sidecar
-examples/rl/harbor/pi/                  Multi-turn Pi through a TITO sidecar
-examples/rl/harbor/mini_swe/            Multi-turn Mini-SWE-Agent through a TITO sidecar
-examples/rl/harbor/recipes/             DABstep and Terminal-Bench RL recipes
-examples/serverless_rl/                 Serverless (Tinker-style) RL on Countdown -- no provisioning
-examples/serverless_dpo/                Serverless DPO preference training -- no provisioning
-examples/serverless_sft/               Serverless (Tinker-style) SFT with DCP checkpoints, resume, promote
-examples/distillation/                  Distillation examples, including routed MOPD
-examples/multihop_qa/                   Multi-hop QA async RL (+ optional IGPO turn-level scoring)
-examples/manual/                        Manual hotload-scope tests (PER_TRAINER / PER_DEPLOYMENT)
-examples/tools/                         Standalone utility scripts
-tests/                                  Unit and end-to-end tests
-```
+Each recipe's `Config` dataclass documents its fields. Leave `TrainerConfig()`
+empty for SDK-selected defaults, or set `training_shape_id`; deployments resolve
+their shape from the training shape. Weight sync, shapes, HSDP replicas,
+reservations and distillation teachers are covered by the
+[skills](../skills/GETTING-STARTED.md) and the
+[configuration reference](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/reference).
 
 ## Tests
 
@@ -316,19 +101,3 @@ tests/                                  Unit and end-to-end tests
 uv pip install -e ".[dev]"
 pytest tests/
 ```
-
-Coverage for the training entrypoints:
-
-```bash
-cd training
-pytest -q tests/unit tests/test_smoke_imports.py examples/rl/frozen_lake/test_masking.py \
-  --cov=. \
-  --cov-report=term-missing \
-  --cov-report=json:coverage.json
-python tests/coverage_summary.py coverage.json
-```
-
-See [issues/training-script-coverage-baseline.md](./issues/training-script-coverage-baseline.md)
-for the current baseline and
-[issues/training-script-coverage-roadmap.md](./issues/training-script-coverage-roadmap.md)
-for the expansion plan.

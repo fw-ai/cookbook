@@ -12,12 +12,10 @@ if [ -n "$missing_vars" ]; then
     exit 1
 fi
 
-# output-mode: embedding | cos_similarity_matrix | contrastive_loss
 python train_embedding.py \
     --base-model accounts/fireworks/models/qwen3-embedding-8b \
     --tokenizer-model Qwen/Qwen3-Embedding-8B \
     --dataset-path retrieval_pairs.jsonl \
-    --output-mode embedding \
     --epochs 3 \
     --batch-size 8 \
     --temperature 0.02 \

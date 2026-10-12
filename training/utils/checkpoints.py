@@ -10,11 +10,9 @@ the recipe step and ``data_consumed`` cursor.
 
 The helpers centralize checkpoint naming and resume metadata handling.
 
-Keep in sync: ``dataloader.json`` has readers outside this repo's unit tests.
-``train-firetitan-py/e2e_tests/training_shape_validate/shape_e2e.py``
-resolves resume/gate checkpoints from it in shape CI; any schema change here
-must update that reader (both schemas) in the same change. Managed serverless
-job resume also reads the versioned manifest to select complete recovery pairs.
+Recovery manifests pair a training checkpoint with the recipe step and row
+cursor. Keep both together when resuming in a new process; restoring model
+weights alone does not restore which dataset rows have already been consumed.
 
 
 Usage::

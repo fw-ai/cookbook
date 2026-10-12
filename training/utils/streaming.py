@@ -362,12 +362,9 @@ def resolve_jsonl_shards(path: str) -> List[str]:
       ``.jsonl`` shards -> ``DatasetError``. We never silently train on
       zero or partial data.
 
-    This selects the same shards as managed-side ``collect_jsonl_files``
-    (``firetitan.train.managed.jsonl_io``). Only the cookbook guarantees
-    globally sorted relative paths: the managed validator checks all rows
-    without assigning recipe row indices, and managed RFT materializes its
-    own rows in directory traversal order. Their row indices are not shared
-    with the SFT/DPO/ORPO recipe resume cursors or eval splits.
+    Relative-path sorting defines the recipe's row indices. Reuse the same
+    shard contents and paths on resume so checkpoint cursors and evaluation
+    splits continue to refer to the same rows.
     """
     if os.path.isfile(path):
         return [path]

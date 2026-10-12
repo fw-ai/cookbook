@@ -1,93 +1,87 @@
-"""TIS (Train-Inference Importance Sampling) weight correction.
+"""Truncated importance sampling (TIS) for a recomputed anchor.
 
-Corrects for the numerical gap between the training model and the
-inference deployment (FP8, quantization, different parallelism, etc.)
-by weighting each token with ``clamp(exp(old_policy - inf), max=cap)``.
-
-Composable with any policy loss (GRPO, DAPO, GSPO, CISPO, IS, DRO).
+With the anchor recomputed on the trainer
+(:func:`training.utils.rl.anchor.recompute_anchor`), rollouts still come
+from the sampler ``mu`` while the loss clips against the trainer snapshot
+``pi_old``. TIS weights each trained token, or each response, by
+``min(pi_old / mu, cap)``. The weight is positive and not differentiated, so
+scaling the datum advantages applies it to any server-side policy loss. With
+the rollout logprobs as the anchor every weight is 1.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
+import math
+from typing import Any, Dict, List, Literal, Tuple
 
+import tinker
 import torch
 
-SAFETY_CLAMP = 20.0
+TISLevel = Literal["token", "sequence"]
 
 
-@dataclass(frozen=True)
-class TISConfig:
-    """TIS weight configuration."""
+def apply_tis(
+    datums: List[tinker.Datum],
+    batch: Any,
+    *,
+    cap: float,
+    level: TISLevel = "token",
+) -> Tuple[List[tinker.Datum], Dict[str, float]]:
+    """Scale datum advantages by truncated anchor/rollout weights.
 
-    cap: float = 5.0
-    """Upper clamp for the TIS weight."""
-    level: Literal["token", "sequence"] = "token"
-    """'token': per-token IS weights.  'sequence': geometric mean
-    of per-token ratios, broadcast to all tokens."""
-    icepop_threshold: float | None = None
-    """Optional token-level IcePop keep threshold for raw train-inference ratio.
-
-    ``threshold=2`` keeps ratios inside ``[0.5, 2.0]`` and zeros out
-    everything else.
+    ``datums`` come from ``build_policy_datums(batch)`` after
+    :func:`~training.utils.rl.anchor.recompute_anchor`, so their ``logprobs``
+    input is the anchor and ``batch.rollout_logprobs`` is the sampler side.
+    ``level="sequence"`` uses one weight per
+    response from the summed log-ratio. Returns the new datums and
+    ``tis_weight_mean`` (mean applied weight) and ``tis_clip_frac`` (share of
+    weights truncated at ``cap``), both averaged per response.
     """
-
-    def __post_init__(self) -> None:
-        if self.cap < 0.0:
-            raise ValueError(f"TIS cap must be non-negative, got {self.cap}.")
-        if self.level not in {"token", "sequence"}:
-            raise ValueError(
-                f"TIS level must be 'token' or 'sequence', got {self.level!r}."
-            )
-        if self.icepop_threshold is not None and self.level != "token":
-            raise ValueError("icepop_threshold is only supported for token-level TIS.")
-        if self.icepop_threshold is not None and self.icepop_threshold < 1.0:
-            raise ValueError(
-                f"TIS icepop_threshold must be >= 1.0, got {self.icepop_threshold}."
-            )
-
-
-def compute_tis_weight(
-    resp_old_policy: torch.Tensor,
-    resp_inf: torch.Tensor,
-    config: TISConfig,
-) -> tuple[torch.Tensor, dict[str, float]]:
-    """Compute TIS weight: clamp(exp(old_policy - inf), max=cap)."""
-    if resp_old_policy.shape != resp_inf.shape:
-        raise ValueError(
-            "TIS requires aligned old-policy and rollout logprobs, got "
-            f"{tuple(resp_old_policy.shape)} and {tuple(resp_inf.shape)}."
+    if not cap >= 1.0:
+        raise ValueError(f"TIS cap must be >= 1; got {cap!r}")
+    if level not in ("token", "sequence"):
+        raise ValueError(f"TIS level must be 'token' or 'sequence'; got {level!r}")
+    rollout_logprobs = batch.rollout_logprobs
+    if len(datums) != len(rollout_logprobs):
+        raise ValueError("apply_tis needs one rollout_logprobs row per datum")
+    log_cap = math.log(cap)
+    weighted: List[tinker.Datum] = []
+    weight_sum = clip_sum = 0.0
+    responses = 0
+    for datum, rollout in zip(datums, rollout_logprobs, strict=True):
+        inputs = datum.loss_fn_inputs
+        anchor = list(inputs["logprobs"].data)
+        advantages = list(inputs["advantages"].data)
+        active = [t for t, m in enumerate(inputs["response_mask"].data) if m]
+        if not active:
+            weighted.append(datum)
+            continue
+        # Both rows in the datum's float32, so an unchanged anchor weighs exactly 1.
+        log_ratios = torch.tensor([anchor[t] for t in active], dtype=torch.float32) - torch.tensor(
+            [float(rollout[t]) for t in active], dtype=torch.float32
         )
-
-    tis_log = torch.clamp(
-        resp_old_policy - resp_inf, min=-SAFETY_CLAMP, max=SAFETY_CLAMP
-    )
-
-    if config.level == "sequence":
-        tis_raw = torch.exp(tis_log.mean()).expand_as(tis_log)
-    else:
-        tis_raw = torch.exp(tis_log)
-
-    tis_weight = torch.clamp(tis_raw, min=0.0, max=config.cap)
-    clip_frac = (tis_weight != tis_raw).float().mean().item()
-
-    if config.icepop_threshold is not None:
-        lower = 1.0 / config.icepop_threshold
-        upper = config.icepop_threshold
-        keep = (tis_raw >= lower) & (tis_raw <= upper)
-        tis_weight = torch.where(keep, tis_weight, torch.zeros_like(tis_weight))
-        icepop_clip_frac = (~keep).float().mean().item()
-    else:
-        icepop_clip_frac = 0.0
-
-    metrics: dict[str, float] = {
-        "tis/weight_mean": tis_weight.mean().item(),
-        "tis/clip_frac": clip_frac,
+        if level == "sequence":
+            log_ratios = log_ratios.sum().expand(len(active))
+        weights = torch.exp(torch.clamp(log_ratios, max=log_cap))
+        for t, w in zip(active, weights.tolist()):
+            advantages[t] *= w
+        weight_sum += weights.mean().item()
+        clip_sum += (log_ratios > log_cap).float().mean().item()
+        responses += 1
+        weighted.append(
+            tinker.Datum(
+                model_input=datum.model_input,
+                loss_fn_inputs={
+                    **inputs,
+                    "advantages": tinker.TensorData(
+                        data=advantages, dtype="float32", shape=[len(advantages)]
+                    ),
+                },
+            )
+        )
+    if not responses:
+        return weighted, {}
+    return weighted, {
+        "tis_weight_mean": weight_sum / responses,
+        "tis_clip_frac": clip_sum / responses,
     }
-    if config.icepop_threshold is not None:
-        metrics["tis/icepop_clip_frac"] = icepop_clip_frac
-    if config.level == "sequence":
-        metrics["tis/seq_ratio"] = tis_raw[0].item() if tis_raw.numel() > 0 else 1.0
-
-    return tis_weight, metrics

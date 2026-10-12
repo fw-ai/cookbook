@@ -22,28 +22,30 @@ from fireworks.training.sdk import (
     TITOMetricSummary,
     TITOTrajectoryArtifact,
 )
-from training.examples.rl.harbor.mimoagent import (
+from training.examples.harbor_rl.harnesses.mimoagent import (
     prepare_tasks as prepare_mimoagent_tasks,
 )
-from training.examples.rl.harbor.mini_swe import prepare_tasks as prepare_mini_swe_tasks
-from training.examples.rl.harbor.mini_swe import rollout as mini_swe_rollout
-from training.examples.rl.harbor.opencode import prepare_tasks as prepare_opencode_tasks
-from training.examples.rl.harbor.opencode import rollout
-from training.examples.rl.harbor.recipes import train_opencode as opencode_train
-from training.examples.rl.harbor.opencode.config import _TOOL_TIMEOUT_PLUGIN
-from training.examples.rl.harbor.opencode.constants import (
+from training.examples.harbor_rl.harnesses.mimoagent import rollout as mimoagent_rollout
+from training.examples.harbor_rl.harnesses.mini_swe import prepare_tasks as prepare_mini_swe_tasks
+from training.examples.harbor_rl.harnesses.mini_swe import rollout as mini_swe_rollout
+from training.examples.harbor_rl.harnesses.opencode import prepare_tasks as prepare_opencode_tasks
+from training.examples.harbor_rl.harnesses.opencode import rollout
+from training.examples.harbor_rl import common as recipe_common
+from training.examples.harbor_rl import train_opencode as opencode_train
+from training.examples.harbor_rl.harnesses.opencode.config import _TOOL_TIMEOUT_PLUGIN
+from training.examples.harbor_rl.harnesses.opencode.constants import (
     DEFAULT_OPENCODE_VERSION,
     OPENCODE_HARBOR_IMPORT_PATH,
 )
-from training.examples.rl.harbor.pi import prepare_tasks as prepare_pi_tasks
-from training.examples.rl.harbor.pi import rollout as pi_rollout
-from training.examples.rl.harbor.recipes.deep_swe import (
+from training.examples.harbor_rl.harnesses.pi import prepare_tasks as prepare_pi_tasks
+from training.examples.harbor_rl.harnesses.pi import rollout as pi_rollout
+from training.examples.harbor_rl.tasks.deep_swe import (
     prepare_tasks as prepare_deep_swe_tasks,
 )
-from training.examples.rl.harbor.tito import sidecar as sidecar_runtime
-from training.examples.rl.harbor.tito import e2b_templates
-from training.examples.rl.harbor.tito import rollout as tito_rollout
-from training.examples.rl.harbor.tito import trial as harbor_adapter
+from training.examples.harbor_rl.tito import sidecar as sidecar_runtime
+from training.examples.harbor_rl.tito import e2b_templates
+from training.examples.harbor_rl.tito import rollout as tito_rollout
+from training.examples.harbor_rl.tito import trial as harbor_adapter
 from training.utils.rl.async_rl.errors import RecoverableRolloutError
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 
@@ -60,15 +62,27 @@ def _setup(tmp_path: Path | None = None) -> SimpleNamespace:
             "echo": False,
             "max_seq_len": 4096,
         },
-        extras={
-            "renderer_name": "renderer",
-            "harbor_trials_dir": str(tmp_path or Path.cwd() / ".tito-tests"),
-        },
         sampler=object(),
         inference_base_url="http://deployment",
         api_key="deployment-key",
         model="deployment",
         completions_per_prompt=4,
+    )
+
+
+def _tito(**overrides: Any) -> sidecar_runtime.TITOSidecarSettings:
+    return sidecar_runtime.TITOSidecarSettings(
+        **{"renderer_name": "renderer", "bundle_root": Path("bundles"), **overrides}
+    )
+
+
+def _harbor(tmp_path: Path | None = None, **overrides: Any) -> tito_rollout.HarborSettings:
+    return tito_rollout.HarborSettings(
+        **{
+            "tito": _tito(),
+            "trials_dir": tmp_path or Path.cwd() / ".tito-tests",
+            **overrides,
+        }
     )
 
 
@@ -159,6 +173,28 @@ def _fake_bundle(tmp_path: Path) -> sidecar_runtime.TITOSidecarBundle:
     return sidecar_runtime.TITOSidecarBundle(archive, "a" * 64)
 
 
+def _patch_runner(monkeypatch, tmp_path: Path, run_trial=None) -> None:
+    """Stub the sidecar bundle, Harbor task rows and (optionally) the trial."""
+    monkeypatch.setattr(
+        tito_rollout,
+        "build_sidecar_bundle",
+        lambda *_: _fake_bundle(tmp_path / "bundle"),
+    )
+    monkeypatch.setattr(tito_rollout, "task_config_from_row", lambda _row: {})
+    monkeypatch.setattr(
+        tito_rollout, "task_initial_instruction", lambda _config: "solve the task"
+    )
+    if run_trial is not None:
+        monkeypatch.setattr(tito_rollout, "run_harbor_trial", run_trial)
+
+
+def _materialized(kwargs: dict[str, Any], outcome) -> Any:
+    """Mimic run_harbor_trial: run the supplied materializer on the outcome."""
+    return replace(
+        outcome, trajectory_artifact=None, rollout=kwargs["materializer"](outcome)
+    )
+
+
 def test_sidecar_bundle_source_scan_rejects_symlinks(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -201,9 +237,8 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
 
     setup = _setup(tmp_path)
     setup.tokenizer = Tokenizer()
-    setup.extras["tito_sidecar_bundle_root"] = str(tmp_path / "bundles")
-    first = sidecar_runtime.build_sidecar_bundle(setup)
-    second = sidecar_runtime.build_sidecar_bundle(setup)
+    first = sidecar_runtime.build_sidecar_bundle(setup, tmp_path / "bundles")
+    second = sidecar_runtime.build_sidecar_bundle(setup, tmp_path / "bundles")
     assert first == second
     extracted = tmp_path / "extracted"
     with zipfile.ZipFile(first.path) as archive:
@@ -213,7 +248,7 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
     assert "cookbook/training/renderer/tito/__init__.py" in names
     assert "cookbook/training/renderer/tito/glm52.py" in names
     assert "cookbook/training/renderer/tito/registry.py" in names
-    assert "cookbook/training/examples/rl/harbor/tito/sidecar.py" in names
+    assert "cookbook/training/examples/harbor_rl/tito/sidecar.py" in names
     assert "tokenizer/chat_template.jinja" in names
     assert not any("model_formats/" in name for name in names)
     assert "python-sdk/fireworks/training/sdk/tito/_sidecar.py" in names
@@ -242,7 +277,7 @@ def test_sidecar_bundle_is_deterministic_and_minimal(tmp_path) -> None:
                 "TITOSidecar, TrajectoryDriftPolicy; "
                 "from training.renderer.tito import "
                 "build_sidecar_tito_renderer; "
-                "import training.examples.rl.harbor.tito.sidecar"
+                "import training.examples.harbor_rl.tito.sidecar"
             ),
         ],
         check=True,
@@ -340,11 +375,14 @@ def test_training_entry_has_no_central_gateway_configuration(monkeypatch) -> Non
     assert args.evaluation_task == ["task-a", "task-b"]
     assert args.evaluation_every == 5
     assert args.evaluation_concurrency == 8
-    extras = opencode_train._rollout_extras(args, selector=None)
-    assert extras["tito_prompt_mode"] == "incremental"
-    assert str(extras["tito_sidecar_bundle_root"]).endswith(
-        "harbor_opencode_logs/.tito-sidecar-bundles"
-    )
+    factory = opencode_train.rollout_fn_factory(args, Path("/runs/example"))
+    harbor = factory.keywords["harbor"]
+    assert factory.keywords["version"] == DEFAULT_OPENCODE_VERSION
+    assert harbor.tito.prompt_mode == "incremental"
+    assert harbor.environment == "e2b"
+    assert harbor.trials_dir is None
+    assert harbor.max_concurrent_trials == 32
+    assert harbor.tito.bundle_root == Path("/runs/example/sidecar-bundles")
     assert not any(
         name.startswith("tito_") and "gateway" in name for name in vars(args)
     )
@@ -417,34 +455,22 @@ def test_load_harbor_rows_preserves_requested_task_order(monkeypatch, tmp_path) 
 def test_sampling_only_builds_rollout_setup_without_trainer(
     monkeypatch, tmp_path
 ) -> None:
-    args = SimpleNamespace(
-        deployment_id="accounts/example/deployments/policy",
-        trainer_job_id=None,
-        harbor_trials_dir=str(tmp_path / "trials"),
-        tokenizer_model="tokenizer",
-        tokenizer_revision=None,
-        max_completion_tokens=1024,
-        temperature=1.0,
-        sample_timeout=6900,
-        completions_per_prompt=1,
-        max_seq_len=4096,
-        log_path=str(tmp_path / "logs"),
-        renderer_name="renderer",
-        rollout_retries=3,
-        retry_include_exception=None,
-        max_concurrent_trials=4,
-        terminal_failure_reward=None,
-        opencode_version=DEFAULT_OPENCODE_VERSION,
-        harness_tool_timeout_seconds=600,
-        harbor_trial_config=None,
-        harbor_environment="e2b",
-        tito_debug=False,
-        tito_prompt_mode="full_history",
-    )
     captured: dict[str, Any] = {}
 
+    class Sampler:
+        def __init__(self, **kwargs) -> None:
+            captured["sampler_kwargs"] = kwargs
+            captured["sampler_closed"] = False
+
+        def close(self) -> None:
+            captured["sampler_closed"] = True
+
     monkeypatch.setenv("FIREWORKS_API_KEY", "deployment-key")
-    monkeypatch.setattr(opencode_train, "load_tokenizer", lambda *_: object())
+    monkeypatch.setattr(recipe_common, "load_tokenizer", lambda *_: object())
+    monkeypatch.setattr(recipe_common, "DeploymentSampler", Sampler)
+    monkeypatch.setattr(
+        recipe_common, "resolve_router_replay_enabled", lambda **_: True
+    )
 
     async def rollout_fn(*_args, **_kwargs):
         return None
@@ -462,40 +488,47 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
     async def close(fn):
         captured["closed"] = fn
 
-    monkeypatch.setattr(opencode_train, "make_rollout_fn", make_rollout)
-    monkeypatch.setattr(opencode_train, "evaluate_rows", evaluate)
-    monkeypatch.setattr(opencode_train, "close_rollout_fn", close)
-    opencode_train._run_sampling_only(
-        args,
-        rows=[{"task_name": "task-a"}],
-        selector=None,
-    )
+    monkeypatch.setattr(recipe_common, "evaluate_rows", evaluate)
+    monkeypatch.setattr(recipe_common, "close_rollout_fn", close)
+    with recipe_common.deployment_rollout_setup(
+        base_model="accounts/example/models/policy",
+        deployment_id="accounts/example/deployments/policy",
+        tokenizer_model="tokenizer",
+        tokenizer_revision=None,
+        max_completion_tokens=1024,
+        max_seq_len=4096,
+        temperature=1.0,
+        sample_timeout=6900,
+        completions_per_prompt=1,
+    ) as setup:
+        metrics = recipe_common.score_rows(
+            make_rollout,
+            setup,
+            [{"task_name": "task-a"}],
+            completions_per_prompt=1,
+            max_concurrency=None,
+        )
+        assert captured["sampler_closed"] is False
 
+    assert metrics == {"sampling/attempted_trajectories": 1}
     setup = captured["setup"]
-    assert setup.model == args.deployment_id
-    assert setup.sampler is None
-    assert not hasattr(setup, "max_context_tokens")
-    assert setup.sample_kwargs["max_seq_len"] == args.max_seq_len
-    assert setup.extras["harbor_environment"] == "e2b"
-    assert setup.extras["tito_prompt_mode"] == "full_history"
+    assert setup.model == "accounts/example/deployments/policy"
+    assert isinstance(setup.sampler, Sampler)
+    assert captured["sampler_kwargs"]["model"] == setup.model
+    assert captured["sampler_closed"] is True
+    assert setup.sample_kwargs["max_seq_len"] == 4096
+    assert setup.sample_kwargs["top_k"] == 0
+    assert setup.sample_kwargs["include_routing_matrix"] is True
     assert captured["evaluate_kwargs"]["max_concurrency"] is None
     assert captured["closed"] is rollout_fn
-    assert (
-        json.loads((tmp_path / "logs" / "sampling-result.json").read_text())["mode"]
-        == "sampling_only"
-    )
 
 
 def test_context_limit_is_shared_by_inference_and_training_retention(
     monkeypatch, tmp_path
 ) -> None:
     setup = _setup(tmp_path)
-    monkeypatch.setattr(
-        rollout,
-        "build_sidecar_bundle",
-        lambda _setup: _fake_bundle(tmp_path / "bundle"),
-    )
-    runner = rollout.make_rollout_fn(setup)
+    _patch_runner(monkeypatch, tmp_path)
+    runner = rollout.make_rollout_fn(setup, harbor=_harbor(tmp_path))
     assert setup.sample_kwargs["max_seq_len"] == 4096
     assert runner._context_limit == 4096
 
@@ -503,11 +536,15 @@ def test_context_limit_is_shared_by_inference_and_training_retention(
 def test_full_sequence_router_replay_enables_incremental_prompt_capture(monkeypatch, tmp_path) -> None:
     setup = _setup(tmp_path)
     setup.sample_kwargs["echo"] = True
-    monkeypatch.setattr(rollout, "build_sidecar_bundle", lambda _setup: _fake_bundle(tmp_path / "bundle"))
+    _patch_runner(monkeypatch, tmp_path)
     setup.sampler = SimpleNamespace(routing_matrix_format="parquet_v1", r3_store_id="shared-test")
-    rollout.make_rollout_fn(setup)
+    rollout.make_rollout_fn(setup, harbor=_harbor(tmp_path))
     spec = sidecar_runtime.build_launch_spec(
-        setup, _fake_bundle(tmp_path / "launch"), call_classifier="all_policy", metadata={}
+        setup,
+        _fake_bundle(tmp_path / "launch"),
+        _tito(),
+        call_classifier="all_policy",
+        metadata={},
     )
     assert spec.routing_matrix_format == "parquet_v1"
     assert spec.r3_store_id == "shared-test"
@@ -518,27 +555,19 @@ def test_opencode_classifier_contract_rejects_unpinned_versions(
     monkeypatch, tmp_path
 ) -> None:
     setup = _setup(tmp_path)
-    setup.extras["opencode_version"] = "future-version"
-    monkeypatch.setattr(
-        rollout,
-        "build_sidecar_bundle",
-        lambda _setup: _fake_bundle(tmp_path / "bundle"),
-    )
+    _patch_runner(monkeypatch, tmp_path)
     with pytest.raises(ValueError, match="classifier-certified version"):
-        rollout.make_rollout_fn(setup)
+        rollout.make_rollout_fn(
+            setup, harbor=_harbor(tmp_path), version="future-version"
+        )
 
 
 def test_launch_spec_carries_limits_and_debug_without_runtime_aliases(tmp_path) -> None:
     setup = _setup(tmp_path)
-    setup.extras.update(
-        {
-            "tito_debug_enabled": True,
-            "tito_prompt_mode": "incremental",
-        }
-    )
     spec = sidecar_runtime.build_launch_spec(
         setup,
         _fake_bundle(tmp_path / "bundle"),
+        _tito(debug_enabled=True, prompt_mode="incremental"),
         call_classifier="tools_present",
         metadata={"member": 3},
     )
@@ -557,6 +586,7 @@ def test_launch_spec_keeps_full_history_as_the_default(tmp_path) -> None:
     spec = sidecar_runtime.build_launch_spec(
         setup,
         _fake_bundle(tmp_path / "bundle"),
+        _tito(),
         call_classifier="tools_present",
         metadata={},
     )
@@ -808,8 +838,8 @@ def test_sidecar_serve_closes_runtime_when_trajectory_creation_fails(
 
 def test_agents_write_only_the_loopback_trajectory_endpoint(tmp_path) -> None:
     pytest.importorskip("harbor")
-    from training.examples.rl.harbor.opencode.agent import ConfigurableOpenCode
-    from training.examples.rl.harbor.pi.agent import ConfigurablePi
+    from training.examples.harbor_rl.harnesses.opencode.agent import ConfigurableOpenCode
+    from training.examples.harbor_rl.harnesses.pi.agent import ConfigurablePi
 
     shared = {
         "logs_dir": tmp_path,
@@ -859,7 +889,7 @@ def test_agents_write_only_the_loopback_trajectory_endpoint(tmp_path) -> None:
 
 def test_opencode_disables_unrelated_remote_bootstrap_requests(tmp_path) -> None:
     pytest.importorskip("harbor")
-    from training.examples.rl.harbor.opencode.agent import ConfigurableOpenCode
+    from training.examples.harbor_rl.harnesses.opencode.agent import ConfigurableOpenCode
 
     agent = ConfigurableOpenCode(
         logs_dir=tmp_path,
@@ -886,7 +916,7 @@ def test_opencode_disables_unrelated_remote_bootstrap_requests(tmp_path) -> None
 
 def test_pi_preserves_empty_reasoning_on_assistant_replay(tmp_path) -> None:
     pytest.importorskip("harbor")
-    from training.examples.rl.harbor.pi.agent import ConfigurablePi
+    from training.examples.harbor_rl.harnesses.pi.agent import ConfigurablePi
 
     agent = ConfigurablePi(
         logs_dir=tmp_path,
@@ -903,7 +933,7 @@ def test_pi_preserves_empty_reasoning_on_assistant_replay(tmp_path) -> None:
 
 def test_pi_textworld_profile_disables_builtin_tools(tmp_path) -> None:
     pytest.importorskip("harbor")
-    from training.examples.rl.harbor.pi.agent import ConfigurablePi
+    from training.examples.harbor_rl.harnesses.pi.agent import ConfigurablePi
 
     agent = ConfigurablePi(
         logs_dir=tmp_path,
@@ -924,11 +954,11 @@ def test_pi_textworld_profile_disables_builtin_tools(tmp_path) -> None:
     ("module_name", "class_name", "version"),
     [
         (
-            "training.examples.rl.harbor.opencode.agent",
+            "training.examples.harbor_rl.harnesses.opencode.agent",
             "ConfigurableOpenCode",
             DEFAULT_OPENCODE_VERSION,
         ),
-        ("training.examples.rl.harbor.pi.agent", "ConfigurablePi", "0.84.2"),
+        ("training.examples.harbor_rl.harnesses.pi.agent", "ConfigurablePi", "0.84.2"),
     ],
 )
 def test_agent_command_promotes_context_marker_to_nonzero_exit(
@@ -966,7 +996,7 @@ def test_agent_command_promotes_context_marker_to_nonzero_exit(
 
     monkeypatch.setattr(agent, "_write_config", write_config)
     monkeypatch.setattr(agent, "exec_as_agent", exec_as_agent)
-    monkeypatch.setattr(module, "terminalize_sidecar", terminalize)
+    monkeypatch.setattr(sidecar_runtime, "terminalize_sidecar", terminalize)
 
     asyncio.run(
         agent_type.run.__wrapped__(
@@ -987,31 +1017,22 @@ def test_four_same_prompt_rollouts_build_four_independent_attempt_specs(
     monkeypatch, tmp_path
 ) -> None:
     setup = _setup(tmp_path)
-    bundle = _fake_bundle(tmp_path / "bundle")
-    monkeypatch.setattr(rollout, "build_sidecar_bundle", lambda _setup: bundle)
-    runner = rollout.make_rollout_fn(setup)
-    runner._trial_start_interval_seconds = 0
     specs: list[dict[str, Any]] = []
 
     async def run_trial(**kwargs):
         specs.append(json.loads(kwargs["sidecar_launch_spec"]))
         member = specs[-1]["trajectory_metadata"]["rollout_member_index"]
-        return _outcome(artifact=_artifact(f"trajectory-{member}"))
+        return _materialized(kwargs, _outcome(artifact=_artifact(f"trajectory-{member}")))
 
-    monkeypatch.setattr(runner, "_run_trial", run_trial)
+    _patch_runner(monkeypatch, tmp_path, run_trial)
     monkeypatch.setattr(tito_rollout, "materialize_tito_trajectory", _sample_rollout)
+    runner = rollout.make_rollout_fn(setup, harbor=_harbor(tmp_path))
+    runner._trial_start_interval_seconds = 0
 
     async def exercise():
         return await asyncio.gather(
             *(
-                runner._run_opencode(
-                    task_config={},
-                    task_name="same-task",
-                    run_id=f"same-group-member-{member}",
-                    rollout_group_id="same-group",
-                    rollout_member_index=member,
-                    canonical_initial_prompt_hash="same-prompt-hash",
-                )
+                runner({"task_name": "same-task"}, cursor_index=7, sample_index=member)
                 for member in range(4)
             )
         )
@@ -1019,15 +1040,16 @@ def test_four_same_prompt_rollouts_build_four_independent_attempt_specs(
     results = asyncio.run(exercise())
     assert all(result is not None for result in results)
     assert len(specs) == 4
-    assert {
-        spec["trajectory_metadata"]["rollout_member_index"] for spec in specs
-    } == set(range(4))
-    assert {spec["bundle_digest"] for spec in specs} == {bundle.digest}
-    assert all(
-        "parent" not in spec["trajectory_metadata"]
-        and "branch" not in spec["trajectory_metadata"]
-        for spec in specs
-    )
+    metadata = [spec["trajectory_metadata"] for spec in specs]
+    assert {item["rollout_member_index"] for item in metadata} == set(range(4))
+    assert {item["rollout_group_id"] for item in metadata} == {
+        "harbor-opencode:same-task:0:7"
+    }
+    assert {spec["bundle_digest"] for spec in specs} == {"a" * 64}
+    assert all("parent" not in item and "branch" not in item for item in metadata)
+    assert sorted(result.run_id for result in results) == [
+        f"harbor-opencode:same-task:0:7:{member}" for member in range(4)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1037,59 +1059,46 @@ def test_only_local_docker_trial_starts_are_paced(
     monkeypatch, tmp_path, environment, expected_pace_calls
 ) -> None:
     setup = _setup(tmp_path)
-    setup.extras["harbor_environment"] = environment
-    monkeypatch.setattr(
-        rollout,
-        "build_sidecar_bundle",
-        lambda _setup: _fake_bundle(tmp_path / "bundle"),
+
+    async def run_trial(**_kwargs):
+        return _outcome(environment_type=environment)
+
+    _patch_runner(monkeypatch, tmp_path, run_trial)
+    runner = rollout.make_rollout_fn(
+        setup, harbor=_harbor(tmp_path, environment=environment)
     )
-    runner = rollout.make_rollout_fn(setup)
     pace_calls = 0
 
     async def pace():
         nonlocal pace_calls
         pace_calls += 1
 
-    async def run_trial(**_kwargs):
-        return _outcome(environment_type=environment)
-
     monkeypatch.setattr(runner, "_pace_trial_start", pace)
-    monkeypatch.setattr(runner, "_run_trial", run_trial)
-    asyncio.run(
-        runner._run_admitted_trial(task_config={}, inference_key="key", run_id="run")
-    )
+    asyncio.run(runner._run_trial(task_name="task", retry_index=0))
     assert pace_calls == expected_pace_calls
 
 
 def test_recoverable_attempt_gets_a_fresh_sidecar_spec(monkeypatch, tmp_path) -> None:
     setup = _setup(tmp_path)
-    setup.extras["rollout_retries"] = 1
-    monkeypatch.setattr(
-        rollout,
-        "build_sidecar_bundle",
-        lambda _setup: _fake_bundle(tmp_path / "bundle"),
-    )
-    runner = rollout.make_rollout_fn(setup)
-    runner._trial_start_interval_seconds = 0
     specs: list[dict[str, Any]] = []
 
     async def run_trial(**kwargs):
         specs.append(json.loads(kwargs["sidecar_launch_spec"]))
         if len(specs) == 1:
             raise RecoverableRolloutError("temporary")
-        return _outcome(artifact=_artifact("trajectory-retry"))
-
-    monkeypatch.setattr(runner, "_run_trial", run_trial)
+        return _materialized(kwargs, _outcome(artifact=_artifact("trajectory-retry")))
 
     async def no_retry_delay(_delay: float) -> None:
         return None
 
+    _patch_runner(monkeypatch, tmp_path, run_trial)
     monkeypatch.setattr(tito_rollout.asyncio, "sleep", no_retry_delay)
     monkeypatch.setattr(tito_rollout, "materialize_tito_trajectory", _sample_rollout)
-    result = asyncio.run(
-        runner._run_opencode(task_config={}, task_name="task", run_id="run")
-    )
+    runner = rollout.make_rollout_fn(setup, harbor=_harbor(tmp_path, rollout_retries=1))
+    runner._trial_start_interval_seconds = 0
+    result = asyncio.run(runner({"task_name": "task"}))
     assert result is not None
+    assert result.metadata["tito_retry_index"] == 1
     assert [item["trajectory_metadata"]["retry_index"] for item in specs] == [0, 1]
 
 
@@ -1097,15 +1106,6 @@ def test_opencode_temporary_trial_survives_through_adapter_metrics(
     monkeypatch, tmp_path
 ) -> None:
     setup = _setup(tmp_path)
-    setup.extras.pop("harbor_trials_dir")
-    setup.extras["rollout_retries"] = 0
-    monkeypatch.setattr(
-        rollout,
-        "build_sidecar_bundle",
-        lambda _setup: _fake_bundle(tmp_path / "bundle"),
-    )
-    runner = rollout.make_rollout_fn(setup)
-    runner._trial_start_interval_seconds = 0
 
     async def run_trial(**kwargs):
         trial_path = Path(kwargs["trials_dir"]) / "trial-example"
@@ -1124,47 +1124,43 @@ def test_opencode_temporary_trial_survives_through_adapter_metrics(
             ),
             encoding="utf-8",
         )
-        outcome = _outcome(artifact=_artifact("trajectory-with-timeout"))
-        return harbor_adapter.HarborTrialOutcome(
-            **{**vars(outcome), "trial_path": trial_path}
+        outcome = replace(
+            _outcome(artifact=_artifact("trajectory-with-timeout")),
+            trial_path=trial_path,
         )
+        return _materialized(kwargs, outcome)
 
-    monkeypatch.setattr(runner, "_run_trial", run_trial)
+    _patch_runner(monkeypatch, tmp_path, run_trial)
     monkeypatch.setattr(tito_rollout, "materialize_tito_trajectory", _sample_rollout)
-    result = asyncio.run(
-        runner._run_opencode(task_config={}, task_name="task", run_id="run")
+    runner = rollout.make_rollout_fn(
+        setup, harbor=_harbor(tmp_path, trials_dir=None, rollout_retries=0)
     )
+    runner._trial_start_interval_seconds = 0
+    result = asyncio.run(runner({"task_name": "task"}))
     assert result is not None
     assert result.metadata["harness_tool_timeout_count"] == 1
+    assert result.metadata["tito_harness"] == "opencode"
 
 
 def test_harness_trial_paths_expand_user(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
+    _patch_runner(monkeypatch, tmp_path)
     for module in (rollout, pi_rollout, mini_swe_rollout):
-        setup = _setup(tmp_path)
-        setup.extras["harbor_trials_dir"] = "~/tito-trials"
-        monkeypatch.setattr(
-            module,
-            "build_sidecar_bundle",
-            lambda _setup: _fake_bundle(tmp_path / module.__name__.replace(".", "-")),
+        runner = module.make_rollout_fn(
+            _setup(tmp_path), harbor=_harbor(tmp_path, trials_dir="~/tito-trials")
         )
-        runner = module.make_rollout_fn(setup)
         assert runner._trials_dir == tmp_path / "tito-trials"
 
 
 def test_harness_trial_paths_honor_yaml_default(monkeypatch, tmp_path) -> None:
+    _patch_runner(monkeypatch, tmp_path)
     for module in (rollout, pi_rollout, mini_swe_rollout):
-        setup = _setup(tmp_path)
-        setup.extras.pop("harbor_trials_dir")
-        setup.extras["harbor_trial_config"] = {
-            "trials_dir": str(tmp_path / "yaml-trials")
-        }
-        monkeypatch.setattr(
-            module,
-            "build_sidecar_bundle",
-            lambda _setup: _fake_bundle(tmp_path / module.__name__.replace(".", "-")),
+        harbor = _harbor(
+            tmp_path,
+            trials_dir=None,
+            trial_config={"trials_dir": str(tmp_path / "yaml-trials")},
         )
-        runner = module.make_rollout_fn(setup)
+        runner = module.make_rollout_fn(_setup(tmp_path), harbor=harbor)
         assert runner._trials_dir == tmp_path / "yaml-trials"
 
 
@@ -1189,137 +1185,71 @@ def _install_fake_e2b_rate_limit_exception(monkeypatch) -> None:
         ValueError("invalid trajectory contract"),
     ],
 )
-def test_mini_swe_rollout_isolates_attempt_errors_from_producer(
-    monkeypatch, tmp_path, error
+@pytest.mark.parametrize("module", [mini_swe_rollout, pi_rollout])
+def test_harness_rollout_forwards_retry_contract_and_isolates_attempt_errors(
+    monkeypatch, tmp_path, error, module
 ) -> None:
     _install_fake_e2b_rate_limit_exception(monkeypatch)
     setup = _setup(tmp_path)
-    setup.extras["rollout_retries"] = 0
-    setup.extras["harbor_reward_key"] = "partial"
-    setup.extras["retry_include_exceptions"] = sorted(
-        harbor_adapter.DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS | {"RateLimitException"}
+    harbor = _harbor(
+        tmp_path,
+        rollout_retries=0,
+        reward_key="partial",
+        retry_include_exceptions=harbor_adapter.DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS
+        | {"RateLimitException"},
     )
-    monkeypatch.setattr(
-        mini_swe_rollout,
-        "build_sidecar_bundle",
-        lambda _setup: _fake_bundle(tmp_path / "bundle"),
-    )
-    monkeypatch.setattr(
-        mini_swe_rollout,
-        "task_config_from_row",
-        lambda _row: SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        mini_swe_rollout,
-        "task_initial_instruction",
-        lambda _task_config: "solve the task",
-    )
-
     seen: dict[str, Any] = {}
 
     async def run_trial(**kwargs):
         seen.update(kwargs)
         raise error
 
-    monkeypatch.setattr(mini_swe_rollout, "run_harbor_trial", run_trial)
-    runner = mini_swe_rollout.make_rollout_fn(setup)
+    _patch_runner(monkeypatch, tmp_path, run_trial)
+    runner = module.make_rollout_fn(setup, harbor=harbor)
 
     assert asyncio.run(runner({"task_name": "example"})) is None
     assert seen["reward_key"] == "partial"
     assert seen["retry_include_exceptions"] == frozenset(
         harbor_adapter.DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS | {"RateLimitException"}
     )
+    assert seen["artifact_processor"] is not None
 
 
-@pytest.mark.parametrize(
-    "error",
-    [
-        RecoverableRolloutError("temporary provider failure"),
-        ValueError("invalid trajectory contract"),
-    ],
-)
-def test_pi_rollout_forwards_retry_contract_and_isolates_attempt_errors(
-    monkeypatch, tmp_path, error
-) -> None:
-    _install_fake_e2b_rate_limit_exception(monkeypatch)
-    setup = _setup(tmp_path)
-    setup.extras["rollout_retries"] = 0
-    setup.extras["retry_include_exceptions"] = sorted(
-        harbor_adapter.DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS | {"RateLimitException"}
-    )
-    monkeypatch.setattr(
-        pi_rollout,
-        "build_sidecar_bundle",
-        lambda _setup: _fake_bundle(tmp_path / "bundle"),
-    )
-    monkeypatch.setattr(
-        pi_rollout,
-        "task_config_from_row",
-        lambda _row: SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        pi_rollout,
-        "task_name_from_row",
-        lambda _row: "example",
-    )
-    monkeypatch.setattr(
-        pi_rollout,
-        "task_initial_instruction",
-        lambda _task_config: "solve the task",
-    )
-    seen: dict[str, Any] = {}
+def test_harness_trial_kwargs_carry_adapter_contract(monkeypatch, tmp_path) -> None:
+    seen: list[dict[str, Any]] = []
 
     async def run_trial(**kwargs):
-        seen.update(kwargs)
-        raise error
+        seen.append(kwargs)
+        raise RecoverableRolloutError("stop after one attempt")
 
-    monkeypatch.setattr(pi_rollout, "run_harbor_trial", run_trial)
-    runner = pi_rollout.make_rollout_fn(setup)
-
-    assert asyncio.run(runner({"task_name": "example"})) is None
-    assert seen["retry_include_exceptions"] == frozenset(
-        harbor_adapter.DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS | {"RateLimitException"}
-    )
+    _patch_runner(monkeypatch, tmp_path, run_trial)
+    harbor = _harbor(tmp_path, rollout_retries=0)
+    for module, settings in (
+        (pi_rollout, {"tool_profile": "textworld"}),
+        (mimoagent_rollout, {"arm": "cc"}),
+    ):
+        runner = module.make_rollout_fn(_setup(tmp_path), harbor=harbor, **settings)
+        assert asyncio.run(runner({"task_name": "t"})) is None
+    assert seen[0]["tool_profile"] == "textworld"
+    assert seen[0]["agent_provider"] == "fireworks-tito"
+    assert seen[1]["agent_extra_kwargs"] == {"arm": "cc"}
+    assert seen[1]["agent_provider"] == "openai"
 
 
 def test_pi_evaluation_uses_verifier_reward_without_trainable_artifact(
     monkeypatch, tmp_path
 ) -> None:
     setup = _setup(tmp_path)
-    setup.extras["rollout_retries"] = 0
-    monkeypatch.setattr(
-        pi_rollout,
-        "build_sidecar_bundle",
-        lambda _setup: _fake_bundle(tmp_path / "bundle"),
-    )
-    monkeypatch.setattr(
-        pi_rollout,
-        "task_config_from_row",
-        lambda _row: SimpleNamespace(),
-    )
-    monkeypatch.setattr(
-        pi_rollout,
-        "task_name_from_row",
-        lambda _row: "example",
-    )
-    monkeypatch.setattr(
-        pi_rollout,
-        "task_initial_instruction",
-        lambda _task_config: "solve the task",
-    )
     seen: dict[str, Any] = {}
 
     async def run_trial(**kwargs):
         seen.update(kwargs)
-        outcome = _outcome(reward=0.75)
-        return replace(
-            outcome,
-            trajectory_artifact=None,
-            rollout=kwargs["materializer"](outcome),
-        )
+        return _materialized(kwargs, _outcome(reward=0.75))
 
-    monkeypatch.setattr(pi_rollout, "run_harbor_trial", run_trial)
-    runner = pi_rollout.make_rollout_fn(setup)
+    _patch_runner(monkeypatch, tmp_path, run_trial)
+    runner = pi_rollout.make_rollout_fn(
+        setup, harbor=_harbor(tmp_path, rollout_retries=0)
+    )
     result = asyncio.run(runner({"task_name": "example"}, evaluation=True))
 
     assert result is not None
@@ -1731,7 +1661,7 @@ def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> Non
         exception_type="RuntimeError",
         exception_message=f"Agent install failed: {marker}",
         exception_traceback=(
-            'File "/bundle/training/examples/rl/harbor/tito/sidecar.py"\n'
+            'File "/bundle/training/examples/harbor_rl/tito/sidecar.py"\n'
             f"TimeoutError: {marker}\n"
             "wrapper\n"
             f"RuntimeError: Agent install failed: {marker}"
@@ -1756,7 +1686,7 @@ def test_e2b_sidecar_readiness_timeout_requires_exact_wrapped_traceback() -> Non
         exception_type="RuntimeError",
         exception_message="Agent install failed",
         exception_traceback=(
-            'File "/bundle/training/examples/rl/harbor/tito/sidecar.py"\n'
+            'File "/bundle/training/examples/harbor_rl/tito/sidecar.py"\n'
             f"TimeoutError: {marker}"
         ),
     )
@@ -1805,7 +1735,7 @@ def test_opencode_timeout_plugin_hard_clamps_explicit_bash_timeouts() -> None:
 
 def test_pi_extension_clamps_timeouts_and_rejects_session_branches() -> None:
     source = (
-        Path(__file__).parents[2] / "examples/rl/harbor/pi/extension.ts"
+        Path(__file__).parents[2] / "examples/harbor_rl/harnesses/pi/extension.ts"
     ).read_text(encoding="utf-8")
     assert 'hasOwnProperty.call(input, "timeout")' in source
     assert "requested > toolTimeoutSeconds" in source

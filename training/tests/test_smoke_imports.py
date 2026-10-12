@@ -21,6 +21,8 @@ import pytest
 RECIPE_MODULES = [
     "training.recipes.sft_loop",
     "training.recipes.rl_loop",
+    "training.recipes.async_rl_loop",
+    "training.recipes.experiment.async_rl_loop_serverless",
     "training.recipes.experiment.ppo_value_head_loop",
     "training.recipes.distillation_loop",
     "training.recipes.dpo_loop",
@@ -48,20 +50,24 @@ UTIL_MODULES = [
     "training.utils.timer",
     "training.utils.validation",
     "training.utils.rl",
-    "training.utils.rl.cispo",
+    "training.utils.rl.algorithm.cispo",
     "training.utils.rl.common",
-    "training.utils.rl.dapo",
-    "training.utils.rl.grpo",
-    "training.utils.rl.gspo",
-    "training.utils.rl.tis",
-    "training.utils.rl.is_loss",
+    "training.utils.rl.algorithm.dapo",
+    "training.utils.rl.algorithm.grpo",
+    "training.utils.rl.algorithm.gspo",
+    "training.utils.rl.algorithm.igpo",
+    "training.utils.rl.algorithm.importance_sampling",
+    "training.utils.rl.anchor",
+    "training.utils.rl.heldout",
     "training.utils.rl.losses",
     "training.utils.rl.metrics",
+    "training.utils.rl.rollout.setup",
     "training.utils.rl.router_replay",
-    "training.utils.rl.train",
     "training.utils.distillation",
     "training.utils.distillation.eval",
+    "training.utils.distillation.losses",
     "training.utils.distillation.sampling",
+    "training.utils.distillation.teacher",
     "training.utils.runner",
 ]
 
@@ -75,11 +81,6 @@ def test_util_imports(module: str):
 
 EXAMPLE_MODULES_WITH_ENV = [
     (
-        "training.examples.rl.deepmath.train_deepmath",
-        "math_verify",
-        {"FIREWORKS_API_KEY": "test"},
-    ),
-    (
         "training.examples.sft.train_sft",
         "fireworks",
         {"FIREWORKS_API_KEY": "test"},
@@ -88,9 +89,20 @@ EXAMPLE_MODULES_WITH_ENV = [
 
 EXAMPLE_MODULES = [
     "training.examples.rl.deepmath.prepare_data",
-    "training.examples.rl.single_turn_token_in.rollout",
-    "training.examples.rl.harbor.opencode.rollout",
-    "training.examples.rl.harbor.pi.rollout",
+    "training.examples.rl.deepmath.train_deepmath",
+    "training.examples.rl.deepmath.train_deepmath_serverless",
+    "training.examples.rl.visual_toolbench.train_visual_toolbench",
+    "training.examples.rl.visual_toolbench.train_visual_toolbench_serverless",
+    "training.examples.archive.single_turn_token_in.rollout",
+    "training.examples.harbor_rl.harnesses.mimoagent.rollout",
+    "training.examples.harbor_rl.harnesses.mini_swe.rollout",
+    "training.examples.harbor_rl.harnesses.opencode.rollout",
+    "training.examples.harbor_rl.harnesses.pi.rollout",
+    "training.examples.harbor_rl.tasks.dabstep.train",
+    "training.examples.harbor_rl.tasks.terminal_bench.train",
+    "training.examples.harbor_rl.tasks.textworld.train",
+    "training.examples.harbor_rl.train_opencode",
+    "training.examples.harbor_rl.train_pi",
     "training.examples.tools.client_phase_trace_demo",
     "training.examples.tools.promote_checkpoint",
 ]
@@ -99,6 +111,11 @@ EXAMPLE_MODULES = [
 @pytest.mark.parametrize("module", EXAMPLE_MODULES)
 def test_example_imports_without_env(module: str):
     importlib.import_module(module)
+
+
+def test_multihop_qa_imports_with_eval_extra() -> None:
+    pytest.importorskip("eval_protocol")
+    importlib.import_module("training.examples.rl.multihop_qa.train_multihop_qa_igpo")
 
 
 @pytest.mark.parametrize(
@@ -193,7 +210,7 @@ def test_ppo_value_head_config_defaults():
 
     cfg = Config(log_path="/tmp/test")
     assert cfg.actor_base_model == cfg.critic_base_model
-    assert cfg.critic_projection_head_dim == 1
+    assert cfg.critic_lora_rank > 0
 
 
 def test_dpo_config_defaults():

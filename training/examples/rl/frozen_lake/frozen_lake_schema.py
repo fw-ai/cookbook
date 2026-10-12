@@ -153,22 +153,7 @@ def _load_kimi_native_tool_call_payload_with_text_span(text: str) -> Tuple[Dict[
 
 def parse_first_frozen_lake_tool_call(output_text: str) -> ParsedToolCall:
     """Parse the first tool call from strict tool-call JSON output."""
-    loaders = (
-        _load_json_object_with_text_span,
-        _load_xml_tool_call_payload_with_text_span,
-        _load_kimi_native_tool_call_payload_with_text_span,
-    )
-    last_error: Exception | None = None
-    for loader in loaders:
-        try:
-            payload, _, _ = loader(output_text)
-            return _parse_tool_call_from_payload(payload)
-        except Exception as exc:
-            last_error = exc
-            continue
-    if last_error is not None:
-        raise last_error
-    raise ValueError("Failed to parse tool call payload")
+    return parse_first_frozen_lake_tool_call_with_content(output_text)[0]
 
 
 def parse_first_frozen_lake_tool_call_with_content(output_text: str) -> Tuple[ParsedToolCall, str]:
@@ -178,7 +163,7 @@ def parse_first_frozen_lake_tool_call_with_content(output_text: str) -> Tuple[Pa
         _load_xml_tool_call_payload_with_text_span,
         _load_kimi_native_tool_call_payload_with_text_span,
     )
-    last_error: Exception | None = None
+    errors: list[str] = []
     for loader in loaders:
         try:
             payload, json_start, json_end = loader(output_text)
@@ -186,11 +171,9 @@ def parse_first_frozen_lake_tool_call_with_content(output_text: str) -> Tuple[Pa
             content = (output_text[:json_start] + output_text[json_end:]).strip()
             return parsed_tool_call, content
         except Exception as exc:
-            last_error = exc
-            continue
-    if last_error is not None:
-        raise last_error
-    raise ValueError("Failed to parse tool call payload")
+            errors.append(str(exc)[:160])
+    # Report every format, not just the last one tried (which is Kimi-specific).
+    raise ValueError("No parseable FrozenLake tool_call: " + "; ".join(errors))
 
 
 def normalize_parsed_tool_call(

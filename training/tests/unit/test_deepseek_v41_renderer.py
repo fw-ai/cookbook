@@ -63,8 +63,7 @@ class _MergingTokenizer(_Tokenizer):
 
 
 def _publisher_encoder():
-    root = Path(__file__).resolve().parents[5]
-    path = root / "py/fireworks/models/deepseek4_next/reference/encoding/encoding.py"
+    path = Path(__file__).resolve().parents[1] / "_encoding_dsv41_oracle.py"
     spec = importlib.util.spec_from_file_location("deepseek_v41_oracle", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

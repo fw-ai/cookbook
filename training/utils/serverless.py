@@ -11,10 +11,30 @@ path so the training loop is identical from there on.
 
 from __future__ import annotations
 
+import logging
+
 from fireworks.training.sdk import FireworksClient, FiretitanServiceClient
 
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.client import DEFAULT_TIMEOUT_S, ReconnectableClient
+
+logger = logging.getLogger(__name__)
+
+_SERVERLESS_PATH = "/training/v1/serverless"
+
+
+def gateway_root_url(base_url: str) -> str:
+    """The gateway root of ``base_url``, which may already name a training surface."""
+    root = base_url.rstrip("/")
+    for suffix in (_SERVERLESS_PATH, "/training/v1"):
+        if root.endswith(suffix):
+            return root[: -len(suffix)]
+    return root
+
+
+def serverless_base_url(base_url: str) -> str:
+    """The serverless training surface for a gateway root or surface URL."""
+    return gateway_root_url(base_url) + _SERVERLESS_PATH
 
 
 class ServerlessCheckpointClient:
@@ -96,7 +116,7 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
             "(there is no training shape to resolve it from)."
         )
     service = FiretitanServiceClient(
-        base_url=f"{base_url}/training/v1/serverless",
+        base_url=serverless_base_url(base_url),
         api_key=api_key,
         default_headers=additional_headers or None,
     )
@@ -132,16 +152,29 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
     # sync httpx client, so register its close on teardown like the dedicated
     # path closes its service client.
     cp_client = FireworksClient(
-        api_key=api_key, base_url=base_url, additional_headers=additional_headers
+        api_key=api_key, base_url=gateway_root_url(base_url), additional_headers=additional_headers
     )
     stack.callback(cp_client.close)
+    account_id = cp_client.account_id
+    run_id = getattr(training_client, "run_id", None)
     ckpt = TrainingCheckpoints(
         client,
-        ServerlessCheckpointClient(cp_client, cp_client.account_id),
+        ServerlessCheckpointClient(cp_client, account_id),
         trainer_id=session_id,
         log_path=cfg.log_path,
         lora_rank=cfg.lora_rank,
         serverless=True,
-        current_run_id=getattr(training_client, "run_id", None),
+        current_run_id=run_id,
+    )
+    # Serverless checkpoints are namespaced under the run that saved them, so
+    # another process continues this run with a fully qualified reference.
+    logger.info(
+        "Serverless training session %s, run %s. To continue from one of this "
+        "run's checkpoints in a new process, pass "
+        "init_from_checkpoint='%s/%s/<checkpoint>' with the same log_path.",
+        session_id,
+        run_id,
+        account_id,
+        run_id,
     )
     return service, client, ckpt, session_id, cfg.max_seq_len

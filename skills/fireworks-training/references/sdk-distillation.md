@@ -1,8 +1,8 @@
 # Distillation Recipe
 
 Use this reference when working with `training/recipes/distillation_loop.py`,
-OPD, MOPD, SDFT, `teacher_messages`, `multi_teacher`, or
-`topk_forward_kl`.
+on-policy distillation (OPD), or `teacher_messages`. For top-K SDFT on the
+shared serverless pool, use `training/recipes/sdft_loop.py` instead.
 
 Before editing, read the recipe and the public example guide:
 
@@ -13,40 +13,39 @@ sed -n '1,220p' training/examples/distillation/README.md
 
 ## Contents
 
-- [Modes](#modes)
+- [Objective](#objective)
 - [Logprob Response Fields](#logprob-response-fields)
 - [Minimal Config](#minimal-config)
 - [Dataset Contract](#dataset-contract)
-- [Multi-teacher Rules](#multi-teacher-rules)
+- [Evaluation Hook](#evaluation-hook)
+- [Customizing](#customizing)
 - [Guardrails](#guardrails)
 - [Validation](#validation)
 
-## Modes
+## Objective
 
-| Config value | Use | Teacher source | Loss path |
-|--------------|-----|----------------|-----------|
-| `DistillMode.SAMPLED_REVERSE_KL` / `"sampled_reverse_kl"` | OPD-style sampled-token distillation | Teacher logprob on the sampled student token | Built-in `importance_sampling` |
-| `DistillMode.TOPK_FORWARD_KL` / `"topk_forward_kl"` | SDFT sparse soft labels | Teacher inference `top_logprobs=K` per response position | Built-in `cross_entropy` with `[N, K]` targets |
+The recipe has one objective: sampled-token reverse KL. Each step:
 
-`sampled_reverse_kl` is the default. The student samples from its managed
-deployment, the teacher scores those exact response tokens, and the dense reward
-is:
+1. the student samples from its hot-loaded deployment and one frozen teacher
+   scores those exact response tokens;
+2. one server-side `importance_sampling` forward/backward with per-token
+   advantage `teacher_logprob - sampling_logprob` (times `opd_loss_scale`),
+   then one optimizer step;
+3. the new student weights are hot-loaded before the next batch.
 
 ```text
-teacher_logprob - sampling_logprob
+advantage = teacher_logprob - sampling_logprob
 ```
 
-The recipe passes that reward through the server-side `importance_sampling`
-loss so rollout/current-policy drift is handled by the backend estimator.
-
-`topk_forward_kl` asks the teacher inference deployment for `top_logprobs=K`,
-builds `target_tokens` and `weights` with shape `[N, K]`, and trains the
-student with `cross_entropy`. Keep `sdft_top_k <= 5`; this mirrors the current
-inference `top_logprobs` response limit.
+The importance ratio in the built-in loss corrects for rollout/current-policy
+drift; `ratio_log_cap` clamps its log. There is no outcome reward and no
+reference model. Helpers live in `training/utils/distillation/`: `losses.py`
+(datums), `sampling.py` (teacher scoring and alignment), `teacher.py` (teacher
+deployment), `eval.py` (privileged-context eval).
 
 ## Logprob Response Fields
 
-Keep the public inference field semantics straight when changing OPD/SDFT
+Keep the public inference field semantics straight when changing OPD
 plumbing:
 
 | Field or request option | Meaning |
@@ -57,12 +56,11 @@ plumbing:
 | `sampling_logprob` | Final generation logprob after temperature and sampling filters/masks. This is the right field when the objective needs the probability of the token under the actual sampler distribution. |
 | `top_logprobs` | Response field for likely alternatives at a position. It does not change sampling and is capped at 5 by the public inference API. |
 
-The recipe currently asks the student sampler for generated token logprobs; the
-current sampler SDK extracts `choice.logprobs.content[].logprob` and stores the
-aligned values as `sampling_logprobs` for OPD batching. Teacher scoring requests
-use `logprobs=True`, `echo=True`, and optional `top_logprobs=sdft_top_k`. If a
-change needs exact sampler-distribution probabilities, wire through
-`sampling_logprob` rather than only raw `logprob`.
+The recipe asks the student sampler for generated token logprobs; the sampler
+SDK extracts `choice.logprobs.content[].logprob` and stores the aligned values
+as `sampling_logprobs` for OPD batching. Teacher scoring requests use
+`logprobs=True` and `echo=True`. If a change needs exact sampler-distribution
+probabilities, wire through `sampling_logprob` rather than only raw `logprob`.
 
 ## Minimal Config
 
@@ -81,21 +79,14 @@ cfg = Config(
     deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
 )
 
-main(cfg)
+main(cfg, cancel_on_exit=True)
 ```
 
 If `teacher_model` is a base-model resource, the recipe creates or reuses a
-frozen teacher inference deployment. If it is already an inference model or
-deployment resource, the recipe uses it directly.
-
-For SDFT:
-
-```python
-from training.utils.distillation import DistillMode
-
-cfg.distill_mode = DistillMode.TOPK_FORWARD_KL
-cfg.sdft_top_k = 5
-```
+frozen teacher inference deployment (`teacher_deployment_id`, or a default id
+derived from the model). If it is already an inference model or deployment
+resource, the recipe uses it directly. `cancel_on_exit=True` deletes the
+trainer and scales created deployments to zero when the run ends.
 
 ## Dataset Contract
 
@@ -105,78 +96,45 @@ Rows are JSONL objects. Required:
 
 Optional:
 
-- `teacher`: default route key for sampled reverse-KL MOPD. The value must
-  match a configured `TeacherConfig.route_value`, or the teacher `model` when
-  `route_value` is unset.
-- `teacher_messages`: privileged teacher-side prompt. If absent, the selected
-  teacher scores the sampled response under `messages`.
+- `teacher_messages`: privileged teacher-side prompt. If absent, the teacher
+  scores the sampled response under `messages`. The aliases
+  `privileged_messages` and `teacher_prompt_messages` are also accepted.
 - `expected_answer`: optional metadata for eval callbacks and smoke checks.
 
-When a teacher uses a custom `TeacherConfig.teacher_messages_key`, rows routed
-to that teacher should provide that key instead of `teacher_messages`.
+## Evaluation Hook
 
-Example routed row:
+`main(cfg, eval_fn=...)` takes an optional async callback. With
+`Config.eval_every = N > 0` it runs once before training and after every N
+steps, once the new weights are served. It receives an
+`training.utils.distillation.eval.EvalContext` (config, rows, student and
+teacher samplers, tokenizer, step, max_seq_len) and returns `eval/*` metrics;
+the last result is returned as `result["eval"]`.
+`make_teacher_trace_logprob_gap_eval(...)` is the privileged-context eval used
+by `examples/distillation/gsm8k_privileged`.
 
-```json
-{"messages":[{"role":"user","content":"Solve 6 * 7. End with Final: <answer>."}],"teacher":"math-teacher","expected_answer":"42"}
-```
+## Customizing
 
-Rows converted from veRL, slime, or AReaL style math sources may keep metadata
-such as `data_source`, `ability`, `reward_model`, and `extra_info`; the
-Fireworks route contract is only the fields above.
+The loop has no mode flags. Fork it to change behavior:
 
-## Multi-teacher Rules
-
-Use `multi_teacher=MultiTeacherConfig(...)` for more than one teacher.
-
-For `sampled_reverse_kl`, this is routed MOPD: each prompt is scored by exactly
-one teacher selected by `MultiTeacherConfig.route_key` (default `teacher`).
-This is not per-prompt blending.
-
-For `topk_forward_kl`, every configured teacher can score the sampled response.
-The recipe blends sparse top-K probability mass by token ID using
-`TeacherConfig.blend_weight`, keeps the top `sdft_top_k` merged IDs, then
-renormalizes before sending the `[N, K]` soft targets to `cross_entropy`.
-
-```python
-from training.utils.distillation import MultiTeacherConfig, TeacherConfig
-
-cfg.multi_teacher = MultiTeacherConfig(
-    route_key="teacher",
-    teachers=[
-        TeacherConfig(
-            model="accounts/fireworks/models/qwen3-32b",
-            route_value="math-teacher",
-            tokenizer_model="Qwen/Qwen3-32B",
-            blend_weight=1.0,
-        ),
-        TeacherConfig(
-            model="accounts/fireworks/models/qwen3-14b",
-            route_value="code-teacher",
-            tokenizer_model="Qwen/Qwen3-14B",
-            blend_weight=1.0,
-        ),
-    ],
-)
-```
+- **Several teachers:** create one sampler per teacher and pick the scorer per
+  row inside `sample_one_prompt` (for example by a `row["teacher"]` route key).
+- **Different objective:** replace the datum builder and the loss call in phase
+  2 of the training loop.
+- **Top-K SDFT:** use `training/recipes/sdft_loop.py`.
 
 ## Guardrails
 
 - Student and teacher token IDs must use a compatible tokenizer and vocabulary.
-  Prefer same-family teachers and set `TeacherConfig.tokenizer_model` when you
-  want validation against `DeployConfig.tokenizer_model`.
+  Prefer same-family teachers; `deployment.tokenizer_model` tokenizes both the
+  student and the teacher prompt.
 - Do not add a separate teacher region knob. `TrainerConfig.region` is the run
   region used by the SDK-managed student sampler and auto-created teacher
-  deployments.
-- `teacher_replica_count` controls replicas for auto-created frozen teacher
-  deployments. `teacher_deployment_shape` sets the run-level default; individual
-  `TeacherConfig.deployment_shape` can override it.
-- Per-teacher metrics use `teacher_route/<slug>/scored` and
-  `teacher_route/<slug>/inflight`; skewed datasets can leave some teacher
-  deployments underused.
-- Environment entrypoint names are `DISTILLATION_TEACHERS` and
-  `DISTILLATION_TEACHER_ROUTE_KEY`. Legacy `OPD_TEACHERS` and
-  `OPD_TEACHER_ROUTE_KEY` are accepted only as fallbacks.
+  deployment.
+- `teacher_replica_count` controls replicas for an auto-created frozen teacher
+  deployment; `teacher_deployment_shape` selects its shape (unset lets the
+  deployment API choose).
+- The recipe is strictly on-policy: it hot-loads the trainer's weights before
+  the first rollout and after every optimizer step.
 
 ## Validation
 

@@ -178,11 +178,12 @@ instead of assuming complete epochs.
 
 Serverless bills padded policy sequences. The inflation depends on the dataset,
 batch size, and ordering, so do not invent a universal padding coefficient from
-one run. The Dedicated `dpo_loop` recipe exposes `group_by_length=True`, but it
-must not be recommended as a Serverless replacement because it provisions a
-different billing surface. The current `training/examples/serverless_dpo`
-runner does not expose length grouping; bucket pairs by rendered length before
-batching and state that actual cost can exceed the unpadded baseline.
+one run. Dedicated `dpo_loop` must not be recommended as a Serverless replacement
+because it bills a different surface. The `training/examples/dpo`
+example runs `dpo_loop` with
+`serverless=True`, so `Config.group_by_length=True` reduces padding there too;
+its CLI does not expose the field, so set it in the example's `build_config`.
+Without grouping, state that actual cost can exceed the unpadded baseline.
 
 Add optional evaluation or generation sampling as separate lines only when
 their token volumes are known. Do not silently quote train-meter cost as total

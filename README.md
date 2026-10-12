@@ -1,19 +1,19 @@
 # Fireworks AI Cookbook
 
-Ready-to-run training recipes for reinforcement learning (GRPO, SAO/PPO, DAPO, GSPO, CISPO), preference optimization (DPO, ORPO), and supervised fine-tuning (SFT) on [Fireworks](https://fireworks.ai).
-
-> **Full documentation**: [Fireworks Training API](https://docs.fireworks.ai/fine-tuning/training-api/introduction)
+Training loops and worked examples for RL (GRPO, IGPO, SAO/PPO), preference
+optimization (DPO, ORPO), SFT, distillation and embedding fine-tuning on
+[Fireworks](https://fireworks.ai). Full docs: [Training API](https://docs.fireworks.ai/fine-tuning/training-api/introduction).
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/fw-ai/cookbook.git
 cd cookbook/training
-conda create -n cookbook python=3.12 -y && conda activate cookbook
-pip install --pre -e .
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install -e .
 ```
 
-See [`training/README.md`](./training/README.md) for configuration, recipes, and examples.
+See [`training/README.md`](./training/README.md) for recipes and examples.
 
 ## For AI Agents
 
@@ -59,21 +59,15 @@ safety guard is active.
 
 ## Repository Structure
 
-`training/` is the primary development surface. `eval/` contains reproducible
-evaluation packages. Legacy integrations, standalone customer scripts,
-multimedia examples, and earlier cookbook content live under `archived/`.
-
 ```
-training/           Training API recipes, utilities, and examples
-  recipes/          Fork-and-customize training loop scripts
-  utils/            Shared config, data loading, losses, metrics
-  examples/         Worked examples (RL, SFT, DPO, ORPO)
-  renderer/         Local renderers and correctness verifier
-  tests/            Unit and end-to-end tests
+training/           Training API cookbook (primary surface)
+  recipes/          One training loop per file; fork to change the algorithm
+  utils/            Pieces recipes assemble: config, data, losses, rollout, metrics
+  examples/         Task code + one recipe call (dedicated and serverless twins)
+  case-studies/     End-to-end notebooks
 eval/               Reproducible evaluation packages and benchmark adapters
-skills/             Research, configure, and debug agent workflows
-archived/           Legacy integrations, multimedia, and cookbook content
-  tools/            Archived standalone customer scripts
+skills/             Research, configure and debug agent workflows
+archived/           Legacy integrations and earlier cookbook content
 ```
 
 ## Evaluations

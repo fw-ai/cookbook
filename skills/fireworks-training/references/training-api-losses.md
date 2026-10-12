@@ -10,9 +10,9 @@ Use this reference when selecting a loss path, constructing datums, or forking a
 |---|---|---|
 | Standard SFT | Recipe-owned weighted token loss | `training/recipes/sft_loop.py` |
 | DPO or ORPO | Pairwise recipe objective | `dpo_loop.py` or `orpo_loop.py` |
-| Standard synchronous RL | Cookbook GRPO path | `rl_loop.py` |
-| Standard asynchronous RL | Cookbook async objective and scheduler | `async_rl_loop.py` |
-| New research objective | Fork the closest maintained recipe | `rl-custom-loss.md` |
+| Standard synchronous RL | Server-side GRPO | `rl_loop.py` |
+| Standard asynchronous RL | Server-side GRPO and async scheduler | `async_rl_loop.py` |
+| Another RL objective, reference KL, or a recomputed anchor | Fork a loop's train step and call `training.utils.rl.algorithm.<name>` | `rl-custom-loss.md` |
 | Direct built-in loss | `forward_backward(...)` | Installed SDK contract |
 | Direct client closure | `forward_backward_custom(...)` | Closest recipe implementation |
 
@@ -60,7 +60,7 @@ Normalization must be explicit when microbatches have different token or sequenc
 ## DPO, ORPO, and RL
 
 - DPO and ORPO use the pairwise schema and recipe implementation in `sdk-recipes.md`.
-- GRPO and related objectives require grouped samples, aligned behavior log probabilities, and reviewed advantage normalization.
+- GRPO and related objectives require grouped samples, aligned rollout log probabilities, and reviewed advantage normalization. The RL loops clip against the rollout log probabilities with no reference KL; `rl-custom-loss.md` covers the alternatives.
 - Custom agent trajectories must satisfy `rl-agentic.md`.
 - Async scheduling and off-policy admission belong in `rl-async.md`, not in the loss closure.
 
@@ -87,7 +87,7 @@ Read `sdk-checkpoints.md` for save, resume, and promote behavior and `rl-hotload
 ## Related
 
 - Recipe catalog: `sdk-recipes.md`
-- Custom RL objectives: `rl-custom-loss.md`, `rl-loss-paths.md`
+- Custom RL objectives: `rl-custom-loss.md`
 - Gradient accumulation: `rl-gradient-accumulation.md`
 - Checkpoints: `sdk-checkpoints.md`
 - Hotload: `rl-hotload.md`

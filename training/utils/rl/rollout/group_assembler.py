@@ -98,8 +98,7 @@ class GroupAssembler:
         *,
         completions_per_prompt: int,
         advantage_fn: AdvantageFn = compute_advantages,
-        with_reference: bool = False,
-        router_replay_completion_only: bool = False,
+        router_replay_completion_only: bool = True,
         min_group_size: int = 1,
     ) -> None:
         if completions_per_prompt < 1:
@@ -108,7 +107,6 @@ class GroupAssembler:
             raise ValueError("min_group_size must be >= 1")
         self._n = completions_per_prompt
         self._advantage_fn = advantage_fn
-        self._with_reference = with_reference
         self._r3_completion_only = router_replay_completion_only
         self._min_group_size = min_group_size
         self._pending: Dict[Hashable, PendingGroup] = {}
@@ -195,7 +193,6 @@ class GroupAssembler:
         pg = rollout_to_prompt_group(
             rollout,
             advantage_fn=self._advantage_fn,
-            with_reference=self._with_reference,
             router_replay_completion_only=self._r3_completion_only,
         )
         return RowResolution(pg=pg, min_submit_version=min_version)
@@ -223,7 +220,6 @@ class GroupAssembler:
             pg = rollout_to_prompt_group(
                 rollout,
                 advantage_fn=self._advantage_fn,
-                with_reference=self._with_reference,
                 router_replay_completion_only=self._r3_completion_only,
             )
             if pg is not None:

@@ -10,7 +10,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
-from training.train_loop import DynamicFilterFn
+from training.utils.rl.rollout.setup import DynamicFilterFn
 from training.utils.data import compute_advantages
 from training.utils.phase_tracing import bind_phase_trace_context, phase_span
 from training.utils.rl.async_rl.batch import OptimizerBatch
@@ -53,8 +53,7 @@ class AsyncRLCoordinator:
         max_head_off_policy_versions: int,
         max_concurrent_rollouts: int | None = None,
         advantage_fn: AdvantageFn = compute_advantages,
-        with_reference: bool = False,
-        router_replay_completion_only: bool = False,
+        router_replay_completion_only: bool = True,
         min_group_size: int = 1,
         max_incomplete_group_retries: int = 0,
         dynamic_filter_fn: DynamicFilterFn | None = None,
@@ -82,7 +81,6 @@ class AsyncRLCoordinator:
             max_head_off_policy_versions=max_head_off_policy_versions,
             max_concurrent_rollouts=max_concurrent_rollouts,
             advantage_fn=advantage_fn,
-            with_reference=with_reference,
             router_replay_completion_only=router_replay_completion_only,
             min_group_size=min_group_size,
             max_incomplete_group_retries=max_incomplete_group_retries,

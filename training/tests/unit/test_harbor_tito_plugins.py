@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from training.examples.rl.harbor.tito import sidecar as sidecar_runtime
+from training.examples.harbor_rl.tito import sidecar as sidecar_runtime
 from training.renderer.tito import plugins as tito_plugins
 from training.renderer.tito.plugins import TITORendererExtension
 from training.renderer.tito.shared import TITORendererCertification
@@ -58,7 +58,7 @@ def register():
 
 _SANDBOX_PROBE = (
     "import json; from pathlib import Path; "
-    "from training.examples.rl.harbor.tito import sidecar; "
+    "from training.examples.harbor_rl.tito import sidecar; "
     "from training.renderer.tito import build_sidecar_tito_renderer; "
     "from training.renderer.tito import shared; "
     "manifest = json.loads(Path('manifest.json').read_text()); "
@@ -96,15 +96,11 @@ def _isolated_extensions():
     tito_plugins.reset_tito_renderer_plugins_for_tests(saved)
 
 
-def _setup(tmp_path: Path) -> SimpleNamespace:
+def _setup() -> SimpleNamespace:
     return SimpleNamespace(
         tokenizer=_Tokenizer(),
         tokenizer_id="tokenizer",
         sample_kwargs={"max_tokens": 128, "max_seq_len": 4096},
-        extras={
-            "renderer_name": "acme_model",
-            "tito_sidecar_bundle_root": str(tmp_path / "bundles"),
-        },
         inference_base_url="http://deployment",
         api_key="deployment-key",
         model="deployment",
@@ -130,7 +126,7 @@ def _build_bundle(tmp_path: Path, body: str = _PLUGIN_SOURCE):
             sidecar_entry_point="acme_private_tito:register",
         )
     )
-    return sidecar_runtime.build_sidecar_bundle(_setup(tmp_path))
+    return sidecar_runtime.build_sidecar_bundle(_setup(), tmp_path / "bundles")
 
 
 def test_bundle_ships_and_rebinds_renderer_extensions(tmp_path) -> None:
@@ -170,7 +166,7 @@ def test_bundle_digest_covers_extension_sources(tmp_path) -> None:
 
 
 def test_bundle_without_extensions_records_none(tmp_path) -> None:
-    bundle = sidecar_runtime.build_sidecar_bundle(_setup(tmp_path))
+    bundle = sidecar_runtime.build_sidecar_bundle(_setup(), tmp_path / "bundles")
 
     with zipfile.ZipFile(bundle.path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
