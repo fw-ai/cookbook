@@ -34,6 +34,24 @@ the user already named model + JSONL + method, skip research and go to
 
 **Order:** research → configure → (debug if needed).
 
+## Quick start
+
+When the user asks what they can try, has no dataset, or wants a first
+successful run, read `references/starter-jobs.md` and offer the
+`research-starter` menu before the full interview. The menu includes:
+
+- Muse Glimmer text SFT on the preloaded prompt-router dataset.
+- Muse Glimmer vision SFT on the preloaded CORD receipts dataset.
+- A bundled DeepMath serverless RL smoke test.
+- A custom-task path back into the normal interview.
+
+The Muse Glimmer Serverless SFT promotion is time- and scope-limited. Apply the
+exact model, method, surface, and UTC deadline from `starter-jobs.md`; never
+generalize it to another operation or call positive-rate training free.
+Research presents the option and readiness package. Configure still verifies
+authentication, availability, resolved parameters, cost, and final approval
+before any mutation.
+
 ## Research methodology
 
 Follow `references/methodology.md`. In short:

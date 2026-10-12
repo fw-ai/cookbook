@@ -83,8 +83,10 @@ def test_starter_jobs_are_linked() -> None:
     starters = read(SKILLS_DIR / "research" / "references" / "starter-jobs.md")
     assert "starter-jobs.md" in getting_started
     assert "starter-jobs.md" in research
-    assert "support_triage_train.jsonl" in starters
-    assert "Do not invent a free tier" in starters
+    assert "onboarding-prompt-router" in starters
+    assert "onboarding-cord-receipts" in starters
+    assert "accounts/michael-s-zhu" not in starters
+    assert "2026-11-01T00:00:00Z" in starters
 
 
 def test_debug_reuses_existing_session() -> None:

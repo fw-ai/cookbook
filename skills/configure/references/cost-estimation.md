@@ -17,12 +17,37 @@ Live sources:
 Shape and catalog context (not rates):
 [`models-shapes-and-cost.md`](../../fireworks-training/references/models-shapes-and-cost.md).
 
+## Temporary Muse Glimmer Serverless SFT promotion
+
+For jobs started before `2026-11-01T00:00:00Z`, the Serverless Training API
+LoRA SFT training rate for
+`accounts/fireworks/models/muse-glimmer-30b` is promotional `$0`.
+
+This dated product promotion overrides the public list train rate only for that
+exact model, Serverless Training API surface, and SFT method. It does not cover
+managed training, DPO, RL, paid sampling or inference, dedicated resources,
+deployment, or jobs started at or after the deadline. Put excluded operations
+on separate cost lines. If the current UTC time is at or after the deadline,
+ignore this section and resolve the live published rate normally.
+
+For a qualifying text or vision starter, report:
+
+- **Estimate type:** `Promotional`
+- **Cost result:** `$0` for the SFT training line
+- **Rate certainty:** `published promotion`
+- **Usage certainty:** dataset-derived or inferred
+
+Vision token accounting remains required for capacity and context validation,
+but does not prevent a `$0` promotional SFT training line. Never carry that
+exception past the deadline or into a non-promotional vision estimate.
+
 ## Route
 
 | Workload | Skill action |
 |---|---|
 | Managed SFT or DPO | Resolve rendered tokens, tuning mode, and live rate; calculate |
 | Managed ORPO | Do not calculate until its billing contract is documented |
+| Promotional Muse Glimmer Serverless LoRA SFT before the deadline | Return a `$0` SFT training line; price excluded work separately |
 | Serverless LoRA SFT | Resolve trainer tokens and live rate; calculate a planning range |
 | Serverless LoRA DPO | Calculate an unpadded baseline with policy train and one-time reference prefill |
 | Dedicated SFT or DPO | Do not calculate. Point to the public cost estimator |
@@ -73,9 +98,12 @@ does not exceed that selected path's context limit. If availability, shape, or
 context is unknown, do not estimate from memory; resolve it from the live model
 catalog first.
 
-If the dataset contains images, return **Estimate type:** `Not calculated`.
+If the dataset contains images, return **Estimate type:** `Not calculated`
+unless it is the active Muse Glimmer promotional Serverless SFT case above.
 Model-specific visual token accounting is unavailable. Do not substitute text
-token counts or infer image tokens from dimensions.
+token counts or infer image tokens from dimensions. During the promotion,
+still resolve rendered visual tokens for context/capacity validation, but the
+qualifying SFT training line remains `$0`.
 
 For eval, pair generation, or post-training deployment uptime, also collect
 drivers from preflight (see manifest). If a driver is unknown, list it in
@@ -216,7 +244,7 @@ Do not use these lines to reconstruct Dedicated training cost.
 Return in the final plan **Cost** block (see `output-template.md`):
 
 - **Recommended path**
-- **Estimate type:** Planning range, Unpadded baseline, or Not calculated
+- **Estimate type:** Promotional, Planning range, Unpadded baseline, or Not calculated
 - **Cost result:** two decimals below $100, whole dollars at $100 or more,
   `<$0.01` for a positive sub-cent result, or "Not calculated"
 - **Rate certainty:** published or unavailable
@@ -243,9 +271,9 @@ estimated_cost:
   pricing_source: https://fireworks.ai/pricing
   pricing_fetched_at_utc:
   recommended_path:
-  estimate_type: planning_range | unpadded_baseline | not_calculated
+  estimate_type: promotional | planning_range | unpadded_baseline | not_calculated
   cost_result: Not calculated | $low–$high | Baseline $value | <$0.01
-  rate_certainty: published | unavailable
+  rate_certainty: published_promotion | published | unavailable
   usage_certainty: dataset-derived | observed | inferred | unknown
   supplied_inputs: {}
   inferred_inputs: []

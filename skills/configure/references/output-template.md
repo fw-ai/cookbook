@@ -37,7 +37,7 @@ that spend waits on approval.
 | | |
 |---|---|
 | Recommended path | Managed / Serverless / Dedicated (estimator page) / RL handoff |
-| Estimate type | Planning range / Unpadded baseline / Not calculated |
+| Estimate type | Promotional / Planning range / Unpadded baseline / Not calculated |
 | Cost result | $low–$high / Baseline $value / <$0.01 / **Not calculated** |
 | Rate certainty | published / unavailable |
 | Usage certainty | dataset-derived / observed / inferred / unknown |

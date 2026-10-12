@@ -108,14 +108,18 @@ Read `references/cost-estimation.md`.
 2. Calculate Serverless SFT from trainer tokens. For DPO, return an unpadded
    baseline with policy train tokens plus one-time all-uncached reference
    prefill; list padding and optional sampling as excluded work.
-3. Do not calculate vision SFT or DPO until model-specific visual token
-   accounting is available.
-4. Do not calculate Dedicated SFT or DPO. Direct the user to
+3. Apply the dated Muse Glimmer Serverless SFT promotion only for the exact
+   model, method, surface, and deadline in `references/cost-estimation.md`;
+   price excluded operations separately.
+4. Do not calculate vision SFT or DPO until model-specific visual token
+   accounting is available, except for the qualifying `$0` promotional SFT
+   training line. Visual tokens still gate context and capacity.
+5. Do not calculate Dedicated SFT or DPO. Direct the user to
    <https://docs.fireworks.ai/fine-tuning/cost-estimator>.
-5. Do not calculate Managed ORPO until its billing contract is documented.
-6. Route RL, embedding, IGPO, and distillation estimates to the Training team
+6. Do not calculate Managed ORPO until its billing contract is documented.
+7. Route RL, embedding, IGPO, and distillation estimates to the Training team
    with method-specific assumptions.
-7. Put the structured estimate and unknowns in the private run manifest.
+8. Put the structured estimate and unknowns in the private run manifest.
 
 Cost estimation does not replace the mandatory final-plan confirmation.
 

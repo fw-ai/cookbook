@@ -50,9 +50,14 @@ Built-in starters (see `research/references/starter-jobs.md`):
 
 | Starter | Preloaded data |
 |---|---|
-| Support-triage SFT | `training/examples/sft/data/support_triage_train.jsonl` |
-| Food-reasoning SFT | `training/examples/sft/food_reasoning.jsonl` |
+| Muse Glimmer prompt-routing SFT | account-relative dataset ID `onboarding-prompt-router` |
+| Muse Glimmer receipt-extraction SFT | account-relative dataset ID `onboarding-cord-receipts` |
 | DeepMath RL smoke | `training/examples/rl/deepmath/dataset.jsonl` |
+
+Muse Glimmer Serverless Training API SFT is promotional `$0` for jobs started
+before `2026-11-01T00:00:00Z`. The offer is limited to that model, method, and
+surface. Research loads the current terms from `starter-jobs.md`; Configure
+still checks account access, availability, and the complete plan before spend.
 
 Other examples:
 

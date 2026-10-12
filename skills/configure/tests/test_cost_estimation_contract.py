@@ -112,6 +112,17 @@ class CostEstimationContractTest(unittest.TestCase):
         self.assertIn("`<$0.01` for a positive sub-cent result", REFERENCE)
         self.assertIn("<$0.01", OUTPUT_TEMPLATE)
 
+    def test_muse_glimmer_serverless_sft_promotion_is_bounded(self) -> None:
+        for marker in (
+            "accounts/fireworks/models/muse-glimmer-30b",
+            "2026-11-01T00:00:00Z",
+            "Promotional",
+            "published_promotion",
+        ):
+            self.assertIn(marker, REFERENCE)
+        self.assertIn("price excluded operations separately", SKILL)
+        self.assertIn("Promotional / Planning range", OUTPUT_TEMPLATE)
+
     def test_manifest_uses_canonical_estimated_cost_key(self) -> None:
         self.assertIn("estimated_cost:", REFERENCE)
         self.assertIn("estimated_cost:", RUN_STATE)
