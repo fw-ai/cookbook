@@ -53,7 +53,6 @@ from training.renderer.model_info import get_recommended_renderer_name
 from training.renderer.tokenizer import get_tokenizer
 
 from training.examples.rl.nemo_gym.proxy import RecordingChatProxy
-from training.examples.rl.vanilla_sampler import build_deployment_sampler
 from training.recipes.async_rl_loop import Config, RolloutSetup, main
 from training.utils import DeployConfig, TrainerConfig, WandBConfig
 from training.utils.rl.rollout import RolloutRun
@@ -282,7 +281,10 @@ def build_rollout_fn_factory(
     run_timeout_s: float,
 ):
     def make_rollout_fn(setup: "RolloutSetup"):
-        sampler = build_deployment_sampler(setup)
+        # The recipe injects one recipe-owned sampler into RolloutSetup; borrow it, don't close it.
+        sampler = setup.sampler
+        if sampler is None:
+            raise RuntimeError("RolloutSetup.sampler is not set; async_rl_loop must inject it")
         # RolloutSetup.sample_kwargs carries the recipe's on-policy sampling settings
         # (temperature, top_p=1.0, top_k=0, ...); the proxy must sample with the same ones.
         proxy_thread.set_sampler(sampler, setup.sample_kwargs)

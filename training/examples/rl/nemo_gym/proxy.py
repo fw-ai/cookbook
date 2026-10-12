@@ -149,8 +149,8 @@ class RolloutSession:
 class RecordingChatProxy:
     """A local OpenAI endpoint backed by a live Fireworks deployment sampler.
 
-    The sampler (``DeploymentSampler``, built once by the rollout factory via
-    ``training.examples.rl.vanilla_sampler.build_deployment_sampler``) is fixed
+    The sampler (``DeploymentSampler``, injected by the recipe as
+    ``RolloutSetup.sampler``) is fixed
     for the whole run -- ``async_rl_loop`` hotloads new weights into the same
     deployment after every optimizer batch, so this proxy needs no
     snapshot-swap call of its own.
@@ -186,7 +186,7 @@ class RecordingChatProxy:
     def set_sampler(self, sampler: Any, sample_kwargs: dict[str, Any] | None = None) -> None:
         """Bind the deployment-backed sampler once ``RolloutSetup`` is available.
 
-        Called exactly once by the rollout factory (``build_deployment_sampler``
+        Called exactly once by the rollout factory (``RolloutSetup.sampler``
         needs ``setup``, which only exists after the recipe's Dedicated
         trainer/deployment are up). No per-step calls after that -- the recipe
         hotloads new weights into this same deployment underneath.
