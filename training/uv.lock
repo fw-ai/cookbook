@@ -953,7 +953,7 @@ wheels = [
 
 [[package]]
 name = "fireworks-ai"
-version = "1.2.22"
+version = "1.2.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -965,9 +965,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/55/e8/11c4e6983597ebb4c45fa5929ebd563e171dbaf1206b241a24e2d51c894f/fireworks_ai-1.2.22.tar.gz", hash = "sha256:3c361d47826576aa43368b1ab46bc14ec02c46d8f8425f2a200c98636e8a0590", size = 633043, upload-time = "2026-10-10T03:47:12.474Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b8/4f/514db167326dc030da3b8a98fdca15b92bfa8c6f57c78ec434396b11369a/fireworks_ai-1.2.24.tar.gz", hash = "sha256:954b4208a94f7418a15db6509b77daad439f7b698b37a9891f8fe7a07f782364", size = 642328, upload-time = "2026-10-13T17:47:02.305Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5f/37/288914a8f32bb4714c1542124e125604a83e8a384046297acc53cbd79b61/fireworks_ai-1.2.22-py3-none-any.whl", hash = "sha256:4bb4f756599dee1670e668bf27d02a04e06ff1bf8c169d3bf58bf677c91b9320", size = 576802, upload-time = "2026-10-10T03:47:10.862Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/da/acff50888bd4accf20e9fc387d939aa27abd22b5ba16ba9828613063dfe0/fireworks_ai-1.2.24-py3-none-any.whl", hash = "sha256:7bfb16fce7e9fedf0688d8b1a837e7fa493c60efc44fa5025fb600f8e3af08a5", size = 582338, upload-time = "2026-10-13T17:47:00.611Z" },
 ]
 
 [package.optional-dependencies]
@@ -1032,7 +1032,7 @@ requires-dist = [
     { name = "chz", marker = "extra == 'sdft'", specifier = ">=0.4.0" },
     { name = "datasets", specifier = ">=2.14.0" },
     { name = "eval-protocol", marker = "extra == 'eval'", specifier = ">=0.3.32" },
-    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.22,<2" },
+    { name = "fireworks-ai", extras = ["training"], specifier = ">=1.2.24,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "huggingface-hub", specifier = ">=1.5.0,<2.0" },
     { name = "hydra-core", specifier = ">=1.3,<2" },
