@@ -42,7 +42,9 @@ jobs:
               context: "Promotion source gate",
               description: allowed
                 ? "Generated from reviewed Fireworks staging"
-                : "Public main accepts only the generated cookbook promotion PR",
+                : labels.has("import")
+                  ? "Queued for private import; publication will close this PR"
+                  : "Maintainer: add import label to submit this contribution",
               target_url: `${context.serverUrl}/${expectedRepo}/actions/runs/${context.runId}`,
             });
 
