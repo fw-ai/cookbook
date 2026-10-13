@@ -74,7 +74,7 @@ Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each 
 | [multilora_fleet](case-studies/multilora_fleet) | LoRA SFT + multi-LoRA serving (Python SDK) | MASSIVE (51 locales) | One deployment, a per-tenant specialist for every locale | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/multilora_fleet/multilora_fleet.ipynb) |
 | [grpo_countdown](case-studies/grpo_countdown) | Serverless non-agentic GRPO (Training API SDK) | TinyZero Countdown | Own the single-turn GRPO loop on serverless; same algorithm as a dedicated config swap | [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/grpo_countdown/countdown_grpo.ipynb) |
 
-**Setup.** Most are independent of the cookbook install above — just `pip install fireworks-ai eval-protocol` (a couple add extras, noted in their own READMEs) and a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). Exceptions: case studies that import the cookbook's `training.*` modules — currently `grpo_countdown` (imports `examples/archive/countdown`) — need the cookbook training install (`uv pip install -e .`, which pulls `tinker`). Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
+**Setup.** Follow the install instructions below, using `uv pip install -e '.[eval]'` to include the SDK and Eval Protocol, and create a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). A couple of case studies add extras, noted in their own READMEs. Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
 
 ## Getting started
 
@@ -85,6 +85,11 @@ uv pip install -e .                      # pulls fireworks-ai[training]>=1.2.22,
 export FIREWORKS_API_KEY=...             # or put it in training/.env
 python -m training.examples.sft.train_sft --help
 ```
+
+The `eval` and `dev` extras require Git and install Eval Protocol from a pinned
+upstream commit. Its published 0.3.32 release requires an older LiteLLM than the
+security fixes allow. The pinned source admits the tested LiteLLM 1.105.0 release;
+replace it with a compatible PyPI release when one is available.
 
 Each recipe's `Config` dataclass documents its fields. Leave `TrainerConfig()`
 empty for SDK-selected defaults, or set `training_shape_id`; deployments resolve
