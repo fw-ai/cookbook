@@ -2,7 +2,7 @@
 
 from training.utils.rl.async_rl.batch import (
     OptimizerBatch,
-    TrainingChunk,
+    TrainingGroup,
 )
 from training.utils.rl.async_rl.producer import RolloutRow
 from training.utils.rl.async_rl.coordinator import (
@@ -20,6 +20,6 @@ __all__ = [
     "PublishResult",
     "OptimizerBatch",
     "OverlappedEvaluation",
-    "TrainingChunk",
+    "TrainingGroup",
     "RolloutRow",
 ]

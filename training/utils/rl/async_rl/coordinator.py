@@ -49,7 +49,6 @@ class AsyncRLCoordinator:
         rows: Iterable[RolloutRow],
         completions_per_prompt: int,
         prompt_groups_per_step: int,
-        training_chunks_per_step: int,
         max_head_off_policy_versions: int,
         max_concurrent_rollouts: int | None = None,
         advantage_fn: AdvantageFn = compute_advantages,
@@ -63,9 +62,7 @@ class AsyncRLCoordinator:
         error_classifier: RolloutErrorClassifier = classify_rollout_error,
         circuit_breaker: CircuitBreakerConfig | None = None,
     ) -> None:
-        self._output: asyncio.Queue[
-            OptimizerBatch | _ProducerFailed | _ProducerFinished
-        ] = asyncio.Queue()
+        self._output: asyncio.Queue[OptimizerBatch | _ProducerFailed | _ProducerFinished] = asyncio.Queue()
         self._active_operation: str | None = None
         self._active_batch: OptimizerBatch | None = None
         self._started = False
@@ -77,7 +74,6 @@ class AsyncRLCoordinator:
             output=self._output,
             completions_per_prompt=completions_per_prompt,
             prompt_groups_per_step=prompt_groups_per_step,
-            training_chunks_per_step=training_chunks_per_step,
             max_head_off_policy_versions=max_head_off_policy_versions,
             max_concurrent_rollouts=max_concurrent_rollouts,
             advantage_fn=advantage_fn,
@@ -141,34 +137,22 @@ class AsyncRLCoordinator:
 
         self._require_started()
         if self._active_operation is not None:
-            raise RuntimeError(
-                f"trainer operation {self._active_operation!r} is already active"
-            )
+            raise RuntimeError(f"trainer operation {self._active_operation!r} is already active")
         if optimizer_batch is not None:
             if self._active_batch is not optimizer_batch:
-                raise RuntimeError(
-                    f"batch {optimizer_batch.batch_id} is not the active trainer batch"
-                )
+                raise RuntimeError(f"batch {optimizer_batch.batch_id} is not the active trainer batch")
         tracks_training = optimizer_batch is not None and operation in {
-            "train_chunk",
+            "train_group",
             "optimizer",
         }
         if tracks_training and optimizer_batch is not None:
-            if optimizer_batch._train_started_at is None:
-                optimizer_batch._train_started_at = time.monotonic()
-                optimizer_batch._chunk_wait_at_train_start = (
-                    optimizer_batch._train_chunk_wait_time
-                )
+            optimizer_batch.start_training()
         executor = self._executor
         if executor is None:
             raise RuntimeError("trainer executor is unavailable")
         self._active_operation = operation
         try:
-            attributes = (
-                {"batch_id": optimizer_batch.batch_id}
-                if optimizer_batch is not None
-                else None
-            )
+            attributes = {"batch_id": optimizer_batch.batch_id} if optimizer_batch is not None else None
             with phase_span(
                 operation,
                 category="async",

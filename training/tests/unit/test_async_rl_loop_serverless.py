@@ -17,6 +17,9 @@ class _Future:
     def __init__(self, value):
         self._value = value
 
+    async def result_async(self, timeout=None):
+        return self.result()
+
     def result(self):
         return self._value
 
@@ -140,7 +143,6 @@ def test_serverless_defaults_are_the_320_group_k3_contract() -> None:
     assert cfg.max_rows == 320
     assert cfg.completions_per_prompt == 8
     assert cfg.prompt_groups_per_step == 8
-    assert cfg.pipeline_chunks_per_step == 2
     assert cfg.max_head_offpolicy_versions == 0
     assert cfg.max_concurrency_rollout_sample is None
     assert cfg.eps_clip == 0.2
@@ -326,7 +328,7 @@ def test_sampling_preflight_finishes_wandb_when_session_creation_fails(
     assert finished == ["metrics.jsonl"]
 
 
-def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
+def test_real_loop_runs_two_groups_and_one_optimizer_step(monkeypatch) -> None:
     service = _Service()
     _patch_runtime(monkeypatch, service)
     eval_steps: list[int] = []
@@ -376,7 +378,6 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
         loop.Config(
             completions_per_prompt=2,
             prompt_groups_per_step=2,
-            pipeline_chunks_per_step=2,
             max_completion_tokens=2,
             max_seq_len=8,
             max_rows=2,
@@ -394,16 +395,13 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
 
     assert result["steps"] == 1
     assert result["accepted_groups"] == 2
-    assert [
-        loss_fn for _, loss_fn, _ in service.training_client.forward_backward_calls
-    ] == ["ppo", "ppo"]
-    for fwd_bwd_result in service.training_client.forward_backward_results:
-        assert fwd_bwd_result.metrics["raw_inference_logprob_coverage"] == 1.0
-        assert fwd_bwd_result.metrics["inference_k3"] >= 0.0
-        assert "ppo_ratio_mean" in fwd_bwd_result.metrics
-    step_metrics = next(
-        metrics for metrics in logged_metrics if "train/step" in metrics
-    )
+    calls = service.training_client.forward_backward_calls
+    assert [loss_fn for _, loss_fn, _ in calls] == ["ppo"]
+    assert len(calls[0][0]) == 4  # Two complete two-completion groups, one ready request.
+    assert service.training_client.forward_backward_results[0].metrics["raw_inference_logprob_coverage"] == 1.0
+    assert service.training_client.forward_backward_results[0].metrics["inference_k3"] >= 0.0
+    assert "ppo_ratio_mean" in service.training_client.forward_backward_results[0].metrics
+    step_metrics = next(metrics for metrics in logged_metrics if "train/step" in metrics)
     assert step_metrics["train/raw_inference_logprob_coverage"] == 1.0
     assert step_metrics["train/inference_k3"] >= 0.0
     assert "train/inference_k1" in step_metrics
@@ -425,9 +423,7 @@ def test_real_loop_runs_two_chunks_and_one_optimizer_step(monkeypatch) -> None:
     assert eval_steps == [0, 1]
     assert evaluation_modes.count(False) == 4
     assert evaluation_modes.count(True) == 1
-    evaluation_metrics = [
-        metrics for metrics in logged_metrics if "eval/failed" in metrics
-    ]
+    evaluation_metrics = [metrics for metrics in logged_metrics if "eval/failed" in metrics]
     assert [metrics["eval/failed"] for metrics in evaluation_metrics] == [1.0, 0.0]
     assert "eval/reward" not in evaluation_metrics[0]
     assert evaluation_metrics[1]["eval/reward"] == 0.5
@@ -463,7 +459,6 @@ def test_rollout_setup_model_follows_the_published_snapshot(monkeypatch) -> None
         loop.Config(
             completions_per_prompt=2,
             prompt_groups_per_step=2,
-            pipeline_chunks_per_step=2,
             max_completion_tokens=2,
             max_seq_len=8,
             max_rows=2,
@@ -539,7 +534,6 @@ def test_evaluation_overlaps_training_and_finishes_before_snapshot_replacement(
         loop.Config(
             completions_per_prompt=2,
             prompt_groups_per_step=1,
-            pipeline_chunks_per_step=1,
             max_completion_tokens=2,
             max_seq_len=8,
             max_rows=1,
@@ -584,7 +578,6 @@ def test_train_step_uses_server_grpo_with_rollout_anchor(monkeypatch) -> None:
         loop.Config(
             completions_per_prompt=2,
             prompt_groups_per_step=1,
-            pipeline_chunks_per_step=1,
             max_completion_tokens=2,
             max_seq_len=8,
             max_rows=1,
@@ -596,13 +589,9 @@ def test_train_step_uses_server_grpo_with_rollout_anchor(monkeypatch) -> None:
         rows=[{"id": "a"}],
     )
 
-    ((datums, loss_fn, loss_fn_config),) = (
-        service.training_client.forward_backward_calls
-    )
+    ((datums, loss_fn, loss_fn_config),) = service.training_client.forward_backward_calls
     assert loss_fn == "ppo"
-    assert loss_fn_config == pytest.approx(
-        {"clip_low_threshold": 0.8, "clip_high_threshold": 1.28}
-    )
+    assert loss_fn_config == pytest.approx({"clip_low_threshold": 0.8, "clip_high_threshold": 1.28})
     assert len(datums) == 2
     for datum in datums:
         inputs = datum.loss_fn_inputs
@@ -655,7 +644,6 @@ def test_resume_restores_optimizer_cursor_and_step(monkeypatch) -> None:
         loop.Config(
             completions_per_prompt=2,
             prompt_groups_per_step=2,
-            pipeline_chunks_per_step=2,
             max_completion_tokens=2,
             max_seq_len=8,
             max_rows=4,
@@ -683,3 +671,186 @@ def test_resume_restores_optimizer_cursor_and_step(monkeypatch) -> None:
     assert result["accepted_groups"] == 4
     assert result["resolved_rows"] == 4
     assert result["final_training_checkpoint"] == "state-0"
+
+
+def test_producer_failure_after_submission_never_optimizes(monkeypatch):
+    service = _Service()
+    _patch_runtime(monkeypatch, service)
+    training_started = asyncio.Event()
+    training_finished = []
+    original_forward_backward = service.training_client.forward_backward
+
+    def forward_backward(data, loss_fn, loss_fn_config=None):
+        future = original_forward_backward(data, loss_fn, loss_fn_config)
+
+        async def result_async(timeout=None):
+            training_started.set()
+            await asyncio.sleep(0)
+            training_finished.append(True)
+            return future.result()
+
+        return SimpleNamespace(result_async=result_async)
+
+    service.training_client.forward_backward = forward_backward
+
+    def factory(setup):
+        async def rollout(row, *, sample_index, **context):
+            if row["id"] == "failure":
+                await training_started.wait()
+                raise ValueError("fatal rollout")
+            return RolloutRun(
+                segments=[
+                    RolloutSample(
+                        tokens=[10, 11, 12],
+                        logprobs=[0.0, -0.1, -0.2],
+                        loss_mask=[0, 1, 1],
+                        reward=float(sample_index),
+                    )
+                ]
+            )
+
+        return rollout
+
+    with pytest.raises(ValueError, match="fatal rollout"):
+        loop.main(
+            loop.Config(
+                completions_per_prompt=2,
+                prompt_groups_per_step=2,
+                min_group_size=2,
+                max_rows=2,
+                max_completion_tokens=2,
+                max_seq_len=8,
+            ),
+            rollout_fn_factory=factory,
+            rows=[{"id": "success"}, {"id": "failure"}],
+        )
+    assert len(service.training_client.forward_backward_calls) == 1
+    assert training_finished == [True]
+    assert service.training_client.optim_calls == []
+    assert len(service.training_client.saved) == 1
+
+
+def test_sigterm_joins_native_requests_before_resource_cleanup(monkeypatch):
+    import signal
+    from training.utils.termination import TerminatedBySignal
+
+    service = _Service()
+    _patch_runtime(monkeypatch, service)
+    polling_cancelled = []
+    completed = []
+    previous_handler = signal.getsignal(signal.SIGTERM)
+    original_forward_backward = service.training_client.forward_backward
+
+    def forward_backward(data, loss_fn, loss_fn_config=None):
+        future = original_forward_backward(data, loss_fn, loss_fn_config)
+
+        async def result_async(timeout=None):
+            release = asyncio.Event()
+            event_loop = asyncio.get_running_loop()
+            event_loop.call_later(0.01, signal.raise_signal, signal.SIGTERM)
+            event_loop.call_later(0.02, release.set)
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                polling_cancelled.append(True)
+                raise
+            assert not service.closed
+            completed.append(True)
+            return future.result()
+
+        return SimpleNamespace(result_async=result_async)
+
+    service.training_client.forward_backward = forward_backward
+
+    def factory(setup):
+        async def rollout(row, *, sample_index, **context):
+            if row["id"] == "blocked":
+                await asyncio.Event().wait()
+            return RolloutRun(
+                segments=[
+                    RolloutSample(
+                        tokens=[10, 11, 12],
+                        logprobs=[0.0, -0.1, -0.2],
+                        loss_mask=[0, 1, 1],
+                        reward=float(sample_index),
+                    )
+                ]
+            )
+
+        return rollout
+
+    with pytest.raises(TerminatedBySignal, match="SIGTERM"):
+        loop.main(
+            loop.Config(
+                completions_per_prompt=2,
+                prompt_groups_per_step=2,
+                min_group_size=2,
+                max_rows=2,
+                max_completion_tokens=2,
+                max_seq_len=8,
+            ),
+            rollout_fn_factory=factory,
+            rows=[{"id": "ready"}, {"id": "blocked"}],
+        )
+    assert completed == [True]
+    assert polling_cancelled == []
+    assert service.training_client.optim_calls == []
+    assert len(service.training_client.saved) == 1
+    assert service.closed
+    assert signal.getsignal(signal.SIGTERM) is previous_handler
+
+
+def test_failed_training_interrupts_blocked_rollout_without_optimizer(monkeypatch):
+    service = _Service()
+    _patch_runtime(monkeypatch, service)
+    cancelled_rollouts = []
+    original_forward_backward = service.training_client.forward_backward
+
+    def forward_backward(data, loss_fn, loss_fn_config=None):
+        original_forward_backward(data, loss_fn, loss_fn_config)
+
+        async def result_async(timeout=None):
+            raise RuntimeError("remote forward-backward failed")
+
+        return SimpleNamespace(result_async=result_async)
+
+    service.training_client.forward_backward = forward_backward
+
+    def factory(setup):
+        async def rollout(row, *, sample_index, **context):
+            if row["id"] == "blocked":
+                try:
+                    await asyncio.wait_for(asyncio.Event().wait(), timeout=1)
+                except asyncio.CancelledError:
+                    cancelled_rollouts.append(True)
+                    raise
+            return RolloutRun(
+                segments=[
+                    RolloutSample(
+                        tokens=[10, 11, 12],
+                        logprobs=[0.0, -0.1, -0.2],
+                        loss_mask=[0, 1, 1],
+                        reward=float(sample_index),
+                    )
+                ]
+            )
+
+        return rollout
+
+    with pytest.raises(RuntimeError, match="remote forward-backward failed"):
+        loop.main(
+            loop.Config(
+                completions_per_prompt=2,
+                prompt_groups_per_step=2,
+                min_group_size=2,
+                max_rows=2,
+                max_completion_tokens=2,
+                max_seq_len=8,
+            ),
+            rollout_fn_factory=factory,
+            rows=[{"id": "ready"}, {"id": "blocked"}],
+        )
+    assert cancelled_rollouts == [True, True]
+    assert len(service.training_client.forward_backward_calls) == 1
+    assert service.training_client.optim_calls == []
+    assert len(service.training_client.saved) == 1

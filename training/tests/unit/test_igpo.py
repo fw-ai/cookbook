@@ -227,3 +227,36 @@ def test_igpo_datums_reject_missing_active_rollout_logprobs(logprobs) -> None:
     batch = combine_prompt_groups([group])
     with pytest.raises(ValueError, match="rollout_logprobs|anchor_logprobs"):
         build_policy_datums(replace(batch, token_advantages=[[1.0, 1.0, 1.0]]))
+
+
+def test_batch_preparation_preserves_group_local_normalization_and_weighted_metrics() -> None:
+    first = _group()
+    second = replace(
+        first,
+        data=[_datum([1, 2, 3, 4], [0, 0, 1])],
+        advantages=[0.0],
+        prompt_len=3,
+        rewards=[0.25],
+        inf_logprobs=[[0.0, 0.0, -0.3]],
+        run_metadata=[{ANSWER_TOKENS: [9], TURN_SPANS: [(3, 4)]}],
+    )
+    groups = [first, second]
+    scorer = _Scorer({2: -2.0, 3: -5.5, 4: -0.5})
+    prepared, metrics = prepare_batch(gamma=0.5)(scorer, combine_prompt_groups(groups))
+    assert len(scorer.calls) == 1
+    expected = [token_advantages(scorer, combine_prompt_groups([group]), gamma=0.5)[0] for group in groups]
+    for actual, expected_row in zip(
+        prepared.token_advantages, [r for b in expected for r in b.token_advantages], strict=True
+    ):
+        assert actual == pytest.approx(expected_row)
+    assert metrics == pytest.approx({"igpo/avg_turns": 4 / 3, "igpo/mean_ig": 1.5, "igpo/baseline_logp": -9.5 / 3})
+
+
+def test_batch_preparation_rejects_misaligned_advantage_rows():
+    group = _group()
+    batch = combine_prompt_groups([group])
+    # A malformed preparation input has fewer actual datums than group runs.
+    batch.data = batch.data[:-1]
+    scorer = _Scorer({2: -2.0, 3: -5.5, 4: -0.5})
+    with pytest.raises(ValueError, match="advantage rows"):
+        prepare_batch(gamma=0.5)(scorer, batch)

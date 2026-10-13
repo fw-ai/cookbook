@@ -101,7 +101,7 @@ so recalibrate the baseline after changing it.
 The recipe trains with the trainer's built-in GRPO loss. To compare another
 objective, such as the sequence-ratio GSPO surrogate, fork
 `recipes/async_rl_loop.py`, import `main` from the fork in `train.py`, and swap
-the loss in `train_chunk` and `_run_optimizer_step`. Each objective in
+the loss in `train_group` and `_run_optimizer_step`. Each objective in
 `training.utils.rl.algorithm` exports its loss name, config and metrics:
 
 ```python
@@ -115,7 +115,7 @@ from training.utils.rl.algorithm.gspo import (
 
 gspo = GSPOConfig(clip_ratio_low=0.001, clip_ratio_high=0.001)
 
-# train_chunk
+# train_group
 result = policy.forward_backward(
     datums, GSPO_LOSS_FN, loss_fn_config=gspo_loss_fn_config(gspo)
 )

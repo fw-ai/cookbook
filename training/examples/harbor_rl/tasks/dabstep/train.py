@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 
 COMPLETIONS_PER_PROMPT = 8
 PROMPT_GROUPS_PER_STEP = 8
-PIPELINE_CHUNKS_PER_STEP = 2
 MAX_COMPLETION_TOKENS = 32768
 MAX_SEQ_LEN = 524288
 TASK_SEED = 20260728
@@ -117,7 +116,6 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, run_name: str) -> C
         tokenizer_revision=args.tokenizer_revision,
         completions_per_prompt=COMPLETIONS_PER_PROMPT,
         prompt_groups_per_step=PROMPT_GROUPS_PER_STEP,
-        pipeline_chunks_per_step=PIPELINE_CHUNKS_PER_STEP,
         max_completion_tokens=MAX_COMPLETION_TOKENS,
         max_seq_len=args.max_seq_len,
         max_rows=args.max_rows,
@@ -132,9 +130,7 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, run_name: str) -> C
         step_offset=args.step_offset,
         resolved_rows_offset=args.row_offset,
         dcp_save_interval=args.dcp_save_interval,
-        wandb=WandBConfig(
-            entity=args.wandb_entity, project=args.wandb_project, run_name=run_name
-        ),
+        wandb=WandBConfig(entity=args.wandb_entity, project=args.wandb_project, run_name=run_name),
     )
 
 

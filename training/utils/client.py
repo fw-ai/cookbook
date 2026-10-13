@@ -16,7 +16,7 @@ import logging
 import os
 from enum import Enum
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 
 try:
     from fireworks.training.sdk.client import (
@@ -33,6 +33,8 @@ except ImportError:
     class GradAccNormalization(str, Enum):
         NUM_SEQUENCES = "num_sequences"
         NUM_LOSS_TOKENS = "num_loss_tokens"
+
+
 from fireworks.training.sdk.trainer import TrainerJobManager, TrainerServiceEndpoint
 
 logger = logging.getLogger(__name__)
@@ -129,6 +131,11 @@ class ReconnectableClient:
         if self._client is None:
             raise RuntimeError("ReconnectableClient is closed or not connected")
         return self._client
+
+    @property
+    def default_timeout(self) -> float:
+        """Result wait budget used by this client's blocking and streaming calls."""
+        return self._default_timeout
 
     @property
     def endpoint(self) -> TrainerServiceEndpoint:
@@ -250,6 +257,14 @@ class ReconnectableClient:
 
     def submit_forward_backward(self, data, loss_fn: str = "cross_entropy", loss_fn_config=None):
         return self._require_client().forward_backward(data, loss_fn, loss_fn_config=loss_fn_config)
+
+    def submit_forward_backward_custom(
+        self,
+        data: list[Any],
+        loss_fn: Callable[..., Any],
+    ) -> Any:
+        """Return the backward future after the SDK prepares a complete custom loss."""
+        return self._require_client().forward_backward_custom(data, loss_fn)
 
     def submit_optim_step(
         self,

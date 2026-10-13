@@ -48,20 +48,15 @@ stays independent of the renderer registry and training runtime.
 | SAO / PPO (experimental) | `recipes/experiment/ppo_value_head_loop.py` | Actor-critic with a value-head critic; see [`examples/rl/experiment/sao/`](examples/rl/experiment/sao/) |
 | Serverless async RL (experimental) | `recipes/experiment/async_rl_loop_serverless.py` | Async GRPO on the shared LoRA pool |
 
-For each prompt group, GRPO centers and scales rewards into advantages
-$A_i=(R_i-\bar R)/(s_R+\varepsilon)$. For a sampled token, let
-$\rho_{i,t}=\exp(\ell_{\theta,i,t}-\ell_{\mathrm{rollout},i,t})$. The
-clipped objective is $-\sum_{i,t}m_{i,t}\min(\rho_{i,t}A_i,
-\operatorname{clip}(\rho_{i,t},1-\epsilon,1+\epsilon)A_i)$, where the
-mask $m$ selects completion tokens. Forward/backward accumulates this sum;
-`optim_step(NUM_LOSS_TOKENS)` divides the accumulated gradient by
-$\sum_{i,t}m_{i,t}$ once before clipping and updating. Async chunks share
-that denominator across the whole optimizer step. The default loop uses no
-frozen-reference KL term. Per-step `train/*`, `perf/*` and `sampler/*` metrics
-separate optimization, timing and sampling behavior.
+Sync RL collects and trains one complete batch; async RL sends currently ready
+groups together. Both wait for every backward before one optimizer update.
+`prompt_groups_per_step` defines optimizer membership;
+remove the old `pipeline_chunks_per_step` field. See the skills for
+[losses](../skills/fireworks-training/references/rl-custom-loss.md) and
+[metrics](../skills/fireworks-training/references/async-rl-metrics.md).
 
-To train another RL objective, fork a recipe and replace its `forward_backward`
-call; see [`rl-custom-loss.md`](../skills/fireworks-training/references/rl-custom-loss.md).
+To train another RL objective, fork a recipe and replace its loss implementation;
+see [`rl-custom-loss.md`](../skills/fireworks-training/references/rl-custom-loss.md).
 
 ## Case studies
 

@@ -42,18 +42,16 @@ class TestComputeStepMetrics:
                     "perf/train_time": 1.0,
                     "perf/train_wait_time": 5.0,
                     "perf/wait_time_ratio": 5 / 6,
-                    "perf/train_chunk_wait_time": 0.25,
+                    "perf/train_group_wait_time": 0.25,
                     "async/in_flight_samples_mean": 6.5,
-                    "async/realized_training_chunks": 4,
+                    "async/realized_training_groups": 4,
                     "async/trained_against_version": 2,
                 },
                 [_make_prompt_group()],
             )
         )
 
-        rollout_metrics = {
-            key: value for key, value in metrics.items() if key.startswith("rollout/")
-        }
+        rollout_metrics = {key: value for key, value in metrics.items() if key.startswith("rollout/")}
         assert rollout_metrics == {
             "rollout/raw_reward": 0.5,
             "rollout/filtered_reward": 1.0,
@@ -69,11 +67,11 @@ class TestComputeStepMetrics:
         assert metrics["perf/train_time"] == 1.0
         assert metrics["perf/train_wait_time"] == 5.0
         assert metrics["perf/wait_time_ratio"] == 5 / 6
-        assert metrics["perf/train_chunk_wait_time"] == 0.25
+        assert metrics["perf/train_group_wait_time"] == 0.25
         assert metrics["perf/step_samples_per_s"] == 1 / 6
         assert metrics["perf/step_tokens_per_s"] == 1 / 3
         assert metrics["async/in_flight_samples_mean"] == 6.5
-        assert metrics["async/realized_training_chunks"] == 4
+        assert metrics["async/realized_training_groups"] == 4
         assert metrics["async/trained_against_version"] == 2
         assert "train/effective_accumulation_steps" not in metrics
         assert "perf/overlap_ratio" not in metrics
@@ -367,7 +365,7 @@ class TestFwdBwdResultAveraging:
         assert metrics["train/total_resp_tokens"] == 10
         assert metrics["train/mask_ratio"] == 0.5
 
-    def test_optional_metric_averages_only_reported_chunks(self):
+    def test_optional_metric_averages_only_reported_groups(self):
         metrics = compute_step_metrics(
             prompt_groups=[],
             fwd_bwd_results=[
@@ -382,7 +380,7 @@ class TestFwdBwdResultAveraging:
         assert metrics["train/inference_k3"] == 0.25
         assert not any(key.startswith("kld/") for key in metrics)
 
-    def test_inference_drift_preserves_historical_chunk_mean(self):
+    def test_inference_drift_preserves_historical_group_mean(self):
         metrics = compute_step_metrics(
             prompt_groups=[],
             fwd_bwd_results=[
@@ -418,7 +416,7 @@ class TestFwdBwdResultAveraging:
         assert metrics["train/ppo_ratio_mean"] == 1.07
 
     def test_k1_preserves_tinker_reduced_runtime_dp_sharding_evidence(self):
-        server_chunks = [
+        server_groups = [
             tinker.ForwardBackwardOutput(
                 loss_fn_output_type="cross_entropy",
                 loss_fn_outputs=[],
@@ -434,7 +432,7 @@ class TestFwdBwdResultAveraging:
             )
             for local_count in (1, 2)
         ]
-        only = combine_fwd_bwd_output_results(server_chunks)
+        only = combine_fwd_bwd_output_results(server_groups)
 
         assert only.metrics["dp_sharded_counts:min"] is True
         assert only.metrics["dp_sharded_counts:max"] is True

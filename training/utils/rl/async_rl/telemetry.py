@@ -236,34 +236,32 @@ class AsyncRLTelemetry:
         reporter = self._reporter
         if reporter is None:
             raise RuntimeError("async RL telemetry is not started")
-        offsets = [
-            trained_against_version - submit_version
-            for submit_version in batch.submit_versions
-        ]
-        train_pipeline_time = 0.0
+        offsets = [trained_against_version - submit_version for submit_version in batch.submit_versions]
+        training_window_time = 0.0
         if batch._train_started_at is not None:
-            train_pipeline_time = (
-                batch._train_finished_at or time.monotonic()
-            ) - batch._train_started_at
-        train_chunk_wait_time = max(
+            training_window_time = (batch._train_finished_at or time.monotonic()) - batch._train_started_at
+        train_group_wait_time = max(
             0.0,
-            batch._train_chunk_wait_time - batch._chunk_wait_at_train_start,
+            batch._train_group_wait_time - batch._group_wait_at_train_start,
         )
-        train_time = max(0.0, train_pipeline_time - train_chunk_wait_time)
+        train_time = max(0.0, training_window_time - train_group_wait_time)
+        if "perf/forward_backward_pending_time" in timing_metrics:
+            # Request windows can overlap group collection; do not subtract that overlap.
+            train_time = timing_metrics["perf/forward_backward_pending_time"] + timing_metrics.get(
+                "perf/optim_step_time", 0.0
+            )
         train_wait_time = max(0.0, step_time - train_time)
         loop_stats: dict[str, Any] = {
             "async/version_offset_mean": sum(offsets) / len(offsets),
             "async/version_offset_max": max(offsets),
             "async/version_offset_min": min(offsets),
             "async/trained_against_version": trained_against_version,
-            "async/realized_training_chunks": batch.realized_chunks,
+            "async/realized_training_groups": batch.realized_groups,
             "perf/step_time": step_time,
             "perf/train_time": train_time,
             "perf/train_wait_time": train_wait_time,
-            "perf/wait_time_ratio": (
-                train_wait_time / step_time if step_time > 0 else 0.0
-            ),
-            "perf/train_chunk_wait_time": train_chunk_wait_time,
+            "perf/wait_time_ratio": (train_wait_time / step_time if step_time > 0 else 0.0),
+            "perf/train_group_wait_time": train_group_wait_time,
             **reporter.finish_step(),
         }
         metrics = compute_step_metrics(
@@ -281,8 +279,7 @@ class AsyncRLTelemetry:
         metrics["rollout/step"] = batch.batch_id
         metrics["train/step"] = batch.batch_id
         logger.info(
-            "Rollout %d | Reward raw %.3f filtered %.3f | "
-            "Samples raw %d filtered %d | Filter %.1f%%",
+            "Rollout %d | Reward raw %.3f filtered %.3f | " "Samples raw %d filtered %d | Filter %.1f%%",
             batch.batch_id,
             metrics.get("rollout/raw_reward", 0.0),
             metrics.get("rollout/filtered_reward", 0.0),

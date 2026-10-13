@@ -7,7 +7,7 @@ Use this reference for implementation details, tuning, and debugging. The
 customer-facing overview stays in the Fireworks docs.
 
 This reference owns the async loop: admission, overlap, grouping, optimizer
-chunks, publication, and durability. For multi-turn agents, tools, token
+groups, publication, and durability. For multi-turn agents, tools, token
 ancestry, history mismatch, or session/cache architecture, read
 [`rl-agentic.md`](rl-agentic.md).
 
@@ -34,10 +34,10 @@ Users provide:
 - optional `advantage_fn`, `dynamic_filter_fn` and `evaluation_fn` callbacks.
 
 The recipe owns trainer/deployment/sampler lifecycle, rollout fan-out and
-admission, group assembly, advantages, training chunks, the server-side GRPO
+admission, group assembly, advantages, training groups, the server-side GRPO
 forward/backward, the optimizer, sampler hotload, version publication,
 metrics, checkpointing, and cleanup. It has no loss, anchor or KL options; to
-change the objective, fork `train_chunk` as described in
+change the objective, fork `train_group` as described in
 [`rl-custom-loss.md`](rl-custom-loss.md).
 
 Keep custom environment logic in the rollout function. Do not put scheduler or
@@ -176,15 +176,18 @@ The scheduler is split by one owner per concern:
 | Component | Owns |
 |---|---|
 | `RolloutProducer` | In-flight rollout tasks, completion-triggered refill, row-atomic admission, group assembly, failure policy, and the durable row cursor |
-| `OptimizerBatch` | One optimizer batch, fixed balanced chunk targets, accepted rows, and the async queue of ready `TrainingChunk`s |
+| `OptimizerBatch` | One optimizer batch, accepted rows and the async queue of immediately ready `TrainingGroup`s |
 | `AsyncRLCoordinator` | The producer/batch handoff, one serialized trainer worker, failure boundaries, and publication |
 | `OverlappedEvaluation` | One version-scoped evaluation task, interval/deduplication, joining, and cancellation |
 | `AsyncRLTelemetry` | Rate-limited producer snapshots, completed-batch metric reduction, and reporting |
-| `async_rl_loop.main` | Sampler and service lifecycle plus visible algorithm phases: `train_chunk` forward/backward, optimizer, hotload, telemetry handoff, and checkpoints |
+| `async_rl_loop.main` | Sampler and service lifecycle plus visible algorithm phases: `train_group` forward/backward, optimizer, hotload, telemetry handoff, and checkpoints |
 
-Blocking trainer calls run on the coordinator's single worker thread. The event
-loop remains free to retire rollout tasks and refill the producer while trainer
-work is active. Gradient mutation is serialized; rollout production is not.
+Complete groups build loss inputs and submit backward requests through the
+coordinator's single trainer worker, with its active-batch failure checks. Results
+wait through the native asynchronous API on the event loop. Optimizer, publication
+and checkpoint calls use that same worker. Rollout retirement, producer refill
+and evaluation can continue during local preparation and while results remain pending.
+There is one optimizer update after every backward in its window succeeds.
 
 ### Sampler ownership and shutdown
 
@@ -214,7 +217,6 @@ Use these symbols when reasoning about capacity:
 |---|---:|---|---|
 | `completions_per_prompt` | `G` | rollout calls per row | Logical GRPO group members requested for one dataset row |
 | `prompt_groups_per_step` | `P` | rows | Complete prompt groups in one optimizer batch |
-| `pipeline_chunks_per_step` | `K` | chunks | Requested forward/backward chunks per optimizer batch |
 | `max_head_offpolicy_versions` | `O` | published versions | Admission headroom beyond the current policy version; `0` is fully on-policy |
 | `max_concurrency_rollout_sample` | `C` | rollout calls | Optional hard cap on in-flight rollout calls |
 
@@ -255,13 +257,12 @@ error, or a record with no MoE flag) still raises.
 
 One optimizer batch requests `B = P × G` logical rollout results. The number of
 trainer trajectories can be larger when a result contains multiple
-`RolloutSample`s. The scheduler balances its `min(P, K)` non-empty chunk
-targets by prompt rows, not by the eventual trajectory count. For example,
-`P=10, K=4` creates targets `(3, 3, 2, 2)`.
+`RolloutSample`s. The dedicated loop sends currently ready complete groups
+together, even while earlier training requests are pending. It never waits for
+additional groups to fill a request. The serverless loop uses the same pattern.
 
-Chunking changes when forward/backward work can start; it does not change the
-optimizer batch. Exactly one optimizer mutation, one sampler hotload, and one
-version publication follow all chunks in a batch.
+Request grouping does not change the optimizer batch. Exactly one optimizer mutation, one sampler hotload, and one
+version publication follow all groups in a batch.
 
 ## Row-atomic admission gate
 
@@ -287,8 +288,8 @@ accounted for, and each publication adds one batch of staleness capacity.
 
 `O=0` is the fully on-policy setting: every optimizer batch trains groups from
 its current published policy version. It does not disable overlap inside that
-batch: with `K>1`, the trainer can process an early chunk while remaining
-rollouts for the same batch finish.
+batch: the trainer can process each complete group while remaining rollouts
+for the same optimizer batch finish.
 
 When `C` is set, it must be at least `G`. To keep a concurrency window full,
 the admission budget must also cover it. A useful sizing check is:
@@ -307,7 +308,7 @@ retired rollout task. For a completion-triggered refill:
 
 1. retire the completed task;
 2. resolve its row when all `G` draws have settled;
-3. emit a training chunk if its predetermined target is full;
+3. emit the complete training group immediately;
 4. immediately retry row admission;
 5. submit as many complete rows as both budgets allow.
 
@@ -319,11 +320,15 @@ concurrency gate is full, the next rollout completion reopens capacity.
 
 For each optimizer batch:
 
-1. The first ready chunk exposes the `OptimizerBatch` to the recipe.
-2. `async for chunk in batch.chunks()` waits only for the next predetermined
-   chunk. Later chunks can queue while the current chunk trains.
-3. Each chunk runs `train_chunk`: one server-side GRPO forward/backward.
-4. After the final chunk, the recipe performs one optimizer step.
+1. The first ready group exposes the `OptimizerBatch` to the recipe.
+2. The loop yields each fully assembled, accepted group immediately.
+3. Each group immediately submits a server-side GRPO forward/backward request;
+   earlier requests may still be pending. No half-formed group is submitted.
+4. After every submitted request succeeds, the recipe performs one optimizer
+   step using the accumulated loss-token normalization. A backward or producer
+   failure prevents that optimizer submission; requests are joined before shutdown using
+   finite, best-effort waits. A timeout or failed transport does not prove that
+   remote work has stopped; no further optimizer or success checkpoint is issued.
 5. The recipe joins any evaluation of the current sampler version.
 6. The recipe synchronizes sampler weights through [negotiated RDMA or save → FILE hotload](rl-hotload.md#transport-negotiation).
 7. `coordinator.publish(batch)` advances the policy version, commits accepted
@@ -411,12 +416,12 @@ table.
 
 ## Loss path
 
-`train_chunk` trains the trainer's built-in GRPO loss, clipped against the
+`train_group` trains the trainer's built-in GRPO loss, clipped against the
 rollout logprobs, with no reference model or KL. Advantages are not
 reweighted, and raw inference logprobs feed drift metrics only. Late-arriving
 off-policy tokens are therefore clipped against the policy version that
 sampled them. To use another objective, reference KL, a recomputed trainer
-anchor, TIS or sampling-support replay, fork `train_chunk`; see
+anchor, TIS or sampling-support replay, fork `train_group`; see
 [`rl-custom-loss.md`](rl-custom-loss.md).
 
 ## Examples and related references
