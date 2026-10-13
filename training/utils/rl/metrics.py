@@ -25,13 +25,13 @@ _LOOP_STAT_PASSTHROUGH_KEYS = (
     "async/admission_capacity_samples_mean",
     "async/staleness_capacity_samples_mean",
     "async/concurrency_capacity_samples_mean",
-    "async/realized_training_chunks",
+    "async/realized_training_groups",
     "async/trained_against_version",
     "perf/step_time",
     "perf/train_time",
     "perf/train_wait_time",
     "perf/wait_time_ratio",
-    "perf/train_chunk_wait_time",
+    "perf/train_group_wait_time",
 )
 
 _TITO_METRIC_ROOT = "tito/"
@@ -421,15 +421,16 @@ def _step_samples_and_tokens(prompt_groups: Sequence[PromptGroup]) -> tuple[int,
     return samples, completion_tokens
 
 
-def sync_step_perf_metrics(
-    loop_stats: Mapping[str, Any], prompt_groups: Sequence[PromptGroup]
-) -> dict[str, float]:
-    """Wall-time split and throughput for one synchronous collect-then-train step."""
+def sync_step_perf_metrics(loop_stats: Mapping[str, Any], prompt_groups: Sequence[PromptGroup]) -> dict[str, float]:
+    """Wall-time windows and throughput for one synchronous optimizer step.
+
+    The sync recipe collects rollouts before training the complete batch.
+    """
     samples, completion_tokens = _step_samples_and_tokens(prompt_groups)
     metrics: dict[str, float] = {}
     rollout = float(loop_stats.get("rollout_batch_wall_time", 0.0))
     train = float(loop_stats.get("train_wall_time", 0.0))
-    step = rollout + train
+    step = float(loop_stats.get("step_wall_time", rollout + train))
     if rollout > 0:
         metrics["perf/rollout_batch_wall_time"] = rollout
         metrics["perf/rollout_batch_samples_per_s"] = samples / rollout

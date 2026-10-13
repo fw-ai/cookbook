@@ -49,9 +49,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         terminal_failure_reward=0.0,
         retry_include_exceptions=("AgentSetupTimeoutError",),
     )
-    common.add_resource_args(
-        parser, replica_count=2, sample_timeout=1800, weight_sync_timeout=1800
-    )
+    common.add_resource_args(parser, replica_count=2, sample_timeout=1800, weight_sync_timeout=1800)
     common.add_wandb_args(parser, project="harbor-rl-textworld")
     parser.add_argument("--textworld-dataset", required=True, type=Path)
     parser.add_argument("--run-dir", required=True, type=Path)
@@ -65,7 +63,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--completions-per-prompt", type=int, default=8)
     parser.add_argument("--prompt-groups-per-step", type=int, default=8)
-    parser.add_argument("--pipeline-chunks-per-step", type=int, default=2)
     parser.add_argument("--max-completion-tokens", type=int, default=8_192)
     parser.add_argument("--max-seq-len", type=int, default=24_576)
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -121,30 +118,24 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, row_count: int) -> 
         learning_rate=args.learning_rate,
         completions_per_prompt=args.completions_per_prompt,
         prompt_groups_per_step=args.prompt_groups_per_step,
-        pipeline_chunks_per_step=args.pipeline_chunks_per_step,
         max_completion_tokens=args.max_completion_tokens,
         max_seq_len=args.max_seq_len,
         temperature=args.temperature,
         epochs=args.epochs,
         max_rows=row_count,
         shuffle=False,  # the seeded order is recorded in launch.json
-        max_head_offpolicy_versions=(
-            0 if args.full_sync else args.max_head_offpolicy_versions
-        ),
+        max_head_offpolicy_versions=(0 if args.full_sync else args.max_head_offpolicy_versions),
         grad_clip_norm=args.grad_clip_norm,
         dcp_save_interval=args.checkpoint_interval,
         weight_sync_timeout=args.weight_sync_timeout,
         cleanup_on_exit=not args.skip_cleanup,
         init_from_checkpoint=args.init_from_checkpoint,
         trainer=common.trainer_config(args),
-        deployment=common.deploy_config(
-            args, hot_load_transition_type="SYNC" if args.full_sync else None
-        ),
+        deployment=common.deploy_config(args, hot_load_transition_type="SYNC" if args.full_sync else None),
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
-            run_name=args.wandb_run_name
-            or f"harbor-textworld-pi-{int(time.time()) % 100000}",
+            run_name=args.wandb_run_name or f"harbor-textworld-pi-{int(time.time()) % 100000}",
         ),
     )
 

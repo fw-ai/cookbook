@@ -69,18 +69,32 @@ def test_collect_prompt_groups_returns_final_partial_batch() -> None:
 
 
 def test_collect_prompt_groups_does_not_hide_rollout_exceptions() -> None:
-    async def sample_prompt(_row: dict, *, cursor_index: int):
-        raise RuntimeError(f"fatal row {cursor_index}")
+    async def scenario():
+        sibling_started = asyncio.Event()
+        joined = []
 
-    with pytest.raises(RuntimeError, match="fatal row 0"):
-        asyncio.run(
-            collect_prompt_groups(
-                iter(CursorDataLoader([{}])),
-                target_size=1,
+        async def sample_prompt(_row: dict, *, cursor_index: int):
+            if cursor_index == 0:
+                await sibling_started.wait()
+                raise RuntimeError("fatal row 0")
+            sibling_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                joined.append(cursor_index)
+
+        try:
+            await collect_prompt_groups(
+                iter(CursorDataLoader([{}, {}])),
+                target_size=2,
                 sample_prompt=sample_prompt,
                 should_accept=None,
             )
-        )
+        finally:
+            assert joined == [1]
+
+    with pytest.raises(RuntimeError, match="fatal row 0"):
+        asyncio.run(asyncio.wait_for(scenario(), 1))
 
 
 def test_collect_prompt_groups_validates_target_size() -> None:

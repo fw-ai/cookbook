@@ -131,4 +131,4 @@ model settings are documented there.
 
 Other objectives (DAPO, GSPO, CISPO, …) live in
 [`utils/rl/algorithm/`](../../../utils/rl/algorithm/); fork the recipe's
-`train_chunk` to swap one in.
+`train_group` to swap one in.

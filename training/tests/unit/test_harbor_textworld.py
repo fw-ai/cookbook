@@ -259,7 +259,6 @@ def test_textworld_full_sync_shape_and_batch_contract(tmp_path):
     assert args.max_rows == 96
     assert config.completions_per_prompt == 8
     assert config.prompt_groups_per_step == 16
-    assert config.pipeline_chunks_per_step == 2
     assert config.max_head_offpolicy_versions == 0
     assert config.grad_clip_norm == 1.5
     assert config.trainer.training_shape_id == shape

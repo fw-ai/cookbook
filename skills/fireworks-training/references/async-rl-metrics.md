@@ -1,7 +1,7 @@
 # Reading async RL metrics
 
 Use this procedure to verify producer liveness, rollout/train overlap, admission
-gates, and pipeline sizing for `training/recipes/async_rl_loop.py` and its
+gates, and concurrency sizing for `training/recipes/async_rl_loop.py` and its
 serverless experiment counterpart.
 
 For a Perfetto timeline of the same client-loop phases, including custom
@@ -14,7 +14,7 @@ The recipe deliberately has two observation clocks:
 
 | Stream | Axis | Contents |
 |---|---|---|
-| Optimizer batch | `rollout/step` | Reward, loss, version lag, step phases, realized chunks, and sampled producer means |
+| Optimizer batch | `rollout/step` | Reward, loss, version lag, step phases, realized groups, and sampled producer means |
 | Rollout producer | `producer/event` | Live producer gauges and cumulative refill/admission counters |
 
 Producer records are emitted at startup, shutdown, and at most once every 10
@@ -28,7 +28,6 @@ in every metric record. Read these first:
 
 - `completions_per_prompt` (`G`)
 - `prompt_groups_per_step` (`P`)
-- `pipeline_chunks_per_step` (`K`)
 - `max_head_offpolicy_versions` (`O`)
 - `max_concurrency_rollout_sample` (`C`, optional)
 
@@ -81,8 +80,8 @@ For `metrics.jsonl`, parse every line and separate records by the presence of
 3. Confirm `producer/in_flight_samples <= C` whenever `C` is configured.
 4. Confirm producer totals are monotonic. Counter decreases usually mean two
    runs were concatenated or histories were sorted on the wrong axis.
-5. Confirm `async/realized_training_chunks <= min(P, K)`. A final partial
-   optimizer batch may realize fewer chunks.
+5. Confirm `async/realized_training_groups <= P`. A final partial
+   optimizer batch may realize fewer groups.
 
 ## Read rollout filtering
 
@@ -128,10 +127,10 @@ utilization.
 | Metric | Meaning |
 |---|---|
 | `perf/step_time` | Wall time from the previous policy publication to this publication. The first step starts with the coordinator. |
-| `perf/train_time` | Active trainer pipeline wall time, from the first train chunk through optimizer completion, excluding waits for later chunks. |
+| `perf/train_time` | The union of pending forward-backward request windows plus optimizer request time. Includes transport and server queueing, not only GPU compute. |
 | `perf/train_wait_time` | `max(perf/step_time - perf/train_time, 0)`: all client-loop time outside active training. |
 | `perf/wait_time_ratio` | `perf/train_wait_time / perf/step_time`. This is not a GPU-idle ratio. |
-| `perf/train_chunk_wait_time` | The subset of pipeline time spent waiting for a later rollout chunk. |
+| `perf/train_group_wait_time` | Time awaiting later complete groups after the first training request. It may overlap pending trainer requests. |
 | `perf/weight_update_time` | Sampler weight publication. For serverless sampling this includes snapshot creation and draining the replaced sampling client. RDMA publication adds its phases as `perf/weight_sync_capture_time` and `perf/weight_sync_hotload_time`. |
 | `perf/step_samples_per_s` / `perf/step_tokens_per_s` | Optimizer-update cadence computed with `perf/step_time`. These are not raw sampler throughput. |
 
@@ -195,7 +194,7 @@ rate     = attempts / Δ producer/elapsed_time_s
 The scheduler intentionally does not instrument every producer transition with
 trainer state. Therefore these records prove standalone refill but do not, by
 themselves, identify the exact physical trainer call during which it occurred.
-For a strict overlap acceptance test, block a train-chunk call, snapshot the
+For a strict overlap acceptance test, block a train-group call, snapshot the
 producer totals, release one rollout, and assert that the refill totals advance
 before unblocking the trainer. The cookbook unit test uses this procedure.
 
@@ -206,10 +205,10 @@ before unblocking the trainer. The cookbook unit test uses this procedure.
 | High `eval/wall_time` but low `eval/weight_sync_wait_time` | Evaluation is hidden by rollout/trainer overlap | No scheduling change; confirm inference contention separately |
 | High `perf/wait_time_ratio` and high `eval/weight_sync_wait_time` or `checkpoint/wall_time` | Periodic work, not rollout capacity, delays publication | Change the relevant interval or workload |
 | High `perf/weight_update_time` | Weight save/hotload or serverless client draining is slow | Inspect publication latency and outstanding sampler requests |
-| High `perf/train_chunk_wait_time`; in-flight near `C` | Later chunks are rollout-bound while using the configured window | Add rollout capacity or raise `C` if deployment capacity and the off-policy budget allow it |
+| High `perf/train_group_wait_time`; in-flight near `C` | Later groups are rollout-bound while using the configured window | Add rollout capacity or raise `C` if deployment capacity and the off-policy budget allow it |
 | High wait; in-flight below `C`; admission capacity below `G` | Admission gate, not deployment capacity, is limiting rollout | Inspect staleness capacity and `O`; do not add replicas first |
 | Staleness capacity near zero during training | Producer exhausted version headroom before publication | Speed up training/publication, or raise `O` only if more off-policy data is acceptable |
-| Near-zero chunk wait with a large `async/realized_training_chunks` | Trainer RPCs may be finer-grained than needed | Benchmark a smaller `K` to trade pipeline latency for fewer RPCs |
+| Near-zero group wait with many requests | Trainer RPCs may be finer-grained than needed | Inspect server packing and `train/groups_per_request_mean`; ready groups share a logical request |
 | Positive `async/in_flight_samples_mean` with nonzero train time | Rollouts and training occupied the same publication window | Use the strict blocked-trainer test when exact physical overlap must be proven |
 
 ## Admission-capacity check
@@ -231,3 +230,28 @@ This ensures the version window is large enough to hold the requested
 concurrency window. It does not guarantee high utilization: deployment
 throughput, sequence lengths, source exhaustion, filtering, and failures still
 matter.
+
+## Streaming request timing
+
+With DEBUG logging, each completed training request emits an `RL group training`
+JSON record with step, source rows/versions, group/datum counts, UTC
+ready/submitted/completed timestamps, status, and client latency.
+`ready_to_submit_s` includes local batch and datum preparation and producer-to-consumer queue wait.
+`perf/group_ready_to_submit_time_sum` adds each group's interval, including
+coalesced groups. `train/groups_per_request_mean` and `_max` describe coalescing;
+`perf/fwd_bwd_submit_time` adds only the local API submission-call durations.
+`submit_to_complete_s` includes transport, server queueing, training and result
+collection; it is not GPU execution time. Use the UTC windows to correlate
+with server telemetry for the same trainer and run interval.
+
+`perf/fwd_bwd_time` is the first-submission through last-completion window.
+`perf/forward_backward_pending_time` is the union of pending request intervals,
+so gaps with no outstanding training request are excluded and overlapping
+requests are counted once. `perf/train_time` adds the optimizer request time.
+Policy-ratio and drift means are recomputed over all samples in the optimizer
+batch so a group with fewer surviving trajectories is not overweighted.
+
+A synchronous `prepare_batch_fn` keeps its whole-batch barrier because a user
+hook can depend on all groups. Actor/critic recipes and contrastive objectives
+retain their mathematical coupling barriers: an updated critic or the full
+negative set must be available before the dependent objective is evaluated.

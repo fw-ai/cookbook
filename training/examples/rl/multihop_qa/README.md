@@ -35,12 +35,13 @@ Each step:
    sample whose turn spans IGPO scores (`training.utils.rl.rollout.turn_traces`).
    The run's metadata carries `TURN_SPANS` and the tokenized ground truth as
    `ANSWER_TOKENS`.
-2. `prepare_batch_fn`: one `forward` on the policy trainer scores `log P(answer | p_t)` for every
-   turn of every rollout. The trainer holds the sampling policy because the
-   recipe hotloads it after every update.
-3. One `forward_backward` with the trainer's built-in `ppo` loss trains on the
-   per-token turn advantages, clipped against the rollout logprobs, then one
-   optimizer step and a hotload.
+2. After the complete rollout batch is collected, `prepare_batch_fn` scores
+   `log P(answer | p_t)` before every turn in one policy-trainer `forward`.
+   Information gain and outcome rewards are normalized separately within each
+   group; the trainer still holds the sampling policy.
+3. One `forward_backward` trains the complete batch with built-in `ppo` loss
+   and per-token turn advantages. After it succeeds, one optimizer step and
+   hotload complete the iteration. Metrics use their run or turn denominators.
 
 ## Quick start
 

@@ -4,10 +4,10 @@
 EXPERIMENTAL -- under active development.  API surface (``Config`` field
 names, ``RolloutSetup`` shape, gate semantics) may change.  The recipe is
 intentionally minimal-surface: the only thing most users need to write is the
-rollout function; everything else (gate, advantage, weight sync, pipeline
-chunking, checkpoints) is handled by ``main()``.  Each optimizer batch trains
+rollout function; everything else (gate, advantage, weight sync, group submission,
+checkpoints) is handled by ``main()``.  Each optimizer batch trains
 with the trainer's built-in GRPO loss, clipped against the rollout logprobs.
-To change the objective, fork ``train_chunk``; the modules in
+To change the objective, fork ``train_group``; the modules in
 ``training.utils.rl.algorithm`` share one interface.  See
 ``skills/fireworks-training/references/rl-async.md`` for the full contract.
 
@@ -35,8 +35,8 @@ import asyncio
 import logging
 import math
 import os
-import signal
-from contextlib import ExitStack
+import time
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -48,7 +48,8 @@ from fireworks.training.sdk.training_spec import (
     normalize_lr_scheduler_spec,
 )
 
-from training.utils.termination import TerminatedBySignal
+from training.utils.phase_tracing import phase_span
+from training.utils.termination import close_in_thread, run_in_thread, with_signals
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
@@ -77,13 +78,24 @@ from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
     OverlappedEvaluation,
-    TrainingChunk,
+    TrainingGroup,
     RolloutRow,
 )
 from training.utils.rl.algorithm import grpo as objective
-from training.utils.rl.common import inference_drift_metrics
-from training.utils.rl.heldout import RolloutEvaluationFn, run_evaluation as evaluate_rollouts
+from training.utils.rl.heldout import (
+    RolloutEvaluationFn,
+    run_evaluation as evaluate_rollouts,
+)
 from training.utils.rl.losses import combine_prompt_groups
+from training.utils.rl.streaming import (
+    SubmittedGroup,
+    track_group,
+    retain_submission,
+    submission_window,
+    drain_groups,
+    add_batch_diagnostics,
+    streaming_metrics,
+)
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.rl.rollout.setup import (
     DynamicFilterFn,
@@ -145,12 +157,6 @@ class Config:
     """Minimum surviving rollout runs per row to emit a PromptGroup."""
     max_incomplete_group_retries: int = 0
     """Rebuild a row this many times when fewer than ``min_group_size`` runs land."""
-    pipeline_chunks_per_step: int = 1
-    """Scheduler chunk cap per global optimizer batch.
-
-    The scheduler creates balanced chunk targets and exposes the batch once its
-    first target is full. Later chunks can fill while the trainer is active.
-    """
 
     grad_clip_norm: float = 0.0
     """Max gradient norm for clipping. 0 disables clipping."""
@@ -220,7 +226,8 @@ def _run_optimizer_step(
     )
 
 
-def main(
+@with_signals
+async def main(
     config: Config,
     *,
     rollout_fn_factory: RolloutFnFactory,
@@ -260,13 +267,6 @@ def main(
         "skills/fireworks-training/references/rl-async.md.",
     )
 
-    def _signal_handler(signum, _):
-        name = signal.Signals(signum).name
-        raise TerminatedBySignal(name)
-
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-
     if rows is None and not cfg.dataset:
         raise ValueError("Provide either cfg.dataset or rows= to main().")
     validate_config(
@@ -292,11 +292,6 @@ def main(
             "without ever training.  Set completions_per_prompt >= 2 (the "
             f"default is 4); got {cfg.completions_per_prompt}."
         )
-    if cfg.pipeline_chunks_per_step < 1:
-        raise ValueError(
-            "pipeline_chunks_per_step must be >= 1; got "
-            f"{cfg.pipeline_chunks_per_step}."
-        )
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     setup_wandb(
         cfg.wandb,
@@ -305,7 +300,6 @@ def main(
             "prompt_groups_per_step": cfg.prompt_groups_per_step,
             "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
             "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
-            "pipeline_chunks_per_step": cfg.pipeline_chunks_per_step,
             "max_completion_tokens": cfg.max_completion_tokens,
             "temperature": cfg.temperature,
             "tokenizer_id": cfg.deployment.tokenizer_model,
@@ -325,8 +319,8 @@ def main(
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
-    with ExitStack() as stack:
-        tokenizer = load_deployment_tokenizer(cfg.deployment)
+    async with AsyncExitStack() as stack:
+        tokenizer = await run_in_thread(load_deployment_tokenizer, cfg.deployment)
         service = build_service_client(
             api_key=api_key,
             base_url=base_url,
@@ -340,14 +334,11 @@ def main(
             deployment=cfg.deployment,
             hotload_timeout_s=cfg.weight_sync_timeout,
             cleanup_trainer_on_close=cfg.cleanup_on_exit,
-            cleanup_deployment_on_close=(
-                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
-                if cfg.cleanup_on_exit
-                else None
-            ),
+            cleanup_deployment_on_close=(CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cfg.cleanup_on_exit else None),
         )
-        stack.callback(service.close)
-        training_client = service.create_training_client(
+        stack.push_async_callback(close_in_thread, service.close)
+        training_client = await run_in_thread(
+            service.create_training_client,
             cfg.base_model,
             lora_rank=cfg.lora_rank,
             lora_alpha=cfg.lora_alpha,
@@ -355,7 +346,8 @@ def main(
         # Decide R3 after the trainer is bound: its create_model response is
         # the authoritative MoE signal, so no GET model is needed (private
         # early-access base models reject that with 403).
-        router_replay_enabled = resolve_router_replay_enabled(
+        router_replay_enabled = await run_in_thread(
+            resolve_router_replay_enabled,
             requested=True,
             api_key=api_key,
             base_url=base_url,
@@ -382,7 +374,8 @@ def main(
             lora_rank=cfg.lora_rank,
         )
 
-        resume_info = ckpt.resume(
+        resume_info = await run_in_thread(
+            ckpt.resume,
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
@@ -395,7 +388,7 @@ def main(
             )
 
         with elapsed_timer("weight_sync") as span:
-            publish_weights(f"step-{step_offset}", checkpoint_type="base")
+            await run_in_thread(publish_weights, f"step-{step_offset}", checkpoint_type="base")
         logger.info(
             "[step %d] initial weight sync (%.1fs)",
             step_offset,
@@ -405,7 +398,7 @@ def main(
         log_run_resources(service)
 
         if rows is None:
-            rows = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+            rows = await run_in_thread(load_jsonl_dataset, cfg.dataset, cfg.max_rows)
         else:
             rows = list(rows)
 
@@ -419,9 +412,7 @@ def main(
         )
 
         remaining_rows = max(0, row_loader.total_items - prior_rows_consumed)
-        total_steps_estimate = step_offset + math.ceil(
-            remaining_rows / max(1, cfg.prompt_groups_per_step)
-        )
+        total_steps_estimate = step_offset + math.ceil(remaining_rows / max(1, cfg.prompt_groups_per_step))
 
         sample_kwargs = default_sample_kwargs(
             max_tokens=cfg.max_completion_tokens,
@@ -430,23 +421,24 @@ def main(
             http_timeout=cfg.deployment.sample_timeout,
             router_replay=router_replay_enabled,
         )
-        sampler = service.create_deployment_sampler(tokenizer=tokenizer)
-        stack.callback(sampler.close)
+        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer)
+        stack.push_async_callback(close_in_thread, sampler.close)
         # One rollout object serves training and evaluation, so stateful
         # rollouts (sandbox pools, judges) keep a single concurrency budget.
         # Evaluation overlaps training here, so sampler/* includes its requests.
         rollout_fn = rollout_fn_factory(
-                RolloutSetup(
-                    sampler=sampler,
-                    tokenizer=tokenizer,
-                    tokenizer_id=cfg.deployment.tokenizer_model,
-                    sample_kwargs=sample_kwargs,
-                    completions_per_prompt=cfg.completions_per_prompt,
-                    inference_base_url=sampler.base_url,
-                    api_key=api_key,
-                    model=sampler.model,
-                )
+            RolloutSetup(
+                sampler=sampler,
+                tokenizer=tokenizer,
+                tokenizer_id=cfg.deployment.tokenizer_model,
+                sample_kwargs=sample_kwargs,
+                completions_per_prompt=cfg.completions_per_prompt,
+                inference_base_url=sampler.base_url,
+                api_key=api_key,
+                model=sampler.model,
             )
+        )
+        stack.push_async_callback(close_rollout_fn, rollout_fn)
         rollout_context_param_names = rollout_context_names(rollout_fn)
 
         async def run_evaluation(step: int) -> None:
@@ -465,9 +457,7 @@ def main(
                 idx = item.index
                 epoch = idx // rows_per_epoch if rows_per_epoch else 0
                 row_index = idx % rows_per_epoch if rows_per_epoch else idx
-                end_of_epoch = (
-                    row_index == rows_per_epoch - 1 if rows_per_epoch else True
-                )
+                end_of_epoch = row_index == rows_per_epoch - 1 if rows_per_epoch else True
                 source_row_id = row.get("id")
 
                 def run_one_rollout(
@@ -487,9 +477,7 @@ def main(
                         "end_of_epoch": end_of_epoch,
                         "evaluation": False,
                     }
-                    return call_rollout_fn(
-                        rollout_fn, sample_prompt, context, rollout_context_param_names
-                    )
+                    return call_rollout_fn(rollout_fn, sample_prompt, context, rollout_context_param_names)
 
                 yield RolloutRow(
                     row_id=idx,
@@ -498,26 +486,34 @@ def main(
                     on_resolved=lambda _reason, idx=idx: row_loader.mark_resolved(idx),
                 )
 
-        def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
-            """One server-side GRPO forward/backward, clipped against the rollout logprobs."""
-            batch = combine_prompt_groups(list(chunk.groups))
-            # Fork recipes (pseudo code; utils in training.utils.rl):
-            #   Recompute the anchor on the trainer (a proximal snapshot when off-policy):
-            #     batch, _ = anchor.recompute_anchor(policy, batch)
-            #     extra = anchor.anchor_drift_metrics(batch)
-            #   Then correct the sampler/trainer mismatch with truncated IS:
-            #     datums, tis_metrics = tis.apply_tis(datums, batch, cap=2.0)  # after build_datums
-            #   Another objective (CISPO, DAPO, GSPO, DRO, IS, ...): import it as `objective`
-            #   and build its Config; client side: policy.forward_backward_custom(
+        def train_group(groups: list[TrainingGroup], owner: asyncio.Task) -> SubmittedGroup:
+            """Build and submit in the trainer worker; polling stays on the event loop."""
+            batch = combine_prompt_groups([group.group for group in groups])
+            # Fork recipes (utils in training.utils.rl): recompute anchors before
+            # build_datums; apply tis.apply_tis(datums, batch, cap=2.0) afterwards.
+            # Client-side loss: policy.submit_forward_backward_custom(
             #     batch.data, objective.make_loss_fn(batch, policy_loss)).
             datums = objective.build_datums(batch, policy_loss)
-            with elapsed_timer("fwd_bwd"):
-                result = policy.forward_backward(
+            started = time.monotonic()
+            with phase_span("fwd_bwd_submit", category="training", attributes={"groups": len(groups)}):
+                future = policy.submit_forward_backward(
                     datums, objective.LOSS_FN, loss_fn_config=objective.loss_fn_config(policy_loss)
                 )
-            result.metrics.update(objective.metrics(batch, result, policy_loss))
-            result.metrics.update(inference_drift_metrics(batch, result))
-            return {"prompt_groups": batch.groups, "fwd_bwd_result": result}
+            return track_group(
+                future,
+                batch,
+                ready_at=min(group.ready_at for group in groups),
+                ready_utc=min(group.ready_utc for group in groups),
+                submit_started_at=started,
+                timeout=policy.default_timeout,
+                abort_task=owner,
+                context={
+                    "step": groups[0].batch_id,
+                    "rows": [group.source_token for group in groups],
+                    "versions": [group.submit_version for group in groups],
+                },
+                group_ready_times=[group.ready_at for group in groups],
+            )
 
         def optimizer_step(step: int) -> dict[str, Any]:
             """Apply exactly one optimizer mutation for one rollout batch."""
@@ -559,7 +555,6 @@ def main(
                 advantage_fn=advantage_fn,
                 completions_per_prompt=cfg.completions_per_prompt,
                 prompt_groups_per_step=cfg.prompt_groups_per_step,
-                training_chunks_per_step=cfg.pipeline_chunks_per_step,
                 max_head_off_policy_versions=cfg.max_head_offpolicy_versions,
                 max_concurrent_rollouts=cfg.max_concurrency_rollout_sample,
                 min_group_size=cfg.min_group_size,
@@ -574,18 +569,23 @@ def main(
                 evaluations.start(step_offset, force=True)
                 try:
                     while (batch := await coordinator.next_batch()) is not None:
-                        chunk_outputs: list[dict[str, Any]] = []
-
-                        async for chunk in batch.chunks():
+                        async with submission_window() as submissions:
+                            async for groups in batch.ready_group_batches():
+                                coordinator.raise_if_failed(batch)
+                                await retain_submission(
+                                    submissions,
+                                    coordinator.run_blocking(
+                                        "train_group",
+                                        train_group,
+                                        groups,
+                                        asyncio.current_task(),
+                                        optimizer_batch=batch,
+                                    ),
+                                )
+                                batch.start_training(at=submissions[-1].submitted_at)
                             coordinator.raise_if_failed(batch)
-                            output = await coordinator.run_blocking(
-                                "train_chunk",
-                                train_chunk,
-                                chunk,
-                                optimizer_batch=batch,
-                            )
-                            coordinator.raise_if_failed(batch)
-                            chunk_outputs.append(output)
+                            results = await drain_groups(submissions)
+                        add_batch_diagnostics(submissions, results, policy_loss, objective)
 
                         coordinator.raise_if_failed(batch)
                         optimizer = await coordinator.run_blocking(
@@ -625,16 +625,13 @@ def main(
                         telemetry.finish_step(
                             batch=batch,
                             trained_against_version=(published.trained_against_version),
-                            prompt_groups=[
-                                group
-                                for output in chunk_outputs
-                                for group in output["prompt_groups"]
-                            ],
-                            fwd_bwd_results=[
-                                output["fwd_bwd_result"] for output in chunk_outputs
-                            ],
+                            prompt_groups=[group for submission in submissions for group in submission.batch.groups],
+                            fwd_bwd_results=results,
                             optim_result=optimizer["result"],
-                            timing_metrics=flush_timing(),
+                            timing_metrics={
+                                **flush_timing(),
+                                **streaming_metrics(submissions),
+                            },
                             step_time=published.step_time,
                             weight_update_time=sync_wall_time,
                             learning_rate=optimizer["learning_rate"],
@@ -647,11 +644,7 @@ def main(
 
                         rollouts_completed = batch.batch_id - step_offset
                         interval = cfg.dcp_save_interval
-                        if (
-                            interval > 0
-                            and rollouts_completed > 0
-                            and rollouts_completed % interval == 0
-                        ):
+                        if interval > 0 and rollouts_completed > 0 and rollouts_completed % interval == 0:
                             try:
                                 with wall_timer() as span:
                                     await coordinator.run_blocking(
@@ -681,14 +674,11 @@ def main(
                     try:
                         await evaluations.cancel()
                     finally:
-                        try:
-                            await telemetry.aclose()
-                        finally:
-                            await close_rollout_fn(rollout_fn)
+                        await telemetry.aclose()
 
                 return coordinator.global_step, telemetry.final_stats()
 
-        global_step, final_stats = asyncio.run(run_training())
+        global_step, final_stats = await run_training()
         # Save resume progress even if all remaining rows were dropped.
         # Promotion still requires at least one optimizer step.
         resume_row_cursor = int(final_stats["resolved_rows"])
@@ -696,14 +686,15 @@ def main(
         has_advanced_dataset = resume_row_cursor > prior_rows_consumed
         if cfg.save_final_checkpoint and (has_trained_steps or has_advanced_dataset):
             cp_name = f"step-{global_step}"
-            ckpt.save(
+            await run_in_thread(
+                ckpt.save,
                 cp_name,
                 resumable=True,
                 promotable=has_trained_steps,
                 data_consumed=resume_row_cursor,
             )
             if cfg.output_model_id and has_trained_steps:
-                ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
+                await run_in_thread(ckpt.promote_latest, cfg.output_model_id, cfg.base_model)
 
         logger.info(
             "Async RL training complete: %d steps (%d new in this run)",

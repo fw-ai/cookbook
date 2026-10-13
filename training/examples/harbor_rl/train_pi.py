@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 COMPLETIONS_PER_PROMPT = 8
 PROMPT_GROUPS_PER_STEP = 8
-PIPELINE_CHUNKS_PER_STEP = 2
 MAX_COMPLETION_TOKENS = 65_536
 MAX_SEQUENCE_TOKENS = 524_288
 MAX_HEAD_OFFPOLICY_VERSIONS = 2
@@ -78,7 +77,6 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, row_count: int) -> 
         learning_rate=args.learning_rate,
         completions_per_prompt=COMPLETIONS_PER_PROMPT,
         prompt_groups_per_step=PROMPT_GROUPS_PER_STEP,
-        pipeline_chunks_per_step=PIPELINE_CHUNKS_PER_STEP,
         max_completion_tokens=MAX_COMPLETION_TOKENS,
         max_seq_len=MAX_SEQUENCE_TOKENS,
         max_rows=row_count,
@@ -93,8 +91,7 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, row_count: int) -> 
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
-            run_name=args.wandb_run_name
-            or f"harbor-dabstep-pi-{int(time.time()) % 100000}",
+            run_name=args.wandb_run_name or f"harbor-dabstep-pi-{int(time.time()) % 100000}",
         ),
     )
 

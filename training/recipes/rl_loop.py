@@ -5,15 +5,15 @@ Each iteration has three visible phases:
 
 1. collect one rollout batch: ``completions_per_prompt`` calls of
    ``rollout_fn(row)`` per row, grouped per row and filtered,
-2. run one server-side GRPO forward/backward and one optimizer step,
+2. train the complete batch with one GRPO forward/backward and one optimizer step,
 3. hotload the new policy before collecting the next batch.
 
 Rollouts plug in through the same ``rollout_fn_factory(setup)`` seam as
 ``recipes.async_rl_loop``, so one task's code drives either loop. The default,
 :func:`single_turn_rollout_fn`, samples one completion of the row's
 ``messages`` and grades it with :func:`reward_fn`. ``prepare_batch_fn(policy,
-batch) -> (batch, metrics)`` may rewrite the batch before the update (IGPO sets
-token-level advantages there). Fork this file to change the objective; the
+batch)`` prepares the complete batch before training (IGPO sets group-local
+token advantages there). Fork this file to change the objective; the
 modules in ``training.utils.rl.algorithm`` share one interface.
 
 Usage:
@@ -28,10 +28,9 @@ import logging
 import math
 import os
 import re
-import signal
 import time
 from collections.abc import Callable
-from contextlib import ExitStack
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,7 +43,7 @@ from fireworks.training.sdk.training_spec import (
 )
 from training.renderer import get_text_content
 
-from training.utils.termination import TerminatedBySignal
+from training.utils.termination import close_in_thread, run_in_thread, with_signals
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
@@ -75,9 +74,18 @@ from training.utils.metrics import sampler_metrics, weight_sync_metrics
 from training.utils.rl.algorithm import grpo as objective
 from training.utils.rl.common import inference_drift_metrics
 from training.utils.rl.heldout import RolloutEvaluationFn, run_evaluation
-from training.utils.rl.losses import PolicyBatch, PromptGroup, combine_prompt_groups, has_reward_variance
+from training.utils.rl.losses import (
+    PolicyBatch,
+    PromptGroup,
+    combine_prompt_groups,
+    has_reward_variance,
+)
 from training.utils.rl.metrics import compute_step_metrics, sync_step_perf_metrics
-from training.utils.rl.rollout import Rollout, rollout_to_prompt_group, single_turn_renderer_rollout
+from training.utils.rl.rollout import (
+    Rollout,
+    rollout_to_prompt_group,
+    single_turn_renderer_rollout,
+)
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.rl.rollout.setup import (
     DynamicFilterFn,
@@ -186,7 +194,8 @@ def single_turn_rollout_fn(renderer_name: str = "") -> RolloutFnFactory:
     return factory
 
 
-def main(
+@with_signals
+async def main(
     config: Config,
     *,
     rollout_fn_factory: RolloutFnFactory | None = None,
@@ -197,7 +206,7 @@ def main(
     evaluation_fn: RolloutEvaluationFn | None = None,
     evaluation_interval: int = 1,
 ) -> dict[str, Any]:
-    """Run strict on-policy GRPO; see the module docstring for the seams."""
+    """Collect, optionally prepare, train and publish one complete on-policy batch."""
     cfg = config
     policy_loss = objective.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
     if rollout_fn_factory is None:
@@ -217,12 +226,6 @@ def main(
         raise ValueError("Provide either cfg.dataset or rows= to main().")
     if not cfg.deployment.tokenizer_model:
         raise ValueError("deployment.tokenizer_model is required.")
-
-    def _signal_handler(signum, _):
-        raise TerminatedBySignal(signal.Signals(signum).name)
-
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
 
     validate_config(
         cfg.base_model,
@@ -259,8 +262,8 @@ def main(
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
-    with ExitStack() as stack:
-        tokenizer = load_deployment_tokenizer(cfg.deployment)
+    async with AsyncExitStack() as stack:
+        tokenizer = await run_in_thread(load_deployment_tokenizer, cfg.deployment)
         service = build_service_client(
             api_key=api_key,
             base_url=base_url,
@@ -274,19 +277,18 @@ def main(
             deployment=cfg.deployment,
             hotload_timeout_s=cfg.weight_sync_timeout,
             cleanup_trainer_on_close=cfg.cleanup_on_exit,
-            cleanup_deployment_on_close=(
-                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cfg.cleanup_on_exit else None
-            ),
+            cleanup_deployment_on_close=(CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cfg.cleanup_on_exit else None),
         )
-        stack.callback(service.close)
+        stack.push_async_callback(close_in_thread, service.close)
 
-        training_client = service.create_training_client(
-            cfg.base_model, lora_rank=cfg.lora_rank, lora_alpha=cfg.lora_alpha
+        training_client = await run_in_thread(
+            service.create_training_client, cfg.base_model, lora_rank=cfg.lora_rank, lora_alpha=cfg.lora_alpha
         )
         # Decide R3 after the trainer is bound: its create_model response is
         # the authoritative MoE signal, so no GET model is needed (private
         # early-access base models reject that with 403).
-        router_replay_enabled = resolve_router_replay_enabled(
+        router_replay_enabled = await run_in_thread(
+            resolve_router_replay_enabled,
             requested=True,
             api_key=api_key,
             base_url=base_url,
@@ -310,7 +312,8 @@ def main(
             log_path=cfg.log_path,
             lora_rank=cfg.lora_rank,
         )
-        resume_info = checkpoint.resume(
+        resume_info = await run_in_thread(
+            checkpoint.resume,
             init_from_checkpoint=cfg.init_from_checkpoint,
             warm_start_from_adapter=cfg.warm_start_from_adapter,
         )
@@ -321,7 +324,7 @@ def main(
         # Strict on-policy: initialize the sampler from the trainer, then repeat
         # this sync after every update.
         with elapsed_timer("weight_sync") as span:
-            publish_weights(f"step-{step_offset}", checkpoint_type="base")
+            await run_in_thread(publish_weights, f"step-{step_offset}", checkpoint_type="base")
         logger.info("[step %d] initial weight sync (%.1fs)", step_offset, span.elapsed)
         flush_timing()
         log_run_resources(service)
@@ -334,26 +337,27 @@ def main(
             router_replay=router_replay_enabled,
         )
 
-        sampler = service.create_deployment_sampler(tokenizer=tokenizer)
-        stack.callback(sampler.close)
+        sampler = await run_in_thread(service.create_deployment_sampler, tokenizer=tokenizer)
+        stack.push_async_callback(close_in_thread, sampler.close)
         # One rollout object serves training and evaluation, so stateful
         # rollouts (sandbox pools, judges) keep a single concurrency budget.
         rollout_fn = rollout_fn_factory(
-                RolloutSetup(
-                    sampler=sampler,
-                    tokenizer=tokenizer,
-                    tokenizer_id=cfg.deployment.tokenizer_model,
-                    sample_kwargs=sample_kwargs,
-                    completions_per_prompt=cfg.completions_per_prompt,
-                    inference_base_url=sampler.base_url,
-                    api_key=api_key,
-                    model=sampler.model,
-                )
+            RolloutSetup(
+                sampler=sampler,
+                tokenizer=tokenizer,
+                tokenizer_id=cfg.deployment.tokenizer_model,
+                sample_kwargs=sample_kwargs,
+                completions_per_prompt=cfg.completions_per_prompt,
+                inference_base_url=sampler.base_url,
+                api_key=api_key,
+                model=sampler.model,
             )
+        )
+        stack.push_async_callback(close_rollout_fn, rollout_fn)
         context_names = rollout_context_names(rollout_fn)
 
         if rows is None:
-            rows = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+            rows = await run_in_thread(load_jsonl_dataset, cfg.dataset, cfg.max_rows)
         else:
             rows = list(rows)
         row_loader = CursorDataLoader(
@@ -406,6 +410,7 @@ def main(
             step = step_offset
             await evaluate(step)
             while True:
+                step_started = time.monotonic()
                 with phase_span("rollout_batch", category="rollout", attributes={"next_step": step + 1}):
                     prompt_groups, row_indices, loop_stats = await collect_prompt_groups(
                         row_iterator,
@@ -427,20 +432,18 @@ def main(
                 batch = combine_prompt_groups(prompt_groups)
                 batch_metrics: dict[str, float] = {}
                 if prepare_batch_fn is not None:
-                    batch, batch_metrics = prepare_batch_fn(policy, batch)
-                # Fork recipes (pseudo code; utils in training.utils.rl):
-                #   Recompute the anchor on the trainer instead of using rollout logprobs:
-                #     batch, _ = anchor.recompute_anchor(policy, batch)
-                #     batch_metrics.update(anchor.anchor_drift_metrics(batch))
-                #   Then correct the sampler/trainer mismatch with truncated IS:
-                #     datums, tis_metrics = tis.apply_tis(datums, batch, cap=2.0)  # after build_datums
-                #   Another objective (CISPO, DAPO, GSPO, DRO, IS, ...): import it as `objective`
-                #   and build its Config; client side: policy.forward_backward_custom(
+                    batch, batch_metrics = await run_in_thread(prepare_batch_fn, policy, batch)
+                # Fork recipes (utils in training.utils.rl): recompute anchors before
+                # build_datums; apply tis.apply_tis(datums, batch, cap=2.0) afterwards.
+                # Client-side loss: policy.forward_backward_custom(
                 #     batch.data, objective.make_loss_fn(batch, policy_loss)).
-                datums = objective.build_datums(batch, policy_loss)
+                datums = await run_in_thread(objective.build_datums, batch, policy_loss)
                 with elapsed_timer("fwd_bwd"):
-                    fwd_bwd_result = policy.forward_backward(
-                        datums, objective.LOSS_FN, loss_fn_config=objective.loss_fn_config(policy_loss)
+                    fwd_bwd_result = await run_in_thread(
+                        policy.forward_backward,
+                        datums,
+                        objective.LOSS_FN,
+                        loss_fn_config=objective.loss_fn_config(policy_loss),
                     )
                 fwd_bwd_result.metrics.update(objective.metrics(batch, fwd_bwd_result, policy_loss))
                 fwd_bwd_result.metrics.update(inference_drift_metrics(batch, fwd_bwd_result))
@@ -448,10 +451,14 @@ def main(
                 # 2. Exactly one optimizer mutation.
                 next_step = step + 1
                 step_lr = compute_lr(
-                    lr_scheduler, step=next_step, base_lr=cfg.learning_rate, total_steps=total_steps_estimate
+                    lr_scheduler,
+                    step=next_step,
+                    base_lr=cfg.learning_rate,
+                    total_steps=total_steps_estimate,
                 )
                 with elapsed_timer("optim_step"):
-                    optim_result = policy.optim_step(
+                    optim_result = await run_in_thread(
+                        policy.optim_step,
                         tinker.AdamParams(learning_rate=step_lr, **adam_kwargs),
                         grad_accumulation_normalization=objective.NORMALIZATION,
                         emit_grad_norm_metrics=True,
@@ -460,12 +467,13 @@ def main(
 
                 # 3. Publish this policy before the next rollout batch.
                 with elapsed_timer("weight_sync"):
-                    sync_result = publish_weights(f"step-{step}")
+                    sync_result = await run_in_thread(publish_weights, f"step-{step}")
 
                 for index in row_indices:
                     row_loader.mark_resolved(index)
 
                 loop_stats["train_wall_time"] = time.monotonic() - train_started
+                loop_stats["step_wall_time"] = time.monotonic() - step_started
                 metrics = compute_step_metrics(
                     prompt_groups=prompt_groups,
                     fwd_bwd_results=[fwd_bwd_result],
@@ -475,6 +483,13 @@ def main(
                 )
                 metrics.update(sync_step_perf_metrics(loop_stats, prompt_groups))
                 metrics.update(batch_metrics)
+                metrics.update(
+                    {
+                        "train/forward_backward_requests": 1,
+                        "train/groups_per_request_mean": len(prompt_groups),
+                        "train/groups_per_request_max": len(prompt_groups),
+                    }
+                )
                 metrics.update(sampler_metrics(sampler.drain_metrics()))
                 metrics.update(weight_sync_metrics(sync_result))
                 metrics["train/step"] = step
@@ -492,7 +507,8 @@ def main(
 
                 if cfg.dcp_save_interval > 0 and (step - step_offset) % cfg.dcp_save_interval == 0:
                     with elapsed_timer("dcp_save") as span:
-                        checkpoint.save(
+                        await run_in_thread(
+                            checkpoint.save,
                             f"step-{step}",
                             resumable=True,
                             promotable=False,
@@ -505,28 +521,25 @@ def main(
                 await evaluate(step)
             return step
 
-        async def run() -> int:
-            try:
-                return await run_training()
-            finally:
-                await close_rollout_fn(rollout_fn)
-
-        global_step = asyncio.run(run())
+        global_step = await run_training()
 
         has_trained_steps = global_step > step_offset
         has_advanced_dataset = row_loader.data_consumed > prior_rows_consumed
         if cfg.save_final_checkpoint and (has_trained_steps or has_advanced_dataset):
-            checkpoint.save(
+            await run_in_thread(
+                checkpoint.save,
                 f"step-{global_step}",
                 resumable=True,
                 promotable=has_trained_steps,
                 data_consumed=row_loader.data_consumed,
             )
             if cfg.output_model_id and has_trained_steps:
-                checkpoint.promote_latest(cfg.output_model_id, cfg.base_model)
+                await run_in_thread(checkpoint.promote_latest, cfg.output_model_id, cfg.base_model)
 
         logger.info(
-            "Synchronous RL training complete: %d steps (%d new)", global_step, global_step - step_offset
+            "Synchronous RL training complete: %d steps (%d new)",
+            global_step,
+            global_step - step_offset,
         )
         wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {
@@ -541,10 +554,7 @@ if __name__ == "__main__":
     main(
         Config(
             log_path="./rl_logs",
-            dataset=(
-                "https://raw.githubusercontent.com/eval-protocol/python-sdk/"
-                "main/development/gsm8k_sample.jsonl"
-            ),
+            dataset=("https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"),
             deployment=DeployConfig(tokenizer_model="Qwen/Qwen3-8B"),
         )
     )

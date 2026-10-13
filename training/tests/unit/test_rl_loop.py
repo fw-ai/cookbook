@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import os
+import signal
+import asyncio
+import threading
 import inspect
 import pkgutil
 from pathlib import Path
@@ -14,7 +18,8 @@ from fireworks.training.sdk.routing import RoutingReferences
 from fireworks.training.sdk.sampling import SampledCompletion
 
 import training.recipes.rl_loop as module
-from training.utils.rl.losses import PromptGroup, has_reward_variance
+from training.utils.rl.losses import PromptGroup
+from training.utils.termination import TerminatedBySignal
 from training.renderer import get_text_content
 from training.utils.supervised import has_non_text_chunks
 from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, Renderer
@@ -41,15 +46,6 @@ def _grpo_result(rows: int) -> SimpleNamespace:
             for _ in range(rows)
         ],
     )
-
-
-def test_config_has_no_runner_state() -> None:
-    cfg = module.Config(log_path="gs://logs")
-
-    assert not hasattr(cfg, "runner")
-    assert not hasattr(module, "RunnerIO")
-    assert "write_running_progress" not in inspect.getsource(module.main)
-    assert cfg.lora_alpha == 32
 
 
 def test_config_excludes_async_and_advanced_sync_scheduling_knobs() -> None:
@@ -110,27 +106,6 @@ def test_main_threads_checkpoint_resume_options(monkeypatch) -> None:
         module.main(cfg, rows=[{"id": 0}])
 
     assert captured == {"init_from_checkpoint": "step-16", "warm_start_from_adapter": None}
-
-
-def test_main_runs_one_objective_on_the_batch_anchor() -> None:
-    source = inspect.getsource(module.main)
-
-    assert "datums = objective.build_datums(batch, policy_loss)" in source
-    assert "objective.LOSS_FN, loss_fn_config=objective.loss_fn_config(policy_loss)" in source
-    assert "objective.metrics(batch, fwd_bwd_result, policy_loss)" in source
-    assert "inference_drift_metrics(batch, fwd_bwd_result)" in source
-    assert "grad_accumulation_normalization=objective.NORMALIZATION" in source
-    assert module.objective.LOSS_FN == "ppo"
-
-
-def test_main_is_one_strictly_synchronous_optimizer_batch_loop() -> None:
-    source = inspect.getsource(module.main)
-
-    assert "collect_prompt_groups(" in source
-    assert source.count("policy.forward_backward(") == 1
-    assert source.count("policy.optim_step(") == 1
-    assert "weight_sync_interval" not in source
-    assert "pipeline_chunks_per_step" not in source
 
 
 @pytest.mark.parametrize(
@@ -200,10 +175,6 @@ def test_reward_fn_requires_matching_numeric_answer():
         == 0.0
     )
     assert module.reward_fn("missing", {"ground_truth": "<answer>7</answer>"}) == 0.0
-
-
-def test_default_filter_is_the_shared_reward_variance_filter():
-    assert inspect.signature(module.main).parameters["dynamic_filter_fn"].default is has_reward_variance
 
 
 def test_main_requires_deployment_tokenizer_model(monkeypatch):
@@ -406,6 +377,7 @@ def _run_loop(
     records: list[Any] | None = None,
     logged: list[tuple[int, dict[str, Any]]] | None = None,
     group_for_row=None,
+    checkpoint_fn=None,
     **main_kwargs: Any,
 ) -> dict[str, Any]:
     samplers = iter(["train", "eval"])
@@ -437,6 +409,8 @@ def _run_loop(
             return None
 
         def save(self, name, **_kwargs):
+            if checkpoint_fn is not None:
+                checkpoint_fn()
             events.append(f"checkpoint:{name}")
 
     def factory(setup):
@@ -476,6 +450,7 @@ def _run_loop(
             completions_per_prompt=2,
             prompt_groups_per_step=main_kwargs.pop("prompt_groups_per_step", 1),
             save_final_checkpoint=False,
+            dcp_save_interval=main_kwargs.pop("dcp_save_interval", 0),
             deployment=module.DeployConfig(tokenizer_model="tokenizer"),
         ),
         rollout_fn_factory=factory,
@@ -485,6 +460,8 @@ def _run_loop(
 
 
 class _Policy:
+    default_timeout = 3600
+
     def __init__(self, events: list[str]):
         self.events = events
         self.datums: list[Any] = []
@@ -501,6 +478,14 @@ class _Policy:
         result = _grpo_result(len(data))
         result.metrics.update({"loss:sum": 1.0, "trainer/forward_backward_duration_s:sum": 0.5})
         return result
+
+    def submit_forward_backward(self, data, loss_fn, loss_fn_config=None):
+        result = self.forward_backward(data, loss_fn, loss_fn_config)
+
+        async def result_async(timeout=None):
+            return result
+
+        return SimpleNamespace(result_async=result_async)
 
     def optim_step(self, _params, **kwargs):
         assert kwargs["grad_accumulation_normalization"] == module.objective.NORMALIZATION
@@ -794,3 +779,169 @@ def test_default_rollout_preserves_images_and_sdk_routing(
             assert datum.model_input.routing_references["files"][0]["artifact_id"] == "capture"
         elif routing_format == "base64_inline":
             assert datum.model_input.routing_matrices[-1] == "route-40"
+
+
+@pytest.mark.parametrize("phase", ["before_optimizer", "optimizer_wait"])
+def test_sync_rl_sigterm_stops_before_publication_and_cursor_commit(
+    monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    events: list[str] = []
+    loaders: list[Any] = []
+    original_loader = module.CursorDataLoader
+    previous_handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+
+    def track_loader(*args: Any, **kwargs: Any) -> Any:
+        loader = original_loader(*args, **kwargs)
+        loaders.append(loader)
+        return loader
+
+    monkeypatch.setattr(module, "CursorDataLoader", track_loader)
+    if phase == "before_optimizer":
+        original_diagnostics = module.inference_drift_metrics
+
+        def stop_after_diagnostics(*args: Any, **kwargs: Any) -> Any:
+            result = original_diagnostics(*args, **kwargs)
+            events.append("stop-before-optimizer")
+            os.kill(os.getpid(), signal.SIGTERM)
+            return result
+
+        monkeypatch.setattr(module, "inference_drift_metrics", stop_after_diagnostics)
+
+    class Policy(_Policy):
+        def optim_step(self, params: Any, **kwargs: Any) -> Any:
+            result = super().optim_step(params, **kwargs)
+            if phase == "optimizer_wait":
+                os.kill(os.getpid(), signal.SIGTERM)
+                # A blocking native result wait must finish before service close.
+                events.append("optimizer-complete")
+            return result
+
+    with pytest.raises(TerminatedBySignal, match="SIGTERM"):
+        _run_loop(monkeypatch, policy=Policy(events), events=events, rows=[{"id": 0}])
+    assert "hotload:/step-0" in events
+    assert "hotload:/step-1" not in events
+    assert loaders[0].data_consumed == 0
+    assert not any(event.startswith("checkpoint:") for event in events)
+    if phase == "before_optimizer":
+        assert "optim" not in events
+    else:
+        assert events.index("optimizer-complete") < events.index("close")
+    assert {signum: signal.getsignal(signum) for signum in previous_handlers} == previous_handlers
+
+
+def test_batch_preparation_runs_after_all_rollouts_and_before_one_training_call(monkeypatch) -> None:
+    events, logged = [], []
+    policy = _Policy(events)
+
+    def make_group(row):
+        n = 2 if row["id"] == 0 else 1
+        return _group(
+            data=[_datum()] * n,
+            advantages=[1.0] * n,
+            rewards=[1.0] * n,
+            inf_logprobs=[[-0.1, -0.2]] * n,
+            completion_lens=[2] * n,
+            truncated=[False] * n,
+            row_meta=row,
+        )
+
+    def prepare(policy_arg, batch):
+        assert policy_arg is policy
+        assert "sample:0" in events and "sample:1" in events
+        assert not any(e.startswith("fwd-bwd:") for e in events)
+        assert len(batch.groups) == 2
+        events.append("batch-prepared")
+        rows = [[v, -v] for g in batch.groups for v in [0.5 if g.row_meta["id"] == 0 else 0.25] for _ in g.data]
+        return replace(batch, token_advantages=rows), {"prepare/weighted_mean": 13 / 3}
+
+    result = _run_loop(
+        monkeypatch,
+        policy=policy,
+        events=events,
+        logged=logged,
+        rows=[{"id": 0}, {"id": 1}],
+        prompt_groups_per_step=2,
+        group_for_row=make_group,
+        prepare_batch_fn=prepare,
+    )
+    assert result["steps"] == 1
+    assert [d.loss_fn_inputs["advantages"].data for d in policy.datums] == [[0.5, -0.5], [0.5, -0.5], [0.25, -0.25]]
+    assert events.index("batch-prepared") < events.index("fwd-bwd:3") < events.index("optim")
+    metrics = [m for step, m in logged if step == 1][0]
+    assert metrics["prepare/weighted_mean"] == pytest.approx(13 / 3)
+    assert metrics["train/forward_backward_requests"] == events.count("optim") == 1
+
+
+@pytest.mark.parametrize("stage", ["prepare", "backward"])
+def test_sync_batch_failure_never_optimizes_or_publishes(monkeypatch, stage):
+    events = []
+
+    class Policy(_Policy):
+        def forward_backward(self, *args, **kwargs):
+            raise RuntimeError("batch failed")
+
+    def prepare(*args):
+        raise RuntimeError("batch failed")
+
+    with pytest.raises(RuntimeError, match="batch failed"):
+        _run_loop(
+            monkeypatch,
+            policy=Policy(events),
+            events=events,
+            rows=[{"id": 0}],
+            **({"prepare_batch_fn": prepare} if stage == "prepare" else {}),
+        )
+    assert "optim" not in events and "hotload:/step-1" not in events
+    assert not any(e.startswith("checkpoint:") for e in events)
+    assert "close" in events
+
+
+def test_all_ready_groups_share_one_request_and_one_optimizer(monkeypatch) -> None:
+    events = []
+    logged = []
+    policy = _Policy(events)
+    result = _run_loop(
+        monkeypatch,
+        policy=policy,
+        events=events,
+        logged=logged,
+        rows=[{"id": i} for i in range(6)],
+        prompt_groups_per_step=6,
+    )
+    assert result["steps"] == 1
+    assert len(policy.datums) == 12
+    metrics = [metrics for step, metrics in logged if step == 1][0]
+    assert metrics["train/forward_backward_requests"] == 1
+    assert metrics["train/groups_per_request_mean"] == metrics["train/groups_per_request_max"] == 6
+    assert events.count("optim") == 1
+
+
+def test_periodic_checkpoint_wait_leaves_event_loop_responsive(monkeypatch) -> None:
+    heartbeat = threading.Event()
+    main_thread = threading.get_ident()
+    from training.utils import termination
+
+    original_run = termination.run_async_with_signals
+
+    def run_with_timer(awaitable):
+        async def monitor():
+            asyncio.get_running_loop().call_later(0.05, heartbeat.set)
+            return await awaitable
+
+        return original_run(monitor())
+
+    def checkpoint():
+        assert threading.get_ident() != main_thread
+        assert heartbeat.wait(timeout=2), "event-loop timer stalled during checkpoint"
+
+    monkeypatch.setattr(termination, "run_async_with_signals", run_with_timer)
+    events = []
+    _run_loop(
+        monkeypatch,
+        policy=_Policy(events),
+        events=events,
+        rows=[{"id": 0}],
+        dcp_save_interval=1,
+        checkpoint_fn=checkpoint,
+    )
+    assert "checkpoint:step-1" in events

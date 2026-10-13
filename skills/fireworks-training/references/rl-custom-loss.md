@@ -2,15 +2,15 @@
 
 The RL recipes are reference loops with one fixed objective and no loss,
 anchor, KL, TIS or sampling-support options. To change the objective, fork the
-loop and edit its train step; each loop carries the same short commented
-pseudo-code for the forks below.
+loop and edit its train step using the loss sketches below.
 
 ## What the reference loops train
 
 `rl_loop`, `async_rl_loop` and `async_rl_loop_serverless` train server-side
 GRPO: the trainer's `"ppo"` loss clipped to `[1 - eps_clip, 1 + eps_clip_high]`
 against the rollout logprobs, with no reference model, KL or importance-sampling
-correction. MoE models get completion-only router replay. The train step:
+correction. MoE models get completion-only router replay. This sequential
+whole-window sketch shows the loss math:
 
 ```python
 from training.utils.rl.algorithm import grpo as objective
@@ -24,6 +24,15 @@ result.metrics.update(objective.metrics(batch, result, policy_loss))
 result.metrics.update(inference_drift_metrics(batch, result))
 policy.optim_step(adam, grad_accumulation_normalization=objective.NORMALIZATION, emit_grad_norm_metrics=True)
 ```
+
+The sync recipe builds and trains the complete batch; async recipes submit
+currently ready groups together. Both keep the loss call visible for forks.
+In async recipes, `track_group` records the native
+future; `retain_submission` retains it even if cancellation races submission.
+`submission_window` drains retained requests on failure, and `drain_groups` joins
+every result before one optimizer update. `add_batch_diagnostics` computes full-window diagnostics once
+after that join. A fork of `train_group` must preserve that return contract and
+all-success optimizer boundary; do not optimize separately for each group.
 
 Every util returns a flat metrics dict; merge it into `result.metrics` and the
 step logger records it as `train/<name>` (see
@@ -52,7 +61,6 @@ recipe's DIS loss.
 from training.utils.rl.algorithm import cispo as objective
 policy_loss = objective.CISPOConfig(eps_low=0.2, eps_high=0.28)
 # server side: the train step above, unchanged
-# client side:
 # client side: the batch's own datums carry the loss mask
 result = policy.forward_backward_custom(batch.data, objective.make_loss_fn(batch, policy_loss))
 ```

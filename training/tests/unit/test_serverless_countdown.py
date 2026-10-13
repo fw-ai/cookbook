@@ -184,7 +184,11 @@ def test_main_runs_the_real_serverless_recipe(monkeypatch, tmp_path) -> None:
                 for d in datums
             ]
             result = SimpleNamespace(metrics={"loss:sum": 1.0}, loss_fn_outputs=outputs)
-            return SimpleNamespace(result=lambda: result)
+
+            async def result_async(timeout=None):
+                return result
+
+            return SimpleNamespace(result=lambda: result, result_async=result_async)
 
         def optim_step(self, params, **kwargs):
             self.optim_calls += 1
@@ -226,15 +230,24 @@ def test_main_runs_the_real_serverless_recipe(monkeypatch, tmp_path) -> None:
 
     result = countdown_rl.main(
         [
-            "--dataset", str(dataset),
-            "--eval-rows", "2",
-            "--max-rows", "4",
-            "--prompt-groups-per-step", "2",
-            "--completions-per-prompt", "2",
-            "--max-concurrency-rollout-sample", "4",
-            "--max-completion-tokens", "16",
-            "--max-seq-len", "64",
-            "--run-dir", str(run_dir),
+            "--dataset",
+            str(dataset),
+            "--eval-rows",
+            "2",
+            "--max-rows",
+            "4",
+            "--prompt-groups-per-step",
+            "2",
+            "--completions-per-prompt",
+            "2",
+            "--max-concurrency-rollout-sample",
+            "4",
+            "--max-completion-tokens",
+            "16",
+            "--max-seq-len",
+            "64",
+            "--run-dir",
+            str(run_dir),
         ]
     )
 

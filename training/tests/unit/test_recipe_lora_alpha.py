@@ -7,6 +7,14 @@ import pytest
 
 
 def _call_name(call: ast.Call) -> str | None:
+    # Async recipes forward the same keyword arguments through the native-call
+    # helper so signals can join setup before resource cleanup.
+    if isinstance(call.func, ast.Name) and call.func.id == "run_in_thread" and call.args:
+        function = call.args[0]
+        if isinstance(function, ast.Attribute):
+            return function.attr
+        if isinstance(function, ast.Name):
+            return function.id
     if isinstance(call.func, ast.Name):
         return call.func.id
     if isinstance(call.func, ast.Attribute):
@@ -47,11 +55,7 @@ def _has_keyword(call: ast.Call, keyword_name: str) -> bool:
 def test_recipe_exposes_and_forwards_lora_alpha(recipe_module: str) -> None:
     module = importlib.import_module(recipe_module)
     config_fields = {config_field.name: config_field for config_field in fields(module.Config)}
-    calls = [
-        node
-        for node in ast.walk(ast.parse(inspect.getsource(module.main)))
-        if isinstance(node, ast.Call)
-    ]
+    calls = [node for node in ast.walk(ast.parse(inspect.getsource(module.main))) if isinstance(node, ast.Call)]
     service_builds = [call for call in calls if _call_name(call) == "build_service_client"]
     training_clients = [call for call in calls if _call_name(call) == "create_training_client"]
     reference_clients = [call for call in calls if _call_name(call) == "create_reference_client"]

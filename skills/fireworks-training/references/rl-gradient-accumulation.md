@@ -2,10 +2,12 @@
 
 Every `forward_backward(...)` / `forward_backward_custom(...)` **accumulates gradients on the server**. Gradients only get applied when you call `optim_step(...)`. Multiple forward-backwards between optim_steps = gradient accumulation.
 
-`rl_loop.py` runs a **strict 1:1 ratio** per step: all
-`prompt_groups_per_step * completions_per_prompt` datums flow through one
-forward-backward followed by one `optim_step`. `async_rl_loop.py` accumulates
-`pipeline_chunks_per_step` chunk forward-backwards into one `optim_step`.
+`rl_loop.py` collects and prepares a complete batch, then sends one logical
+forward-backward. IGPO uses `prepare_batch_fn=igpo.prepare_batch(...)`: answer
+scoring is batched while advantages remain normalized within each group.
+Dedicated and serverless async RL submit currently ready complete groups
+together, without a collection delay. All requests in `prompt_groups_per_step`
+accumulate into exactly one `optim_step`, after every backward succeeds.
 
 Do **not** use trainer-job `grad_accum`, `TrainerJobConfig.gradient_accumulation_steps`, or the old REST `gradientAccumulationSteps` field. Cookbook recipes and examples do not expose the server-side knob; SDK compatibility handling rejects values above `1`. Real gradient accumulation is only client-side control flow: call `forward_backward` N times, then call one `optim_step`.
 

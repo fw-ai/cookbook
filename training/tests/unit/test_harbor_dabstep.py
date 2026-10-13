@@ -279,7 +279,6 @@ def test_dabstep_pi_recipe_uses_sdk_managed_resources_and_offpolicy_two(tmp_path
 
     assert config.completions_per_prompt == 8
     assert config.prompt_groups_per_step == 8
-    assert config.pipeline_chunks_per_step == 2
     assert config.max_head_offpolicy_versions == 2
     assert config.eps_clip == 0.2
     assert config.trainer.job_id is None

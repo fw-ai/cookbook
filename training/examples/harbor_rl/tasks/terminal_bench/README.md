@@ -45,11 +45,12 @@ validated; the harness, Harbor environment, and
 sidecar endpoint remain unchanged.
 
 The training defaults are 8 completions per prompt, 8 prompt groups per
-optimizer step, 2 pipeline chunks, an off-policy budget of 2 policy versions,
+optimizer step, an off-policy budget of 2 policy versions,
 32,768 completion tokens per turn, a 196,608-token total context and
 exact-boundary retention limit, and 80 rows (10 optimizer steps). Override the
 total limit with `--max-seq-len`. Evaluation uses eight fixed held-out tasks at
-step 0 and then every five optimizer steps.
+step 0 and then every five optimizer steps. Complete accepted groups submit
+as soon as they are ready, with one optimizer update after all backwards succeed.
 
 Rollout admission stays on the async coordinator's adaptive default. The shared
 Harbor rollout separately limits active local trials (`--max-concurrent-trials`,

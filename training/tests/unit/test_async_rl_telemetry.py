@@ -172,12 +172,12 @@ def test_step_record_merges_sampler_and_weight_sync_metrics() -> None:
         batch = SimpleNamespace(
             batch_id=3,
             submit_versions=[2, 2],
-            realized_chunks=1,
+            realized_groups=1,
             completed_rewards=[1.0, 0.0],
             _train_started_at=None,
             _train_finished_at=None,
-            _train_chunk_wait_time=0.0,
-            _chunk_wait_at_train_start=0.0,
+            _train_group_wait_time=0.0,
+            _group_wait_at_train_start=0.0,
         )
         telemetry.finish_step(
             batch=batch,

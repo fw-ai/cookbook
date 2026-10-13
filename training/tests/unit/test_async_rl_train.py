@@ -27,7 +27,6 @@ from training.utils.rl.async_rl import (
     OptimizerBatch,
     RolloutRow,
 )
-from training.utils.rl.async_rl.batch import balanced_chunk_targets
 from training.utils.rl.async_rl.telemetry import AsyncRLTelemetry
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 
@@ -102,7 +101,6 @@ def _coordinator(
         "rows": rows,
         "completions_per_prompt": 1,
         "prompt_groups_per_step": 2,
-        "training_chunks_per_step": 2,
         "max_head_off_policy_versions": 0,
         "advantage_fn": _passthrough_advantages,
     }
@@ -120,8 +118,8 @@ async def _wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> No
 
 async def _consume(batch: OptimizerBatch) -> list[int]:
     sizes = []
-    async for chunk in batch.chunks():
-        sizes.append(chunk.actual_groups)
+    async for group in batch.groups():
+        sizes.append(1)
     return sizes
 
 
@@ -229,7 +227,6 @@ class TestValidation:
         [
             ({"completions_per_prompt": 0}, "completions_per_prompt"),
             ({"prompt_groups_per_step": 0}, "prompt_groups_per_step"),
-            ({"training_chunks_per_step": 0}, "training_chunks_per_step"),
             ({"max_head_off_policy_versions": -1}, "max_head_off_policy_versions"),
             ({"max_incomplete_group_retries": -1}, "max_incomplete_group_retries"),
             ({"global_step": -1}, "global_step"),
@@ -247,10 +244,6 @@ class TestValidation:
     def test_coordinator_rejects_invalid_values(self, overrides, match):
         with pytest.raises((TypeError, ValueError), match=match):
             _coordinator([], **overrides)
-
-    def test_balanced_chunk_targets_are_fixed_and_nonempty(self):
-        assert balanced_chunk_targets(8, 3) == (3, 3, 2)
-        assert balanced_chunk_targets(2, 8) == (1, 1)
 
     def test_row_id_must_be_hashable(self):
         with pytest.raises(TypeError, match="hashable"):
@@ -271,7 +264,6 @@ def test_incomplete_group_is_rebuilt_before_admission() -> None:
             [_row(0, run_factory=factory)],
             completions_per_prompt=2,
             prompt_groups_per_step=1,
-            training_chunks_per_step=1,
             min_group_size=2,
             max_incomplete_group_retries=1,
         )
@@ -321,14 +313,14 @@ def test_completion_refills_during_physical_training() -> None:
         async with _observed(coordinator, telemetry):
             batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
             assert batch is not None
-            chunks = batch.chunks()
-            first = await anext(chunks)
+            groups = batch.groups()
+            first = await anext(groups)
             assert first.index == 0
 
             await asyncio.wait_for(submitted[3].wait(), timeout=1.0)
             trainer = asyncio.create_task(
                 coordinator.run_blocking(
-                    "train_chunk",
+                    "train_group",
                     blocked_train,
                     optimizer_batch=batch,
                 )
@@ -339,18 +331,12 @@ def test_completion_refills_during_physical_training() -> None:
 
             await asyncio.wait_for(submitted[4].wait(), timeout=1.0)
             snapshot = coordinator.snapshot()
-            assert (
-                snapshot["completion_refill_attempts"]
-                > before["completion_refill_attempts"]
-            )
-            assert (
-                snapshot["completion_refill_rows_submitted"]
-                > before["completion_refill_rows_submitted"]
-            )
+            assert snapshot["completion_refill_attempts"] > before["completion_refill_attempts"]
+            assert snapshot["completion_refill_rows_submitted"] > before["completion_refill_rows_submitted"]
 
             train_release.set()
             await trainer
-            await chunks.aclose()
+            await groups.aclose()
 
     _run(scenario())
 
@@ -387,11 +373,11 @@ def test_completion_refill_attempt_is_visible_when_staleness_gate_is_full() -> N
         async with _observed(coordinator, telemetry):
             batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
             assert batch is not None
-            chunks = batch.chunks()
-            await anext(chunks)
+            groups = batch.groups()
+            await anext(groups)
             trainer = asyncio.create_task(
                 coordinator.run_blocking(
-                    "train_chunk",
+                    "train_group",
                     blocked_train,
                     optimizer_batch=batch,
                 )
@@ -407,17 +393,14 @@ def test_completion_refill_attempt_is_visible_when_staleness_gate_is_full() -> N
             )
 
             snapshot = coordinator.snapshot()
-            assert (
-                snapshot["completion_refill_rows_submitted"]
-                == before["completion_refill_rows_submitted"]
-            )
+            assert snapshot["completion_refill_rows_submitted"] == before["completion_refill_rows_submitted"]
             assert snapshot["rows_submitted"] == before["rows_submitted"]
             assert snapshot["staleness_capacity"] == 0
             assert not fifth_submitted.is_set()
 
             train_release.set()
             await trainer
-            await chunks.aclose()
+            await groups.aclose()
 
     _run(scenario())
 
@@ -460,7 +443,7 @@ def test_staleness_gate_blocks_refill_until_publish() -> None:
     _run(scenario())
 
 
-def test_later_chunk_queues_while_first_chunk_trains() -> None:
+def test_five_ready_groups_coalesce_while_first_group_submits() -> None:
     async def scenario() -> None:
         second_release = asyncio.Event()
 
@@ -470,7 +453,8 @@ def test_later_chunk_queues_while_first_chunk_trains() -> None:
 
         telemetry = _telemetry()
         coordinator = _coordinator(
-            [_row(0), _row(1, run_factory=second_factory)],
+            [_row(0), *[_row(i, run_factory=second_factory) for i in range(1, 6)]],
+            prompt_groups_per_step=6,
         )
         train_started = threading.Event()
         train_release = threading.Event()
@@ -482,24 +466,29 @@ def test_later_chunk_queues_while_first_chunk_trains() -> None:
         async with _observed(coordinator, telemetry):
             batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
             assert batch is not None
-            chunks = batch.chunks()
-            await anext(chunks)
+            groups = batch.ready_group_batches()
+            first = await anext(groups)
+            assert len(first) == 1 and first[0].source_token == 0
             trainer = asyncio.create_task(
                 coordinator.run_blocking(
-                    "train_chunk",
+                    "train_group",
                     blocked_train,
                     optimizer_batch=batch,
                 )
             )
             await _wait_until(train_started.is_set)
             second_release.set()
-            await _wait_until(lambda: batch.ready_chunks == 1)
+            await _wait_until(lambda: batch.ready_groups == 5)
 
             train_release.set()
             await trainer
-            assert (await anext(chunks)).index == 1
+            ready = await anext(groups)
+            assert len(ready) == 5
+            assert {group.source_token for group in ready} == set(range(1, 6))
+            assert all(group.submit_version == 0 and group.batch_id == batch.batch_id for group in ready)
+            assert batch.ready_groups == 0
             with pytest.raises(StopAsyncIteration):
-                await anext(chunks)
+                await anext(groups)
             published = coordinator.publish(batch)
             metrics = _finish_step(
                 telemetry,
@@ -507,7 +496,9 @@ def test_later_chunk_queues_while_first_chunk_trains() -> None:
                 trained_against_version=published.trained_against_version,
                 step_time=published.step_time,
             )
-            assert metrics["async/realized_training_chunks"] == 2
+            assert metrics["async/realized_training_groups"] == 6
+            with pytest.raises(RuntimeError, match="consumed once"):
+                await anext(batch.groups())
 
     _run(scenario())
 
@@ -536,12 +527,12 @@ def test_metrics_failure_does_not_poison_active_batch() -> None:
             telemetry.start(coordinator.snapshot)
             batch = await coordinator.next_batch()
             assert batch is not None
-            chunks = batch.chunks()
-            await anext(chunks)
+            groups = batch.groups()
+            await anext(groups)
 
             await _wait_until(lambda: telemetry.failure is not None)
             release_second.set()
-            assert (await anext(chunks)).index == 1
+            assert (await anext(groups)).index == 1
 
             with pytest.raises(OSError, match="metrics unavailable"):
                 await telemetry.aclose()
@@ -561,10 +552,10 @@ def test_final_optimizer_batch_uses_its_realized_size() -> None:
         async with coordinator:
             while (batch := await coordinator.next_batch()) is not None:
                 sizes = []
-                async for chunk in batch.chunks():
-                    sizes.append(chunk.actual_groups)
+                async for group in batch.groups():
+                    sizes.append(1)
                     await coordinator.run_blocking(
-                        "train_chunk",
+                        "train_group",
                         count,
                         "train",
                         optimizer_batch=batch,
@@ -597,14 +588,13 @@ def test_step_time_includes_weight_update_but_train_time_does_not() -> None:
         coordinator = _coordinator(
             [_row(0)],
             prompt_groups_per_step=1,
-            training_chunks_per_step=1,
         )
         async with _observed(coordinator, telemetry):
             batch = await coordinator.next_batch()
             assert batch is not None
             await _consume(batch)
             await coordinator.run_blocking(
-                "train_chunk",
+                "train_group",
                 lambda: None,
                 optimizer_batch=batch,
             )
@@ -640,7 +630,6 @@ def test_step_time_starts_at_the_previous_publication() -> None:
         coordinator = _coordinator(
             [_row(0), _row(1)],
             prompt_groups_per_step=1,
-            training_chunks_per_step=1,
         )
         async with coordinator:
             first = await coordinator.next_batch()
@@ -718,7 +707,6 @@ def test_recoverable_rollout_error_drops_and_continues() -> None:
         coordinator = _coordinator(
             [_row(0, run_factory=timeout), _row(1)],
             prompt_groups_per_step=1,
-            training_chunks_per_step=1,
         )
         async with _observed(coordinator, telemetry):
             batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1.0)
@@ -746,7 +734,6 @@ def test_misaligned_r3_rollout_drops_before_group_admission() -> None:
         coordinator = _coordinator(
             [_row(0, run_factory=malformed_r3), _row(1)],
             prompt_groups_per_step=1,
-            training_chunks_per_step=1,
             max_concurrent_rollouts=1,
         )
         async with _observed(coordinator, telemetry):
@@ -805,7 +792,6 @@ def test_unknown_rollout_error_is_fatal() -> None:
         coordinator = _coordinator(
             [_row(0, run_factory=broken)],
             prompt_groups_per_step=1,
-            training_chunks_per_step=1,
         )
         async with coordinator:
             with pytest.raises(RuntimeError, match="contract bug"):
@@ -822,7 +808,6 @@ def test_invalid_rollout_return_is_fatal() -> None:
         coordinator = _coordinator(
             [_row(0, run_factory=invalid)],  # type: ignore[arg-type]
             prompt_groups_per_step=1,
-            training_chunks_per_step=1,
             error_classifier=lambda _error: ErrorClassification(
                 ErrorDisposition.RECOVERABLE,
                 "custom_recoverable_label",
@@ -843,7 +828,6 @@ def test_unexpected_rollout_cancellation_is_fatal() -> None:
         coordinator = _coordinator(
             [_row(0, run_factory=cancelled)],
             prompt_groups_per_step=1,
-            training_chunks_per_step=1,
         )
         async with coordinator:
             with pytest.raises(RuntimeError, match="unexpectedly cancelled"):

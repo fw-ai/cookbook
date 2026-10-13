@@ -7,6 +7,7 @@ SDK, or a deployment.
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -101,11 +102,6 @@ class TestConfigDefaults:
         assert cfg.dcp_save_interval == 0
         assert cfg.weight_sync_timeout == 600
 
-    def test_config_pipeline_chunks_default_to_one(self) -> None:
-        cfg = async_rl_loop.Config(log_path="gs://logs")
-
-        assert cfg.pipeline_chunks_per_step == 1
-
     def test_config_has_only_grpo_hyperparameters(self) -> None:
         cfg = async_rl_loop.Config(log_path="gs://logs")
 
@@ -139,6 +135,8 @@ def test_optimizer_step_requests_grad_norm_metrics() -> None:
     captured = {}
 
     class FakePolicy:
+        default_timeout = 3600
+
         def optim_step(self, adam_params, **kwargs):
             captured.update(adam_params=adam_params, **kwargs)
             return "result"
@@ -340,6 +338,8 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
             events.append("hotload")
 
     class FakePolicy:
+        default_timeout = 3600
+
         def save_weights_for_sampler(self, *_args, **_kwargs):
             events.append("save")
             return SimpleNamespace(path="checkpoint")
@@ -355,9 +355,7 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
     policy = FakePolicy()
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setattr(async_rl_loop, "setup_wandb", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(
-        async_rl_loop, "validate_config", lambda *_args, **_kwargs: None
-    )
+    monkeypatch.setattr(async_rl_loop, "validate_config", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         async_rl_loop,
         "resolve_router_replay_enabled",
@@ -417,11 +415,7 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
         log_path="/tmp/async_rl_test_logs",
         deployment=async_rl_loop.DeployConfig(tokenizer_model="Qwen/Qwen3-1.7B"),
     )
-    error = (
-        _StopAfterRolloutSetup
-        if advantage_mode == "rollout_setup"
-        else _StopAfterCoordinatorSetup
-    )
+    error = _StopAfterRolloutSetup if advantage_mode == "rollout_setup" else _StopAfterCoordinatorSetup
     options = {"advantage_fn": mean_only} if advantage_mode == "mean_only" else {}
     with pytest.raises(error):
         async_rl_loop.main(
@@ -441,7 +435,7 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
     ]
 
 
-class _StopAfterTrainChunk(RuntimeError):
+class _StopAfterTrainGroup(RuntimeError):
     pass
 
 
@@ -485,8 +479,8 @@ def _logprob_output(rows):
     )
 
 
-def _run_train_chunk(monkeypatch, cfg, group, policy, setups=None):
-    """Drive ``main`` until its first ``train_chunk`` returns."""
+def _run_train_group(monkeypatch, cfg, group, policy, setups=None, heartbeat=None):
+    """Drive ``main`` until its first ``train_group`` returns."""
     outputs = []
 
     def rollout_fn_factory(setup):
@@ -518,8 +512,23 @@ def _run_train_chunk(monkeypatch, cfg, group, policy, setups=None):
             return None
 
     class FakeBatch:
-        async def chunks(self):
-            yield SimpleNamespace(groups=[group])
+        batch_id = 1
+        _train_group_wait_time = 0.0
+
+        def start_training(self, **kwargs):
+            pass
+
+        async def ready_group_batches(self):
+            yield [
+                SimpleNamespace(
+                    group=group,
+                    batch_id=1,
+                    source_token=0,
+                    submit_version=0,
+                    ready_at=0.0,
+                    ready_utc=0.0,
+                )
+            ]
 
     class FakeCoordinator:
         def __init__(self, **_kwargs):
@@ -540,10 +549,13 @@ def _run_train_chunk(monkeypatch, cfg, group, policy, setups=None):
         def raise_if_failed(self, *_args):
             pass
 
-        async def run_blocking(self, name, fn, chunk, **_kwargs):
-            assert name == "train_chunk"
-            outputs.append(fn(chunk))
-            raise _StopAfterTrainChunk
+        async def run_blocking(self, name, fn, *args, **_kwargs):
+            if name == "train_group":
+                if heartbeat is not None:
+                    asyncio.get_running_loop().call_later(0.01, heartbeat.set)
+                return await asyncio.to_thread(fn, *args)
+            assert name == "optimizer"
+            raise _StopAfterTrainGroup
 
     class FakeTelemetry:
         def __init__(self, **_kwargs):
@@ -555,9 +567,14 @@ def _run_train_chunk(monkeypatch, cfg, group, policy, setups=None):
         async def aclose(self):
             pass
 
-    policy.save_weights_for_sampler = lambda *_a, **_k: SimpleNamespace(
-        path="checkpoint"
-    )
+    original_diagnostics = async_rl_loop.add_batch_diagnostics
+
+    def record_diagnostics(submissions, results, config, objective):
+        original_diagnostics(submissions, results, config, objective)
+        outputs.extend(results)
+
+    monkeypatch.setattr(async_rl_loop, "add_batch_diagnostics", record_diagnostics)
+    policy.save_weights_for_sampler = lambda *_a, **_k: SimpleNamespace(path="checkpoint")
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     for name, value in {
         "setup_wandb": lambda *_a, **_k: None,
@@ -576,9 +593,9 @@ def _run_train_chunk(monkeypatch, cfg, group, policy, setups=None):
         "from_training_client",
         lambda *_a, **_k: policy,
     )
-    with pytest.raises(_StopAfterTrainChunk):
+    with pytest.raises(_StopAfterTrainGroup):
         async_rl_loop.main(cfg, rows=[], rollout_fn_factory=rollout_fn_factory)
-    return outputs[0]["fwd_bwd_result"]
+    return outputs[0]
 
 
 def _config(**overrides):
@@ -589,16 +606,23 @@ def _config(**overrides):
     )
 
 
-def test_train_chunk_runs_server_grpo_on_the_rollout_anchor(monkeypatch) -> None:
+def test_train_group_runs_server_grpo_on_the_rollout_anchor(monkeypatch) -> None:
     calls = []
 
     class FakePolicy:
-        def forward_backward(self, data, loss_fn, loss_fn_config=None):
+        default_timeout = 3600
+
+        def submit_forward_backward(self, data, loss_fn, loss_fn_config=None):
             calls.append((data, loss_fn, loss_fn_config))
-            return SimpleNamespace(
+            result = SimpleNamespace(
                 metrics={"loss:sum": 1.0},
                 loss_fn_outputs=_logprob_output([[-0.4, -0.2, -0.1]]).loss_fn_outputs,
             )
+
+            async def result_async(timeout=None):
+                return result
+
+            return SimpleNamespace(result_async=result_async)
 
         def forward(self, *_args, **_kwargs):
             raise AssertionError("a rollout anchor needs no snapshot forward")
@@ -606,14 +630,14 @@ def test_train_chunk_runs_server_grpo_on_the_rollout_anchor(monkeypatch) -> None
         def forward_backward_custom(self, *_args, **_kwargs):
             raise AssertionError("built-in execution must not call a custom loss")
 
-    result = _run_train_chunk(
+    result = _run_train_group(
         monkeypatch,
         _config(),
         _policy_group(),
         FakePolicy(),
     )
 
-    (server_data, loss_fn, loss_config), = calls
+    ((server_data, loss_fn, loss_config),) = calls
     assert loss_fn == "ppo"
     assert loss_config == {"clip_low_threshold": 0.8, "clip_high_threshold": 1.2}
     inputs = server_data[0].loss_fn_inputs
@@ -624,3 +648,32 @@ def test_train_chunk_runs_server_grpo_on_the_rollout_anchor(monkeypatch) -> None
     assert result.metrics["raw_inference_logprob_coverage"] == 1.0
     assert result.metrics["ppo_ratio_mean"] > 0
     assert result.metrics["active_tokens"] == 2
+
+
+def test_group_preparation_and_submission_leave_event_loop_responsive(monkeypatch) -> None:
+    heartbeat = threading.Event()
+    main_thread = threading.get_ident()
+    original_build = async_rl_loop.objective.build_datums
+
+    def slow_build(*args):
+        assert threading.get_ident() != main_thread
+        assert heartbeat.wait(timeout=2), "event-loop timer stalled during preparation"
+        return original_build(*args)
+
+    class Policy:
+        default_timeout = 17
+
+        def submit_forward_backward(self, *_args, **_kwargs):
+            assert threading.get_ident() != main_thread
+
+            async def result_async(timeout=None):
+                assert timeout == self.default_timeout
+                return SimpleNamespace(
+                    metrics={},
+                    loss_fn_outputs=_logprob_output([[-0.4, -0.2, -0.1]]).loss_fn_outputs,
+                )
+
+            return SimpleNamespace(result_async=result_async)
+
+    monkeypatch.setattr(async_rl_loop.objective, "build_datums", slow_build)
+    _run_train_group(monkeypatch, _config(), _policy_group(), Policy(), heartbeat=heartbeat)

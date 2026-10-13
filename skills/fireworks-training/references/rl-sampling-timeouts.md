@@ -43,7 +43,7 @@ deployment returns any metrics.
    the cause.** Investigate gateway timeout limits, network stability, hotload
    readiness, request size, or an overly short `DeployConfig.sample_timeout`.
 4. **Compare async RL phase and producer metrics.** High
-   `perf/train_chunk_wait_time` together with high sampler queue metrics points
+   `perf/train_group_wait_time` together with high sampler queue metrics points
    to a slow sampler. Near-zero staleness capacity with in-flight samples below
    the concurrency limit points to the off-policy admission gate instead.
    `perf/train_wait_time` alone is not enough evidence because it also includes

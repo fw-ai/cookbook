@@ -70,7 +70,7 @@ uv run python -m training.examples.harbor_rl.tasks.dabstep.train \
   --wandb-entity <entity>
 ```
 
-The recipe fixes 8 completions x 8 groups, two pipeline chunks, 32,768 tokens
+The recipe fixes 8 completions x 8 groups, 32,768 tokens
 per OpenCode turn, and server-side GRPO on a rank-64 LoRA; `--max-seq-len`,
 `--lora-rank`, and the AdamW flags are explicit experiment knobs. Training rows
 are placeholders: the adaptive selector chooses distinct tasks per optimizer
@@ -84,6 +84,9 @@ The run directory receives `metrics.jsonl`, `selector-state.json`,
 passing `--resume-from`, `--row-offset`, `--step-offset`, and
 `--selector-state-in` together (plus the prior `--wandb-run-id` when W&B is
 enabled).
+
+Complete accepted groups submit as soon as they are ready; one optimizer update
+follows all successful backwards in the window.
 
 ## Pi managed-resource recipe
 
@@ -109,7 +112,7 @@ uv run python -m training.examples.harbor_rl.train_pi \
 ```
 
 The recipe uses full-parameter server-side GRPO, binary Harbor reward, eight
-completions for each of eight prompt groups, two pipeline chunks, a
+completions for each of eight prompt groups, a
 two-version off-policy window, one epoch, a 524,288-token sequence limit, and
 a 65,536-token per-turn limit. It saves every 40 optimizer steps. Resource
 shapes are selected by the SDK; `--trainer-job-id` and `--deployment-id`

@@ -50,12 +50,14 @@ async def collect_prompt_groups(
             break
 
         consumed_indices.extend(item.index for item in window)
-        results = await asyncio.gather(
-            *(
-                sample_prompt(item.value, cursor_index=item.index)
-                for item in window
-            )
-        )
+        tasks = [asyncio.ensure_future(sample_prompt(item.value, cursor_index=item.index)) for item in window]
+        try:
+            results = await asyncio.gather(*tasks)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         for result in results:
             if result is None:
                 sample_fails += 1
@@ -66,12 +68,16 @@ async def collect_prompt_groups(
                 continue
             groups.append(result)
 
-    return groups, consumed_indices, {
-        "valid_prompt_groups": len(groups),
-        "total_sampled": len(consumed_indices),
-        "filter_drops": filter_drops,
-        "sample_fails": sample_fails,
-        "trainer_wait_for_sampler_time": 0.0,
-        "rollout_batch_wall_time": time.monotonic() - started,
-        "all_raw_rewards": raw_rewards,
-    }
+    return (
+        groups,
+        consumed_indices,
+        {
+            "valid_prompt_groups": len(groups),
+            "total_sampled": len(consumed_indices),
+            "filter_drops": filter_drops,
+            "sample_fails": sample_fails,
+            "trainer_wait_for_sampler_time": 0.0,
+            "rollout_batch_wall_time": time.monotonic() - started,
+            "all_raw_rewards": raw_rewards,
+        },
+    )

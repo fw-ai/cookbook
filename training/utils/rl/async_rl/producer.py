@@ -11,8 +11,7 @@ from typing import Any, TypeAlias
 from training.utils.rl.rollout.setup import DynamicFilterFn
 from training.utils.rl.async_rl.batch import (
     OptimizerBatch,
-    TrainingChunk,
-    balanced_chunk_targets,
+    TrainingGroup,
 )
 from training.utils.rl.async_rl.errors import (
     CircuitBreakerConfig,
@@ -114,7 +113,6 @@ class RolloutProducer:
         output: asyncio.Queue[OptimizerBatch | _ProducerFailed | _ProducerFinished],
         completions_per_prompt: int,
         prompt_groups_per_step: int,
-        training_chunks_per_step: int,
         max_head_off_policy_versions: int,
         max_concurrent_rollouts: int | None,
         advantage_fn: AdvantageFn,
@@ -131,7 +129,6 @@ class RolloutProducer:
         _validate_producer_args(
             completions_per_prompt=completions_per_prompt,
             prompt_groups_per_step=prompt_groups_per_step,
-            training_chunks_per_step=training_chunks_per_step,
             max_head_off_policy_versions=max_head_off_policy_versions,
             max_concurrent_rollouts=max_concurrent_rollouts,
             min_group_size=min_group_size,
@@ -143,10 +140,6 @@ class RolloutProducer:
         self._cpp = completions_per_prompt
         self._groups_per_batch = prompt_groups_per_step
         self._samples_per_batch = completions_per_prompt * prompt_groups_per_step
-        self._chunk_targets = balanced_chunk_targets(
-            prompt_groups_per_step,
-            training_chunks_per_step,
-        )
         self._max_staleness = max_head_off_policy_versions
         self._max_concurrent = max_concurrent_rollouts
         self._dynamic_filter_fn = dynamic_filter_fn
@@ -487,9 +480,7 @@ class RolloutProducer:
                 return
             self._reject_row(entry, reason="none")
             return
-        if self._dynamic_filter_fn is not None and not self._dynamic_filter_fn(
-            resolution.pg
-        ):
+        if self._dynamic_filter_fn is not None and not self._dynamic_filter_fn(resolution.pg):
             self._reject_row(
                 entry,
                 reason="filter",
@@ -502,14 +493,13 @@ class RolloutProducer:
         batch = self._batch_for_next_group()
         entry.batch_id = batch.batch_id
         source_token = entry.request.row_id
-        chunk = batch._append_group(
+        group = batch._append_group(
             sequence=sequence,
             group=resolution.pg,
             submit_version=resolution.min_submit_version,
             source_token=source_token,
         )
-        if chunk is not None:
-            self._emit_chunk(batch, chunk)
+        self._emit_group(batch, group)
         if batch.realized_groups == batch.target_groups:
             self._seal_fill_batch()
 
@@ -539,7 +529,6 @@ class RolloutProducer:
             batch = OptimizerBatch(
                 batch_id=self._next_batch_id,
                 target_groups=self._groups_per_batch,
-                chunk_targets=self._chunk_targets,
             )
             self._next_batch_id += 1
             self._fill_batch = batch
@@ -549,8 +538,8 @@ class RolloutProducer:
                 self._pending_completed_rewards.clear()
         return self._fill_batch
 
-    def _emit_chunk(self, batch: OptimizerBatch, chunk: TrainingChunk) -> None:
-        batch._put_chunk(chunk)
+    def _emit_group(self, batch: OptimizerBatch, group: TrainingGroup) -> None:
+        batch._put_group(group)
         if not batch._exposed:
             batch._exposed = True
             self._output.put_nowait(batch)
@@ -559,9 +548,6 @@ class RolloutProducer:
         batch = self._fill_batch
         if batch is None:
             return
-        chunk = batch._take_partial_chunk()
-        if chunk is not None:
-            self._emit_chunk(batch, chunk)
         batch._seal()
         self._fill_batch = None
 
@@ -648,7 +634,6 @@ def _validate_producer_args(
     *,
     completions_per_prompt: int,
     prompt_groups_per_step: int,
-    training_chunks_per_step: int,
     max_head_off_policy_versions: int,
     max_concurrent_rollouts: int | None,
     min_group_size: int,
@@ -657,7 +642,6 @@ def _validate_producer_args(
 ) -> None:
     _require_positive_int("completions_per_prompt", completions_per_prompt)
     _require_positive_int("prompt_groups_per_step", prompt_groups_per_step)
-    _require_positive_int("training_chunks_per_step", training_chunks_per_step)
     _require_nonnegative_int(
         "max_head_off_policy_versions",
         max_head_off_policy_versions,
@@ -668,12 +652,9 @@ def _validate_producer_args(
             "max_concurrent_rollouts",
             max_concurrent_rollouts,
         )
-    if max_concurrent_rollouts is not None and (
-        max_concurrent_rollouts < completions_per_prompt
-    ):
+    if max_concurrent_rollouts is not None and (max_concurrent_rollouts < completions_per_prompt):
         raise ValueError(
-            "max_concurrent_rollouts must fit one whole row: "
-            f"{max_concurrent_rollouts} < {completions_per_prompt}"
+            "max_concurrent_rollouts must fit one whole row: " f"{max_concurrent_rollouts} < {completions_per_prompt}"
         )
     _require_positive_int("min_group_size", min_group_size)
     _require_nonnegative_int(

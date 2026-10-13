@@ -1,4 +1,4 @@
-"""Optimizer-batch and chunk ownership for asynchronous RL."""
+"""Optimizer-batch and group ownership for asynchronous RL."""
 
 from __future__ import annotations
 
@@ -10,35 +10,17 @@ from dataclasses import dataclass, field
 from training.utils.rl.losses import PromptGroup
 
 
-def balanced_chunk_targets(total_groups: int, requested_chunks: int) -> tuple[int, ...]:
-    """Split one optimizer batch into fixed non-empty, balanced chunks."""
-
-    _require_positive_int("total_groups", total_groups)
-    _require_positive_int("requested_chunks", requested_chunks)
-    chunks = min(total_groups, requested_chunks)
-    base, larger = divmod(total_groups, chunks)
-    return tuple(base + (index < larger) for index in range(chunks))
-
-
 @dataclass(frozen=True, slots=True)
-class TrainingChunk:
+class TrainingGroup:
     """One immutable forward/backward unit from an optimizer batch."""
 
     batch_id: int
     index: int
-    planned_chunks: int
-    target_groups: int
-    groups: tuple[PromptGroup, ...]
-    submit_versions: tuple[int, ...]
-    source_tokens: tuple[Hashable, ...]
-
-    @property
-    def actual_groups(self) -> int:
-        return len(self.groups)
-
-    @property
-    def partial(self) -> bool:
-        return self.actual_groups < self.target_groups
+    group: PromptGroup
+    submit_version: int
+    source_token: Hashable
+    ready_at: float = field(default_factory=time.monotonic)
+    ready_utc: float = field(default_factory=time.time)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,41 +37,28 @@ _BATCH_FINISHED = _BatchFinished()
 
 @dataclass(slots=True)
 class OptimizerBatch:
-    """The sole owner of one optimizer batch and its streamed chunks."""
+    """The sole owner of one optimizer batch and its streamed groups."""
 
     batch_id: int
     target_groups: int
-    chunk_targets: tuple[int, ...]
-    _queue: asyncio.Queue[TrainingChunk | _BatchFailed | _BatchFinished] = field(
+    _queue: asyncio.Queue[TrainingGroup | _BatchFailed | _BatchFinished] = field(
         default_factory=asyncio.Queue,
         repr=False,
     )
-    _pending_groups: list[PromptGroup] = field(default_factory=list, repr=False)
-    _pending_versions: list[int] = field(default_factory=list, repr=False)
-    _pending_sources: list[Hashable] = field(default_factory=list, repr=False)
     _accepted_sequences: list[int] = field(default_factory=list, repr=False)
     _all_groups: list[PromptGroup] = field(default_factory=list, repr=False)
     _all_versions: list[int] = field(default_factory=list, repr=False)
     _completed_rewards: list[float] = field(default_factory=list, repr=False)
-    _realized_chunks: int = 0
     _exposed: bool = False
     _sealed: bool = False
     _partial: bool = False
     _consumer_started: bool = False
     _consumed: bool = False
-    _ready_chunks: int = 0
-    _train_chunk_wait_time: float = 0.0
+    _ready_groups: int = 0
+    _train_group_wait_time: float = 0.0
     _train_started_at: float | None = None
     _train_finished_at: float | None = None
-    _chunk_wait_at_train_start: float = 0.0
-
-    @property
-    def planned_chunks(self) -> int:
-        return len(self.chunk_targets)
-
-    @property
-    def realized_chunks(self) -> int:
-        return self._realized_chunks
+    _group_wait_at_train_start: float = 0.0
 
     @property
     def realized_groups(self) -> int:
@@ -118,28 +87,66 @@ class OptimizerBatch:
         return tuple(self._completed_rewards)
 
     @property
-    def ready_chunks(self) -> int:
-        return self._ready_chunks
+    def ready_groups(self) -> int:
+        return self._ready_groups
 
-    async def chunks(self) -> AsyncIterator[TrainingChunk]:
-        """Yield chunks once, waiting only when the next target is not ready."""
+    def start_training(self, *, at: float | None = None) -> None:
+        """Record the first submitted training request and its group-wait boundary."""
+        if self._train_started_at is None:
+            self._train_started_at = time.monotonic() if at is None else at
+            self._group_wait_at_train_start = self._train_group_wait_time
+
+    async def groups(self) -> AsyncIterator[TrainingGroup]:
+        """Yield groups once, waiting only when the next target is not ready."""
 
         if self._consumer_started:
-            raise RuntimeError(
-                f"batch {self.batch_id} chunks can only be consumed once"
-            )
+            raise RuntimeError(f"batch {self.batch_id} groups can only be consumed once")
         self._consumer_started = True
         while True:
             wait_started = time.monotonic()
             item = await self._queue.get()
-            self._train_chunk_wait_time += time.monotonic() - wait_started
+            self._train_group_wait_time += time.monotonic() - wait_started
             if item is _BATCH_FINISHED:
                 self._consumed = True
                 return
             if isinstance(item, _BatchFailed):
                 raise item.error
-            self._ready_chunks -= 1
+            self._ready_groups -= 1
             yield item
+
+    async def ready_group_batches(self) -> AsyncIterator[list[TrainingGroup]]:
+        """Drain complete groups already ready, with no collection delay.
+
+        While the consumer builds/submits one request, the producer keeps
+        filling this queue. The next request takes that entire ready prefix.
+        """
+
+        if self._consumer_started:
+            raise RuntimeError(f"batch {self.batch_id} groups can only be consumed once")
+        self._consumer_started = True
+        while True:
+            wait_started = time.monotonic()
+            item = await self._queue.get()
+            self._train_group_wait_time += time.monotonic() - wait_started
+            ready: list[TrainingGroup] = []
+            finished = False
+            while True:
+                if item is _BATCH_FINISHED:
+                    finished = True
+                    break
+                if isinstance(item, _BatchFailed):
+                    raise item.error
+                self._ready_groups -= 1
+                ready.append(item)
+                try:
+                    item = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            if ready:
+                yield ready
+            if finished:
+                self._consumed = True
+                return
 
     def _append_group(
         self,
@@ -148,45 +155,24 @@ class OptimizerBatch:
         group: PromptGroup,
         submit_version: int,
         source_token: Hashable,
-    ) -> TrainingChunk | None:
+    ) -> TrainingGroup:
         if self._sealed:
             raise RuntimeError(f"batch {self.batch_id} is already sealed")
         self._accepted_sequences.append(sequence)
         self._all_groups.append(group)
         self._all_versions.append(submit_version)
         self._completed_rewards.extend(group.rewards)
-        self._pending_groups.append(group)
-        self._pending_versions.append(submit_version)
-        self._pending_sources.append(source_token)
-        target = self.chunk_targets[self._realized_chunks]
-        if len(self._pending_groups) < target:
-            return None
-        return self._take_chunk(target)
-
-    def _take_partial_chunk(self) -> TrainingChunk | None:
-        if not self._pending_groups:
-            return None
-        return self._take_chunk(self.chunk_targets[self._realized_chunks])
-
-    def _take_chunk(self, target_groups: int) -> TrainingChunk:
-        chunk = TrainingChunk(
+        return TrainingGroup(
             batch_id=self.batch_id,
-            index=self._realized_chunks,
-            planned_chunks=self.planned_chunks,
-            target_groups=target_groups,
-            groups=tuple(self._pending_groups),
-            submit_versions=tuple(self._pending_versions),
-            source_tokens=tuple(self._pending_sources),
+            index=self.realized_groups - 1,
+            group=group,
+            submit_version=submit_version,
+            source_token=source_token,
         )
-        self._pending_groups.clear()
-        self._pending_versions.clear()
-        self._pending_sources.clear()
-        self._realized_chunks += 1
-        return chunk
 
-    def _put_chunk(self, chunk: TrainingChunk) -> None:
-        self._queue.put_nowait(chunk)
-        self._ready_chunks += 1
+    def _put_group(self, group: TrainingGroup) -> None:
+        self._queue.put_nowait(group)
+        self._ready_groups += 1
 
     def _record_filtered_rewards(self, rewards: tuple[float, ...]) -> None:
         self._completed_rewards.extend(rewards)
@@ -212,6 +198,5 @@ def _require_positive_int(name: str, value: int) -> None:
 
 __all__ = [
     "OptimizerBatch",
-    "TrainingChunk",
-    "balanced_chunk_targets",
+    "TrainingGroup",
 ]

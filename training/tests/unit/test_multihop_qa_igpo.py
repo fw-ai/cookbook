@@ -35,7 +35,10 @@ ROW = {
         {"role": "user", "content": "What is the capital of France?"},
     ],
     "ground_truth": "Paris",
-    "context": {"titles": ["France"], "paragraphs": [["Paris is the capital of France."]]},
+    "context": {
+        "titles": ["France"],
+        "paragraphs": [["Paris is the capital of France."]],
+    },
 }
 SEARCH = '<tool_call>\n{"name": "search", "arguments": {"query": "capital of France"}}\n</tool_call>'
 SUBMIT = '{"name": "submit_answer", "arguments": {"answer": "Paris"}}<|im_end|>'
@@ -283,6 +286,8 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
         return {"logprobs": tinker.TensorData(data=[-0.5] * n, dtype="float32", shape=[n])}
 
     class Policy:
+        default_timeout = 17
+
         def forward(self, datums, loss_fn):
             calls.append(("forward", loss_fn, len(datums)))
             return SimpleNamespace(loss_fn_outputs=[logprobs(d) for d in datums])
@@ -291,6 +296,15 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
             advantages = [list(d.loss_fn_inputs["advantages"].data) for d in datums]
             calls.append(("forward_backward", loss_fn, advantages))
             return SimpleNamespace(metrics={}, loss_fn_outputs=[logprobs(d) for d in datums])
+
+        def submit_forward_backward(self, datums, loss_fn, loss_fn_config=None):
+            result = self.forward_backward(datums, loss_fn, loss_fn_config)
+
+            async def result_async(timeout=None):
+                assert timeout == self.default_timeout
+                return result
+
+            return SimpleNamespace(result_async=result_async)
 
         def optim_step(self, adam_params, **kwargs):
             calls.append(("optim_step",))
@@ -307,7 +321,10 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
             calls.append(("save", name, kwargs["data_consumed"]))
 
     sampler = SimpleNamespace(
-        model="m#d", base_url="https://api.fireworks.ai", close=lambda: None, drain_metrics=list
+        model="m#d",
+        base_url="https://api.fireworks.ai",
+        close=lambda: None,
+        drain_metrics=list,
     )
     service = SimpleNamespace(
         trainer_job_id="job-1",
@@ -325,12 +342,14 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
         "load_deployment_tokenizer": lambda deployment: None,
         "build_service_client": lambda **kwargs: service,
         "resolve_router_replay_enabled": lambda **kwargs: True,
-        "make_weight_sync": lambda *args: lambda name, **kwargs: calls.append(("sync", name)),
+        "make_weight_sync": lambda *args: (lambda name, **kwargs: calls.append(("sync", name))),
         "TrainingCheckpoints": Checkpoints,
     }.items():
         monkeypatch.setattr(rl_loop, name, value)
     monkeypatch.setattr(
-        rl_loop.ReconnectableClient, "from_training_client", lambda *args, **kwargs: Policy()
+        rl_loop.ReconnectableClient,
+        "from_training_client",
+        lambda *args, **kwargs: Policy(),
     )
     monkeypatch.setattr(
         train_module,
@@ -347,7 +366,9 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
         deployment=DeployConfig(deployment_id="dep-1", tokenizer_model="Qwen/Qwen3-8B"),
     )
     monkeypatch.setattr(
-        rl_loop, "load_jsonl_dataset", lambda *args: [{"id": "right"}, {"id": "dropped"}]
+        rl_loop,
+        "load_jsonl_dataset",
+        lambda *args: [{"id": "right"}, {"id": "dropped"}],
     )
 
     result = train_module.main(cfg, MultiHopQATask(gamma=0.5))
@@ -364,7 +385,13 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
         [0.0, 0.0, -1.0, -1.0],
     ]
     assert [call[0] for call in calls] == [
-        "sync", "forward", "forward_backward", "optim_step", "sync", "rollout_closed", "save",
+        "sync",
+        "forward",
+        "forward_backward",
+        "optim_step",
+        "sync",
+        "save",
+        "rollout_closed",
     ]
     assert calls[1] == ("forward", "cross_entropy", 2)
     assert metrics["igpo/avg_turns"] == 1.0
@@ -412,7 +439,11 @@ def test_search_episode_on_the_qwen3_6_template_end_to_end(monkeypatch):
 
 def test_main_keeps_groups_with_equal_outcome_rewards(monkeypatch):
     captured = {}
-    monkeypatch.setattr(train_module.rl_loop, "main", lambda cfg, **kwargs: captured.update(kwargs) or {})
+    monkeypatch.setattr(
+        train_module.rl_loop,
+        "main",
+        lambda cfg, **kwargs: captured.update(kwargs) or {},
+    )
 
     train_module.main(train_module.Config(log_path="/tmp/igpo"))
 

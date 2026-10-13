@@ -34,14 +34,10 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     common.add_model_args(parser)
     common.add_harness_args(parser)
-    common.add_resource_args(
-        parser, replica_count=1, sample_timeout=600, weight_sync_timeout=600
-    )
+    common.add_resource_args(parser, replica_count=1, sample_timeout=600, weight_sync_timeout=600)
     common.add_wandb_args(parser, project="harbor-rl-opencode")
     parser.add_argument(
         "--harbor-dataset",
@@ -55,9 +51,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Exact task name to include; repeat to freeze an ordered cohort",
     )
     parser.add_argument("--harbor-registry-path", default=None)
-    parser.add_argument(
-        "--harbor-environment", choices=("docker", "e2b"), default="docker"
-    )
+    parser.add_argument("--harbor-environment", choices=("docker", "e2b"), default="docker")
     parser.add_argument(
         "--harbor-trials-dir",
         type=Path,
@@ -79,7 +73,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--completions-per-prompt", type=int, default=4)
     parser.add_argument("--prompt-groups-per-step", type=int, default=1)
-    parser.add_argument("--pipeline-chunks-per-step", type=int, default=1)
     parser.add_argument("--max-completion-tokens", type=int, default=1024)
     parser.add_argument("--max-seq-len", type=int, default=65536)
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -111,7 +104,6 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, row_count: int) -> 
         learning_rate=args.learning_rate,
         completions_per_prompt=args.completions_per_prompt,
         prompt_groups_per_step=args.prompt_groups_per_step,
-        pipeline_chunks_per_step=args.pipeline_chunks_per_step,
         max_completion_tokens=args.max_completion_tokens,
         max_seq_len=args.max_seq_len,
         temperature=args.temperature,
@@ -128,8 +120,7 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, row_count: int) -> 
         wandb=WandBConfig(
             entity=args.wandb_entity,
             project=args.wandb_project,
-            run_name=args.wandb_run_name
-            or f"harbor-rl-opencode-{int(time.time()) % 100000}",
+            run_name=args.wandb_run_name or f"harbor-rl-opencode-{int(time.time()) % 100000}",
         ),
     )
 

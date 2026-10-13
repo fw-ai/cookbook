@@ -10,9 +10,12 @@ turns and broadcast to the tokens each turn generated.
 
 IGPO is an advantage estimator, not a new loss: :func:`token_advantages`
 sets ``PolicyBatch.token_advantages`` and any objective in this package trains
-on the result. In ``recipes/rl_loop.py`` it is the ``prepare_batch_fn``::
+on the result. In ``recipes/rl_loop.py`` prepare the complete batch::
 
     rl_loop.main(cfg, rollout_fn_factory=..., prepare_batch_fn=igpo.prepare_batch(gamma=1.0))
+
+Answer scoring is batched across groups; both reward normalizers remain
+group-local. Weights stay fixed until the complete batch has trained.
 
 A rollout describes each run with two ``RolloutRun.metadata`` keys:
 
@@ -185,17 +188,14 @@ def _group_token_advantages(
     groups: Sequence[PromptGroup],
     *,
     gamma: float,
-) -> Tuple[List[List[float]], Dict[str, float]]:
+) -> Tuple[List[List[float]], Dict[str, Any]]:
     """Per-target-token IGPO advantages for every datum of ``groups``, and metrics."""
     runs = []
     contexts: List[List[int]] = []
     answers: List[List[int]] = []
     for group_index, group in enumerate(groups):
         if not (len(group.data) == len(group.run_metadata) == len(group.rewards)):
-            raise ValueError(
-                f"IGPO group {group_index} needs exactly one datum and reward per "
-                "rollout run."
-            )
+            raise ValueError(f"IGPO group {group_index} needs exactly one datum and reward per " "rollout run.")
         for datum, metadata in zip(group.data, group.run_metadata):
             spans = [(int(start), int(end)) for start, end in metadata.get(TURN_SPANS) or []]
             if not spans:
@@ -232,7 +232,7 @@ def _group_token_advantages(
         for (spans, num_targets), advantages in zip(group_runs, turn_advantages):
             token_advantages.append(expand_turn_advantages(advantages, spans, num_targets))
 
-    metrics: Dict[str, float] = {}
+    metrics: Dict[str, Any] = {}
     if runs:
         metrics["igpo/avg_turns"] = sum(len(spans) for spans, _ in runs) / len(runs)
         metrics["igpo/mean_ig"] = total_gain / gain_turns if gain_turns else 0.0

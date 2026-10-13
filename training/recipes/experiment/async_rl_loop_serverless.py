@@ -2,7 +2,7 @@
 """Async RL on the Fireworks serverless training and sampling pool.
 
 The scheduler, rollout contract, batching, telemetry, one-update-per-batch
-semantics and objective match :mod:`training.recipes.async_rl_loop`: each chunk
+semantics and objective match :mod:`training.recipes.async_rl_loop`: each group
 trains with the trainer's built-in GRPO loss, clipped against the rollout
 logprobs. The resource lifecycle is serverless: no trainer job or inference
 deployment is provisioned. A training session publishes each policy version with
@@ -18,12 +18,13 @@ session-bound sampling client.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import hashlib
 import logging
 import math
 import os
+import time
 import re
-import signal
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,7 +47,8 @@ from training.utils.rl.rollout.setup import (
     default_sample_kwargs,
     rollout_context_names,
 )
-from training.utils.termination import TerminatedBySignal
+from training.utils.phase_tracing import phase_span
+from training.utils.termination import close_in_thread, run_in_thread, with_signals
 from training.utils import (
     DEFAULT_ADAM,
     WandBConfig,
@@ -66,10 +68,18 @@ from training.utils.rl.async_rl import (
     AsyncRLTelemetry,
     OverlappedEvaluation,
     RolloutRow,
-    TrainingChunk,
+    TrainingGroup,
 )
 from training.utils.rl.algorithm import grpo as objective
-from training.utils.rl.common import inference_drift_metrics
+from training.utils.rl.streaming import (
+    SubmittedGroup,
+    track_group,
+    retain_submission,
+    submission_window,
+    drain_groups,
+    add_batch_diagnostics,
+    streaming_metrics,
+)
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
@@ -99,7 +109,6 @@ class Config:
     lr_scheduler: LRSchedulerSpec = field(default_factory=default_constant_schedule)
     completions_per_prompt: int = 8
     prompt_groups_per_step: int = 8
-    pipeline_chunks_per_step: int = 2
     max_completion_tokens: int = 8192
     max_seq_len: int = 524288
     temperature: float = 1.0
@@ -132,9 +141,7 @@ class Config:
     resolved_rows_offset: int = 0
     dcp_save_interval: int = 0
     save_final_checkpoint: bool = True
-    wandb: WandBConfig = field(
-        default_factory=lambda: WandBConfig(project="serverless-rl-async")
-    )
+    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="serverless-rl-async"))
 
 
 class ServerlessSampler:
@@ -214,7 +221,6 @@ def _validate_config(cfg: Config) -> None:
     positive = {
         "completions_per_prompt": cfg.completions_per_prompt,
         "prompt_groups_per_step": cfg.prompt_groups_per_step,
-        "pipeline_chunks_per_step": cfg.pipeline_chunks_per_step,
         "max_completion_tokens": cfg.max_completion_tokens,
         "max_seq_len": cfg.max_seq_len,
         "max_rows": cfg.max_rows,
@@ -238,17 +244,12 @@ def _validate_config(cfg: Config) -> None:
         raise ValueError("serverless resume offsets require init_from_checkpoint")
     minimum_resolved = cfg.step_offset * cfg.prompt_groups_per_step
     if cfg.resolved_rows_offset < minimum_resolved:
-        raise ValueError(
-            "resolved_rows_offset cannot be smaller than the prompt groups "
-            "represented by step_offset"
-        )
+        raise ValueError("resolved_rows_offset cannot be smaller than the prompt groups " "represented by step_offset")
     if (
         cfg.max_concurrency_rollout_sample is not None
         and cfg.max_concurrency_rollout_sample < cfg.completions_per_prompt
     ):
-        raise ValueError(
-            "max_concurrency_rollout_sample must be at least completions_per_prompt"
-        )
+        raise ValueError("max_concurrency_rollout_sample must be at least completions_per_prompt")
     if cfg.max_completion_tokens >= cfg.max_seq_len:
         raise ValueError("max_completion_tokens must be smaller than max_seq_len")
     if cfg.lora_rank < 1:
@@ -281,9 +282,7 @@ def _snapshot_name(prefix: str, suffix: str) -> str:
     suffix_slug = re.sub(r"[^a-z0-9]+", "-", suffix.lower()).strip("-")
     candidate = "-".join(part for part in (prefix_slug, suffix_slug) if part)
     if not candidate:
-        raise ValueError(
-            "snapshot prefix and suffix must contain an alphanumeric character"
-        )
+        raise ValueError("snapshot prefix and suffix must contain an alphanumeric character")
     if len(candidate) <= _MAX_SNAPSHOT_NAME_LENGTH:
         return candidate
 
@@ -328,7 +327,6 @@ def _wandb_config(cfg: Config, *, mode: str) -> dict[str, Any]:
         "weight_decay": cfg.weight_decay,
         "completions_per_prompt": cfg.completions_per_prompt,
         "prompt_groups_per_step": cfg.prompt_groups_per_step,
-        "pipeline_chunks_per_step": cfg.pipeline_chunks_per_step,
         "max_rows": cfg.max_rows,
         "max_seq_len": cfg.max_seq_len,
         "max_completion_tokens": cfg.max_completion_tokens,
@@ -368,9 +366,7 @@ def _rollout_setup(
     )
 
 
-def _router_replay_enabled(
-    cfg: Config, *, api_key: str, base_url: str, training_client: Any
-) -> bool:
+def _router_replay_enabled(cfg: Config, *, api_key: str, base_url: str, training_client: Any) -> bool:
     """R3 for MoE policies, decided from the bound trainer's create response."""
     return resolve_router_replay_enabled(
         requested=True,
@@ -457,7 +453,8 @@ def run_sampling_preflight(
             wandb_finish(metrics_file=cfg.metrics_file)
 
 
-def main(
+@with_signals
+async def main(
     config: Config,
     *,
     rollout_fn_factory: RolloutFnFactory,
@@ -474,13 +471,6 @@ def main(
     if evaluation_interval < 1:
         raise ValueError("evaluation_interval must be >= 1")
 
-    def _signal_handler(signum, _frame):
-        name = signal.Signals(signum).name
-        raise TerminatedBySignal(name)
-
-    signal.signal(signal.SIGTERM, _signal_handler)
-    signal.signal(signal.SIGINT, _signal_handler)
-
     if rows is None and not cfg.dataset:
         raise ValueError("Provide either cfg.dataset or rows= to main().")
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
@@ -493,24 +483,30 @@ def main(
     )
     service: FiretitanServiceClient | None = None
     sampler: ServerlessSampler | None = None
+    stack = AsyncExitStack()
     try:
         service = _make_service(api_key, base_url)
-        tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision)
-        training_client = service.create_lora_training_client(
+        stack.push_async_callback(close_in_thread, service.close)
+        tokenizer = await run_in_thread(load_tokenizer, cfg.tokenizer_model, cfg.tokenizer_revision)
+        training_client = await run_in_thread(
+            service.create_lora_training_client,
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
             alpha=cfg.lora_alpha,
         )
         if cfg.init_from_checkpoint:
-            training_client.load_state_with_optimizer(cfg.init_from_checkpoint).result()
-        initial_client, initial_snapshot = _create_snapshot_sampling_client(
+            await run_in_thread(lambda: training_client.load_state_with_optimizer(cfg.init_from_checkpoint).result())
+        initial_client, initial_snapshot = await run_in_thread(
+            _create_snapshot_sampling_client,
             service=service,
             training_client=training_client,
             tokenizer=tokenizer,
             name=_snapshot_name(cfg.snapshot_prefix, f"step-{cfg.step_offset}"),
         )
         sampler = ServerlessSampler(initial_client)
-        router_replay_enabled = _router_replay_enabled(
+        stack.push_async_callback(sampler.aclose)
+        router_replay_enabled = await run_in_thread(
+            _router_replay_enabled,
             cfg,
             api_key=api_key,
             base_url=base_url,
@@ -524,9 +520,10 @@ def main(
             router_replay_enabled=router_replay_enabled,
         )
         rollout_fn = rollout_fn_factory(rollout_setup)
+        stack.push_async_callback(close_rollout_fn, rollout_fn)
         context_names = rollout_context_names(rollout_fn)
         if rows is None:
-            rows = load_jsonl_dataset(cfg.dataset, cfg.max_rows)
+            rows = await run_in_thread(load_jsonl_dataset, cfg.dataset, cfg.max_rows)
         else:
             rows = list(rows)
         if not rows:
@@ -542,9 +539,7 @@ def main(
             0,
             row_loader.total_items - cfg.resolved_rows_offset,
         )
-        total_steps = cfg.step_offset + math.ceil(
-            remaining_rows / cfg.prompt_groups_per_step
-        )
+        total_steps = cfg.step_offset + math.ceil(remaining_rows / cfg.prompt_groups_per_step)
 
         def make_row_requests():
             rows_per_epoch = len(rows)
@@ -576,24 +571,37 @@ def main(
                     row_id=index,
                     run_factory=run_one_rollout,
                     row_meta={"row_id": row.get("id")},
-                    on_resolved=lambda _reason, index=index: row_loader.mark_resolved(
-                        index
-                    ),
+                    on_resolved=lambda _reason, index=index: row_loader.mark_resolved(index),
                 )
 
-        def train_chunk(chunk: TrainingChunk) -> dict[str, Any]:
-            """One server-side GRPO forward/backward, clipped against the rollout logprobs."""
-            batch = combine_prompt_groups(list(chunk.groups))
-            # Fork recipes: see the commented block in recipes/async_rl_loop.py
-            # (recompute the anchor, truncated IS, another objective).
+        def train_group(groups: list[TrainingGroup], owner: asyncio.Task) -> SubmittedGroup:
+            """Build and submit in the trainer worker; polling stays on the event loop."""
+            batch = combine_prompt_groups([group.group for group in groups])
+            # Fork recipes (utils in training.utils.rl): recompute anchors before
+            # build_datums; apply tis.apply_tis(datums, batch, cap=2.0) afterwards.
+            # Client-side loss: training_client.forward_backward_custom(
+            #     batch.data, objective.make_loss_fn(batch, policy_loss)).
             datums = objective.build_datums(batch, policy_loss)
-            with elapsed_timer("fwd_bwd"):
-                result = training_client.forward_backward(
+            started = time.monotonic()
+            with phase_span("fwd_bwd_submit", category="training", attributes={"groups": len(groups)}):
+                future = training_client.forward_backward(
                     datums, objective.LOSS_FN, loss_fn_config=objective.loss_fn_config(policy_loss)
-                ).result()
-            result.metrics.update(objective.metrics(batch, result, policy_loss))
-            result.metrics.update(inference_drift_metrics(batch, result))
-            return {"prompt_groups": batch.groups, "fwd_bwd_result": result}
+                )
+            return track_group(
+                future,
+                batch,
+                ready_at=min(group.ready_at for group in groups),
+                ready_utc=min(group.ready_utc for group in groups),
+                submit_started_at=started,
+                timeout=None,
+                abort_task=owner,
+                context={
+                    "step": groups[0].batch_id,
+                    "rows": [group.source_token for group in groups],
+                    "versions": [group.submit_version for group in groups],
+                },
+                group_ready_times=[group.ready_at for group in groups],
+            )
 
         def optimizer_step(step: int) -> dict[str, Any]:
             learning_rate = compute_lr(
@@ -609,7 +617,7 @@ def main(
             adam_kwargs["weight_decay"] = cfg.weight_decay
             params = tinker.AdamParams(learning_rate=learning_rate, **adam_kwargs)
             with elapsed_timer("optim_step"):
-                # Chunks add token-summed losses; normalize the step to a
+                # Groups add token-summed losses; normalize the step to a
                 # per-token mean. Global/RMS grad norms only.
                 result = training_client.optim_step(
                     params,
@@ -627,14 +635,10 @@ def main(
             )
 
         def save_training_state(step: int) -> str:
-            saved = training_client.save_state(
-                _snapshot_name(cfg.snapshot_prefix, f"state-step-{step}")
-            ).result()
+            saved = training_client.save_state(_snapshot_name(cfg.snapshot_prefix, f"state-step-{step}")).result()
             path = getattr(saved, "path", None)
             if not path:
-                raise RuntimeError(
-                    f"serverless DCP checkpoint at step {step} has no path"
-                )
+                raise RuntimeError(f"serverless DCP checkpoint at step {step} has no path")
             logger.info("[step %d] saved serverless DCP checkpoint: %s", step, path)
             return str(path)
 
@@ -649,167 +653,151 @@ def main(
 
         async def run_training() -> tuple[int, dict[str, Any], str, list[str]]:
             periodic_checkpoints: list[str] = []
-            try:
-                telemetry = AsyncRLTelemetry(
-                    producer_metrics_fn=lambda metrics: log_metrics(
-                        metrics,
-                        step=int(metrics["producer/event"]),
-                        metrics_file=cfg.metrics_file,
-                    ),
-                    step_metrics_fn=lambda metrics, step: log_metrics(
-                        metrics,
-                        step=step,
-                        metrics_file=cfg.metrics_file,
-                    ),
-                )
-                coordinator = AsyncRLCoordinator(
-                    rows=make_row_requests(),
-                    completions_per_prompt=cfg.completions_per_prompt,
-                    prompt_groups_per_step=cfg.prompt_groups_per_step,
-                    training_chunks_per_step=cfg.pipeline_chunks_per_step,
-                    max_head_off_policy_versions=cfg.max_head_offpolicy_versions,
-                    max_concurrent_rollouts=cfg.max_concurrency_rollout_sample,
-                    min_group_size=cfg.min_group_size,
-                    max_incomplete_group_retries=(cfg.max_incomplete_group_retries),
-                    dynamic_filter_fn=dynamic_filter_fn,
-                    global_step=cfg.step_offset,
-                    resolved_rows_offset=cfg.resolved_rows_offset,
-                    resolved_rows_fn=lambda: row_loader.data_consumed,
-                )
-                latest_snapshot = initial_snapshot
-                async with coordinator:
-                    telemetry.start(coordinator.snapshot)
-                    evaluations.start(cfg.step_offset, force=True)
-                    try:
-                        while (batch := await coordinator.next_batch()) is not None:
-                            chunk_outputs: list[dict[str, Any]] = []
-                            async for chunk in batch.chunks():
+            telemetry = AsyncRLTelemetry(
+                producer_metrics_fn=lambda metrics: log_metrics(
+                    metrics,
+                    step=int(metrics["producer/event"]),
+                    metrics_file=cfg.metrics_file,
+                ),
+                step_metrics_fn=lambda metrics, step: log_metrics(
+                    metrics,
+                    step=step,
+                    metrics_file=cfg.metrics_file,
+                ),
+            )
+            coordinator = AsyncRLCoordinator(
+                rows=make_row_requests(),
+                completions_per_prompt=cfg.completions_per_prompt,
+                prompt_groups_per_step=cfg.prompt_groups_per_step,
+                max_head_off_policy_versions=cfg.max_head_offpolicy_versions,
+                max_concurrent_rollouts=cfg.max_concurrency_rollout_sample,
+                min_group_size=cfg.min_group_size,
+                max_incomplete_group_retries=(cfg.max_incomplete_group_retries),
+                dynamic_filter_fn=dynamic_filter_fn,
+                global_step=cfg.step_offset,
+                resolved_rows_offset=cfg.resolved_rows_offset,
+                resolved_rows_fn=lambda: row_loader.data_consumed,
+            )
+            latest_snapshot = initial_snapshot
+            async with coordinator:
+                telemetry.start(coordinator.snapshot)
+                evaluations.start(cfg.step_offset, force=True)
+                try:
+                    while (batch := await coordinator.next_batch()) is not None:
+                        async with submission_window() as submissions:
+                            async for groups in batch.ready_group_batches():
                                 coordinator.raise_if_failed(batch)
-                                chunk_outputs.append(
-                                    await coordinator.run_blocking(
-                                        "train_chunk",
-                                        train_chunk,
-                                        chunk,
+                                await retain_submission(
+                                    submissions,
+                                    coordinator.run_blocking(
+                                        "train_group",
+                                        train_group,
+                                        groups,
+                                        asyncio.current_task(),
                                         optimizer_batch=batch,
-                                    )
+                                    ),
                                 )
+                                batch.start_training(at=submissions[-1].submitted_at)
                             coordinator.raise_if_failed(batch)
-                            optimizer = await coordinator.run_blocking(
-                                "optimizer",
-                                optimizer_step,
+                            results = await drain_groups(submissions)
+                        add_batch_diagnostics(submissions, results, policy_loss, objective)
+                        coordinator.raise_if_failed(batch)
+                        optimizer = await coordinator.run_blocking(
+                            "optimizer",
+                            optimizer_step,
+                            batch.batch_id,
+                            optimizer_batch=batch,
+                        )
+                        evaluation_step = evaluations.active_step
+                        if evaluation_step is not None:
+                            with wall_timer(
+                                "evaluation_join",
+                                category="evaluation",
+                                attributes={"step": evaluation_step},
+                            ) as evaluation_wait_span:
+                                await evaluations.join()
+                            log_metrics(
+                                {
+                                    "rollout/step": evaluation_step,
+                                    "eval/weight_sync_wait_time": (evaluation_wait_span.elapsed),
+                                },
+                                step=evaluation_step,
+                                metrics_file=cfg.metrics_file,
+                            )
+                        with wall_timer(
+                            "weight_update",
+                            attributes={"step": batch.batch_id},
+                        ) as update_span:
+                            (
+                                next_client,
+                                latest_snapshot,
+                            ) = await coordinator.run_blocking(
+                                "weight_sync",
+                                create_sampler_version,
                                 batch.batch_id,
                                 optimizer_batch=batch,
                             )
-                            evaluation_step = evaluations.active_step
-                            if evaluation_step is not None:
-                                with wall_timer(
-                                    "evaluation_join",
-                                    category="evaluation",
-                                    attributes={"step": evaluation_step},
-                                ) as evaluation_wait_span:
-                                    await evaluations.join()
-                                log_metrics(
-                                    {
-                                        "rollout/step": evaluation_step,
-                                        "eval/weight_sync_wait_time": (
-                                            evaluation_wait_span.elapsed
-                                        ),
-                                    },
-                                    step=evaluation_step,
-                                    metrics_file=cfg.metrics_file,
-                                )
+                            await sampler.replace(next_client)
+                            # Sidecar harnesses (Harbor TITO) read setup.model when
+                            # each trial launches, not the live sampler.
+                            rollout_setup.model = sampler.model
+                        published = coordinator.publish(batch)
+                        telemetry.finish_step(
+                            batch=batch,
+                            trained_against_version=(published.trained_against_version),
+                            prompt_groups=[group for submission in submissions for group in submission.batch.groups],
+                            fwd_bwd_results=results,
+                            optim_result=optimizer["result"],
+                            timing_metrics={
+                                **flush_timing(),
+                                **streaming_metrics(submissions),
+                            },
+                            step_time=published.step_time,
+                            weight_update_time=update_span.elapsed,
+                            learning_rate=optimizer["learning_rate"],
+                        )
+                        evaluations.start(batch.batch_id)
+                        interval = cfg.dcp_save_interval
+                        completed_steps = batch.batch_id - cfg.step_offset
+                        if interval > 0 and completed_steps > 0 and completed_steps % interval == 0:
                             with wall_timer(
-                                "weight_update",
+                                "checkpoint",
+                                category="checkpoint",
                                 attributes={"step": batch.batch_id},
-                            ) as update_span:
-                                (
-                                    next_client,
-                                    latest_snapshot,
-                                ) = await coordinator.run_blocking(
-                                    "weight_sync",
-                                    create_sampler_version,
-                                    batch.batch_id,
-                                    optimizer_batch=batch,
-                                )
-                                await sampler.replace(next_client)
-                                # Sidecar harnesses (Harbor TITO) read setup.model when
-                                # each trial launches, not the live sampler.
-                                rollout_setup.model = sampler.model
-                            published = coordinator.publish(batch)
-                            telemetry.finish_step(
-                                batch=batch,
-                                trained_against_version=(
-                                    published.trained_against_version
-                                ),
-                                prompt_groups=[
-                                    group
-                                    for output in chunk_outputs
-                                    for group in output["prompt_groups"]
-                                ],
-                                fwd_bwd_results=[
-                                    output["fwd_bwd_result"] for output in chunk_outputs
-                                ],
-                                optim_result=optimizer["result"],
-                                timing_metrics=flush_timing(),
-                                step_time=published.step_time,
-                                weight_update_time=update_span.elapsed,
-                                learning_rate=optimizer["learning_rate"],
-                            )
-                            evaluations.start(batch.batch_id)
-                            interval = cfg.dcp_save_interval
-                            completed_steps = batch.batch_id - cfg.step_offset
-                            if (
-                                interval > 0
-                                and completed_steps > 0
-                                and completed_steps % interval == 0
-                            ):
-                                with wall_timer(
+                            ) as checkpoint_span:
+                                checkpoint = await coordinator.run_blocking(
                                     "checkpoint",
-                                    category="checkpoint",
-                                    attributes={"step": batch.batch_id},
-                                ) as checkpoint_span:
-                                    checkpoint = await coordinator.run_blocking(
-                                        "checkpoint",
-                                        save_training_state,
-                                        batch.batch_id,
-                                    )
-                                periodic_checkpoints.append(checkpoint)
-                                log_metrics(
-                                    {
-                                        "rollout/step": batch.batch_id,
-                                        "checkpoint/wall_time": checkpoint_span.elapsed,
-                                    },
-                                    step=batch.batch_id,
-                                    metrics_file=cfg.metrics_file,
+                                    save_training_state,
+                                    batch.batch_id,
                                 )
-                        await evaluations.join()
-                        evaluations.start(coordinator.global_step, force=True)
-                        await evaluations.join()
+                            periodic_checkpoints.append(checkpoint)
+                            log_metrics(
+                                {
+                                    "rollout/step": batch.batch_id,
+                                    "checkpoint/wall_time": checkpoint_span.elapsed,
+                                },
+                                step=batch.batch_id,
+                                metrics_file=cfg.metrics_file,
+                            )
+                    await evaluations.join()
+                    evaluations.start(coordinator.global_step, force=True)
+                    await evaluations.join()
+                finally:
+                    try:
+                        await evaluations.cancel()
                     finally:
-                        try:
-                            await evaluations.cancel()
-                        finally:
-                            try:
-                                await telemetry.aclose()
-                            finally:
-                                await close_rollout_fn(rollout_fn)
-                return (
-                    coordinator.global_step,
-                    telemetry.final_stats(),
-                    latest_snapshot,
-                    periodic_checkpoints,
-                )
-            finally:
-                await sampler.aclose()
+                        await telemetry.aclose()
+            return (
+                coordinator.global_step,
+                telemetry.final_stats(),
+                latest_snapshot,
+                periodic_checkpoints,
+            )
 
-        steps, final_stats, final_snapshot, periodic_checkpoints = asyncio.run(
-            run_training()
-        )
+        steps, final_stats, final_snapshot, periodic_checkpoints = await run_training()
         resolved_rows = int(final_stats["resolved_rows"])
         final_checkpoint = None
-        if cfg.save_final_checkpoint and (
-            steps > cfg.step_offset or resolved_rows > cfg.resolved_rows_offset
-        ):
+        if cfg.save_final_checkpoint and (steps > cfg.step_offset or resolved_rows > cfg.resolved_rows_offset):
             if (
                 periodic_checkpoints
                 and cfg.dcp_save_interval > 0
@@ -817,7 +805,7 @@ def main(
             ):
                 final_checkpoint = periodic_checkpoints[-1]
             else:
-                final_checkpoint = save_training_state(steps)
+                final_checkpoint = await run_in_thread(save_training_state, steps)
         session = getattr(service, "training_session_name", None) or getattr(
             service,
             "training_session_id",
@@ -825,23 +813,16 @@ def main(
         )
         return {
             "steps": steps,
-            "accepted_groups": (
-                cfg.step_offset * cfg.prompt_groups_per_step
-                + int(final_stats["total_accepted"])
-            ),
+            "accepted_groups": (cfg.step_offset * cfg.prompt_groups_per_step + int(final_stats["total_accepted"])),
             "resolved_rows": resolved_rows,
             "training_session": session,
-            "training_run": getattr(training_client, "run_name", None)
-            or getattr(training_client, "run_id", None),
+            "training_run": getattr(training_client, "run_name", None) or getattr(training_client, "run_id", None),
             "final_sampler_snapshot": final_snapshot,
             "periodic_training_checkpoints": periodic_checkpoints,
             "final_training_checkpoint": final_checkpoint,
         }
     finally:
         try:
-            if sampler is not None and not sampler.closed:
-                asyncio.run(sampler.aclose())
-            if service is not None:
-                service.close()
+            await stack.aclose()
         finally:
             wandb_finish(metrics_file=cfg.metrics_file)

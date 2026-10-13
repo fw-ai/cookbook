@@ -72,6 +72,7 @@ class _FakeService:
         self.calls.append(kwargs)
         return "sampler"
 
+
 def _make_client(inner: _FakeInnerClient) -> ReconnectableClient:
     client = object.__new__(ReconnectableClient)
     client._client = inner
@@ -362,3 +363,15 @@ def test_forward_backward_contrastive_requires_sdk_support():
             num_queries=4,
             temperature=0.02,
         )
+
+
+def test_submit_custom_loss_returns_native_future_without_waiting():
+    inner = _FakeInnerClient()
+    client = _make_client(inner)
+
+    def loss_fn(data, values):
+        return None
+
+    assert client.submit_forward_backward_custom(["chosen", "rejected"], loss_fn) is inner.future
+    assert inner.calls == [("forward_backward_custom", ["chosen", "rejected"], loss_fn, {})]
+    assert inner.future.timeout is None
