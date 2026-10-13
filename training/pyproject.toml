@@ -113,6 +113,7 @@ packages = [
     "training.examples.rl.experiment.sao",
     "training.examples.rl.frozen_lake",
     "training.examples.rl.multihop_qa",
+    "training.examples.rl.nemo_gym",
     "training.examples.rl.visual_toolbench",
     "training.examples.sft",
     "training.examples.tools",
