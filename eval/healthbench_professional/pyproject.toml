@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -21,7 +21,7 @@ healthbench-professional = "healthbench_professional.cli:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4,<9",
+    "pytest>=9.0.3,<10",
     "pytest-asyncio>=1.2,<2",
 ]
 
@@ -39,3 +39,16 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+# Security floors for optional and transitive dependencies in the lock.
+constraint-dependencies = [
+    "aiohttp>=3.14.3",
+    "cryptography>=50.0.0",
+    "h2>=4.4.1",
+    "litellm>=1.92.2",
+    "multidict>=6.9.1",
+    "pyjwt>=2.15.0",
+    "pytest>=9.0.3",
+    "urllib3>=2.8.0",
+]
