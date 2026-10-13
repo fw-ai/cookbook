@@ -5,7 +5,7 @@ takes ``sft_loop.Config`` and reuses sft_loop's row path: rows are rendered lazi
 time, by the same JSONL datasets, render workers, DataLoader and raw-row resume cursor, and the
 same LR schedule, Adam settings, checkpoint intervals and pipelining apply. Decision-specific
 rules override a few settings: every step uses ``target_logprob_support="candidates"``, a
-calibration split is required, and the final sampler checkpoint is ``step-N-calibrated`` (its
+calibration split is required, and the final sampler checkpoint is ``step-N-cal`` (its
 ``decision.json`` holds one fitted temperature per question type), which is what gets promoted.
 """
 
@@ -68,6 +68,30 @@ logger = logging.getLogger(__name__)
 # Decision tuning takes exactly sft_loop's settings; main() rejects the ones a decision run overrides.
 Config = sft_loop.Config
 _DEFAULT_TRAIN_ON_WHAT = Config.__dataclass_fields__["train_on_what"].default
+
+# Published session checkpoint ids are ``run-`` + 32 hex + ``-`` + name + ``-`` + 8 hex.
+# Resource ids are at most 63 characters, so the caller-supplied name has 17.
+_RUN_ID_HEX_LENGTH = 32
+_SESSION_SUFFIX_HEX_LENGTH = 8
+PROMOTED_CHECKPOINT_NAME_BUDGET = 63 - (len("run-") + _RUN_ID_HEX_LENGTH + 1 + 1 + _SESSION_SUFFIX_HEX_LENGTH)
+
+
+def calibrated_checkpoint_name(step: int) -> str:
+    """Logical name of the final calibrated sampler checkpoint.
+
+    ``step-<n>-cal`` stays within the 17-character promotion budget through
+    8-digit step counts. The bare ``step-<n>`` saves beside it are unchanged:
+    they are the resume key, and they fit the same budget through 12 digits.
+    """
+    if step < 0:
+        raise ValueError(f"step must be >= 0, got {step}")
+    name = f"step-{step}-cal"
+    if len(name) > PROMOTED_CHECKPOINT_NAME_BUDGET:
+        raise UserConfigError(
+            f"decision checkpoint name {name!r} is {len(name)} characters; "
+            f"serverless promotion allows {PROMOTED_CHECKPOINT_NAME_BUDGET}"
+        )
+    return name
 
 
 def _render_pairs(row: dict) -> list[tuple[str, tinker.Datum]] | DatasetError:
@@ -387,7 +411,7 @@ def main(config: Config) -> dict:
         # A promotable step-N (a periodic sampler save, a weight sync) never stands in for the
         # calibrated checkpoint, and save() refuses to skip a save carrying metadata. Promotion of
         # the same checkpoint is idempotent, so a resume at the final step re-promotes.
-        calibrated = f"step-{step}-calibrated"
+        calibrated = calibrated_checkpoint_name(step)
         if step > start_step:
             ckpt.save(f"step-{step}", resumable=True, promotable=False, data_consumed=cursor.value)
         if step > start_step or not ckpt.has_promotable(calibrated):

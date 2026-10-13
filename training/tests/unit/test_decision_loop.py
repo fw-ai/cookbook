@@ -8,10 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from fireworks.training.sdk.client import qualify_snapshot_name
 from fireworks.training.sdk.training_spec import CosineSchedule, compute_lr, normalize_lr_scheduler_spec
 from training.recipes import decision_loop, sft_loop
 from training.renderer.muse_glimmer import MuseGlimmerOptions, MuseGlimmerRenderer
-from training.utils.checkpoints import TrainingCheckpoints
+from training.utils.checkpoints import TrainingCheckpoints, _RUN_ID_RE, _public_logical_name
 from training.utils.runner import DatasetError, UserConfigError
 
 from .test_decision_rows import ROW, _GlimmerTokenizer
@@ -53,7 +54,7 @@ class _ControlPlane:
     trainer_job_id = "trainer-1"
     max_context_length = 4096
 
-    def __init__(self) -> None:
+    def __init__(self, *, run_id: str | None = None, session_suffix: str | None = None) -> None:
         self.rows: list[dict] = []
         self.sampler_metadata: dict[str, object] = {}
         self.promoted: list[str] = []
@@ -62,11 +63,28 @@ class _ControlPlane:
         self.tokenizer_args: tuple | None = None
         self.learning_rates: list[float] = []
         self.provisioned = False
+        self.run_id = run_id
+        self.session_suffix = session_suffix
+
+    def _stored_name(self, logical: str, *, sampler: bool) -> str:
+        """Publish the id the control plane lists: ``run-<32 hex>-<name>[-<8 hex>]``."""
+        if self.run_id is None:
+            return logical
+        stored = logical
+        if sampler:
+            if self.session_suffix is None:
+                raise AssertionError("session_suffix is required to publish a sampler checkpoint id")
+            stored = qualify_snapshot_name(self.session_suffix, logical)
+        return f"{self.run_id}-{stored}"
 
     def _row(self, name: str, checkpoint_type: str, promotable: bool) -> None:
+        if self.run_id is None:
+            resource = f"accounts/a/trainers/trainer-1/checkpoints/{name}"
+        else:
+            resource = f"accounts/a/trainingSessions/ts-{'a' * 32}/checkpoints/{name}"
         self.rows.append(
             {
-                "name": f"accounts/a/trainers/trainer-1/checkpoints/{name}",
+                "name": resource,
                 "checkpointType": checkpoint_type,
                 "promotable": promotable,
                 "createTime": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -104,25 +122,39 @@ class _ControlPlane:
         return SimpleNamespace(loss_fn_outputs=outputs)
 
     def save_state(self, name):
-        self._row(name, "CHECKPOINT_TYPE_TRAINING_LORA", promotable=False)
+        self._row(self._stored_name(name, sampler=False), "CHECKPOINT_TYPE_TRAINING_LORA", promotable=False)
 
     def save_weights_for_sampler(self, name, checkpoint_type=None, metadata=None, **kwargs):
         self.sampler_metadata[name] = metadata
-        self._row(name, "CHECKPOINT_TYPE_INFERENCE_LORA", promotable=True)
+        self._row(self._stored_name(name, sampler=True), "CHECKPOINT_TYPE_INFERENCE_LORA", promotable=True)
 
     def list_checkpoints(self, trainer_id):
         return list(self.rows)
 
     def promote_checkpoint(self, *, name, output_model_id, base_model, hot_load_deployment_id=None):
-        self.promoted.append(name.rsplit("/", 1)[-1])
+        checkpoint_id = name.rsplit("/", 1)[-1]
+        if len(checkpoint_id) > 63:
+            raise RuntimeError(f"id length ({len(checkpoint_id)}) must not exceed 63 characters")
+        self.promoted.append(checkpoint_id)
         return {}
 
 
-def _run(monkeypatch, tmp_path, plane: _ControlPlane, *, resume_info=None, **overrides) -> None:
+def _run(
+    monkeypatch,
+    tmp_path,
+    plane: _ControlPlane,
+    *,
+    resume_info=None,
+    serverless_run_id: str | None = None,
+    **overrides,
+) -> None:
     """Run ``decision_loop.main`` on 8 rows (4 steps of 2 rows) with a 4-row calibration split."""
 
     class _Checkpoints(TrainingCheckpoints):
         def __init__(self, *args, **kwargs):
+            if serverless_run_id is not None:
+                kwargs["serverless"] = True
+                kwargs["current_run_id"] = serverless_run_id
             super().__init__(*args, save_appear_timeout_s=1.0, save_stabilize_s=0.0, save_poll_s=0.01, **kwargs)
 
         def resume(self, **kwargs):
@@ -190,8 +222,8 @@ def test_trains_candidates_and_promotes_the_calibrated_checkpoint(monkeypatch, t
     assert plane.train_steps == 4
     assert len(plane.step_tokens) == 4 and all(tokens > 0 for tokens in plane.step_tokens)
     assert plane.sampler_metadata["step-4"] is None
-    _assert_calibrated(plane, "step-4-calibrated")
-    assert plane.promoted == ["step-4-calibrated"]
+    _assert_calibrated(plane, "step-4-cal")
+    assert plane.promoted == ["step-4-cal"]
     assert [r["name"].rsplit("/", 1)[-1] for r in plane.rows if not r["promotable"]] == ["step-4"]
 
 
@@ -201,17 +233,17 @@ def test_resume_at_the_final_step_writes_a_missing_calibrated_checkpoint_and_pro
 ) -> None:
     plane = _ControlPlane()
     if existing:
-        plane.save_weights_for_sampler("step-4-calibrated", metadata=existing)
+        plane.save_weights_for_sampler("step-4-cal", metadata=existing)
     _run(monkeypatch, tmp_path, plane, resume_info=SimpleNamespace(step=4, data_consumed=8))
 
-    assert plane.train_steps == 0 and list(plane.sampler_metadata) == ["step-4-calibrated"]
+    assert plane.train_steps == 0 and list(plane.sampler_metadata) == ["step-4-cal"]
     assert not [r for r in plane.rows if not r["promotable"]], "the resumable step-4 already exists"
     if existing:
-        assert plane.sampler_metadata["step-4-calibrated"] == existing
+        assert plane.sampler_metadata["step-4-cal"] == existing
     else:
-        _assert_calibrated(plane, "step-4-calibrated")
+        _assert_calibrated(plane, "step-4-cal")
     # A crash between the calibrated save and promotion still publishes on resume; re-promotion is idempotent.
-    assert plane.promoted == ["step-4-calibrated"]
+    assert plane.promoted == ["step-4-cal"]
 
 
 def test_pinned_tokenizer_settings_reach_the_tokenizer(monkeypatch, tmp_path) -> None:
@@ -336,11 +368,11 @@ def test_checkpoint_intervals_apply_as_in_sft_loop(monkeypatch, tmp_path) -> Non
     names = lambda promotable: [
         r["name"].rsplit("/", 1)[-1] for r in plane.rows if r["promotable"] is promotable
     ]  # noqa: E731
-    assert names(True) == ["step-2", "step-4", "step-4-calibrated"]
+    assert names(True) == ["step-2", "step-4", "step-4-cal"]
     assert names(False) == ["step-3", "step-4"]
     assert plane.sampler_metadata["step-2"] is None and plane.sampler_metadata["step-4"] is None
-    _assert_calibrated(plane, "step-4-calibrated")
-    assert plane.promoted == ["step-4-calibrated"]
+    _assert_calibrated(plane, "step-4-cal")
+    assert plane.promoted == ["step-4-cal"]
 
 
 def test_render_samples_are_written_as_in_sft_loop(monkeypatch, tmp_path) -> None:
@@ -357,6 +389,83 @@ def test_a_save_carrying_metadata_is_never_skipped(tmp_path) -> None:
     ckpt = TrainingCheckpoints(plane, plane, trainer_id="trainer-1", log_path=str(tmp_path), save_poll_s=0.01)
     for _ in range(2):  # an ordinary save of an existing sampler checkpoint is skipped, as before
         ckpt.save("step-4", resumable=False, promotable=True)
-    assert len(plane.rows) == 1 and ckpt.has_promotable("step-4") and not ckpt.has_promotable("step-4-calibrated")
+    assert len(plane.rows) == 1 and ckpt.has_promotable("step-4") and not ckpt.has_promotable("step-4-cal")
     with pytest.raises(RuntimeError, match="sampler_metadata is never skipped"):
         ckpt.save("step-4", resumable=False, promotable=True, sampler_metadata=SimpleNamespace())
+
+
+# Serverless publication of the canary's checkpoint: run- + 32 hex, then the SDK's 8-hex suffix.
+_INCIDENT_RUN_ID = "run-0bc3603413bb41a4aa2fb101efef4e56"
+_INCIDENT_SESSION_SUFFIX = "16439373"
+
+
+def _published_sampler_id(
+    logical: str,
+    *,
+    run_id: str = _INCIDENT_RUN_ID,
+    session_suffix: str = _INCIDENT_SESSION_SUFFIX,
+) -> str:
+    assert _RUN_ID_RE.fullmatch(run_id)
+    return f"{run_id}-{qualify_snapshot_name(session_suffix, logical)}"
+
+
+@pytest.mark.parametrize("step", [10, 25, 100, 10_000, 99_999_999])
+def test_calibrated_name_stays_inside_the_promoted_id_budget(step: int) -> None:
+    name = decision_loop.calibrated_checkpoint_name(step)
+    assert name == f"step-{step}-cal"
+    assert len(name) <= decision_loop.PROMOTED_CHECKPOINT_NAME_BUDGET == 17
+    public = _published_sampler_id(name)
+    assert len(public) <= 63
+    assert _public_logical_name(public) == name
+
+
+def test_eight_digit_steps_fill_the_budget_and_the_next_digit_does_not() -> None:
+    assert len(decision_loop.calibrated_checkpoint_name(99_999_999)) == 17
+    assert len(_published_sampler_id("step-99999999-cal")) == 63
+    with pytest.raises(UserConfigError, match="allows 17"):
+        decision_loop.calibrated_checkpoint_name(100_000_000)
+
+
+def test_legacy_calibrated_suffix_is_one_over_the_promoted_id_cap() -> None:
+    legacy = _published_sampler_id("step-25-calibrated")
+    assert legacy == "run-0bc3603413bb41a4aa2fb101efef4e56-step-25-calibrated-16439373"
+    assert len(legacy) == 64
+    assert len(_published_sampler_id(decision_loop.calibrated_checkpoint_name(25))) == 57
+
+
+def test_ten_step_calibrated_checkpoint_promotes_under_the_run_prefix(monkeypatch, tmp_path) -> None:
+    """A 10-step decision run promotes the calibrated sampler id the gateway will accept."""
+    plane = _ControlPlane(run_id=_INCIDENT_RUN_ID, session_suffix=_INCIDENT_SESSION_SUFFIX)
+    _run(
+        monkeypatch,
+        tmp_path,
+        plane,
+        dataset=_write(tmp_path / "train10.jsonl", _rows(20)),
+        batch_size=2,
+        serverless_run_id=_INCIDENT_RUN_ID,
+    )
+    public = _published_sampler_id("step-10-cal")
+    assert plane.train_steps == 10
+    assert plane.promoted == [public]
+    assert len(public) <= 63
+    assert _public_logical_name(public) == "step-10-cal"
+    _assert_calibrated(plane, "step-10-cal")
+
+
+def test_step_25_calibrated_checkpoint_promotes_under_the_incident_prefix(monkeypatch, tmp_path) -> None:
+    """Resume at step 25, the canary's step, still promotes a 63-or-shorter id."""
+    plane = _ControlPlane(run_id=_INCIDENT_RUN_ID, session_suffix=_INCIDENT_SESSION_SUFFIX)
+    _run(
+        monkeypatch,
+        tmp_path,
+        plane,
+        dataset=_write(tmp_path / "train25.jsonl", _rows(50)),
+        batch_size=2,
+        resume_info=SimpleNamespace(step=25, data_consumed=50),
+        serverless_run_id=_INCIDENT_RUN_ID,
+    )
+    public = _published_sampler_id("step-25-cal")
+    assert plane.train_steps == 0
+    assert plane.promoted == [public]
+    assert len(public) == 57
+    assert _public_logical_name(public) == "step-25-cal"
