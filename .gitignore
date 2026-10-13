@@ -305,6 +305,3 @@ wandb/
 
 # Local training run outputs (datasets and fixtures remain tracked).
 *_logs/
-
-# Rebuilt by the archived Chroma notebook's PersistentClient.
-/archived/learn/rag/project_simple-rag-with-chroma/chromadb/
