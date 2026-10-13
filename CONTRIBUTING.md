@@ -10,11 +10,13 @@ then closes your original PR as incorporated and links to the public commit.
 Your authorship and existing co-author credit are preserved as `Co-authored-by`
 trailers on the commit that first publishes your reviewed import. Later
 promotion commits do not repeat that credit. Maintainers merge generated
-promotion PRs with **Create a merge commit** to preserve these
-individual commits and their attribution. The public repository disables squash
-and rebase merges so these commit boundaries cannot be discarded accidentally.
-Internal changes keep their source commit's author; the publication bot is the
-committer. Each change merged into internal main is promoted as a separate
+promotion PRs with **Rebase and merge** to preserve these
+individual commits and their attribution. The public repository allows only rebase
+merges, preserving these commit boundaries and satisfying linear-history rules.
+GitHub rewrites commit IDs and committer metadata during rebasing, while
+original authors and co-author trailers remain.
+When creating promotion commits, the bot preserves the source author and acts
+as committer. Each change merged into internal main is promoted as a separate
 commit. After a failed or missed promotion, the next run publishes the remaining
 changes in order with their original credit.
 Use a GitHub-associated commit email or your GitHub noreply address for profile
