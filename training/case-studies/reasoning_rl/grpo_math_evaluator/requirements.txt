@@ -1,2 +1,2 @@
-eval-protocol @ git+https://github.com/eval-protocol/python-sdk.git@9b642d9401b05ab96b73fc18922d1279f8ac617b
+eval-protocol>=0.3.23
 openai

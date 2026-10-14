@@ -1,5 +1,5 @@
 # Install the cookbook package first, then add the remote server dependencies.
-eval-protocol @ git+https://github.com/eval-protocol/python-sdk.git@9b642d9401b05ab96b73fc18922d1279f8ac617b
+eval-protocol>=0.3.32
 fastapi
 openai
 uvicorn

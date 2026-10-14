@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=83.0.0"]
+requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,13 +9,14 @@ requires-python = ">=3.11"
 dependencies = [
     "fireworks-ai[training]>=1.2.24,<2",
     # Preserve the runtime floors previously supplied by tinker-cookbook.
-    "aiohttp>=3.14.3",
+    "aiohttp>=3.9.0",
     "pydantic>=2.0.0",
     "tinker>=0.22.3",
     "tqdm>=4.60.0",
-    # Security floor includes the torch.jit.script memory-corruption fix.
-    "torch>=2.13.0",
-    "datasets>=5.0.1",
+    # transformers 5.10.4 reads torch.float8_e8m0fnu at import time; that
+    # dtype lands in torch 2.7.
+    "torch>=2.7",
+    "datasets>=2.14.0",
     "tiktoken>=0.12.0",
     "numpy>=1.24.0",
     "transformers==5.10.4",
@@ -25,18 +26,16 @@ dependencies = [
     "python-dotenv",
     "wandb>=0.28.2",
     "orjson",
-    "hydra-core>=1.3.6,<2",
+    "hydra-core>=1.3,<2",
     "pillow>=12.3.0",
     # datasets/mimo/mcp client and the task bundles' MCP servers are 1.x;
     # 2.x removed FastMCP. Keep in sync with the image pin (mcp==1.30.0).
-    "mcp>=1.30.0,<2",
+    "mcp>=1.8,<2",
 ]
 
 [project.optional-dependencies]
 eval = [
-    # The published release caps LiteLLM below the security fixes.
-    "eval-protocol @ git+https://github.com/eval-protocol/python-sdk.git@9b642d9401b05ab96b73fc18922d1279f8ac617b",
-    "litellm>=1.96.2,<2",
+    "eval-protocol>=0.3.32",
 ]
 # SDFT (training._vendor.tinker_cookbook_fw) runs on upstream tinker-cookbook
 # plus the Fireworks-modified modules vendored there. Only SDFT imports these.
@@ -46,7 +45,7 @@ sdft = [
 ]
 dev = [
     "fireworks-training-cookbook[eval]",
-    "pytest>=9.0.3",
+    "pytest",
     "pytest-cov",
     "pytest-timeout",
     "math-verify",
@@ -152,27 +151,6 @@ packages = [
 "training._vendor.tinker_cookbook_fw" = ["LICENSE"]
 
 [tool.uv]
-
-# Security floors for optional and transitive dependencies in the lock.
-constraint-dependencies = [
-    "aiohttp>=3.14.3",
-    "anyio>=4.14.2",
-    "cryptography>=50.0.0",
-    "datasets>=5.0.1",
-    "fsspec>=2026.6.0",
-    "h2>=4.4.1",
-    "hpack>=4.2.0",
-    "hydra-core>=1.3.6",
-    "litellm>=1.96.2",
-    "mcp>=1.30.0",
-    "multidict>=6.9.1",
-    "pydantic-settings>=2.14.2",
-    "pyjwt>=2.15.0",
-    "setuptools>=83.0.0",
-    "starlette>=1.3.1",
-    "torch>=2.13.0",
-    "urllib3>=2.8.0",
-]
 # tinker-cookbook (the sdft extra) declares transformers<=5.5.4; keep this
 # project's transformers pin authoritative.
 override-dependencies = [
@@ -205,8 +183,8 @@ show_missing = true
 skip_covered = true
 include = [
     "recipes/*.py",
-    "examples/**/train_*.py",
-    "examples/**/prepare_data.py",
+    "examples/*/train_*.py",
+    "examples/*/prepare_data.py",
 ]
 omit = [
     "*/__init__.py",
