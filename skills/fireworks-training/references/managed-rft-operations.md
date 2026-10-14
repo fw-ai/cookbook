@@ -17,7 +17,7 @@ Before any upload or create:
 - Confirm the base model is RFT-compatible in the live Models matrix.
 - Validate JSONL locally. Each row needs a `messages` array; evaluator-specific fields must match the reviewed evaluator contract.
 - Probe the evaluator on at least five rows and require non-identical scores.
-- Check authentication, account, billing readiness, and `firectl quota list`.
+- Check authentication, account, billing readiness, and quota (`firectl quota list` when installed).
 - Use full resource names such as `accounts/fireworks/models/<id>`.
 - Do not run `firectl rftj create`. New creates are rejected. Use get/list/cancel/resume on jobs that already exist.
 
@@ -26,14 +26,26 @@ Before any upload or create:
 | Surface | When | Entry |
 |---|---|---|
 | Training API | New RL work | `references/training-api.md` and `training/examples/rl/deepmath/` |
-| `firectl` | Existing jobs only | `firectl rftj get/list/cancel/resume` |
+| Python SDK | Existing jobs only | `client.reinforcement_fine_tuning_jobs.get/list/cancel/resume` |
+| `firectl` (user runs it) | Existing jobs only | `firectl rftj get/list/cancel/resume` |
 | Dashboard | Existing jobs only | Fine-Tuning reinforcement tab (create is gone) |
 
 ### Eval Protocol / create workflow
 
 `eval-protocol create rft` and `firectl rftj create` are rejected for new jobs. Do not use them. New RL goes through the Training API.
 
-### `firectl` for existing jobs
+### Existing jobs
+
+The agent uses the SDK; cancel and resume are mutations that need approval:
+
+```python
+client.reinforcement_fine_tuning_jobs.list()
+client.reinforcement_fine_tuning_jobs.get("<job-id>")
+client.reinforcement_fine_tuning_jobs.cancel("<job-id>")
+client.reinforcement_fine_tuning_jobs.resume("<job-id>")
+```
+
+**For a user who runs commands themselves (`firectl`):**
 
 ```bash
 firectl rftj list

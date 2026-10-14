@@ -8,7 +8,7 @@ The coding-agent flow preserves its plan, approvals, resources, progress, and re
 
 At the start of the skill run, generate one random UUID and export it as
 `FIREWORKS_SESSION_ID`; export
-`FIREWORKS_CLIENT_SOURCE=fireworks-training-skill/2.2.0`. Preserve those values
+`FIREWORKS_CLIENT_SOURCE=fireworks-training-skill/2.3.0`. Preserve those values
 for all firectl, Training API Python, direct REST, retry, resume, and blocked
 manual terminal handoff calls in this run. Do not use `PURPOSE_PILOT`.
 
@@ -23,7 +23,7 @@ status: planned
 phase: awaiting_plan_approval
 updated_at_utc:
 skill_session_id:
-skill_client_source: fireworks-training-skill/2.2.0
+skill_client_source: fireworks-training-skill/2.3.0
 
 ## Intent
 task:
@@ -129,16 +129,27 @@ Update the manifest:
 When asked to resume:
 
 1. Read the manifest before running any command.
-2. Confirm the account with `firectl whoami`.
-3. Query every recorded resource with the matching resource family:
-   - Dataset: `firectl dataset get <DATASET_ID> -o json`
-   - SFT: `firectl sftj get <JOB_ID> -o json`
-   - DPO / ORPO: `firectl dpo-job get <JOB_ID> -o json`
-   - Managed RFT: `firectl rftj get <JOB_ID> -o json`
-   - Training API dedicated trainer: `firectl rlor-trainer-job get <TRAINER_JOB_ID> -o json`
-   - Training API dedicated checkpoints: `firectl rlor-trainer-job list-checkpoints <TRAINER_JOB_ID>`
-   - Deployment: `firectl deployment get <DEPLOYMENT_ID> -o json`
-   - Output model: `firectl model get <OUTPUT_MODEL_ID> -o json`
+2. Build the client for the manifest's recorded account
+   (`client = Fireworks(account_id=<manifest account>)`) and confirm it with
+   `client.accounts.get()`; a 403 means this key cannot reach that account, so
+   stop and ask.
+3. Query every recorded resource with the matching read-only call. SDK first;
+   the `firectl` form is equivalent and fine when installed:
+
+   | Resource | SDK (`client = Fireworks()`) | `firectl` |
+   |---|---|---|
+   | Dataset | `client.datasets.get(<DATASET_ID>)` | `firectl dataset get <DATASET_ID> -o json` |
+   | SFT | `client.supervised_fine_tuning_jobs.get(<JOB_ID>)` | `firectl sftj get <JOB_ID> -o json` |
+   | DPO / ORPO | `client.dpo_jobs.get(<JOB_ID>)` | `firectl dpo-job get <JOB_ID> -o json` |
+   | Managed RFT | `client.reinforcement_fine_tuning_jobs.get(<JOB_ID>)` | `firectl rftj get <JOB_ID> -o json` |
+   | Dedicated trainer checkpoints | `FireworksClient(api_key).list_checkpoints(<TRAINER_JOB_ID>)` | `firectl rlor-trainer-job list-checkpoints <TRAINER_JOB_ID>` |
+   | Dedicated trainer job | — | `firectl rlor-trainer-job get <TRAINER_JOB_ID> -o json` |
+   | Deployment | `client.deployments.get(<DEPLOYMENT_ID>)` | `firectl deployment get <DEPLOYMENT_ID> -o json` |
+   | Output model | `client.models.get(<OUTPUT_MODEL_ID>)` | `firectl model get <OUTPUT_MODEL_ID> -o json` |
+
+   `FireworksClient` is `fireworks.training.sdk.FireworksClient`. When a
+   resource has no SDK read and `firectl` is not installed, ask the user to run
+   the `firectl` command and paste the output.
 4. Reconcile the manifest with Fireworks state and update it.
 5. Continue from `next_action`.
 
@@ -148,11 +159,11 @@ approval before reconnecting or creating paid resources.
 
 Never replay dataset, evaluator, job, model, or deployment creation merely because the previous chat ended. Every create must use the stable ID recorded before execution:
 
-- dataset: the positional dataset name;
+- dataset: `dataset_id` (the positional name in `firectl`);
 - evaluator: planned display name plus the reviewed source SHA-256 when the current evaluator API supports naming;
-- managed job: `--job-id <planned_job_id>`;
-- output model: `--output-model <planned_output_model_id>`;
-- deployment: `--deployment-id <planned_deployment_id>`.
+- managed job: `supervised_fine_tuning_job_id` (or the DPO/RFT equivalent; `--job-id` in `firectl`);
+- output model: `output_model` (`--output-model`);
+- deployment: `deployment_id` (`--deployment-id`).
 
 If the manifest says creation was attempted but has no returned resource, call the exact matching `get` command with the planned ID. If it exists, compare its immutable inputs and resolved config with the approved plan. Reuse only an exact match. Evaluator registration may not expose a caller-selected ID: if its response is lost, locate it through Eval Protocol output, the account UI, or the current evaluator API by matching the planned name and source hash; never register it again while state is ambiguous. If a resource does not exist, ask before retrying when the original action may have incurred spend. Never generate a second ID as a recovery shortcut.
 
@@ -163,8 +174,8 @@ Training API dedicated recipes may provision several resources rather than one m
 On resume:
 
 1. Confirm the same cookbook commit and SDK version are available.
-2. Read the recorded RLOR trainer with `firectl rlor-trainer-job get`.
-3. List its checkpoints with `firectl rlor-trainer-job list-checkpoints`.
+2. Read the recorded RLOR trainer with `firectl rlor-trainer-job get` (read-only; ask the user to run it if `firectl` is not installed).
+3. List its checkpoints with `FireworksClient(api_key).list_checkpoints(<TRAINER_JOB_ID>)` or `firectl rlor-trainer-job list-checkpoints`.
 4. Read every rollout or evaluation deployment and the promoted model, if present.
 5. Reconcile the last checkpoint, optimizer step, deployment attachment, and promotion state with the manifest.
 6. Use the recipe's documented reconnect path only when it supports reconnecting to that trainer. Do not start the recipe from the beginning.

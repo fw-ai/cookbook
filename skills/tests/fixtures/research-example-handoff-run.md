@@ -2,7 +2,7 @@
 
 status: planned
 skill_session_id: 4ba27cf5-ae22-4af0-88f4-75e5fa2eb46f
-skill_client_source: fireworks-training-skill/2.2.0
+skill_client_source: fireworks-training-skill/2.3.0
 
 ## Research handoff
 

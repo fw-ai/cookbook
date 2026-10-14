@@ -49,9 +49,11 @@ python -m examples.sft.muse_glimmer_starter watch --run-id $RUN
 ```
 
 Rerunning `launch` with the same run ID reuses that job only if every setting
-matches; otherwise it stops and lists the differences. `watch` prints state,
-percent complete, and train and eval loss, and stops if progress stalls for 30
-minutes. Success looks like eval loss falling below its first value and the job
+matches; otherwise it stops and lists the differences. `watch` prints the state
+and status (percent and epoch) on every poll, a summary of the rendered
+training samples once they are ready, and train and eval loss in the final
+summary when the job finishes. It stops if a running job makes no progress for
+30 minutes. Success looks like eval loss falling below its first value and the job
 reaching `JOB_STATE_COMPLETED`. The output is the LoRA model
 `accounts/<account>/models/muse-starter-$RUN`.
 
@@ -62,7 +64,7 @@ step 5), runs the loop in your process, and compares base and tuned on rows it
 holds out.
 
 ```bash
-RUN=sl-$(date +%Y%m%d-%H%M%S)
+RUN=tickets-$(date +%Y%m%d-%H%M%S)
 python -m examples.sft.muse_glimmer_starter prepare --file data.jsonl --run-id $RUN
 python -m examples.sft.muse_glimmer_starter launch --surface serverless --file data.jsonl --run-id $RUN
 ```
@@ -77,7 +79,8 @@ on the holdout in the same session. It writes
 `muse_starter_logs/$RUN/summary.json` (exact match, per-key accuracy when the
 answers are JSON, and a paired test, base vs tuned). Sampling in-session needs no deployment (Muse public serverless
 inference was retired on 2026-09-25), but it is billed per token separately
-from the free training. Before the session closes, the tuned adapter is saved
+from the free training; `launch` ends with a cost line giving the sampled token
+counts. Before the session closes, the tuned adapter is saved
 as `accounts/<account>/models/muse-starter-sl-$RUN`; pass `--no-promote` to skip.
 
 ## 4. RL on DeepMath (Serverless Training API, paid)

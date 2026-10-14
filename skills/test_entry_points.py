@@ -31,8 +31,8 @@ def test_validator_passes() -> None:
 def test_plugin_versions_match() -> None:
     claude = json.loads(read(REPO_ROOT / ".claude-plugin" / "plugin.json"))
     codex = json.loads(read(REPO_ROOT / ".codex-plugin" / "plugin.json"))
-    assert claude["version"] == "2.2.0"
-    assert codex["version"] == "2.2.0"
+    assert claude["version"] == "2.3.0"
+    assert codex["version"] == "2.3.0"
 
 
 def test_install_includes_reference_carrier() -> None:

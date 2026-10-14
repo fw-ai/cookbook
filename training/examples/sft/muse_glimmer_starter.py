@@ -37,8 +37,12 @@ import os
 import random
 import sys
 import time
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# tinker imports pydantic.v1, which warns on Python 3.14; the warning is harmless here.
+warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality")
 
 BASE_MODEL = "accounts/fireworks/models/muse-glimmer-30b"
 TOKENIZER_MODEL = "meta-models/Muse-Glimmer-30B"
@@ -174,8 +178,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         )
     plan["cost"] = {
         "training": "$0 (promotional)" if active else "paid: resolve the live rate at https://fireworks.ai/pricing",
-        "excluded": "deployment, inference outside the run, DPO, Dedicated; in-session evaluation sampling is a "
-        "separate line unless the account shows it covered",
+        "excluded": "full-parameter SFT, RL, DPO, Dedicated, deployment, inference outside the run; in-session "
+        "evaluation sampling is a separate line unless the account shows it covered",
     }
     print(json.dumps(plan, indent=2))
     return 0
@@ -256,7 +260,8 @@ def _render_summary(signed_url: str | None, rows: int = 3) -> dict:
     try:
         samples = [json.loads(line) for line in _fetch_lines(signed_url) if line.strip()]
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"could not read render samples: {str(exc)[:160]}"}
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        return {"error": f"could not read render samples ({status or type(exc).__name__})"}
     if not samples:
         return {}
     first = samples[0]
@@ -291,8 +296,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
         percent = getattr(progress, "percent", None) if progress else None
         epoch = getattr(progress, "epoch", None) if progress else None
         message = getattr(job.status, "message", "") if job.status else ""
-        print(f"{_now().isoformat(timespec='seconds')} {job.state} progress={percent}% epoch={epoch} {message}",
-              flush=True)
+        if message and "%" in message:  # the status message already carries percent and epoch
+            detail = message
+        else:
+            epoch_part = f" epoch={epoch}" if epoch else ""  # the API can report 0 even at 100%
+            detail = f"progress={percent}%{epoch_part} {message}".rstrip()
+        print(f"{_now().isoformat(timespec='seconds')} {job.state} {detail}", flush=True)
         urls = job.model_dump()
         if not rendered and urls.get("renderSamplesSignedUrl"):
             summary = _render_summary(urls["renderSamplesSignedUrl"])
@@ -374,8 +383,11 @@ def cmd_upload(args: argparse.Namespace) -> int:
 def cmd_cleanup(args: argparse.Namespace) -> int:
     if not args.run_id:
         sys.exit("Pass the --run-id printed by launch.")
+    import fireworks
+
     client, account = _connect()
     names = _names(account, args.run_id)
+    failed = False
     for label, delete in (
         ("output_model", lambda: client.models.delete(names["job_id"])),
         ("job", lambda: client.supervised_fine_tuning_jobs.delete(names["job_id"])),
@@ -384,9 +396,12 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         try:
             delete()
             print(f"deleted {label} {names[label]}")
-        except Exception as exc:  # noqa: BLE001 - absent resources are fine
-            print(f"skip {label}: {str(exc)[:120]}")
-    return 0
+        except fireworks.NotFoundError:
+            print(f"skip {label}: {names[label]} does not exist")
+        except fireworks.APIStatusError as exc:
+            failed = True
+            print(f"FAILED to delete {label} {names[label]}: HTTP {exc.status_code} {exc.message}", file=sys.stderr)
+    return 1 if failed else 0
 
 
 def _parse_json(text: str) -> dict:
@@ -603,16 +618,24 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
         tuned = evaluate("tuned")
         promoted = None if args.no_promote else _promote_tuned(service, account, args.run_id)
         summary = {"steps": step, "base": base, "tuned": tuned, "promoted_model": promoted,
-                   "exact_match_delta": tuned["exact_match"] - base["exact_match"],
+                   "exact_match_delta": round(tuned["exact_match"] - base["exact_match"], 4),
                    "paired": _mcnemar(per_example["base"], per_example["tuned"]),
                    "session": getattr(service, "training_session_id", None), "log": str(run_dir)}
+        prompt_tokens = base["prompt_tokens"] + tuned["prompt_tokens"]
+        sampled_tokens = base["sampled_tokens"] + tuned["sampled_tokens"]
+        summary["cost"] = {"training": "$0 (promotional)" if promotion_active() else "paid at the live rate",
+                           "evaluation_sampling": {"prompt_tokens": prompt_tokens, "sampled_tokens": sampled_tokens,
+                                                   "note": "billed separately from training at published "
+                                                           "per-token rates"}}
         (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary, indent=2))
+        print(f"cost: training {summary['cost']['training']}; evaluation sampling used {prompt_tokens} prompt + "
+              f"{sampled_tokens} sampled tokens, billed separately at published per-token rates", flush=True)
     finally:
         log.close()
         service.close()
-        print("serverless session closed. It keeps one concurrent-run slot until the session expires; "
-              "no deployment was created.", flush=True)
+        print("Serverless session closed; no deployment was created. Its training slot frees when the "
+              "session expires, so a new run started right away may wait or get a 429.", flush=True)
     return 0
 
 
@@ -668,7 +691,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = p.parse_args(argv)
     if args.run_id is None and args.command in ("plan", "prepare", "launch"):
         args.run_id = f"r{_now():%Y%m%d-%H%M%S}"
-        if args.command != "plan":
+        serverless_without_file = (args.command == "prepare" or args.surface == "serverless") and not args.file
+        if args.command != "plan" and not serverless_without_file:
             print(f"run id: {args.run_id} (pass --run-id {args.run_id} to watch and cleanup)", file=sys.stderr)
     return args
 

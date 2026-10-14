@@ -159,10 +159,10 @@ def check_slim_layout(errors: list[str]) -> None:
 def check_packaging(errors: list[str]) -> None:
     plugin = json.loads(read(REPO_ROOT / ".claude-plugin" / "plugin.json"))
     codex = json.loads(read(REPO_ROOT / ".codex-plugin" / "plugin.json"))
-    if plugin.get("version") != "2.2.0":
-        errors.append(".claude-plugin/plugin.json: expected version 2.2.0")
-    if codex.get("version") != "2.2.0":
-        errors.append(".codex-plugin/plugin.json: expected version 2.2.0")
+    if plugin.get("version") != "2.3.0":
+        errors.append(".claude-plugin/plugin.json: expected version 2.3.0")
+    if codex.get("version") != "2.3.0":
+        errors.append(".codex-plugin/plugin.json: expected version 2.3.0")
     if codex.get("skills") != "./skills/":
         errors.append(".codex-plugin/plugin.json: expected skills ./skills/")
 
@@ -377,8 +377,8 @@ def check_semantic_contracts(errors: list[str]) -> None:
     run_state = read(
         SKILLS_DIR / "fireworks-training" / "references" / "run-state-and-reporting.md"
     )
-    if "fireworks-training-skill/2.2.0" not in run_state:
-        errors.append("run manifest attribution must use skill version 2.2.0")
+    if "fireworks-training-skill/2.3.0" not in run_state:
+        errors.append("run manifest attribution must use skill version 2.3.0")
     if "fireworks-training-skill/2.0.0" in run_state:
         errors.append("run manifest retains stale skill version 2.0.0")
     for method in canonical_methods:

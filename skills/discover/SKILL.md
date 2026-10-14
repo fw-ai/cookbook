@@ -17,7 +17,7 @@ instructions.
 | Plan, run, monitor, deploy training | **configure** |
 | Debug a failed or stuck run | **debug** |
 
-Install the v2.2.0 skills using the Claude Code, Cursor, or Codex command in the
+Install the current skills using the Claude Code, Cursor, or Codex command in the
 [Getting Started guide](https://github.com/fw-ai/cookbook/blob/main/skills/GETTING-STARTED.md).
 
 Do not follow workflow steps in this file. This is a **redirect** stub for v2.1.0
