@@ -930,10 +930,7 @@ class AppendOnlyPickleLog:
         return self._count
 
     def disk_size_bytes(self) -> int:
-        """Flush buffered appends before measuring the file size."""
         try:
-            if self._fh is not None:
-                self._fh.flush()
             return os.path.getsize(self._path)
         except OSError:
             return 0
