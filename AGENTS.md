@@ -72,6 +72,10 @@ python -m unittest skills.configure.tests.test_cost_estimation_contract -v
   accelerator or shape, or copy a trainer region into a hot-load deployment.
   Leave unset values unset so the backend trainer/deployment gateway can choose
   defaults and enforce colocation.
+- **SDK first.** Agents act through the Fireworks Python SDK; `firectl` blocks
+  agent mutations. Write skill steps as SDK calls, and give the `firectl`
+  command only as the way a user runs that step themselves or as a read-only
+  check.
 - **Skill size.** `skills/configure/SKILL.md` has a 240-line limit enforced by
   `validate_skills.py`. Put detail in a reference file and link it.
 

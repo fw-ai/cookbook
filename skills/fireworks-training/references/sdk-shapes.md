@@ -78,6 +78,16 @@ The CI pattern for the saves-GPUs variant is `ref_shape = "" if lora_rank > 0 el
 
 ## Listing available shapes
 
+Deployment shapes through the SDK:
+
+```python
+client.deployment_shape_versions.match_for_model("<MODEL>")   # deployable shape versions
+```
+
+Training shapes have no `Fireworks()` list call; cookbook recipes resolve them
+through `FireworksClient.resolve_training_profile`. Listing them is a read-only
+`firectl` call, fine for the agent when installed and otherwise for the user:
+
 ```bash
 firectl training-shape list                       # alias: firectl ts list
 firectl deployment-shape-version match --model <MODEL>

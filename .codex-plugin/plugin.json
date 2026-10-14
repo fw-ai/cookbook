@@ -1,6 +1,6 @@
 {
   "name": "cookbook",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Research, configure, and debug Fireworks training from a coding agent.",
   "author": {
     "name": "Fireworks AI",

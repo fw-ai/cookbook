@@ -130,7 +130,7 @@ Every objective other than GRPO, and GRPO with a reference KL penalty, is a fork
 
 ## Validate before uploading (run this first)
 
-Catch format errors locally before `firectl dataset create`. A malformed row otherwise surfaces as a late, often masked, failure. Set `method`, run this on your JSONL file or shard directory, and fix any rejection before uploading:
+Catch format errors locally before uploading (`client.datasets.create` and `upload`, or `firectl dataset create` when the user runs it). A malformed row otherwise surfaces as a late, often masked, failure. Set `method`, run this on your JSONL file or shard directory, and fix any rejection before uploading:
 
 ```python
 import json, os, sys

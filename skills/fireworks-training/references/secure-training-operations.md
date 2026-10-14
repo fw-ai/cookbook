@@ -8,6 +8,13 @@ Use this reference for agent-assisted BYOB and CMEK setup. Always confirm the cu
 
 BYOB lets Fireworks read a training dataset from customer-managed object storage. Use least-privilege access scoped to the required bucket and prefix, and revoke access after the approved workflow completes.
 
+```python
+client.datasets.create(dataset_id="<dataset-id>",
+                       dataset={"externalUrl": "gs://<bucket>/<prefix>/data.jsonl", "format": "CHAT"})
+```
+
+**For a user who runs commands themselves (`firectl`):**
+
 ```bash
 firectl dataset create <dataset-id> \
   --external-url gs://<bucket>/<prefix>/data.jsonl
@@ -45,7 +52,7 @@ Before setup:
 1. Confirm the selected cloud and training method are supported in the live Training security section.
 2. Confirm the exact issuer, subject, audience, and permissions for the user's account.
 3. Show the role and key resource names without secret material.
-4. Run the installed `firectl ... --help` for the current registration command.
+4. Key registration is a `firectl` step for the user: read the installed `firectl ... --help` for the current command and give it to them to run.
 5. Obtain confirmation before registering a key or starting a job.
 
 Do not publish or automate a draft CLI contract from memory.

@@ -174,3 +174,25 @@ def test_render_summary_covers_every_row_and_reports_fetch_errors(monkeypatch):
 
     monkeypatch.setattr(starter, "_fetch_lines", not_ready)
     assert "error" in starter._render_summary("signed")
+
+
+def test_cleanup_reports_real_failures(monkeypatch, capsys):
+    import fireworks
+    import httpx
+
+    def resp(code):
+        return httpx.Response(code, request=httpx.Request("DELETE", "https://api.fireworks.ai/x"))
+
+    def gone(*a, **k):
+        raise fireworks.NotFoundError("not found", response=resp(404), body=None)
+
+    def denied(*a, **k):
+        raise fireworks.PermissionDeniedError("denied", response=resp(403), body=None)
+
+    client = SimpleNamespace(models=SimpleNamespace(delete=gone),
+                             supervised_fine_tuning_jobs=SimpleNamespace(delete=denied))
+    monkeypatch.setattr(starter, "_connect", lambda: (client, "acme"))
+    assert starter.cmd_cleanup(starter.parse_args(["cleanup", "--run-id", "r"])) == 1
+    out = capsys.readouterr()
+    assert "does not exist" in out.out
+    assert "FAILED to delete job" in out.err

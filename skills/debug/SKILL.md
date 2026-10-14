@@ -51,7 +51,7 @@ vague first message there instead of asking a second welcome question.
 Reuse the run's `FIREWORKS_SESSION_ID`. If none exists, create one UUID. Set:
 
 ```bash
-export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.2.0"
+export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.3.0"
 ```
 
 Record `entry_skill: debug` in the private run manifest. Before the first

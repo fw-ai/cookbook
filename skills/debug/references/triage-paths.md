@@ -69,7 +69,8 @@ answer to `triage_category` (`job_state`, `error_message`, `quality`,
 1. Capture exact status message and request/correlation IDs.
 2. Read `../../fireworks-training/references/error-reference.md`.
 3. Classify platform-side vs user-side vs unknown before acting.
-4. De-mask: pull strongest progress signal for the method (W&B, trainer logs,
+4. De-mask: pull strongest progress signal for the method (the job's
+   `metrics.jsonl` from its SDK `get`, W&B, trainer logs, or the
    `firectl get <id> -o json` progress fields — there is no `sftj export-metrics`).
 5. If one bounded retry is justified, recommend it and hand off to Configure
    for cost disclosure and explicit approval. Debug does not run the retry.
@@ -153,7 +154,7 @@ triage when neither the environment nor a run manifest provides one.
 if [ -z "${FIREWORKS_SESSION_ID:-}" ]; then
   export FIREWORKS_SESSION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 fi
-export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.2.0"
+export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.3.0"
 ```
 
 Never replace an existing run's session UUID.

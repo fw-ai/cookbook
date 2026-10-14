@@ -51,7 +51,7 @@ Use one UUID for the whole run:
 
 ```bash
 export FIREWORKS_SESSION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.2.0"
+export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.3.0"
 ```
 
 Record `entry_skill: configure` in the private run manifest. Before the first

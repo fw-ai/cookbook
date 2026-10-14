@@ -120,7 +120,7 @@ Follow `references/methodology.md`. In short:
 
 ```bash
 export FIREWORKS_SESSION_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
-export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.2.0"
+export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.3.0"
 ```
 
 Record `entry_skill: research` when writing a run manifest.

@@ -179,7 +179,7 @@ Telemetry: `question_id: research-domain` (legacy: `discover-domain`), field `do
 
 ```bash
 export FIREWORKS_SESSION_ID="$(python -c 'import uuid; print(uuid.uuid4())')"
-export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.2.0"
+export FIREWORKS_CLIENT_SOURCE="fireworks-training-skill/2.3.0"
 ```
 
 Record `entry_skill: research` in the run manifest.

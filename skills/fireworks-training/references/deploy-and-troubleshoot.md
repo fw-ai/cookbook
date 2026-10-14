@@ -15,32 +15,77 @@ A fine-tuned LoRA **cannot run on serverless** — it needs an **on-demand (dedi
 | Perf | Matches base | Slightly higher TTFT; lower max throughput |
 | Best for | Single model in prod | Experiments / many variants |
 
-**One adapter → live merge** (simplest). Always pass a deployment shape: a bare `firectl deployment create <model>` drops into an **interactive shape picker**, and choosing "Create without using shape" fails with `accelerator_type must be specified for non-embeddings engines`. The interactive prompt also breaks non-interactive / agent / CI use, so pass the shape explicitly and add `--wait`. Either find a deployable shape, or pass `--deployment-shape default` to let the server pick one:
-```bash
-firectl deployment-shape-version match --model "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>"
+The agent creates, checks, and deletes deployments through the Python SDK.
+`firectl` blocks agent mutations; the `firectl` blocks below are for the user to
+run themselves. A deployment is a paid resource: get separate approval first.
+
+**One adapter → live merge** (simplest). Always set a deployment shape. Find a
+deployable one, or pass `"default"` to let the server pick a validated one:
+
+```python
+import time
+
+# client = Fireworks(account_id=account), resolved as in getting-started.md
+model = f"accounts/{account}/models/<FINE_TUNED_MODEL_ID>"
+shapes = client.deployment_shape_versions.match_for_model(model)
+print([v.name for v in shapes.deployment_shape_versions or []])  # .../deploymentShapes/<SHAPE>/versions/<v>
+
+dep = client.deployments.create(
+    base_model=model,
+    deployment_id="<DEPLOYMENT_ID>",
+    deployment_shape="accounts/fireworks/deploymentShapes/<SHAPE>",  # or "default"
+    min_replica_count=0, max_replica_count=1,
+)
+deadline = time.monotonic() + 60 * 60   # the SDK does not wait; bound it like firectl --wait
+while (d := client.deployments.get("<DEPLOYMENT_ID>")).state != "READY":
+    if d.state in ("FAILED", "DELETING", "DELETED") or time.monotonic() > deadline:
+        raise SystemExit(f"Deployment {d.name} is {d.state}: {d.status}. Diagnose it, "
+                         "then delete it with approval so it stops billing.")
+    time.sleep(30)
 ```
-```bash
-firectl deployment create "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>" \
-  --deployment-id <DEPLOYMENT_ID> \
-  --deployment-shape accounts/<ACCOUNT_ID>/deploymentShapes/<SHAPE> --wait
-```
-**Multi-LoRA:**
-```bash
-# BF16 shape (FP8/FP4 reject addons); match --enable-addons lists them
-firectl deployment-shape-version match --model accounts/fireworks/models/<BASE_MODEL_ID> --enable-addons
-firectl deployment create "accounts/fireworks/models/<BASE_MODEL_ID>" \
-  --deployment-shape accounts/<ACCOUNT_ID>/deploymentShapes/<SHAPE> \
-  --enable-addons --wait
-firectl load-lora <FINE_TUNED_MODEL_ID> --deployment <DEPLOYMENT_ID>
+
+**Multi-LoRA** needs a **BF16** shape (FP8/FP4 reject addons):
+
+```python
+shapes = client.deployment_shape_versions.match_for_model(
+    "accounts/fireworks/models/<BASE_MODEL_ID>", enable_addons=True)
+client.deployments.create(
+    base_model="accounts/fireworks/models/<BASE_MODEL_ID>",
+    deployment_id="<DEPLOYMENT_ID>",
+    deployment_shape="accounts/fireworks/deploymentShapes/<SHAPE>",
+    enable_addons=True,
+)
+# after it is READY:
+client.lora.load(model=f"accounts/{account}/models/<FINE_TUNED_MODEL_ID>",
+                 deployment=f"accounts/{account}/deployments/<DEPLOYMENT_ID>")
 # route per request: model="<model_name>#<deployment_name>"
 ```
-> **Addon gotcha:** `--enable-addons` works only on **BF16** shapes (FP8/FP4 reject addons). Use a BF16 shape or live merge.
+
+**For a user who runs commands themselves (`firectl`).** A bare `firectl deployment create <model>` opens an
+interactive shape picker (choosing "Create without using shape" fails with
+`accelerator_type must be specified for non-embeddings engines`), so pass the
+shape and `--wait`:
+
+```bash
+firectl deployment-shape-version match --model "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>"
+firectl deployment create "accounts/<ACCOUNT_ID>/models/<FINE_TUNED_MODEL_ID>" \
+  --deployment-id <DEPLOYMENT_ID> \
+  --deployment-shape accounts/fireworks/deploymentShapes/<SHAPE> --wait
+# Multi-LoRA:
+firectl deployment-shape-version match --model accounts/fireworks/models/<BASE_MODEL_ID> --enable-addons
+firectl deployment create "accounts/fireworks/models/<BASE_MODEL_ID>" \
+  --deployment-shape accounts/fireworks/deploymentShapes/<SHAPE> --enable-addons --wait
+firectl load-lora <FINE_TUNED_MODEL_ID> --deployment <DEPLOYMENT_ID>
+```
+> **Addon gotcha:** addons work only on **BF16** shapes (FP8/FP4 reject addons). Use a BF16 shape or live merge.
 
 Docs: [Deploying fine-tuned models](https://docs.fireworks.ai/fine-tuning/deploying-loras), [On-demand deployments](https://docs.fireworks.ai/guides/ondemand-deployments).
 
 ## Preemptible deployment (optional eval / batch feature)
 
-Use this only when the installed CLI exposes `--preemptible` in `firectl deployment create --help`. It borrows idle capacity and can be reclaimed at any time. If the flag is absent, use a bounded on-demand deployment and tear it down immediately after evaluation.
+Preemptible is a `firectl` flag the SDK `deployments.create` does not expose, so
+it is a **user-run** step: give the user the command below. Use it only
+when the installed CLI exposes `--preemptible` in `firectl deployment create --help`. It borrows idle capacity and can be reclaimed at any time. Otherwise the agent creates a bounded on-demand deployment through the SDK and tears it down immediately after evaluation.
 
 > **Eval / batch only.** It can disappear mid-request — never point production or latency-sensitive traffic at it.
 
@@ -64,8 +109,8 @@ firectl deployment create accounts/fireworks/models/<MODEL> \
 ```
 
 - **`--preemptible` is immutable** — set at create, can't be toggled on/off later. To change it, delete + recreate.
-- Check status: `firectl get deployment <NAME> -a <ACCOUNT_ID>`, then send eval requests like any model endpoint.
-- **Tear down when done** to release the borrowed capacity: `firectl delete deployment <NAME> -a <ACCOUNT_ID>`.
+- Check status: `client.deployments.get("<NAME>")` (or `firectl get deployment <NAME> -a <ACCOUNT_ID>`), then send eval requests like any model endpoint.
+- **Tear down when done** to release the borrowed capacity: `client.deployments.delete("<NAME>")` (or `firectl delete deployment <NAME> -a <ACCOUNT_ID>`).
 
 ## Smoke-test (a READY state is not serving proof)
 
@@ -83,12 +128,27 @@ Fine-tuned LoRA serves from an **on-demand deployment** — serverless per-token
 ## CLEAN UP — stop the spend
 
 On-demand bills by **GPU-second while replicas are active, even with no traffic**:
+```python
+import fireworks
+
+try:
+    client.deployments.delete("<DEPLOYMENT_ID>")
+except fireworks.APIStatusError as exc:
+    # Deployments that served traffic in the last hour fail with FailedPrecondition
+    # ("pass --ignore-checks"). Force only after the user approves:
+    if "ignore" not in str(exc).lower():
+        raise
+    client.deployments.delete("<DEPLOYMENT_ID>", ignore_checks=True)
+try:
+    state = client.deployments.get("<DEPLOYMENT_ID>").state
+except fireworks.NotFoundError:
+    state = "DELETED"
+print(state)  # DELETING or DELETED means teardown went through; anything else, keep going
+```
+**For a user who runs commands themselves (`firectl`):**
 ```bash
 firectl deployment list
-firectl deployment delete <DEPLOYMENT_ID>
-# If the deployment received inference in the last hour, delete is blocked with
-# FailedPrecondition ("pass --ignore-checks to skip this check"). Force teardown now:
-firectl deployment delete <DEPLOYMENT_ID> --ignore-checks
+firectl deployment delete <DEPLOYMENT_ID>                  # add --ignore-checks if blocked
 ```
 Lighter: `scale_to_zero` (min/max replicas = 0). Defaults: scale to zero after ~1h idle; min-0 deployments auto-deleted after 7 days idle. A scaled-to-zero deployment returns **`503 DEPLOYMENT_SCALING_UP`** on the first request — add retry/backoff.
 
@@ -96,17 +156,30 @@ Lighter: `scale_to_zero` (min/max replicas = 0). Defaults: scale to zero after ~
 
 If a run's session ended and there is no manifest / no recorded ID, do not assume nothing is billing — scan the account. This is independent of any manifest:
 
-```bash
-firectl deployment list -a <ACCOUNT_ID>                 # enumerate ALL deployments
-firectl deployment get <DEPLOYMENT_ID> -o json -a <ACCOUNT_ID>   # per hit: State + replica counts
-#   -> a deployment with Replica Count / Ready Replica Count > 0 is actively billing
-firectl model list -a <ACCOUNT_ID>                      # correlate the fine-tuned model created around that time
-firectl rlor-trainer-job list -a <ACCOUNT_ID>           # a dedicated Training API trainer may also still be live
+```python
+for d in client.deployments.list(page_size=100):   # enumerate ALL deployments
+    print(d.name, d.state, d.base_model, d.replica_count)
+#   -> replica_count > 0 is actively billing
+for m in client.models.list(page_size=100, order_by="create_time desc"):
+    print(m.name, m.create_time)                    # correlate the fine-tuned model
 ```
 
-Then stop the spend (confirm first; may hit the agent guard → run manually):
+A dedicated Training API trainer may also still be live; list it read-only with
+`firectl rlor-trainer-job list -a <ACCOUNT_ID>` when `firectl` is installed.
+
+Then stop the spend after the user confirms:
+
+```python
+dep = client.deployments.get("<DEPLOYMENT_ID>")
+client.deployments.update("<DEPLOYMENT_ID>", base_model=dep.base_model,
+                          min_replica_count=0, max_replica_count=0)    # park
+client.deployments.delete("<DEPLOYMENT_ID>", ignore_checks=True)       # hard stop
+```
+
+**For a user who runs commands themselves (`firectl`):**
 
 ```bash
+firectl deployment list -a <ACCOUNT_ID>
 firectl deployment update <DEPLOYMENT_ID> --min-replica-count 0 --max-replica-count 0   # park
 firectl deployment delete <DEPLOYMENT_ID> --ignore-checks                                # hard stop
 ```
