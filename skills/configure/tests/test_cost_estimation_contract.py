@@ -112,6 +112,27 @@ class CostEstimationContractTest(unittest.TestCase):
         self.assertIn("`<$0.01` for a positive sub-cent result", REFERENCE)
         self.assertIn("<$0.01", OUTPUT_TEMPLATE)
 
+    def test_muse_glimmer_sft_promotion_is_bounded(self) -> None:
+        for marker in (
+            "accounts/fireworks/models/muse-glimmer-30b",
+            "2026-11-01T00:00:00-07:00",
+            "https://docs.fireworks.ai/fine-tuning/models",
+            "| LoRA SFT | Managed SFT",
+            "| LoRA SFT | Serverless Training API |",
+            "It does not cover full-parameter SFT, RL, DPO, Managed RFT,",
+            "$0` for the SFT training line",
+            "Promotional",
+            "product_promotion",
+            "at or after\nthe deadline",
+        ):
+            self.assertIn(marker, REFERENCE)
+        self.assertNotIn("| RL | Serverless Training API |", REFERENCE)
+        self.assertIn("RL is not covered", " ".join(SKILL.split()))
+        self.assertIn("(Managed SFT, Serverless Training API SFT)", " ".join(SKILL.split()))
+        self.assertIn("Price excluded operations separately", " ".join(SKILL.split()))
+        self.assertIn("Promotional / Planning range", OUTPUT_TEMPLATE)
+        self.assertIn("| Cost result | $0 /", OUTPUT_TEMPLATE)
+
     def test_manifest_uses_canonical_estimated_cost_key(self) -> None:
         self.assertIn("estimated_cost:", REFERENCE)
         self.assertIn("estimated_cost:", RUN_STATE)
@@ -125,7 +146,7 @@ class CostEstimationContractTest(unittest.TestCase):
         self.assertIn("Do not calculate Dedicated SFT or DPO", SKILL)
         self.assertIn("Do not calculate Managed ORPO", SKILL)
         self.assertIn("RL, embedding, IGPO, and distillation", SKILL)
-        self.assertIn("Do not calculate vision SFT or DPO", SKILL)
+        self.assertIn("Do not calculate vision SFT, DPO, or RL", SKILL)
         self.assertIn("does not replace the mandatory final-plan", SKILL)
 
     def test_dedicated_is_not_calculated_and_does_not_expose_private_coefficients(

@@ -12,19 +12,20 @@ picks Research or describes a task.
 **Research** — exploring method, data, eval, and cookbook starting points.
 ```
 
-## During interview (questions still open)
+## When one blocking question remains
 
 ```text
 **Research** — exploring method, data, eval, and cookbook starting points.
 
-<AskQuestion — one question from interview-questions.md>
+<your provisional recommendation and the defaults you inferred>
 
-**Next:** readiness package after <N> more answer(s) / this answer.
+<one question — only the blocking one>
 ```
 
-Rules: one AskQuestion per turn; STOP and wait; no final recommendation yet.
+Rules: one decision-critical question by default. Group only tightly coupled
+blockers when needed; state defaults for other gaps. Most turns need none.
 
-## After interview (readiness package)
+## Recommendation (readiness package)
 
 ```text
 **Research** — exploring method, data, eval, and cookbook starting points.
@@ -36,24 +37,28 @@ Rules: one AskQuestion per turn; STOP and wait; no final recommendation yet.
 | Method | SFT / DPO / ORPO / RFT / IGPO / distillation / embedding |
 | Cookbook entry | `training/...` (case study / example / recipe) |
 | Dataset plan | local / bundled / HF candidates / labeling |
-| Eval plan | metric + baseline + hook or gap |
+| Eval plan | metric on a named holdout + baseline + hook or gap; say if the metric needs paid sampling or a deployment |
+| Pre-launch checks | render one row; for vision, validate image chunks and visual tokens against max sequence length |
 
 **Runner-up (if any):** only when genuinely close.
 
-<AskQuestion — handoff from interview-questions.md>
-
-**Not ready to train?** Stay in research for README summary or labeling help.
+Want me to plan this run? (skip if the user already said to go ahead)
 ```
 
 Rules:
 
-- Hand off through AskQuestion only.
+- Keep the initial recommendation to one screen by default: result, evidence,
+  actionable data/eval plan, and next step. Offer deeper references instead of
+  narrating every inspected file or runner-up.
+- When the user says go, continue in configure the same turn.
 - YAML readiness block goes in `run.md` — not customer-facing unless asked.
 - Do not tell the user to paste a magic configure sentence.
 
 ## What research must never do
 
 - Dump the full catalog unprompted.
-- Recommend before completion gate (unless bypassed).
-- Start configure planning or `firectl` in the same turn.
+- Run a multi-turn interview when defaults would do.
+- Start configure planning before the user selects a starter or
+  `plan_configure`. After either, present Configure's final plan in the same
+  turn.
 - Omit the skill banner.

@@ -3,6 +3,9 @@
 Training loops for RL, preference optimization, SFT and embedding fine-tuning
 on [Fireworks](https://fireworks.ai). Full docs: [Training API](https://docs.fireworks.ai/fine-tuning/training-api/introduction).
 
+New here? The [Muse Glimmer mini cookbook](examples/muse_glimmer/README.md)
+runs a free first fine-tune on preloaded example data in about 10 minutes.
+
 ## Layout
 
 The tree is layered so each kind of change has one home:
@@ -13,6 +16,7 @@ recipes/experiment/   Loops not yet stable (serverless async RL, SAO/PPO)
 utils/                Reusable pieces recipes assemble: config, data, losses,
                       rollout helpers, metrics (structured, per step)
 examples/             Task code + one recipe call; no loop logic
+  muse_glimmer/        Free first fine-tune walkthrough (Managed and serverless SFT)
   sft/ dpo/ orpo/ embedding/ distillation/
   rl/                 deepmath (text) · visual_toolbench (vision) ·
                       frozen_lake (multi-turn env) · multihop_qa (IGPO) ·

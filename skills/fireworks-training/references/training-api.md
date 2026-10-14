@@ -6,7 +6,7 @@ Write or fork a Python training loop; Fireworks runs forward/backward on distrib
 
 Docs: https://docs.fireworks.ai/fine-tuning/training-api/introduction · Cookbook (start here): https://github.com/fw-ai/cookbook
 
-> Status: private preview — request access at https://fireworks.ai/contact-training
+> Status: Serverless Training is generally available. Dedicated Training needs access; request it at https://fireworks.ai/contact-training
 
 ## Access preflight
 
@@ -20,18 +20,26 @@ Use **managed training** for standard SFT/DPO/ORPO jobs. Reach for the **Trainin
 
 | Path | Use when | Cookbook |
 |---|---|---|
-| **Serverless** | Supported-model LoRA SFT or RL, shared pool, per-token billing, no provisioning | `training/examples/*/train_*_serverless.py` (e.g. DeepMath, VisualToolBench) on the experimental async RL loop `training/recipes/experiment/async_rl_loop_serverless.py` |
-| **Dedicated** | Full-parameter, DPO, broader model/method support, sustained runs, explicit trainer/deployment/checkpoint control | `training/recipes/` |
+| **Serverless** | LoRA SFT, DPO, ORPO, RL, distillation, and custom loops on models in the shared pool; per-token billing; no trainer or deployment to provision; session-based training and in-session sampling | `sft_loop` / `dpo_loop` with `serverless=True` (`training/examples/sft/train_sft_serverless.py`, `training/examples/dpo/train_dpo_serverless.py`), `sdft_loop` for distillation, RL via `training/examples/rl/*/train_*_serverless.py` on `training/recipes/experiment/async_rl_loop_serverless.py` |
+| **Dedicated** | Full-parameter training, models not in the serverless pool, sustained workloads, explicit trainer, deployment, checkpoint, and teardown control | The matching `train_*.py` examples and `training/recipes/` with `TrainerConfig` / `DeployConfig` |
 
-Read the live [serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and [dedicated](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md) pages before choosing.
+Default to Serverless when the model is in the pool and LoRA is enough; that
+includes DPO, ORPO, distillation, and custom losses. Read the live
+[serverless](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md) and
+[dedicated](https://docs.fireworks.ai/fine-tuning/training-api/dedicated.md) pages before choosing.
 
 ## How to run RL
 
-RL runs on the Training API. Fork `training.recipes.rl_loop` / `async_rl_loop` and supply an
-inline `reward_fn(completion, row) -> float`. It may read `ground_truth`, another declared
-reference field, tool outcomes, environment state, or a judge result. There is no evaluator
-resource — same shape as Tinker's reward-in-the-loop — and the SDK provisions the trainer plus
-rollout deployment. This is fully agent-drivable.
+RL runs on the Training API. Supply an inline `reward_fn(completion, row) -> float`. It may
+read `ground_truth`, another declared reference field, tool outcomes, environment state, or a
+judge result. There is no evaluator resource — same shape as Tinker's reward-in-the-loop. This
+is fully agent-drivable.
+
+- **Serverless:** start from `training/examples/rl/*/train_*_serverless.py` (on
+  `recipes/experiment/async_rl_loop_serverless.py`). Rollouts sample from the session's
+  sampler snapshots; nothing is provisioned.
+- **Dedicated:** fork `training.recipes.rl_loop` / `async_rl_loop`; the recipe provisions a
+  trainer plus a rollout deployment from `TrainerConfig` / `DeployConfig`.
 
 **Managed RFT (`firectl reinforcement-fine-tuning-job create --evaluator <id>`) is deprecated**
 and accepts no new jobs. The evaluator material below applies only to jobs that already exist.
@@ -80,6 +88,94 @@ Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw
 
 Recipes cover SFT, DPO/ORPO, and RL. The RL loops train GRPO; DAPO, GSPO, CISPO, DRO, DPPO and others are objective modules in `training/utils/rl/algorithm/` that a forked loop calls (see `rl-custom-loss.md`). SAO/PPO and IGPO have their own recipes.
 
+## Quick reference: Managed and Serverless SFT
+
+Both blocks ran live on Muse Glimmer 30B. When the cookbook checkout has the
+Muse starter or `sft_loop`, run those and fork them for custom loops; use these
+blocks when they are missing. Load `.env` in-process first with an
+explicit search from the working directory:
+`from dotenv import find_dotenv, load_dotenv; load_dotenv(find_dotenv(usecwd=True))`.
+
+Managed SFT on a dataset already in the account:
+
+```python
+from fireworks import Fireworks
+c = Fireworks(account_id=ACCOUNT)
+job = c.supervised_fine_tuning_jobs.create(
+    supervised_fine_tuning_job_id=JOB_ID,
+    base_model="accounts/fireworks/models/muse-glimmer-30b",
+    dataset=f"accounts/{ACCOUNT}/datasets/{DATASET_ID}",
+    output_model=f"accounts/{ACCOUNT}/models/{JOB_ID}",
+    epochs=1, lora_rank=8, eval_auto_carveout=True,
+)
+j = c.supervised_fine_tuning_jobs.get(JOB_ID)   # state, job_progress.percent, status.message
+urls = j.model_dump()                           # metricsFileSignedUrl, renderSamplesSignedUrl
+```
+
+Serverless Training API loop with base and tuned snapshots (run from
+`$COOKBOOK_DIR/training` so the `training.*` helpers import):
+
+```python
+import os, tinker
+from fireworks.training.sdk import FiretitanServiceClient
+from training.utils.supervised import build_renderer, render_messages_to_datum
+from training.utils.tokenizers import load_tokenizer
+from training.renderer import get_text_content
+
+tok = load_tokenizer("meta-models/Muse-Glimmer-30B")
+renderer = build_renderer(tok, "meta-models/Muse-Glimmer-30B", "muse_glimmer")
+datums = [render_messages_to_datum(r["messages"], renderer=renderer, max_seq_len=2048).datum for r in rows]
+
+service = FiretitanServiceClient(api_key=os.environ["FIREWORKS_API_KEY"],
+                                 base_url="https://api.fireworks.ai/training/v1/serverless")
+try:
+    tc = service.create_lora_training_client(base_model="accounts/fireworks/models/muse-glimmer-30b", rank=8)
+    for batch in batches(datums):
+        fb = tc.forward_backward(batch, "cross_entropy").result()          # fb.metrics["loss:sum"]
+        opt = tc.optim_step(tinker.AdamParams(learning_rate=1e-4),
+                            emit_grad_norm_metrics=True).result()          # opt.metrics grad norms
+    path = tc.save_weights_for_sampler("tuned").result().path
+    sampler = service.create_sampling_client(model_path=path, tokenizer=tok)
+    out = sampler.sample(prompt=renderer.build_generation_prompt(msgs[:-1]), num_samples=1,
+                         sampling_params=tinker.SamplingParams(max_tokens=256, temperature=0.0,
+                                                               stop=renderer.get_stop_sequences())).result()
+    msg, termination = renderer.parse_response(out.sequences[0].tokens)
+    answer = get_text_content(msg)   # drops reasoning (thinking) parts
+    sampler.close()
+finally:
+    service.close()
+```
+
+`sample` returns a future: for an eval set, submit every request first, then
+collect results, instead of waiting on each one in turn.
+
+Snapshot the base adapter the same way before the first step to compare base
+and tuned on one holdout, and keep each example's raw output, parsed answer,
+and `termination` for both. Muse Glimmer reasons before answering: a base
+sample that ends `MALFORMED` usually ran out of `max_tokens` before the answer,
+which is a budget problem, not a capability score. Raise the budget or report
+those rows separately. Use the same `max_tokens`, temperature, and stop
+sequences for base and tuned, and read a few raw outputs before reporting a
+surprising number.
+
+To keep the tuned adapter after the session, promote its sampler checkpoint
+before closing; session checkpoints are unreachable once the session ends:
+
+```python
+from fireworks.training.sdk import FireworksClient
+fw = FireworksClient(api_key=os.environ["FIREWORKS_API_KEY"])
+rows = [r for r in fw.list_training_session_checkpoints(service.training_session_name)
+        if r.get("promotable") and "tuned" in r["checkpointName"]]   # ids are prefixed/suffixed; never match by equality
+fw.promote_session_checkpoint(name=max(rows, key=lambda r: r["createTime"])["name"],
+                              output_model_id="my-tuned-lora", base_model="accounts/fireworks/models/muse-glimmer-30b")
+```
+
+`service.close()` ends your use of the session, but the run keeps its slot in
+the account's concurrent-run quota until the session expires. Do not tell the
+user nothing is in use until then; a new run (Managed or Serverless) on the
+same model may queue or be rejected. More in
+[`execution-notes.md`](execution-notes.md).
+
 ## Core SDK primitives
 
 - `forward_backward` — built-in losses by id (e.g. `"cross_entropy"`), no extra forward pass.
@@ -113,7 +209,8 @@ Log `result.metrics` with the optimizer step. `True` emits global L2
 `grad_norm` is after accumulation normalization and before clipping; preserve
 the run's normalization setting. Keys may have a `:last` suffix.
 The RL loops always request `True`; a fork that needs bucket norms passes
-`"detailed"`. Verify the first step's logs; missing metrics do not mean zero
+`"detailed"`. `sft_loop` exposes `grad_norm_metrics` (`"off"`, `"basic"`, or
+`"detailed"`) and defaults it to `"basic"`. Verify the first step's logs; missing metrics do not mean zero
 gradients.
 
 ### Top-K logprobs from `forward` (entropy / distributional KL)
@@ -146,7 +243,7 @@ def reward_fn(completion: str, row: dict) -> float:   # fork this
     truth = extract_answer(str(row.get("ground_truth", "")))
     return 1.0 if predicted == truth else 0.0
 ```
-The dataset is JSONL of prompts (`messages`) plus exactly the fields the selected reward reads. `ground_truth` is common for exact-match rewards, but it is not universal. Declare and validate the reward's required fields before launch. The recipe samples rollouts, scores each with `reward_fn`, and trains with the trainer's built-in GRPO loss, clipped against the rollout logprobs, with no reference KL. Key knobs: `completions_per_prompt`, `prompt_groups_per_step`, `eps_clip`/`eps_clip_high`, and `max_head_offpolicy_versions` (async; 0 = strict on-policy). To change the objective, fork the loop's train step (`rl-custom-loss.md`). The SDK provisions the trainer + rollout deployment and tears them down on close. **No registered evaluator needed on this path.**
+The dataset is JSONL of prompts (`messages`) plus exactly the fields the selected reward reads. `ground_truth` is common for exact-match rewards, but it is not universal. Declare and validate the reward's required fields before launch. The recipe samples rollouts, scores each with `reward_fn`, and trains with the trainer's built-in GRPO loss, clipped against the rollout logprobs, with no reference KL. Key knobs: `completions_per_prompt`, `prompt_groups_per_step`, `eps_clip`/`eps_clip_high`, and `max_head_offpolicy_versions` (async; 0 = strict on-policy). To change the objective, fork the loop's train step (`rl-custom-loss.md`). On Dedicated, the recipe provisions the trainer + rollout deployment and tears them down on close; on Serverless, the serverless examples sample from session snapshots instead. **No registered evaluator needed on this path.**
 
 ## Numerics alignment & MoE Router Replay (R3)
 
@@ -159,7 +256,7 @@ Trainer↔inference divergence silently wrecks RL. Required reading: https://doc
 
 - **Start from a cookbook recipe**, not a blank loop.
 - **Align numerics** before trusting any RL signal; keep **R3** on for MoE.
-- **For RL, use a dedicated rollout deployment** (sized for sampling), not your prod endpoint.
-- **Set an explicit deployment shape for the rollout.** RFT provisions a rollout/sampling deployment, and the accelerator is owned by the *deployment shape*. With only a base model and `training_shape=auto`, creation fails: `ValueError: Cannot create a managed deployment without a deployment shape`. Pass a `deployment_shape` (or a `training_shape_id` whose shape references one) — e.g. via the recipe's `--training-shape`. The RFT preflight should check this before launch. (Observed live on qwen3-4b, 2026-07-15.)
+- **Dedicated RL only:** use a separate rollout deployment (sized for sampling), not your prod endpoint. Serverless RL needs no deployment.
+- **Dedicated RL only: set an explicit deployment shape for the rollout.** RFT provisions a rollout/sampling deployment, and the accelerator is owned by the *deployment shape*. With only a base model and `training_shape=auto`, creation fails: `ValueError: Cannot create a managed deployment without a deployment shape`. Pass a `deployment_shape` (or a `training_shape_id` whose shape references one) — e.g. via the recipe's `--training-shape`. The RFT preflight should check this before launch. (Observed live on qwen3-4b, 2026-07-15.)
 - Use `forward_backward_custom` only for a genuinely custom objective; otherwise the built-in path is cheaper.
 - Loss must be differentiable w.r.t. `logprobs_list`; the metrics dict is logging-only.

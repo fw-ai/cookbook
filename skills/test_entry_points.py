@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -63,6 +64,9 @@ def test_question_ids_are_stable() -> None:
         "research-q1": read(
             SKILLS_DIR / "research" / "references" / "interview-questions.md"
         ),
+        "research-starter": read(
+            SKILLS_DIR / "research" / "references" / "starter-jobs.md"
+        ),
         "configure-q-path": read(
             SKILLS_DIR / "configure" / "references" / "path-intake.md"
         ),
@@ -72,6 +76,38 @@ def test_question_ids_are_stable() -> None:
     }
     for question, text in documents.items():
         assert question in text
+
+
+def test_starter_jobs_are_linked() -> None:
+    getting_started = read(SKILLS_DIR / "GETTING-STARTED.md")
+    research = read(SKILLS_DIR / "research" / "SKILL.md")
+    starters = read(SKILLS_DIR / "research" / "references" / "starter-jobs.md")
+    methodology = read(SKILLS_DIR / "research" / "references" / "methodology.md")
+    catalog = read(SKILLS_DIR / "research" / "references" / "cookbook-catalog.md")
+    path_intake = read(SKILLS_DIR / "configure" / "references" / "path-intake.md")
+    assert "starter-jobs.md" in getting_started
+    assert "starter-jobs.md" in research
+    assert "onboarding-prompt-router" in starters
+    assert "onboarding-cord-receipts" in starters
+    assert not re.search(r"accounts/(?!<current-account>)[^/\s]+/datasets/onboarding-", starters)
+    assert "2026-11-01T00:00:00-07:00" in starters
+    assert "https://docs.fireworks.ai/fine-tuning/models" in starters
+    assert "**Managed LoRA SFT**" in starters
+    assert "**Serverless Training API LoRA SFT.**" in starters
+    assert "RL (on any surface)" in starters
+    assert "muse_glimmer_starter.py" in starters
+    assert "Do not add a separate readiness-package or handoff question" in starters
+    assert "Muse Glimmer verifiable math RL smoke" not in starters
+    assert "execution-notes.md" in starters
+    assert "renderSamplesSignedUrl" in read(
+        SKILLS_DIR / "fireworks-training" / "references" / "execution-notes.md"
+    )
+    assert "account_preloaded" in methodology
+    assert "account_preloaded" in path_intake
+    assert "cookbook_eval_entry" in starters
+    assert "cookbook_eval_entry" in methodology
+    assert "cookbook_eval_entry" in path_intake
+    assert "canonical readiness\npackage in `methodology.md`" in catalog
 
 
 def test_debug_reuses_existing_session() -> None:
@@ -88,6 +124,7 @@ TESTS = (
     test_install_includes_reference_carrier,
     test_entry_routes_and_carrier_references,
     test_question_ids_are_stable,
+    test_starter_jobs_are_linked,
     test_debug_reuses_existing_session,
 )
 

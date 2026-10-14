@@ -1,5 +1,8 @@
 # RL: weight sync (hotload) during training
 
+> Dedicated Training only: hotload publishes weights to a provisioned rollout
+> deployment. Serverless RL samples from session sampler snapshots instead.
+
 RL is the main consumer of hotload: the recipe publishes updated weights to the serving deployment so new rollouts come from the updated policy. Publication uses negotiated RDMA or a sampler checkpoint followed by FILE hotload. SFT / DPO / ORPO don't typically hotload — they save once at the end and call it a day.
 
 `training/recipes/rl_loop.py` is always strict on-policy: it performs an

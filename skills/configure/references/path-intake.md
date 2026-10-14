@@ -14,12 +14,27 @@ Do **not** present a spend plan until:
 1. **Method** is known (SFT / DPO / ORPO / RFT / IGPO / distillation /
    embedding) from research handoff or
    `../../fireworks-training/references/choose-method.md`.
-2. **Workflow path** is confirmed with Q-path. A coarse research
-   `suggested_path` never skips this question.
+2. **Workflow path** is chosen: the easiest compatible default from the table
+   below, the user's stated preference, or a Q-path answer. The final plan names
+   it, and plan approval confirms it.
 3. Local dataset / model facts are resolved or labeled **unknown**.
 
-If the user says "just use defaults," record that explicitly and still name the
-chosen path in the plan (never silent defaults).
+If the user says "just use defaults" or "whatever's easiest," pick the easiest
+compatible path and name it in the plan (never silent defaults).
+
+## Easiest compatible path
+
+| Signal | Default `workflow_path` |
+|---|---|
+| Plain SFT on chat JSONL, text or vision, no custom code | `managed_sdk` (agent runs SDK `supervised_fine_tuning_jobs`) |
+| User wants to write a loop, sample in-session, or compare base vs tuned without a deployment | `serverless` |
+| RL, serverless DPO, distillation, custom loss | `serverless` |
+| User will run commands themselves in a terminal | `managed_firectl` |
+| Full-parameter, model not on the serverless pool, reserved capacity, custom infra | `dedicated` |
+
+Choose Dedicated only when an easier path cannot do the job. When the user asks
+for Dedicated without such a reason, recommend the easier path in one sentence
+(no provisioning, no idle cost) and follow their answer.
 
 ## Inherit from research
 
@@ -36,15 +51,17 @@ When `run.md` includes research handoff fields (legacy: discover handoff), reuse
 | `dataset_plan` | Approved source and dataset candidates |
 | `eval_plan` | Approved metric, baseline requirement, and cookbook hook |
 
-Research does not set `workflow_path` or `execution_surface`. Reuse its
-recommendation as the suggested option, then run Q-path. Skip Q-path only when
-the manifest contains an answer with `question_id: configure-q-path`. A
-`research-q3` answer never satisfies this gate, even when its option ID has the
-same spelling.
+Research does not set `workflow_path` or `execution_surface`. Configure picks
+the exact path from the easiest-path table and names it in the final plan. A
+`research-q3` answer never satisfies this gate by itself, even when its option
+ID has the same spelling; the path is confirmed by approval of the plan that
+names it, or by a recorded `question_id: configure-q-path` answer.
 
-## Q-path — Which workflow? (required)
+## Q-path — Which workflow? (only when needed)
 
-Fire **one** AskQuestion. STOP and wait.
+Ask Q-path only when two paths fit equally well and the user has not stated a
+preference. Otherwise use the easiest compatible default. When asked, fire
+**one** AskQuestion and STOP.
 
 Title: `Configure`
 
@@ -52,23 +69,15 @@ Prompt: `How do you want to run this training job?`
 
 | Option ID | Label | `workflow_path` | `execution_surface` |
 |---|---|---|---|
-| `managed_firectl` | Managed — `firectl` CLI (simplest production path) | managed_firectl | firectl |
-| `managed_sdk` | Managed — Python SDK / case-study notebook | managed_sdk | sdk |
-| `serverless` | Training API — serverless (fast LoRA experiments) | serverless | training_api |
-| `dedicated` | Training API — dedicated trainer (custom loop, full control) | dedicated | training_api |
+| `managed_sdk` | Managed — I run it for you through the Python SDK (easiest) | managed_sdk | sdk |
+| `serverless` | Training API — serverless (your own loop, in-session eval, RL) | serverless | training_api |
+| `managed_firectl` | Managed — you run the `firectl` commands yourself | managed_firectl | firectl |
+| `dedicated` | Training API — dedicated trainer (full-parameter, reserved capacity) | dedicated | training_api |
 
-**Routing hints (do not skip the question):**
+List the recommended option first.
 
-| Signal | Suggest, don't assume |
-|---|---|
-| Plain SFT on JSONL, no custom code | `managed_firectl` |
-| User references a case-study notebook | `managed_sdk` |
-| Custom loss, rollouts, distillation, research loop | `dedicated` or `serverless` |
-| Discover `suggested_path: serverless` | `serverless` |
-| Discover `suggested_path: training_api_dedicated` | `dedicated` |
-
-**Training API access:** serverless and dedicated are private preview. If
-entitlement is unverified, say so and offer managed paths. See
+**Training API access:** if the account cannot reach the serverless pool, say so
+and offer Managed SFT. See
 `../../fireworks-training/references/training-api.md`.
 
 ## Q-method — Supervision signal (when method unclear)
@@ -93,18 +102,15 @@ DPO unless the user explicitly requests ORPO before the final plan.
 For vague goals ("make my chatbot better"), run the full discriminating list in
 `../../fireworks-training/references/choose-method.md` one question per turn.
 
-## Q-surface — firectl vs SDK (optional follow-up)
-
-Only when user picked managed but case study implies SDK (e.g. CORD notebook)
-and they chose `managed_firectl`, confirm:
-
-> Same managed backend — SDK notebook vs `firectl` CLI. Prefer CLI unless you
-> need the notebook eval harness.
+`managed_firectl` and `managed_sdk` use the same managed backend. The agent
+uses the SDK because `firectl` blocks agent mutations; choose `managed_firectl`
+only when the user will run the commands.
 
 ## Record in run manifest
 
-After Q-path, update the private run manifest and record
-`question_id: configure-q-path` with the selected option ID through
+After the path is confirmed, update the private run manifest and record
+`question_id: configure-q-path` with the selected option ID (response source
+`plan_approval` when no question was asked) through
 `firectl skill-journey record` when available. Use
 `../../fireworks-training/references/telemetry.md`.
 
@@ -115,6 +121,7 @@ execution_surface: firectl | sdk | training_api
 implied_method: sft | dpo | orpo | rft | igpo | distillation | embedding
 inherited_from_research: true | false
 research_handoff:  # when present (legacy: discover_handoff)
+  starter_job_id: <built-in starter ID>  # when present
   case_study: <slug>
   cookbook_entry_tier: case_study | example | recipe
   cookbook_entry_path: training/...
@@ -122,16 +129,17 @@ research_handoff:  # when present (legacy: discover_handoff)
   readme: training/...    # when present
   suggested_path: <from discover>
   dataset_plan:
-    source: local | cookbook_bundled | huggingface | labeling_required
+    source: local | account_preloaded | cookbook_bundled | huggingface | labeling_required
     candidates: []
   eval_plan:
     metric:
     baseline_required: true
     cookbook_eval_hook: eval-protocol | recipe_inline | gap
+    cookbook_eval_entry: training/...  # optional adaptation source
 ```
 
 Set `inherited_from_research: true` only when the user had already selected one
-exact Q-path option before the handoff. A recommendation alone is not inherited.
+exact path before the handoff. A recommendation alone is not inherited.
 
 ## Final plan must state
 
@@ -142,7 +150,7 @@ Every confirmed plan includes a **Path** section:
 | Workflow | Managed / Training API serverless / dedicated |
 | Surface | `firectl sftj` / SDK `supervised_fine_tuning_jobs` / `sft_loop.py` |
 | Why | One sentence tied to user choice |
-| GA vs preview | Managed GA; Training API preview if applicable |
+| Availability | Managed and Serverless Training are GA; Dedicated Training needs account access |
 
 Never show only `firectl` commands when the user chose SDK or Training API.
 

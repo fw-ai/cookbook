@@ -1,5 +1,8 @@
 # Migrating off the deprecated managed infra (`InfraConfig` / `setup_infra`)
 
+> Applies to Dedicated Training recipes. Serverless recipes never provisioned
+> trainers or deployments.
+
 The cookbook moved trainer/deployment provisioning out of the recipe layer and
 behind SDK-managed provisioning. Refactored recipes build one SDK-managed
 service client and then use Tinker-shaped `service.create_*` calls. Recipe `Config` objects now take
