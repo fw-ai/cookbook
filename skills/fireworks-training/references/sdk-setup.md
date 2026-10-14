@@ -13,6 +13,9 @@ python -m pip install -e .
 # Option B: uv
 uv venv --python 3.12 && source .venv/bin/activate
 uv pip install -e .
+
+# Option C: any Python 3.11+ and venv (check `python3 --version`; use python3.12 etc. if older)
+python3 -m venv .venv && source .venv/bin/activate && pip install -e .
 ```
 
 The cookbook requires `fireworks-ai[training]>=1.2.21,<2`, available as a stable

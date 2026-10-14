@@ -101,12 +101,13 @@ in the abstract.
 
 **Muse Glimmer 30B**, in the
 [serverless trainer pool](https://docs.fireworks.ai/updates/changelog#2026-08-30) since 2026-08-30.
-It is also on **serverless inference**, so the baseline sweep is per-token and needs no deployment —
-the tuned adapter is not, because trained LoRAs are served on-demand only, from every path.
+Its public serverless inference was deprecated on 2026-09-25, so the baseline sweep needs the
+in-session sampler on the serverless trainer or an on-demand deployment. Trained LoRAs are served
+on-demand only, from every path.
 
 It publishes two dedicated shapes as well — `muse-glimmer-30b-131k-lora` (`LORA_TRAINER`, 1 × B200)
-and `muse-glimmer-30b-131k` (`POLICY_TRAINER`, 2 × B200) — and is **not** enabled for Managed SFT
-(`managedSft: false`). §9 shows the dedicated and managed configs without running them.
+and `muse-glimmer-30b-131k` (`POLICY_TRAINER`, 2 × B200) — and is enabled for Managed SFT. §9 shows
+the dedicated and managed configs without running them.
 
 **Check the [Models catalog](https://docs.fireworks.ai/fine-tuning/models) (Availability =
 Serverless) for the pool as it is today** rather than trusting the ids here; the pool is small and

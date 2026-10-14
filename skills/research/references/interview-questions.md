@@ -1,8 +1,9 @@
 # Research interview questions
 
-Interview the user when the goal is vague, multiple cookbook entries could fit,
-or the domain is novel. **Inspect** `cookbook-catalog.md` first, then ask only
-what you still need.
+These questions are a fallback, not a script. Default to recommending from
+what the user said, with stated defaults. Ask one of these only when the answer
+is blocking — no reasonable default exists and it changes what you would do.
+**Inspect** `cookbook-catalog.md` first.
 
 Read `output-template.md` for turn shapes. Record bounded telemetry after each
 answer using `../../fireworks-training/references/telemetry.md`. Show
@@ -22,20 +23,39 @@ interview question.
 
 ## Completion gate (before readiness package)
 
-Do **not** present the final recommendation until:
+Present the recommendation once each item below is answered, stated, clearly
+inferable, or covered by a stated default:
 
-1. **Q1** (task shape) is answered or stated in the opening message, **and**
-2. **Q2** (data / supervision) is answered, **and**
-3. **Q-eval** (how to measure success) is answered, **and**
-4. Any applicable follow-up (Q1b, domain, Q3) is answered.
+1. **Q1** (task shape) is answered, stated, or clearly inferable, **and**
+2. **Q2** (data / supervision) is answered, stated, or clearly inferable, **and**
+3. **Q-eval** (how to measure success) is answered or has a proposed default
+   metric the user can accept, **and**
+4. Any applicable follow-up (Q1b, domain) is answered or inferable.
 
-**Exception:** user says "skip questions", "just pick one", or names a cookbook
-slug. Set `completion_gate_bypassed: true`.
+"Clearly inferable" means the user's words leave one sensible reading (for
+example "always output a valid JSON ticket" is `structured_output` /
+`extraction`; "we have no labeled data" is `raw_only`). State the inference in
+one line instead of asking. Ask only the questions that remain open, one per
+turn, and share a provisional recommendation while asking.
 
-**Novel domains** (finance, legal, healthcare): always run **Q1 + Q2 + Q-eval +
-one follow-up**.
+**Exception:** user says "skip questions", "just pick one", names a cookbook
+slug, or selects a starter from `starter-jobs.md` (any option except
+`explore_custom`). Set `completion_gate_bypassed: true`.
+
+**Novel domains** (finance, legal, healthcare): state the inferred Q1, Q2,
+and Q-eval answers in the recommendation so the user can correct them.
 
 ## Question sequence
+
+### Starter — What should we try first?
+
+When the user is greenfield or asks what they can try, run this before Q1.
+Telemetry and options: `starter-jobs.md` (`question_id: research-starter`).
+
+If the answer is a concrete starter ID, skip Q1 / Q2 / Q-eval and go straight
+to Configure's fast path in the same turn (read-only preflight and the complete
+final plan). Do not fire **Handoff** for a starter. If the answer is
+`explore_custom`, continue with Q1.
 
 ### Q1 — What are you trying to improve?
 
@@ -94,9 +114,12 @@ Telemetry: `question_id: research-q3` (legacy: `discover-q3`), field `intake_q3_
 | Option ID | Option | Suggested path |
 |---|---|---|
 | `managed` | Simplest managed job | managed |
-| `serverless` | Fast LoRA on shared compute | serverless |
-| `dedicated` | Custom loop or embedding recipe | training_api_dedicated |
-| `no_preference` | No preference | omit `suggested_path` |
+| `serverless` | My own loop, in-session eval, or RL on shared compute | serverless |
+| `dedicated` | Full-parameter, embedding recipe, or reserved capacity | training_api_dedicated |
+| `no_preference` | No preference | easiest compatible path |
+
+Ask Q3 only when the user's goal makes two paths equally good. Otherwise omit it
+and let Configure pick the easiest compatible path.
 
 ### Q4 — What have you tried so far?
 
@@ -124,7 +147,7 @@ Telemetry: `question_id: research-handoff` (legacy: `discover-handoff`), field `
 
 | Option ID | Option | Action |
 |---|---|---|
-| `plan_configure` | Yes — plan a run (don't start yet) | write handoff YAML → **configure** |
+| `plan_configure` | Yes — show me the exact plan to approve | write handoff YAML → **configure** final plan in the same turn |
 | `readme_first` | Show the README first | summarize; stay in research |
 | `labeling_help` | Help building labeled data | stay in research; labeling schema |
 | `defer` | Not now | `session_outcome: research_only` |
@@ -145,7 +168,9 @@ Telemetry: `question_id: research-domain` (legacy: `discover-domain`), field `do
 1. Present **readiness package** (`output-template.md`).
 2. Set `matched_case_study` or `cookbook_entry_path`, `match_confidence`.
 3. Emit `research_recommendation_presented`.
-4. Fire the **Handoff** AskQuestion and STOP.
+4. Unless the user already said to proceed:
+   Fire the **Handoff** AskQuestion (a plain "want me to plan this run?" is
+   fine) and STOP.
 5. Write the handoff block to `run.md` only after the user selects
    `plan_configure`. Other answers stay in Research and do not create a
    Configure handoff.

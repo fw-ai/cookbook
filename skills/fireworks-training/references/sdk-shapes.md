@@ -1,5 +1,8 @@
 # Training and deployment shapes — always use a profile
 
+> Dedicated Training and on-demand deployments only. Serverless Training
+> attaches to the shared pool and takes no shape.
+
 Shapes are the required entry point for both trainer and deployment. Cookbook
 trainer config rejects `accelerator_type` and `accelerator_count`; clients
 cannot select trainer accelerators, so set `training_shape_id` instead.

@@ -260,6 +260,10 @@ def check_cookbook_routes(errors: list[str]) -> None:
         "rl/coding_agent/",
         "rl/multi_turn_message_in/",
         "intake-questions.md",
+        "igpo_loop",
+        "examples/serverless_rl",
+        "examples/rl/harbor/",
+        "routed_mopd",
     ):
         if stale in research_refs:
             errors.append(f"research catalog contains stale route `{stale}`")

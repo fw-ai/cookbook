@@ -72,7 +72,7 @@ firectl deployment create accounts/fireworks/models/<MODEL> \
 `State: READY` does not prove the model serves. Send a **real request and confirm HTTP 200** before reporting success or running an eval. Right after `deployment create`, early routing errors are usually transient within the readiness window, so poll with a short backoff rather than failing on the first error.
 
 Fine-tuned LoRA serves from an **on-demand deployment** — serverless per-token serving of your *own* fine-tuned LoRA is not available yet. Addressing the inference `model` depends on the deployment type:
-- **Dedicated live-merge deployment:** the bare model id returns `NOT_FOUND` on a fresh deployment, and so does `model="<model>#<short-deployment-name>"`. Use the **full** reference `model="<full-model-path>#<full-deployment-resource-path>"` — e.g. `accounts/acme/models/my-tune#accounts/acme/deployments/my-tune-dep`.
+- **Live-merge deployment:** the bare model id returns `NOT_FOUND` on a fresh deployment, and so does `model="<model>#<short-deployment-name>"`. Use the **full** reference `model="<full-model-path>#<full-deployment-resource-path>"` — e.g. `accounts/acme/models/my-tune#accounts/acme/deployments/my-tune-dep`.
 - **Multi-LoRA:** route `model="<model_name>#<deployment_name>"`.
 
 - **Playground:** open the deployment in the [dashboard](https://app.fireworks.ai), send prompts.

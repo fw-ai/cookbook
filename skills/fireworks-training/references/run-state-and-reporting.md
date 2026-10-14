@@ -142,6 +142,10 @@ When asked to resume:
 4. Reconcile the manifest with Fireworks state and update it.
 5. Continue from `next_action`.
 
+Treat resume as a new mutation and cost window. Resolve or explicitly mark its
+remaining cost, show the checkpoint/log-path continuation plan, and get
+approval before reconnecting or creating paid resources.
+
 Never replay dataset, evaluator, job, model, or deployment creation merely because the previous chat ended. Every create must use the stable ID recorded before execution:
 
 - dataset: the positional dataset name;

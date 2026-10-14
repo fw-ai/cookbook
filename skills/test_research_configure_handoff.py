@@ -49,7 +49,10 @@ def test_configure_consumes_handoff_fields() -> None:
         "execution surface",
     ):
         assert field in configure, f"configure does not consume {field}"
-    assert "Run Q-path even when research recommends a coarse path" in configure
+    assert "The final-plan\napproval confirms it." in configure
+    assert "when evidence supports it" in configure
+    assert "Do not add a\nceremonial gate" in configure
+    assert "required fact that cannot be safely resolved" in configure
 
 
 def test_configure_persists_complete_handoff() -> None:
