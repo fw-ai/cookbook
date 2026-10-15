@@ -1186,3 +1186,20 @@ def test_serverless_k3_example_distills_from_step0_teacher(monkeypatch, tmp_path
     records = (tmp_path / "logs" / "metrics.jsonl").read_text().splitlines()
     assert len(records) == 2
     assert '"train/opd_sampled_reverse_kl"' in records[0]
+
+
+def test_gsm8k_prepare_data_skips_problems_that_trip_the_privileged_validator(tmp_path, monkeypatch):
+    import sys
+
+    from training.examples.distillation.gsm8k_privileged import prepare_data
+
+    def row(question):
+        return {"messages": [{"role": "user", "content": question}], "ground_truth": "#### 4"}
+
+    rows = [row("What is 2+2?"), row("A private plot is 2 by 2. What is its area?"), row("What is 1+3?")]
+    monkeypatch.setattr(prepare_data, "load_jsonl", lambda source: rows)
+    output = tmp_path / "rows.jsonl"
+    monkeypatch.setattr(sys, "argv", ["prepare_data", "--output", str(output), "--max-rows", "2"])
+    prepare_data.main()
+    assert len(output.read_text().splitlines()) == 2
+    validate_privileged_opd_dataset(str(output), min_rows=2)

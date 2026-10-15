@@ -24,6 +24,8 @@ from typing import Any
 
 import requests
 
+from training.utils.distillation.eval import DEFAULT_PRIVILEGED_CONTEXT_MARKERS
+
 
 DEFAULT_SOURCE = "https://raw.githubusercontent.com/eval-protocol/python-sdk/main/development/gsm8k_sample.jsonl"
 DEFAULT_OUTPUT = Path(__file__).with_name("dataset.jsonl")
@@ -113,6 +115,13 @@ def convert_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _mentions_privileged_marker(messages: list[dict[str, Any]]) -> bool:
+    # validate_privileged_opd_dataset rejects the whole file when a student prompt
+    # contains a marker, and ordinary GSM8K problems mention "private property".
+    text = "\n".join(str(message.get("content", "")) for message in messages).lower()
+    return any(marker.lower() in text for marker in DEFAULT_PRIVILEGED_CONTEXT_MARKERS)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Prepare GSM8K privileged distillation JSONL")
     parser.add_argument("--source", default=DEFAULT_SOURCE)
@@ -121,9 +130,18 @@ def main() -> None:
     args = parser.parse_args()
 
     rows = load_jsonl(args.source)
-    if args.max_rows > 0:
-        rows = rows[: args.max_rows]
-    converted = [convert_row(row) for row in rows]
+    converted = []
+    skipped = 0
+    for row in rows:
+        candidate = convert_row(row)
+        if _mentions_privileged_marker(candidate["messages"]):
+            skipped += 1
+            continue
+        converted.append(candidate)
+        if args.max_rows > 0 and len(converted) == args.max_rows:
+            break
+    if skipped:
+        print(f"Skipped {skipped} problems whose own text contains a privileged-context marker")
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
