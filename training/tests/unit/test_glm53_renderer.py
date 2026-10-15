@@ -7,13 +7,13 @@ import os
 from typing import Any
 
 import pytest
-import tinker
-import transformers
-from PIL import Image
-
 import training.renderer.glm5  # noqa: F401 - registers glm53
+import transformers
+from fireworks.training import sdk
+from PIL import Image
 from training.renderer import RendererError, get_renderer
-from training.renderer.glm5 import GLM53Renderer, Glm53FlashImageTokenCounter
+from training.renderer.base import TrainOnWhat
+from training.renderer.glm5 import Glm53FlashImageTokenCounter, GLM53Renderer
 from training.utils.rl.rollout.renderer import (
     build_multimodal_completions_prompt_token_ids,
 )
@@ -21,8 +21,6 @@ from training.utils.supervised import (
     build_tool_prefixed_messages,
     normalize_messages,
 )
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
-
 
 _TOKENIZER = "zai-org/GLM-5.3"
 _TOKENIZER_REVISION = "935644c05e76fc198714f4cca449fd8b970ff6d7"
@@ -81,10 +79,7 @@ def tokenizer():
         path_env="GLM53_TOKENIZER_PATH",
     )
     if tok is None:
-        pytest.skip(
-            f"GLM-5.3 tokenizer not available: "
-            f"{_TOKENIZER!r}@{_TOKENIZER_REVISION}"
-        )
+        pytest.skip(f"GLM-5.3 tokenizer not available: " f"{_TOKENIZER!r}@{_TOKENIZER_REVISION}")
     if not getattr(tok, "chat_template", None):
         pytest.skip("Loaded GLM-5.3 tokenizer has no chat template.")
     return tok
@@ -98,10 +93,7 @@ def flash_tokenizer():
         path_env="GLM53_FLASH_TOKENIZER_PATH",
     )
     if tok is None:
-        pytest.skip(
-            f"GLM-5.3-Flash tokenizer not available: "
-            f"{_FLASH_TOKENIZER!r}@{_FLASH_TOKENIZER_REVISION}"
-        )
+        pytest.skip(f"GLM-5.3-Flash tokenizer not available: " f"{_FLASH_TOKENIZER!r}@{_FLASH_TOKENIZER_REVISION}")
     if not getattr(tok, "chat_template", None):
         pytest.skip("Loaded GLM-5.3-Flash tokenizer has no chat template.")
     return tok
@@ -161,20 +153,20 @@ def _generation_tokens(
 def _generation_input(
     renderer: Any,
     messages: list[dict[str, Any]],
-) -> tinker.ModelInput:
+) -> sdk.ModelInput:
     return renderer.build_generation_prompt(normalize_messages(messages))
 
 
 def _expand_image_chunks(
     tokenizer: Any,
-    model_input: tinker.ModelInput,
+    model_input: sdk.ModelInput,
 ) -> list[int]:
     image = tokenizer.convert_tokens_to_ids("<|image|>")
     expanded: list[int] = []
     for chunk in model_input.chunks:
-        if isinstance(chunk, tinker.types.EncodedTextChunk):
+        if isinstance(chunk, sdk.types.EncodedTextChunk):
             expanded.extend(int(token) for token in chunk.tokens)
-        elif isinstance(chunk, tinker.types.ImageChunk):
+        elif isinstance(chunk, sdk.types.ImageChunk):
             expanded.extend([image] * int(chunk.expected_tokens))
         else:  # pragma: no cover - renderer emits only these two chunk types
             raise TypeError(type(chunk))
@@ -239,10 +231,7 @@ def _parallel_tool_messages(
                 },
             ],
         },
-        *[
-            {"role": "tool", "tool_call_id": tool_call_id, "content": content}
-            for tool_call_id, content in results
-        ],
+        *[{"role": "tool", "tool_call_id": tool_call_id, "content": content} for tool_call_id, content in results],
     ]
 
 
@@ -256,15 +245,9 @@ def test_registered_glm53_flash_renderer(flash_tokenizer, flash_renderer):
     assert type(flash_renderer).__name__ == "GLM53FlashRenderer"
     assert flash_renderer.has_extension_property is True
     assert flash_renderer.supports_per_message_rendering is False
-    assert flash_renderer.image_placeholder_token_id == int(
-        flash_tokenizer.convert_tokens_to_ids("<|image|>")
-    )
-    assert flash_renderer._begin_of_image_token_id == int(
-        flash_tokenizer.convert_tokens_to_ids("<|begin_of_image|>")
-    )
-    assert flash_renderer._end_of_image_token_id == int(
-        flash_tokenizer.convert_tokens_to_ids("<|end_of_image|>")
-    )
+    assert flash_renderer.image_placeholder_token_id == int(flash_tokenizer.convert_tokens_to_ids("<|image|>"))
+    assert flash_renderer._begin_of_image_token_id == int(flash_tokenizer.convert_tokens_to_ids("<|begin_of_image|>"))
+    assert flash_renderer._end_of_image_token_id == int(flash_tokenizer.convert_tokens_to_ids("<|end_of_image|>"))
 
 
 def test_glm53_flash_token_in_rl_uses_native_image_placeholder(
@@ -280,9 +263,7 @@ def test_glm53_flash_token_in_rl_uses_native_image_placeholder(
             ],
         }
     ]
-    model_input = image_renderer.build_generation_prompt(
-        normalize_messages(messages)
-    )
+    model_input = image_renderer.build_generation_prompt(normalize_messages(messages))
     prompt_token_ids, images = build_multimodal_completions_prompt_token_ids(
         messages,
         model_input,
@@ -292,12 +273,8 @@ def test_glm53_flash_token_in_rl_uses_native_image_placeholder(
 
     assert prompt_token_ids.count(image_renderer.image_placeholder_token_id) == 1
     image_pos = prompt_token_ids.index(image_renderer.image_placeholder_token_id)
-    assert prompt_token_ids[image_pos - 1] == int(
-        flash_tokenizer.convert_tokens_to_ids("<|begin_of_image|>")
-    )
-    assert prompt_token_ids[image_pos + 1] == int(
-        flash_tokenizer.convert_tokens_to_ids("<|end_of_image|>")
-    )
+    assert prompt_token_ids[image_pos - 1] == int(flash_tokenizer.convert_tokens_to_ids("<|begin_of_image|>"))
+    assert prompt_token_ids[image_pos + 1] == int(flash_tokenizer.convert_tokens_to_ids("<|end_of_image|>"))
     assert prompt_token_ids == _hf_tokens(
         flash_tokenizer,
         messages,
@@ -434,15 +411,9 @@ def test_generation_prompt_preserves_interleaved_images_with_hf_parity(
     ]
 
     model_input = _generation_input(image_renderer, messages)
-    image_chunks = [
-        chunk
-        for chunk in model_input.chunks
-        if isinstance(chunk, tinker.types.ImageChunk)
-    ]
+    image_chunks = [chunk for chunk in model_input.chunks if isinstance(chunk, sdk.types.ImageChunk)]
     assert [chunk.expected_tokens for chunk in image_chunks] == [64, 18]
-    assert _expand_image_chunks(
-        flash_tokenizer, model_input
-    ) == _expand_hf_image_tokens(
+    assert _expand_image_chunks(flash_tokenizer, model_input) == _expand_hf_image_tokens(
         flash_tokenizer,
         _hf_tokens(flash_tokenizer, messages, add_generation_prompt=True),
         [64, 18],
@@ -483,17 +454,13 @@ def test_tool_image_preserves_hf_wrapper_and_is_context_only(
         normalize_messages(messages),
         train_on_what=TrainOnWhat.ALL_TOKENS,
     )
-    image_chunks = [
-        chunk
-        for chunk in model_input.chunks
-        if isinstance(chunk, tinker.types.ImageChunk)
-    ]
+    image_chunks = [chunk for chunk in model_input.chunks if isinstance(chunk, sdk.types.ImageChunk)]
     assert [chunk.expected_tokens for chunk in image_chunks] == [64]
 
     cursor = 0
     for chunk in model_input.chunks:
         chunk_weights = weights[cursor : cursor + chunk.length]
-        if isinstance(chunk, tinker.types.ImageChunk):
+        if isinstance(chunk, sdk.types.ImageChunk):
             assert chunk_weights.eq(0).all()
         cursor += chunk.length
     assert cursor == len(weights)
@@ -513,9 +480,7 @@ def test_image_content_requires_processor(
     messages = [
         {
             "role": "user",
-            "content": [
-                {"type": "image", "image": Image.new("RGB", (32, 32))}
-            ],
+            "content": [{"type": "image", "image": Image.new("RGB", (32, 32))}],
         }
     ]
     with pytest.raises(RendererError, match="requires an image processor"):
@@ -612,9 +577,7 @@ def test_flash_supervised_stop_uses_posttraining_role_sentinel_not_eot(
         assistant["tool_calls"] = tool_calls
     messages = [{"role": "user", "content": "question"}, assistant]
 
-    model_input, weights = flash_renderer.build_supervised_example(
-        normalize_messages(messages)
-    )
+    model_input, weights = flash_renderer.build_supervised_example(normalize_messages(messages))
     ours = list(model_input.to_ints())
     expected_stop_id = flash_tokenizer.convert_tokens_to_ids(expected_stop)
     eot_id = flash_tokenizer.convert_tokens_to_ids("<|endoftext|>")
@@ -630,9 +593,7 @@ def test_flash_supervised_stop_uses_posttraining_role_sentinel_not_eot(
 
 
 def test_parallel_tool_results_follow_call_order(tokenizer, renderer):
-    messages = _parallel_tool_messages(
-        [("call_time", "12:00"), ("call_weather", "sunny")]
-    )
+    messages = _parallel_tool_messages([("call_time", "12:00"), ("call_weather", "sunny")])
     ours = _generation_tokens(renderer, messages, tools=_TOOLS)
     assert ours == _hf_tokens(
         tokenizer,
@@ -645,9 +606,7 @@ def test_parallel_tool_results_follow_call_order(tokenizer, renderer):
 
 
 def test_duplicate_tool_result_ids_fall_back_to_source_order(tokenizer, renderer):
-    messages = _parallel_tool_messages(
-        [("call_time", "first"), ("call_time", "second")]
-    )
+    messages = _parallel_tool_messages([("call_time", "first"), ("call_time", "second")])
     ours = _generation_tokens(renderer, messages, tools=_TOOLS)
     assert ours == _hf_tokens(
         tokenizer,
@@ -663,9 +622,7 @@ def test_flash_invalid_tool_result_block_matches_current_hf(
     flash_tokenizer: Any,
     flash_renderer: Any,
 ) -> None:
-    messages = _parallel_tool_messages(
-        [("call_time", "first"), ("call_time", "second")]
-    )
+    messages = _parallel_tool_messages([("call_time", "first"), ("call_time", "second")])
     ours = _generation_tokens(flash_renderer, messages, tools=_TOOLS)
 
     assert ours == _hf_tokens(
@@ -683,9 +640,7 @@ def test_reasoning_effort_overrides_initial_prompt_line(tokenizer):
 
     default = GLM53Renderer(tokenizer)
     assert default._initial_prompt_text == "<|system|>Reasoning Effort: Max"
-    assert "Reasoning Effort: Max" in tokenizer.decode(
-        default.build_generation_prompt(list(messages)).to_ints()
-    )
+    assert "Reasoning Effort: Max" in tokenizer.decode(default.build_generation_prompt(list(messages)).to_ints())
 
     low = GLM53Renderer(tokenizer, reasoning_effort="low")
     rendered = tokenizer.decode(low.build_generation_prompt(list(messages)).to_ints())
@@ -695,14 +650,13 @@ def test_reasoning_effort_overrides_initial_prompt_line(tokenizer):
     # medium/high fold into the template's High tier, mirroring the serving
     # conversation-style mapping.
     high = GLM53Renderer(tokenizer, reasoning_effort="medium")
-    assert "Reasoning Effort: High" in tokenizer.decode(
-        high.build_generation_prompt(list(messages)).to_ints()
-    )
+    assert "Reasoning Effort: High" in tokenizer.decode(high.build_generation_prompt(list(messages)).to_ints())
 
     max_effort = GLM53Renderer(tokenizer, reasoning_effort="max")
-    assert max_effort.build_generation_prompt(
-        list(messages)
-    ).to_ints() == default.build_generation_prompt(list(messages)).to_ints()
+    assert (
+        max_effort.build_generation_prompt(list(messages)).to_ints()
+        == default.build_generation_prompt(list(messages)).to_ints()
+    )
 
 
 def test_reasoning_effort_rejects_unknown_tier(tokenizer):

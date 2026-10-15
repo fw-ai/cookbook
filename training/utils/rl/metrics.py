@@ -11,7 +11,7 @@ import math
 from collections.abc import Mapping
 from typing import Any, Sequence
 
-import tinker
+from fireworks.training import sdk
 
 from training.utils.metrics import forward_backward_metrics, optimizer_metrics
 from training.utils.rl.losses import PromptGroup
@@ -82,11 +82,7 @@ _TITO_PUBLIC_SUMS = {
 
 
 def _finite_metric(value: Any, *, name: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-    ):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
         raise ValueError(f"TITO sidecar metric {name!r} must be finite numeric data")
     return float(value)
 
@@ -100,15 +96,10 @@ def merge_tito_sidecar_metrics(
         return
     for value in summaries:
         invalid = sorted(
-            str(name)
-            for name in value
-            if not isinstance(name, str) or not name.startswith(_TITO_METRIC_ROOT)
+            str(name) for name in value if not isinstance(name, str) or not name.startswith(_TITO_METRIC_ROOT)
         )
         if invalid:
-            raise ValueError(
-                "TITO sidecar metrics must use only the canonical root: "
-                + ", ".join(invalid)
-            )
+            raise ValueError("TITO sidecar metrics must use only the canonical root: " + ", ".join(invalid))
 
     distribution_bases = {
         name[: -len(suffix)]
@@ -117,11 +108,7 @@ def merge_tito_sidecar_metrics(
         for suffix in _DISTRIBUTION_SUFFIXES
         if name.endswith(suffix)
     }
-    distribution_keys = {
-        f"{base}{suffix}"
-        for base in distribution_bases
-        for suffix in _DISTRIBUTION_SUFFIXES
-    }
+    distribution_keys = {f"{base}{suffix}" for base in distribution_bases for suffix in _DISTRIBUTION_SUFFIXES}
 
     counter_totals: dict[str, float] = {}
     for summary in summaries:
@@ -222,9 +209,7 @@ def publish_tito_sidecar_metrics(
         # Client-visible model wall minus server-side generation: queueing on
         # a saturated deployment plus transport. Without this term a contended
         # deployment reads as "sampling is slow".
-        metrics["tito/model/queue_overhead_seconds_sum"] = max(
-            0.0, model_sum - sampler_sum
-        )
+        metrics["tito/model/queue_overhead_seconds_sum"] = max(0.0, model_sum - sampler_sum)
     if harness_sum is not None and model_sum is not None:
         window = harness_sum + model_sum
         if window > 0:
@@ -236,13 +221,8 @@ def publish_tito_sidecar_metrics(
 
     trial_wall_sum = merged.get("tito/trial/trial_wall_seconds_sum")
     if trial_wall_sum is not None:
-        bracketed = sum(
-            float(merged.get(f"{source}_sum", 0.0))
-            for source in _TITO_TRIAL_PHASE_SOURCES
-        )
-        metrics["tito/trial/unaccounted_seconds_sum"] = max(
-            0.0, float(trial_wall_sum) - bracketed
-        )
+        bracketed = sum(float(merged.get(f"{source}_sum", 0.0)) for source in _TITO_TRIAL_PHASE_SOURCES)
+        metrics["tito/trial/unaccounted_seconds_sum"] = max(0.0, float(trial_wall_sum) - bracketed)
 
     trajectory_count = float(merged.get("tito/trajectory/policy_turns_count", 0.0))
     metrics["tito/trajectory/count"] = trajectory_count
@@ -250,9 +230,7 @@ def publish_tito_sidecar_metrics(
     splits = max(0.0, new_segments - trajectory_count)
     eligible_boundaries = max(0.0, turn_count - trajectory_count)
     metrics["tito/lineage/splits"] = splits
-    metrics["tito/lineage/split_ratio"] = (
-        splits / eligible_boundaries if eligible_boundaries else 0.0
-    )
+    metrics["tito/lineage/split_ratio"] = splits / eligible_boundaries if eligible_boundaries else 0.0
     metrics["tito/lineage/realigns"] = float(merged.get("tito/lineage/realign", 0.0))
     for public_name, source in (
         ("contract_change", "tito/lineage/boundary_reason_contract_change"),
@@ -270,17 +248,13 @@ def publish_tito_sidecar_metrics(
         if source in merged:
             metrics[f"tito/lineage/history_rewrite/{kind}"] = merged[source]
     if "tito/lineage/realigned_masked_tokens_sum" in merged:
-        metrics["tito/lineage/realigned_masked_tokens"] = merged[
-            "tito/lineage/realigned_masked_tokens_sum"
-        ]
+        metrics["tito/lineage/realigned_masked_tokens"] = merged["tito/lineage/realigned_masked_tokens_sum"]
     sampled_tokens = merged.get("tito/coverage/sampled_completion_tokens")
     if sampled_tokens:
         trained_tokens = float(merged.get("tito/coverage/trained_tokens", 0.0))
         metrics["tito/coverage/sampled_completion_tokens"] = float(sampled_tokens)
         metrics["tito/coverage/trained_tokens"] = trained_tokens
-        metrics["tito/coverage/trained_fraction"] = trained_tokens / float(
-            sampled_tokens
-        )
+        metrics["tito/coverage/trained_fraction"] = trained_tokens / float(sampled_tokens)
     for cause in (
         "realign_overwritten",
         "checkpoint_trimmed",
@@ -294,18 +268,12 @@ def publish_tito_sidecar_metrics(
         if source in merged:
             metrics[f"tito/coverage/lost/{cause}"] = merged[source]
     if "tito/coverage/unaccounted_tokens" in merged:
-        metrics["tito/coverage/unaccounted_tokens"] = merged[
-            "tito/coverage/unaccounted_tokens"
-        ]
-    metrics["tito/parser/model_malformed"] = float(
-        merged.get("tito/parser/model_malformed", 0.0)
-    )
+        metrics["tito/coverage/unaccounted_tokens"] = merged["tito/coverage/unaccounted_tokens"]
+    metrics["tito/parser/model_malformed"] = float(merged.get("tito/parser/model_malformed", 0.0))
     metrics["tito/calls/errors"] = float(merged.get("tito/calls/failed", 0.0)) + float(
         merged.get("tito/calls/rejected", 0.0)
     )
-    metrics["tito/calls/upstream_retries"] = float(
-        merged.get("tito/calls/upstream_retry_attempts", 0.0)
-    )
+    metrics["tito/calls/upstream_retries"] = float(merged.get("tito/calls/upstream_retry_attempts", 0.0))
 
     if debug_enabled:
         for name, value in merged.items():
@@ -338,7 +306,7 @@ def add_tito_sidecar_metrics(
     )
 
 
-def datum_target_len(datum: tinker.Datum) -> int:
+def datum_target_len(datum: sdk.Datum) -> int:
     """Length of the target-token tensor on a training datum (0 if missing)."""
     target = datum.loss_fn_inputs.get("target_tokens")
     shape = getattr(target, "shape", None)
@@ -369,18 +337,14 @@ def rollout_metrics(
     rewards = [reward for pg in prompt_groups for reward in pg.rewards]
     if raw_rewards:
         metrics["rollout/raw_reward"] = sum(raw_rewards) / len(raw_rewards)
-        metrics["rollout/filtered_reward"] = (
-            sum(rewards) / len(rewards) if rewards else 0.0
-        )
+        metrics["rollout/filtered_reward"] = sum(rewards) / len(rewards) if rewards else 0.0
         metrics["rollout/raw_samples"] = len(raw_rewards)
         metrics["rollout/filtered_samples"] = len(rewards)
         metrics["rollout/filter_ratio"] = 1.0 - len(rewards) / len(raw_rewards)
 
     completion_lens = [n for pg in prompt_groups for n in pg.completion_lens]
     if completion_lens:
-        metrics["rollout/completion_tokens_mean"] = sum(completion_lens) / len(
-            completion_lens
-        )
+        metrics["rollout/completion_tokens_mean"] = sum(completion_lens) / len(completion_lens)
         metrics["rollout/completion_tokens_max"] = max(completion_lens)
     truncated = [flag for pg in prompt_groups for flag in pg.truncated]
     if truncated:
@@ -394,9 +358,7 @@ def rollout_metrics(
         and math.isfinite(float(metadata["trainable_tokens"]))
     ]
     if trainable_tokens:
-        metrics["rollout/trainable_tokens_mean"] = sum(trainable_tokens) / len(
-            trainable_tokens
-        )
+        metrics["rollout/trainable_tokens_mean"] = sum(trainable_tokens) / len(trainable_tokens)
         metrics["rollout/trainable_tokens_max"] = max(trainable_tokens)
         metrics["rollout/trainable_tokens_min"] = min(trainable_tokens)
     return metrics
@@ -446,9 +408,7 @@ def sync_step_perf_metrics(loop_stats: Mapping[str, Any], prompt_groups: Sequenc
     return metrics
 
 
-def async_step_perf_metrics(
-    loop_stats: Mapping[str, Any], prompt_groups: Sequence[PromptGroup]
-) -> dict[str, float]:
+def async_step_perf_metrics(loop_stats: Mapping[str, Any], prompt_groups: Sequence[PromptGroup]) -> dict[str, float]:
     """The async scheduler's staleness/wait statistics and step throughput."""
     metrics = {key: loop_stats[key] for key in _LOOP_STAT_PASSTHROUGH_KEYS if key in loop_stats}
     step_time = float(loop_stats.get("perf/step_time", 0.0))

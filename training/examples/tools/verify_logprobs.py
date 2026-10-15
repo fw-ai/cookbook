@@ -24,29 +24,28 @@ Usage:
 
 from __future__ import annotations
 
-import os
-import json
-import time
-import logging
 import argparse
+import json
+import logging
+import os
+import time
 from contextlib import closing
 
 import torch
-import tinker
 import transformers
-
+from fireworks.training import sdk
 from fireworks.training.sdk import (
-    TrainerJobManager,
     DeploymentManager,
+    TrainerJobManager,
 )
 from training.utils import (
-    TrainerConfig,
     DeployConfig,
     ReconnectableClient,
+    TrainerConfig,
     build_service_client,
-    read_api_extra_headers_env,
     load_jsonl_dataset,
     prepare_sampling_messages,
+    read_api_extra_headers_env,
 )
 
 logging.basicConfig(
@@ -106,10 +105,14 @@ def compare_logprobs(
     }
 
     logger.info(
-        "[%s] completion tokens=%d | mean_diff=%.6f max_diff=%.6f | "
-        "k1=%.6f k2=%.6f k3=%.6f",
-        label, metrics["count"], metrics["mean_diff"], metrics["max_diff"],
-        metrics["k1"], metrics["k2"], metrics["k3"],
+        "[%s] completion tokens=%d | mean_diff=%.6f max_diff=%.6f | " "k1=%.6f k2=%.6f k3=%.6f",
+        label,
+        metrics["count"],
+        metrics["mean_diff"],
+        metrics["max_diff"],
+        metrics["k1"],
+        metrics["k2"],
+        metrics["k3"],
     )
     return metrics
 
@@ -124,11 +127,13 @@ def parse_args():
         description="Verify train-inference logprob alignment using cookbook utilities",
     )
     p.add_argument(
-        "--training-shape", required=True,
+        "--training-shape",
+        required=True,
         help="Policy training shape ID (e.g. ts-qwen3-30b-a3b-128k)",
     )
     p.add_argument(
-        "--ref-training-shape", default=None,
+        "--ref-training-shape",
+        default=None,
         help=(
             "LoRA-capable reference training shape ID. "
             "When set, a second trainer is created to provide reference "
@@ -136,15 +141,18 @@ def parse_args():
         ),
     )
     p.add_argument(
-        "--shape-account", default=None,
+        "--shape-account",
+        default=None,
         help="Account that owns the training shapes (for cross-account resolution)",
     )
     p.add_argument(
-        "--base-model", required=True,
+        "--base-model",
+        required=True,
         help="Base model resource name (e.g. accounts/fireworks/models/qwen3-30b-a3b)",
     )
     p.add_argument(
-        "--tokenizer", required=True,
+        "--tokenizer",
+        required=True,
         help="HuggingFace tokenizer name (e.g. Qwen/Qwen3-30B-A3B)",
     )
     p.add_argument("--dataset", default=DEFAULT_DATASET, help="JSONL dataset path or URL")
@@ -255,7 +263,8 @@ def main():
 
         sampler = service.create_sampling_client().deployment_sampler
         sampler.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            args.tokenizer, trust_remote_code=True,
+            args.tokenizer,
+            trust_remote_code=True,
         )
         logger.info("  Deployment:       %s", service.deployment_id)
 
@@ -275,7 +284,8 @@ def main():
 
         logger.info(
             "\n[4/4] Verifying logprobs (%d prompts, greedy, completion-only, ref=%s)...",
-            len(dataset), "yes" if use_reference else "no",
+            len(dataset),
+            "yes" if use_reference else "no",
         )
         all_metrics: list[dict] = []
 
@@ -287,15 +297,22 @@ def main():
 
             preview = input_msgs[-1].get("content", "")[:60]
             logger.info(
-                "\n--- Prompt %d/%d: %s... ---", pidx + 1, len(dataset), preview,
+                "\n--- Prompt %d/%d: %s... ---",
+                pidx + 1,
+                len(dataset),
+                preview,
             )
 
             # Sample from deployment
             try:
                 sampled = sampler.sample_with_tokens(
-                    messages=input_msgs, n=1,
-                    max_tokens=args.max_new_tokens, temperature=0.0,
-                    logprobs=True, echo=True, prompt_cache_max_len=0,
+                    messages=input_msgs,
+                    n=1,
+                    max_tokens=args.max_new_tokens,
+                    temperature=0.0,
+                    logprobs=True,
+                    echo=True,
+                    prompt_cache_max_len=0,
                     max_seq_len=max_seq_len,
                 )
             except Exception as e:
@@ -310,17 +327,21 @@ def main():
             ft = s.full_tokens
             logger.info(
                 "  Sampled: prompt=%d  completion=%d  total=%d",
-                s.prompt_len, s.completion_len, len(ft),
+                s.prompt_len,
+                s.completion_len,
+                len(ft),
             )
 
             if len(ft) < 2:
                 continue
 
-            datum = tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(ft[:-1]),
+            datum = sdk.Datum(
+                model_input=sdk.ModelInput.from_ints(ft[:-1]),
                 loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(
-                        data=ft[1:], dtype="int64", shape=[len(ft) - 1],
+                    "target_tokens": sdk.TensorData(
+                        data=ft[1:],
+                        dtype="int64",
+                        shape=[len(ft) - 1],
                     ),
                 },
             )
@@ -377,11 +398,14 @@ def main():
             logger.info("  %d comparisons across %d prompts", n, args.max_rows)
             logger.info(
                 "  Completion: avg_mean_diff=%.6f  max_diff=%.6f",
-                avg_mean, worst_max,
+                avg_mean,
+                worst_max,
             )
             logger.info(
                 "  KL:         k1=%.6f  k2=%.6f  k3=%.6f",
-                avg_k1, avg_k2, avg_k3,
+                avg_k1,
+                avg_k2,
+                avg_k3,
             )
 
             if worst_max < 0.01:
@@ -395,19 +419,25 @@ def main():
                 logger.info("  RESULT: FAIL (max diff %.6f > 0.1)", worst_max)
 
             with open(os.path.join(args.log_dir, "results.json"), "w") as f:
-                json.dump({
-                    "training_shape": args.training_shape,
-                    "ref_training_shape": args.ref_training_shape,
-                    "base_model": args.base_model,
-                    "per_prompt": all_metrics,
-                    "summary": {
-                        "prompts": len(dataset),
-                        "comparisons": n,
-                        "avg_mean_diff": avg_mean,
-                        "max_diff": worst_max,
-                        "k1": avg_k1, "k2": avg_k2, "k3": avg_k3,
+                json.dump(
+                    {
+                        "training_shape": args.training_shape,
+                        "ref_training_shape": args.ref_training_shape,
+                        "base_model": args.base_model,
+                        "per_prompt": all_metrics,
+                        "summary": {
+                            "prompts": len(dataset),
+                            "comparisons": n,
+                            "avg_mean_diff": avg_mean,
+                            "max_diff": worst_max,
+                            "k1": avg_k1,
+                            "k2": avg_k2,
+                            "k3": avg_k3,
+                        },
                     },
-                }, f, indent=2)
+                    f,
+                    indent=2,
+                )
             logger.info("  Results: %s", os.path.join(args.log_dir, "results.json"))
         else:
             logger.error("  No valid comparisons completed!")

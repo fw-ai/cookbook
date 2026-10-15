@@ -1,6 +1,6 @@
 """Local DeepSeek V3 thinking renderer with multi-turn SFT disaggregate support.
 
-Upstream ``training._vendor.tinker_cookbook_0_4_3.renderers.deepseek_v3.DeepSeekV3ThinkingRenderer``
+Upstream ``training.renderer.deepseek_v3.DeepSeekV3ThinkingRenderer``
 strips ``<think>`` blocks from history (matching the shipped
 ``apply_chat_template`` default) but ships without a
 ``build_supervised_examples`` override. Multi-turn ALL_ASSISTANT_MESSAGES
@@ -15,14 +15,11 @@ variants (``deepseekv3``, ``deepseekv3_disable_thinking``) override
 from __future__ import annotations
 
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.deepseek_v3 import DeepSeekV3ThinkingRenderer
-
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.deepseek_v3 import DeepSeekV3ThinkingRenderer
 
 
-class DeepSeekV3ThinkingSplitRenderer(
-    DisaggregateMultiTurnMixin, DeepSeekV3ThinkingRenderer
-):
+class DeepSeekV3ThinkingSplitRenderer(DisaggregateMultiTurnMixin, DeepSeekV3ThinkingRenderer):
     pass
 
 

@@ -1,28 +1,27 @@
 from __future__ import annotations
 
-import importlib
-import os
-import signal
 import asyncio
-import threading
+import importlib
 import inspect
+import os
 import pkgutil
-from pathlib import Path
+import signal
+import threading
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import tinker
+import training.recipes.rl_loop as module
+from fireworks.training import sdk
 from fireworks.training.sdk.routing import RoutingReferences
 from fireworks.training.sdk.sampling import SampledCompletion
-
-import training.recipes.rl_loop as module
-from training.utils.rl.losses import PromptGroup
-from training.utils.termination import TerminatedBySignal
 from training.renderer import get_text_content
+from training.renderer.base import Message, Renderer
+from training.utils.rl.losses import PromptGroup
 from training.utils.supervised import has_non_text_chunks
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, Renderer
+from training.utils.termination import TerminatedBySignal
 
 
 class _StopAfterRenderer(RuntimeError):
@@ -42,8 +41,7 @@ def _grpo_result(rows: int) -> SimpleNamespace:
     return SimpleNamespace(
         metrics={},
         loss_fn_outputs=[
-            {"logprobs": tinker.TensorData(data=[-0.1, -0.2], dtype="float32", shape=[2])}
-            for _ in range(rows)
+            {"logprobs": sdk.TensorData(data=[-0.1, -0.2], dtype="float32", shape=[2])} for _ in range(rows)
         ],
     )
 
@@ -143,9 +141,7 @@ def test_all_cookbook_renderer_classes_implement_parse_response():
     get_text_content(Message(role="assistant", content="hello"))
 
     missing: list[str] = []
-    for modinfo in pkgutil.walk_packages(
-        training.renderer.__path__, training.renderer.__name__ + "."
-    ):
+    for modinfo in pkgutil.walk_packages(training.renderer.__path__, training.renderer.__name__ + "."):
         if ".verifier" in modinfo.name:
             continue
         mod = importlib.import_module(modinfo.name)
@@ -166,14 +162,8 @@ def test_extract_answer_reads_digits_from_answer_block():
 
 
 def test_reward_fn_requires_matching_numeric_answer():
-    assert (
-        module.reward_fn("<answer>7</answer>", {"ground_truth": "<answer>7</answer>"})
-        == 1.0
-    )
-    assert (
-        module.reward_fn("<answer>8</answer>", {"ground_truth": "<answer>7</answer>"})
-        == 0.0
-    )
+    assert module.reward_fn("<answer>7</answer>", {"ground_truth": "<answer>7</answer>"}) == 1.0
+    assert module.reward_fn("<answer>8</answer>", {"ground_truth": "<answer>7</answer>"}) == 0.0
     assert module.reward_fn("missing", {"ground_truth": "<answer>7</answer>"}) == 0.0
 
 
@@ -193,9 +183,7 @@ def _stub_provisioning_dependencies(monkeypatch: Any) -> None:
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        module, "resolve_router_replay_enabled", lambda **kwargs: kwargs["requested"]
-    )
+    monkeypatch.setattr(module, "resolve_router_replay_enabled", lambda **kwargs: kwargs["requested"])
     monkeypatch.setattr(module, "load_deployment_tokenizer", lambda *args, **kwargs: object())
 
 
@@ -260,10 +248,7 @@ def test_main_requests_cleanup_for_sdk_created_resources(monkeypatch):
     kwargs = _build_service_kwargs(monkeypatch, cfg)
 
     assert kwargs["cleanup_trainer_on_close"] is True
-    assert (
-        kwargs["cleanup_deployment_on_close"]
-        == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
-    )
+    assert kwargs["cleanup_deployment_on_close"] == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
 
 
 def test_main_can_disable_cleanup_on_exit(monkeypatch):
@@ -312,10 +297,7 @@ def test_main_delegates_trainer_cleanup_for_existing_id_to_sdk(monkeypatch):
     kwargs = _build_service_kwargs(monkeypatch, cfg)
 
     assert kwargs["cleanup_trainer_on_close"] is True
-    assert (
-        kwargs["cleanup_deployment_on_close"]
-        == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
-    )
+    assert kwargs["cleanup_deployment_on_close"] == module.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
 
 
 def test_main_requests_trainer_cleanup_for_empty_job_id(monkeypatch):
@@ -331,10 +313,10 @@ def test_main_requests_trainer_cleanup_for_empty_job_id(monkeypatch):
     assert kwargs["cleanup_trainer_on_close"] is True
 
 
-def _datum() -> tinker.Datum:
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints([1, 2]),
-        loss_fn_inputs={"target_tokens": tinker.TensorData(data=[2, 3], dtype="int64", shape=[2])},
+def _datum() -> sdk.Datum:
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={"target_tokens": sdk.TensorData(data=[2, 3], dtype="int64", shape=[2])},
     )
 
 
@@ -552,9 +534,7 @@ def test_prepare_batch_fn_rewrites_the_batch_before_the_update(monkeypatch) -> N
         return replace(batch, token_advantages=[[0.0, 0.5], [0.0, -0.5]]), {"igpo/mean_ig": 0.25}
 
     logged: list[tuple[int, dict[str, Any]]] = []
-    _run_loop(
-        monkeypatch, policy=policy, events=events, rows=[{"id": 0}], prepare_batch_fn=prepare, logged=logged
-    )
+    _run_loop(monkeypatch, policy=policy, events=events, rows=[{"id": 0}], prepare_batch_fn=prepare, logged=logged)
 
     assert seen == [policy]
     assert [d.loss_fn_inputs["advantages"].data for d in policy.datums] == [[0.0, 0.5], [0.0, -0.5]]
@@ -645,11 +625,11 @@ def test_main_passes_renderer_name_to_the_default_rollout(monkeypatch):
 def test_default_rollout_preserves_images_and_sdk_routing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, multimodal: bool, routing_format: str | None
 ) -> None:
-    chunks = [tinker.EncodedTextChunk(tokens=[10, 11])]
+    chunks = [sdk.EncodedTextChunk(tokens=[10, 11])]
     if multimodal:
-        chunks.append(tinker.types.ImageChunk(data=b"image", format="png", expected_tokens=4))
-    chunks.append(tinker.EncodedTextChunk(tokens=[12]))
-    prompt = tinker.ModelInput(chunks=chunks)
+        chunks.append(sdk.types.ImageChunk(data=b"image", format="png", expected_tokens=4))
+    chunks.append(sdk.EncodedTextChunk(tokens=[12]))
+    prompt = sdk.ModelInput(chunks=chunks)
     expanded_tokens = [10, 11] + ([0] * 4 if multimodal else []) + [12]
     routes = None
     if routing_format == "base64_inline":

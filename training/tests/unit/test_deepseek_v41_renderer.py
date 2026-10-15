@@ -7,13 +7,13 @@ import json
 from pathlib import Path
 
 import pytest
-import tinker
+from fireworks.training import sdk
 from PIL import Image
+from training.renderer.base import TrainOnWhat
 from training.renderer.deepseek_v41 import (
     DeepseekV41ImageTokenCounter,
     DeepseekV41Renderer,
 )
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
 from training.utils.supervised import (
     build_tool_prefixed_messages,
     normalize_messages,
@@ -33,9 +33,7 @@ class _Tokenizer:
         return [_EOS_ID] if text == _EOS else [ord(character) for character in text]
 
     def decode(self, tokens: list[int], **_: object) -> str:
-        return "".join(
-            _EOS if int(token) == _EOS_ID else chr(int(token)) for token in tokens
-        )
+        return "".join(_EOS if int(token) == _EOS_ID else chr(int(token)) for token in tokens)
 
 
 class _MergingTokenizer(_Tokenizer):
@@ -50,11 +48,7 @@ class _MergingTokenizer(_Tokenizer):
         tokens, index = [], 0
         while index < len(text):
             merged = next(
-                (
-                    item
-                    for item in self._MERGES.items()
-                    if text.startswith(item[0], index)
-                ),
+                (item for item in self._MERGES.items() if text.startswith(item[0], index)),
                 None,
             )
             tokens.append(merged[1] if merged else ord(text[index]))
@@ -86,7 +80,7 @@ def _renderer(*, images: bool = False) -> DeepseekV41Renderer:
     return DeepseekV41Renderer(_Tokenizer(), image_processor=counter)
 
 
-def _text(model_input: tinker.ModelInput) -> str:
+def _text(model_input: sdk.ModelInput) -> str:
     return _Tokenizer().decode(list(model_input.to_ints()))
 
 
@@ -151,9 +145,7 @@ def test_tool_order_and_mid_system_last_turn_mask() -> None:
                     "type": "function",
                     "function": {
                         "name": name,
-                        "arguments": json.dumps(json.dumps({"city": "Paris"}))
-                        if name == "first"
-                        else "{}",
+                        "arguments": json.dumps(json.dumps({"city": "Paris"})) if name == "first" else "{}",
                     },
                 }
                 for call_id, name in (("a", "first"), ("b", "second"))
@@ -174,17 +166,9 @@ def test_tool_order_and_mid_system_last_turn_mask() -> None:
         train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
     )
     text = _text(model_input)
-    assert text == _publisher_encoder().encode_messages(
-        messages, thinking_mode="thinking"
-    )
+    assert text == _publisher_encoder().encode_messages(messages, thinking_mode="thinking")
     trained = renderer.tokenizer.decode(
-        [
-            token
-            for token, weight in zip(
-                model_input.to_ints(), weights.tolist(), strict=True
-            )
-            if weight
-        ]
+        [token for token, weight in zip(model_input.to_ints(), weights.tolist(), strict=True) if weight]
     )
     assert "OLD_REASONING" not in trained
     assert "NEW_REASONING" in trained and "Done." in trained
@@ -209,9 +193,7 @@ def test_tool_order_and_mid_system_last_turn_mask() -> None:
 def test_assistant_header_matches_publisher(
     messages: list[dict[str, object]],
 ) -> None:
-    actual = _text(
-        _renderer().build_supervised_example(normalize_messages(messages))[0]
-    )
+    actual = _text(_renderer().build_supervised_example(normalize_messages(messages))[0])
     expected = _publisher_encoder().encode_messages(messages, thinking_mode="thinking")
     assert actual == expected
 
@@ -254,9 +236,7 @@ def test_mid_system_is_a_supervised_turn_boundary(
         renderer=_renderer(),
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
-    assert len(rendered) == sum(
-        message["role"] == "assistant" for message in raw_messages
-    )
+    assert len(rendered) == sum(message["role"] == "assistant" for message in raw_messages)
     assert all(sum(item.datum.loss_fn_inputs["weights"].data) > 0 for item in rendered)
 
 
@@ -278,14 +258,10 @@ def test_top_level_tools_preserve_structured_system_metadata() -> None:
         },
         {"role": "user", "content": "Find it."},
     ]
-    prefixed = build_tool_prefixed_messages(
-        raw_messages, renderer=_renderer(), tools=tools
-    )
+    prefixed = build_tool_prefixed_messages(raw_messages, renderer=_renderer(), tools=tools)
     actual = _text(_renderer().build_generation_prompt(prefixed))
     expected_messages = [dict(raw_messages[0], tools=tools), raw_messages[1]]
-    expected = _publisher_encoder().encode_messages(
-        expected_messages, thinking_mode="thinking"
-    )
+    expected = _publisher_encoder().encode_messages(expected_messages, thinking_mode="thinking")
     assert actual == expected
 
 
@@ -324,15 +300,11 @@ def test_images_are_ordered_counted_and_zero_loss() -> None:
             ]
         )
     )
-    images = [
-        chunk
-        for chunk in model_input.chunks
-        if isinstance(chunk, tinker.types.ImageChunk)
-    ]
+    images = [chunk for chunk in model_input.chunks if isinstance(chunk, sdk.types.ImageChunk)]
     assert [chunk.expected_tokens for chunk in images] == [4, 4]
     offset = 0
     for chunk in model_input.chunks:
-        if isinstance(chunk, tinker.types.ImageChunk):
+        if isinstance(chunk, sdk.types.ImageChunk):
             assert not weights[offset : offset + chunk.length].any()
         offset += chunk.length
 
@@ -388,15 +360,16 @@ def test_block_separators_tokenize_like_the_publisher_prompt(
 ) -> None:
     image = Image.new("RGB", (4, 4), "red")
     rendered = [
-        {
-            **message,
-            "content": [
-                dict(part, image=image) if part["type"] == "image" else part
-                for part in message["content"]
-            ],
-        }
-        if isinstance(message["content"], list)
-        else message
+        (
+            {
+                **message,
+                "content": [
+                    dict(part, image=image) if part["type"] == "image" else part for part in message["content"]
+                ],
+            }
+            if isinstance(message["content"], list)
+            else message
+        )
         for message in messages
     ]
     renderer = DeepseekV41Renderer(
@@ -406,26 +379,26 @@ def test_block_separators_tokenize_like_the_publisher_prompt(
     model_input, _ = renderer.build_supervised_example(normalize_messages(rendered))
     segments: list[list[int]] = [[]]
     for chunk in model_input.chunks:
-        if isinstance(chunk, tinker.types.ImageChunk):
+        if isinstance(chunk, sdk.types.ImageChunk):
             segments.append([])
         else:
             segments[-1].extend(chunk.tokens)
     publisher = [
-        {
-            **message,
-            "content": [
-                {"type": "image", "data": "red"} if part["type"] == "image" else part
-                for part in message["content"]
-            ],
-        }
-        if isinstance(message["content"], list)
-        else message
+        (
+            {
+                **message,
+                "content": [
+                    {"type": "image", "data": "red"} if part["type"] == "image" else part
+                    for part in message["content"]
+                ],
+            }
+            if isinstance(message["content"], list)
+            else message
+        )
         for message in messages
     ]
     prompt = _publisher_encoder().encode_messages(publisher, thinking_mode="thinking")
-    assert segments == [
-        renderer.tokenizer.encode(part) for part in prompt.split("<｜deepseek_image｜>")
-    ]
+    assert segments == [renderer.tokenizer.encode(part) for part in prompt.split("<｜deepseek_image｜>")]
 
 
 def test_valid_and_malformed_tool_parsing() -> None:

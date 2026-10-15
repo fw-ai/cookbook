@@ -83,8 +83,7 @@ from __future__ import annotations
 import warnings
 from typing import Any, Mapping, Sequence
 
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
-
+from training.renderer.base import TrainOnWhat
 from training.renderer.message_weights import (
     equivalent_builtin_train_on_what,
     render_masked_example,
@@ -138,24 +137,18 @@ class DisaggregateMultiTurnMixin:
         terminal_start = 0
         for idx in range(len(prefix) - 1, -1, -1):
             message = prefix[idx]
-            if isinstance(
-                message, Mapping
-            ) and self._is_disaggregation_turn_boundary(message, idx):
+            if isinstance(message, Mapping) and self._is_disaggregation_turn_boundary(message, idx):
                 terminal_start = idx + 1
                 break
         return [
-            message
-            if idx >= terminal_start or not isinstance(message, Mapping)
-            else {**message, "trainable": False}
+            message if idx >= terminal_start or not isinstance(message, Mapping) else {**message, "trainable": False}
             for idx, message in enumerate(prefix)
         ]
 
     def _disaggregation_end_indices(self, messages: Sequence[Mapping[str, Any]]) -> list[int]:
         """Exclusive ends for turns that contain at least one assistant."""
         boundaries = [
-            index
-            for index, message in enumerate(messages)
-            if self._is_disaggregation_turn_boundary(message, index)
+            index for index, message in enumerate(messages) if self._is_disaggregation_turn_boundary(message, index)
         ]
         ends: list[int] = []
         turn_start = 0
@@ -177,9 +170,7 @@ class DisaggregateMultiTurnMixin:
         # on a renderer that supports it), the singular render is correct
         # and disaggregating would N²-blow up token cost for no win.
         if self.has_extension_property:
-            return [
-                self.build_supervised_example(messages, train_on_what=train_on_what)
-            ]
+            return [self.build_supervised_example(messages, train_on_what=train_on_what)]
 
         # Single-target modes don't need split — the singular path renders
         # the full conversation with weights only on the last segment, so
@@ -188,9 +179,7 @@ class DisaggregateMultiTurnMixin:
             TrainOnWhat.LAST_ASSISTANT_MESSAGE,
             TrainOnWhat.LAST_ASSISTANT_TURN,
         ):
-            return [
-                self.build_supervised_example(messages, train_on_what=train_on_what)
-            ]
+            return [self.build_supervised_example(messages, train_on_what=train_on_what)]
 
         if train_on_what not in (
             TrainOnWhat.ALL_ASSISTANT_MESSAGES,
@@ -220,9 +209,7 @@ class DisaggregateMultiTurnMixin:
                 continue
             if train_on_what == TrainOnWhat.ALL_ASSISTANT_MESSAGES:
                 mode = TrainOnWhat.LAST_ASSISTANT_TURN
-            elif train_on_what == TrainOnWhat.CUSTOMIZED and uses_per_message_weights(
-                prefix
-            ):
+            elif train_on_what == TrainOnWhat.CUSTOMIZED and uses_per_message_weights(prefix):
                 prefix = self._demote_history_to_context(prefix)
                 # A fully trainable terminal turn restates LAST_ASSISTANT_TURN
                 # and a terminal turn masked down to its final answer restates

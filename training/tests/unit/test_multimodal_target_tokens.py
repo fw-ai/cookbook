@@ -1,6 +1,6 @@
 """Tests for the canonical expanded multimodal datum contract.
 
-Tinker represents each image position with a zero wire placeholder in
+The training protocol represents each image position with a zero wire placeholder in
 ``target_tokens``. The shifted model input, targets, and weights therefore all
 have the same expanded length. The trainer resolves placeholders to its
 model-specific image token ID and keeps image positions masked out of loss.
@@ -12,13 +12,12 @@ import hashlib
 
 import pytest
 import torch
-import tinker
-
+from fireworks.training import sdk
 from training.utils.supervised import (
     RenderedChunkSpan,
     build_datum_from_model_input_and_weights,
-    rendered_chunk_spans,
     render_messages_to_datum,
+    rendered_chunk_spans,
 )
 
 
@@ -26,17 +25,17 @@ def _make_multimodal_model_input(
     prefix_tokens: list[int],
     image_expected_tokens: int,
     suffix_tokens: list[int],
-) -> tinker.ModelInput:
+) -> sdk.ModelInput:
     """Build a ModelInput: [text] [image] [text]."""
-    return tinker.ModelInput(
+    return sdk.ModelInput(
         chunks=[
-            tinker.EncodedTextChunk(tokens=prefix_tokens),
-            tinker.types.ImageAssetPointerChunk(
-                location="https://example.com/img.png",
+            sdk.EncodedTextChunk(tokens=prefix_tokens),
+            sdk.types.ImageChunk(
+                data=b"inline-image",
                 format="png",
                 expected_tokens=image_expected_tokens,
             ),
-            tinker.EncodedTextChunk(tokens=suffix_tokens),
+            sdk.EncodedTextChunk(tokens=suffix_tokens),
         ]
     )
 
@@ -77,9 +76,7 @@ class TestMultimodalTargetTokensUseExpandedCoordinates:
                 token_count=3,
                 image_index=0,
                 image_format="png",
-                fingerprint=hashlib.sha256(
-                    b"https://example.com/img.png"
-                ).hexdigest(),
+                fingerprint=hashlib.sha256(b"inline-image").hexdigest(),
             ),
             RenderedChunkSpan(kind="text", token_start=5, token_count=1),
             RenderedChunkSpan(kind="text", token_start=6, token_count=1),
@@ -103,17 +100,21 @@ class TestMultimodalTargetTokensUseExpandedCoordinates:
 
     def test_multiple_images(self):
         """Two image chunks retain both placeholder spans."""
-        model_input = tinker.ModelInput(
+        model_input = sdk.ModelInput(
             chunks=[
-                tinker.EncodedTextChunk(tokens=[10, 11]),
-                tinker.types.ImageAssetPointerChunk(
-                    location="img1", format="png", expected_tokens=2,
+                sdk.EncodedTextChunk(tokens=[10, 11]),
+                sdk.types.ImageChunk(
+                    data=b"img1",
+                    format="png",
+                    expected_tokens=2,
                 ),
-                tinker.EncodedTextChunk(tokens=[12]),
-                tinker.types.ImageAssetPointerChunk(
-                    location="img2", format="png", expected_tokens=2,
+                sdk.EncodedTextChunk(tokens=[12]),
+                sdk.types.ImageChunk(
+                    data=b"img2",
+                    format="png",
+                    expected_tokens=2,
                 ),
-                tinker.EncodedTextChunk(tokens=[13, 14]),
+                sdk.EncodedTextChunk(tokens=[13, 14]),
             ]
         )
         total = 2 + 2 + 1 + 2 + 2  # 9
@@ -172,9 +173,7 @@ class TestMultimodalWeightsAlignment:
         image_start = 1  # after shift, image occupies positions 1..3
         image_end = 4
         for i in range(image_start, image_end):
-            assert datum_weights[i] == 0.0, (
-                f"Weight at image position {i} should be 0.0, got {datum_weights[i]}"
-            )
+            assert datum_weights[i] == 0.0, f"Weight at image position {i} should be 0.0, got {datum_weights[i]}"
 
 
 class TestMultimodalModelInputPreservesChunks:
@@ -191,7 +190,7 @@ class TestMultimodalModelInputPreservesChunks:
         rendered = build_datum_from_model_input_and_weights(model_input, weights)
         chunks = list(rendered.datum.model_input.chunks)
 
-        non_text = [c for c in chunks if not isinstance(c, tinker.types.EncodedTextChunk)]
+        non_text = [c for c in chunks if not isinstance(c, sdk.types.EncodedTextChunk)]
         assert len(non_text) == 1, "Image chunk must be preserved in the datum's model_input"
 
     def test_truncation_removes_last_text_token_only(self):
@@ -295,9 +294,7 @@ class TestTextOnlyPathUnchanged:
     """Text-only inputs should still go through the standard datum builder."""
 
     def test_text_only_model_input_uses_upstream_builder(self):
-        model_input = tinker.ModelInput(
-            chunks=[tinker.EncodedTextChunk(tokens=[10, 11, 12, 13])]
-        )
+        model_input = sdk.ModelInput(chunks=[sdk.EncodedTextChunk(tokens=[10, 11, 12, 13])])
         weights = [0.0, 0.0, 1.0, 1.0]
 
         rendered = build_datum_from_model_input_and_weights(model_input, weights)

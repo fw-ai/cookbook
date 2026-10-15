@@ -4,9 +4,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-import tinker
-
 import training.examples.archive.countdown.countdown_rl as countdown_rl
+from fireworks.training import sdk
 from training.examples.archive.countdown.countdown_rewards import composite_reward
 from training.examples.archive.countdown.prepare_data import countdown_row
 from training.recipes.experiment import async_rl_loop_serverless as loop
@@ -23,7 +22,7 @@ class _Renderer:
         # The last prompt token identifies the row so the fake sampler can
         # alternate answers within each prompt group.
         assert messages[-1]["role"] == "user"
-        return tinker.ModelInput.from_ints([1, 2, len(messages[-1]["content"])])
+        return sdk.ModelInput.from_ints([1, 2, len(messages[-1]["content"])])
 
     def parse_response(self, tokens):
         return {"role": "assistant", "content": _TEXT_BY_TOKEN[tokens[0]]}, True
@@ -175,7 +174,7 @@ def test_main_runs_the_real_serverless_recipe(monkeypatch, tmp_path) -> None:
             self.forward_backward_calls.append((len(datums), loss_fn))
             outputs = [
                 {
-                    "logprobs": tinker.TensorData(
+                    "logprobs": sdk.TensorData(
                         data=[-0.15] * len(d.loss_fn_inputs["target_tokens"].data),
                         dtype="float32",
                         shape=[len(d.loss_fn_inputs["target_tokens"].data)],

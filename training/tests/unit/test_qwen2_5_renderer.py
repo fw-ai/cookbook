@@ -7,8 +7,7 @@ from typing import Any
 
 import pytest
 import transformers
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, ParseTermination, TrainOnWhat
-
+from training.renderer.base import Message, ParseTermination, TrainOnWhat
 from training.renderer.qwen2_5 import (
     PRODUCTION_EOS_TOKEN,
     PRODUCTION_EOS_TOKEN_ID,
@@ -19,7 +18,6 @@ from training.utils.supervised import (
     normalize_messages,
     render_preference_pair,
 )
-
 
 _HF_REPO = "Qwen/Qwen2.5-32B-Instruct"
 
@@ -133,9 +131,7 @@ def test_public_hf_main_has_required_stop_token(
     tokenizer: transformers.PreTrainedTokenizerBase,
 ) -> None:
     assert tokenizer.eos_token == PRODUCTION_EOS_TOKEN
-    assert tokenizer.convert_tokens_to_ids(PRODUCTION_EOS_TOKEN) == (
-        PRODUCTION_EOS_TOKEN_ID
-    )
+    assert tokenizer.convert_tokens_to_ids(PRODUCTION_EOS_TOKEN) == (PRODUCTION_EOS_TOKEN_ID)
 
 
 @pytest.mark.parametrize(
@@ -264,9 +260,7 @@ def test_supervised_tokens_masks_and_generation_prefix_match_public_hf_main(
 
     assert tokens[: len(generation_prefix)] == generation_prefix
     assert last_weights[: len(generation_prefix)] == [0.0] * len(generation_prefix)
-    assert last_weights[len(generation_prefix) :] == [1.0] * (
-        len(tokens) - len(generation_prefix)
-    )
+    assert last_weights[len(generation_prefix) :] == [1.0] * (len(tokens) - len(generation_prefix))
     last_text = _trained_text(tokenizer, tokens, last_weights)
     assert "SECOND_ANSWER" in last_text
     assert "FIRST_ANSWER" not in last_text
@@ -283,10 +277,7 @@ def test_supervised_tokens_masks_and_generation_prefix_match_public_hf_main(
     assert "second question" not in all_text
 
     customized = normalize_messages(
-        [
-            {**message, "weight": int(index == 1)}
-            for index, message in enumerate(raw_messages)
-        ]
+        [{**message, "weight": int(index == 1)} for index, message in enumerate(raw_messages)]
     )
     custom_input, custom_weights = renderer.build_supervised_example(
         customized,
@@ -348,14 +339,8 @@ def test_dpo_chosen_rejected_match_public_hf_main_and_preserve_cross_boundary_bp
         min(len(expected_chosen), len(expected_rejected)),
     )
     assert pair.response_start == expected_response_start == 32
-    assert (
-        pair.chosen_tokens[: pair.response_start]
-        == pair.rejected_tokens[: pair.response_start]
-    )
-    assert (
-        pair.chosen_tokens[pair.response_start]
-        != pair.rejected_tokens[pair.response_start]
-    )
+    assert pair.chosen_tokens[: pair.response_start] == pair.rejected_tokens[: pair.response_start]
+    assert pair.chosen_tokens[pair.response_start] != pair.rejected_tokens[pair.response_start]
 
     generation_text = _hf_render(
         tokenizer,
@@ -399,9 +384,7 @@ def test_dpo_chosen_rejected_match_public_hf_main_and_preserve_cross_boundary_bp
             return_offsets_mapping=True,
         )
         crossing_tokens = [
-            index
-            for index, (start, end) in enumerate(encoded["offset_mapping"])
-            if start < len(generation_text) < end
+            index for index, (start, end) in enumerate(encoded["offset_mapping"]) if start < len(generation_text) < end
         ]
         assert crossing_tokens == [pair.response_start - 1]
 
@@ -411,14 +394,8 @@ def test_dpo_chosen_rejected_match_public_hf_main_and_preserve_cross_boundary_bp
     rejected_targets = pair.rejected_datum.loss_fn_inputs["target_tokens"].data
     assert chosen_targets == pair.chosen_tokens[1:]
     assert rejected_targets == pair.rejected_tokens[1:]
-    assert (
-        chosen_targets[pair.response_start - 1]
-        == pair.chosen_tokens[pair.response_start]
-    )
-    assert (
-        rejected_targets[pair.response_start - 1]
-        == pair.rejected_tokens[pair.response_start]
-    )
+    assert chosen_targets[pair.response_start - 1] == pair.chosen_tokens[pair.response_start]
+    assert rejected_targets[pair.response_start - 1] == pair.rejected_tokens[pair.response_start]
 
 
 @pytest.mark.parametrize("role", ["user", "assistant"])

@@ -9,35 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
-import training._vendor.tinker_cookbook_0_4_3.model_info as vendored_model_info
-import training._vendor.tinker_cookbook_0_4_3.renderers as vendored_renderers
 import training.renderer as fireworks_renderers
+import training.renderer._model_info as native_model_info
+import training.renderer._registry as native_renderers
 import training.renderer.model_info as fireworks_model_info
-
-_INSTALLED_PACKAGE_IMPORT = re.compile(
-    r"(?m)^[ \t]*(?:"
-    r"from[ \t]+tinker_cookbook(?:\.[A-Za-z_]\w*)*[ \t]+import\b"
-    r"|import[ \t]+tinker_cookbook(?:\.[A-Za-z_]\w*)*\b"
-    r")"
-)
-_DISTRIBUTION_REQUIREMENT = re.compile(
-    r"(?im)(?:"
-    r"^[^\n]*(?:pip(?:3)?|uv[ \t]+pip)[ \t]+install[^\n#`]*\btinker-cookbook\b"
-    r"|^[ \t\"']*tinker-cookbook(?:\[[^\]]+\])?(?:[ \t=<>~!;\"']|$)"
-    r"|\bname[ \t]*=[ \t]*\"tinker-cookbook\""
-    r")"
-)
-
-# SDFT intentionally runs on upstream tinker-cookbook plus the
-# Fireworks-modified modules vendored in training/_vendor/tinker_cookbook_fw.
-_SDFT_TINKER_COOKBOOK_IMPORT_PATHS = (
-    "training/_vendor/tinker_cookbook_fw/",
-    "training/recipes/sdft_loop.py",
-)
-_SDFT_TINKER_COOKBOOK_REQUIREMENT_FILES = frozenset(
-    {"training/pyproject.toml", "training/uv.lock"}
-)
 
 
 class _CharacterTokenizer:
@@ -125,30 +100,26 @@ _BASELINE_CUSTOM_RENDERERS = (
 
 
 def test_custom_registry_matches_pre_cutover_snapshot() -> None:
-    assert (
-        tuple(fireworks_renderers.get_registered_renderer_names())
-        == _BASELINE_CUSTOM_RENDERERS
-    )
+    assert tuple(fireworks_renderers.get_registered_renderer_names()) == _BASELINE_CUSTOM_RENDERERS
 
 
-def test_role_colon_runtime_behavior_matches_vendored_snapshot() -> None:
+def test_role_colon_runtime_contract() -> None:
     tokenizer = _CharacterTokenizer()
     messages = [
         {"role": "system", "content": "Be terse."},
         {"role": "user", "content": "2 + 2?"},
         {"role": "assistant", "content": "4"},
     ]
-    vendored = vendored_renderers.get_renderer("role_colon", tokenizer)
+    vendored = native_renderers.get_renderer("role_colon", tokenizer)
     fireworks = fireworks_renderers.get_renderer("role_colon", tokenizer)
 
     assert fireworks.get_stop_sequences() == vendored.get_stop_sequences()
     assert (
-        fireworks.build_generation_prompt(messages).to_ints()
-        == vendored.build_generation_prompt(messages).to_ints()
+        fireworks.build_generation_prompt(messages).to_ints() == vendored.build_generation_prompt(messages).to_ints()
     )
 
     vendored_input, vendored_weights = vendored.build_supervised_example(
-        messages, vendored_renderers.TrainOnWhat.ALL_ASSISTANT_MESSAGES
+        messages, native_renderers.TrainOnWhat.ALL_ASSISTANT_MESSAGES
     )
     fireworks_input, fireworks_weights = fireworks.build_supervised_example(
         messages, fireworks_renderers.TrainOnWhat.ALL_ASSISTANT_MESSAGES
@@ -163,123 +134,17 @@ def test_role_colon_runtime_behavior_matches_vendored_snapshot() -> None:
     assert fireworks_termination.value == vendored_termination.value
 
 
-def test_model_routing_exports_vendored_snapshot() -> None:
-    vendored_functions = (
-        vendored_model_info.get_llama_info,
-        vendored_model_info.get_qwen_info,
-        vendored_model_info.get_deepseek_info,
-        vendored_model_info.get_gpt_oss_info,
-        vendored_model_info.get_moonshot_info,
-        vendored_model_info.get_nvidia_info,
-    )
-    fireworks_functions = (
-        fireworks_model_info.get_llama_info,
-        fireworks_model_info.get_qwen_info,
-        fireworks_model_info.get_deepseek_info,
-        fireworks_model_info.get_gpt_oss_info,
-        fireworks_model_info.get_moonshot_info,
-        fireworks_model_info.get_nvidia_info,
-    )
-    assert fireworks_functions == vendored_functions
-
-
 def test_nemotron35_lightning_recommends_compact_thinking_renderers() -> None:
     assert fireworks_model_info.get_recommended_renderer_names(
         "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
     ) == ["nemotron3_ultra", "nemotron3_ultra_disable_thinking"]
 
 
-@pytest.mark.parametrize(
-    ("source", "forbidden"),
-    [
-        ("pip install {package}", True),
-        ("pip3 install --upgrade {package}", True),
-        ("`uv pip install '{package}[extra]'`", True),
-        ('"{package}>=0.4"', True),
-        ('name = "{package}"', True),
-        ("`pip install other` followed by {package} documentation", False),
-        (
-            "| Install with `uv pip install -e '.[sdft]'` | Vendored {package} loop |",
-            False,
-        ),
-        ("pip install other # {package} is vendored", False),
-    ],
-)
-def test_distribution_requirement_stops_at_inline_code_boundary(
-    source: str, forbidden: bool
-) -> None:
-    source = source.format(package="tinker-cookbook")
-    assert bool(_DISTRIBUTION_REQUIREMENT.search(source)) is forbidden
-
-
-def test_no_installed_tinker_cookbook_imports_or_requirements() -> None:
-    repository_root = Path(
-        subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    ).resolve()
-    cookbook_prefix = (
-        Path(__file__).resolve().parents[3].relative_to(repository_root).as_posix()
-    )
-    tracked_files = subprocess.run(
-        ["git", "ls-files"],
-        cwd=repository_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-
-    forbidden_imports: list[str] = []
-    forbidden_requirements: list[str] = []
-    for relative_path in tracked_files:
-        if "training/_vendor/tinker_cookbook_0_4_3/" in relative_path:
-            continue
-        cookbook_path = (
-            relative_path
-            if cookbook_prefix == "."
-            else relative_path.removeprefix(f"{cookbook_prefix}/")
-        )
-        path = repository_root / relative_path
-        try:
-            source = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
-        if cookbook_path not in _SDFT_TINKER_COOKBOOK_REQUIREMENT_FILES:
-            for match in _DISTRIBUTION_REQUIREMENT.finditer(source):
-                line_number = source.count("\n", 0, match.start()) + 1
-                forbidden_requirements.append(f"{relative_path}:{line_number}")
-        if path.suffix not in {".py", ".ipynb"}:
-            continue
-        if cookbook_path.startswith(_SDFT_TINKER_COOKBOOK_IMPORT_PATHS):
-            continue
-        if path.suffix == ".ipynb":
-            notebook = json.loads(source)
-            source = "\n".join(
-                "".join(cell.get("source", []))
-                for cell in notebook.get("cells", [])
-                if cell.get("cell_type") == "code"
-            )
-        for match in _INSTALLED_PACKAGE_IMPORT.finditer(source):
-            line_number = source.count("\n", 0, match.start()) + 1
-            forbidden_imports.append(f"{relative_path}:{line_number}")
-
-    assert not forbidden_imports, (
-        "installed tinker-cookbook imports remain: " + ", ".join(forbidden_imports)
-    )
-    assert not forbidden_requirements, (
-        "external cookbook distribution requirements remain: "
-        + ", ".join(forbidden_requirements)
-    )
-
-
 @pytest.mark.parametrize("name", ["not-a-renderer", "", "qwen-unknown"])
-def test_unknown_renderer_error_shape_matches_vendored_snapshot(name: str) -> None:
+def test_unknown_renderer_error_contract(name: str) -> None:
     tokenizer = _CharacterTokenizer()
     with pytest.raises(ValueError) as vendored_error:
-        vendored_renderers.get_renderer(name, tokenizer)
+        native_renderers.get_renderer(name, tokenizer)
     with pytest.raises(ValueError) as fireworks_error:
         fireworks_renderers.get_renderer(name, tokenizer)
     assert str(fireworks_error.value) == str(vendored_error.value)

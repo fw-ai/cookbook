@@ -32,16 +32,14 @@ import random
 from typing import Any
 
 import pytest
-import tinker
+from fireworks.training import sdk
 from PIL import Image
 from training.renderer import TrainOnWhat, get_renderer
-from transformers.dynamic_module_utils import get_class_from_dynamic_module
-
 from training.renderer.kimi_k3 import (
     STOP_SEQUENCE,
     KimiK3Conversation,
-    KimiK3RenderOptions,
     KimiK3Renderer,
+    KimiK3RenderOptions,
     _canonical_image_bytes,
     _native_message,
     _normalize_reasoning,
@@ -58,6 +56,7 @@ from training.utils.supervised import (
     resolve_renderer_name,
 )
 from training.utils.tokenizers import load_tokenizer
+from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 _KIMI_K3_HF_MODEL = "moonshotai/Kimi-K3"
 _KIMI_K3_HF_REVISION = "301be1b88c89c0d3a763da6301352cb8fe399e90"
@@ -150,9 +149,7 @@ def tokenizer():
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         pytest.skip(f"Kimi K3 HF tokenizer unavailable: {exc}")
     assert loaded.chat_template is None
-    assert type(loaded).apply_chat_template.__module__.startswith(
-        "transformers_modules."
-    )
+    assert type(loaded).apply_chat_template.__module__.startswith("transformers_modules.")
     return loaded
 
 
@@ -166,9 +163,7 @@ def renderer(tokenizer) -> KimiK3Renderer:
 @pytest.fixture(scope="module")
 def image_processor():
     load_kwargs: dict[str, Any] = (
-        {"local_files_only": True}
-        if _LOCAL_RELEASE_PATH
-        else {"revision": _KIMI_K3_HF_REVISION}
+        {"local_files_only": True} if _LOCAL_RELEASE_PATH else {"revision": _KIMI_K3_HF_REVISION}
     )
     try:
         processor_cls = get_class_from_dynamic_module(
@@ -191,7 +186,7 @@ def vision_renderer(tokenizer, image_processor) -> KimiK3Renderer:
     return KimiK3Renderer(tokenizer, image_processor=image_processor)
 
 
-def _ids(model_input: tinker.ModelInput) -> list[int]:
+def _ids(model_input: sdk.ModelInput) -> list[int]:
     return [int(token) for token in model_input.to_ints()]
 
 
@@ -281,9 +276,7 @@ def test_generation_matches_release_python_oracle(
     renderer,
     messages,
 ) -> None:
-    actual = _ids(
-        renderer.build_generation_prompt(_conversation(messages), role="assistant")
-    )
+    actual = _ids(renderer.build_generation_prompt(_conversation(messages), role="assistant"))
     assert actual == _oracle_ids(
         tokenizer,
         messages,
@@ -339,11 +332,7 @@ def test_request_controls_match_release_python_oracle(
     options,
 ) -> None:
     messages = [{"role": "user", "content": "What is 6 * 7?"}]
-    actual = _ids(
-        renderer.build_generation_prompt(
-            _conversation(messages, tools=TOOLS, options=options)
-        )
-    )
+    actual = _ids(renderer.build_generation_prompt(_conversation(messages, tools=TOOLS, options=options)))
     assert actual == _oracle_ids(
         tokenizer,
         messages,
@@ -364,11 +353,7 @@ def test_verl_slime_areal_multiturn_assistant_loss_spans(
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
     trained_text = tokenizer.decode(
-        [
-            token
-            for token, weight in zip(tokens, all_assistant_weights, strict=True)
-            if weight == 1.0
-        ]
+        [token for token, weight in zip(tokens, all_assistant_weights, strict=True) if weight == 1.0]
     )
     for expected in (
         "I need both tools.",
@@ -469,9 +454,7 @@ def test_tinker_action_to_next_observation_extension(
     renderer,
 ) -> None:
     assistant_indices = [
-        index
-        for index, message in enumerate(PARALLEL_TOOL_MESSAGES)
-        if message["role"] == "assistant"
+        index for index, message in enumerate(PARALLEL_TOOL_MESSAGES) if message["role"] == "assistant"
     ]
     for position, assistant_index in enumerate(assistant_indices):
         history = PARALLEL_TOOL_MESSAGES[:assistant_index]
@@ -481,9 +464,7 @@ def test_tinker_action_to_next_observation_extension(
             through_assistant,
             tools=TOOLS,
         )
-        assert observation == _ids(
-            renderer.build_generation_prompt(_conversation(history, tools=TOOLS))
-        )
+        assert observation == _ids(renderer.build_generation_prompt(_conversation(history, tools=TOOLS)))
         assert action
         assert len(trailing) == 1
 
@@ -497,9 +478,7 @@ def test_tinker_action_to_next_observation_extension(
                     )
                 )
             )
-            assert next_observation[: len(observation + action + trailing)] == (
-                observation + action + trailing
-            )
+            assert next_observation[: len(observation + action + trailing)] == (observation + action + trailing)
 
 
 def test_final_and_streaming_parser_for_every_assistant(
@@ -518,27 +497,18 @@ def test_final_and_streaming_parser_for_every_assistant(
         streamed = list(renderer.parse_response_streaming(action))
         assert streamed[-1] == parsed
 
-        visible = "".join(
-            str(part.get("text", ""))
-            for part in parsed["content"]
-            if part.get("type") == "text"
-        )
+        visible = "".join(str(part.get("text", "")) for part in parsed["content"] if part.get("type") == "text")
         thinking = "".join(
-            str(part.get("thinking", ""))
-            for part in parsed["content"]
-            if part.get("type") == "thinking"
+            str(part.get("thinking", "")) for part in parsed["content"] if part.get("type") == "thinking"
         )
         assert visible == expected.get("content", "")
         assert thinking == expected.get("reasoning_content", "")
         expected_calls = expected.get("tool_calls") or []
         parsed_calls = parsed.get("tool_calls") or []
         assert [call.id for call in parsed_calls] == [
-            f"{call['function']['name']}:{call_index}"
-            for call_index, call in enumerate(expected_calls)
+            f"{call['function']['name']}:{call_index}" for call_index, call in enumerate(expected_calls)
         ]
-        assert [call.function.name for call in parsed_calls] == [
-            call["function"]["name"] for call in expected_calls
-        ]
+        assert [call.function.name for call in parsed_calls] == [call["function"]["name"] for call in expected_calls]
         assert [json.loads(call.function.arguments) for call in parsed_calls] == [
             call["function"]["arguments"] for call in expected_calls
         ]
@@ -578,9 +548,7 @@ def test_deterministic_random_conversations_match_oracle(
         messages,
         add_generation_prompt=False,
     )
-    generation_messages = messages + [
-        {"role": "user", "content": f"next-{rng.choice(values)}"}
-    ]
+    generation_messages = messages + [{"role": "user", "content": f"next-{rng.choice(values)}"}]
     assert _ids(renderer.build_generation_prompt(generation_messages)) == _oracle_ids(
         tokenizer,
         generation_messages,
@@ -606,13 +574,10 @@ def _encoded_image(
     ("payload", "expected_mode"),
     [
         pytest.param(Image.new("RGB", (28, 42), "red"), "RGB", id="pil-rgb"),
-        pytest.param(
-            Image.new("RGBA", (28, 42), (1, 2, 3, 127)), "RGBA", id="pil-rgba"
-        ),
+        pytest.param(Image.new("RGBA", (28, 42), (1, 2, 3, 127)), "RGBA", id="pil-rgba"),
         pytest.param(_encoded_image("RGB", "JPEG"), "RGB", id="jpeg-bytes"),
         pytest.param(
-            "data:image/jpeg;base64,"
-            + base64.b64encode(_encoded_image("RGB", "JPEG")).decode(),
+            "data:image/jpeg;base64," + base64.b64encode(_encoded_image("RGB", "JPEG")).decode(),
             "RGB",
             id="jpeg-data-url",
         ),
@@ -658,14 +623,8 @@ def test_vision_symbolic_token_in_and_expanded_representations(
     )
     media_pad_id = vision_renderer.image_placeholder_token_id
     assert trace.materialized_one_pad_ids.count(media_pad_id) == 1
-    assert trace.expanded_token_ids.count(media_pad_id) == (
-        trace.processed_media[0].expected_tokens
-    )
-    image_chunks = [
-        chunk
-        for chunk in trace.model_input.chunks
-        if isinstance(chunk, tinker.types.ImageChunk)
-    ]
+    assert trace.expanded_token_ids.count(media_pad_id) == (trace.processed_media[0].expected_tokens)
+    image_chunks = [chunk for chunk in trace.model_input.chunks if isinstance(chunk, sdk.types.ImageChunk)]
     assert len(image_chunks) == 1
     assert image_chunks[0].expected_tokens == (trace.processed_media[0].expected_tokens)
     assert trace.model_input.length == len(trace.expanded_token_ids)
@@ -700,9 +659,7 @@ def test_vision_token_in_rejects_mismatched_model_input(tokenizer, vision_render
     ]
     model_input = vision_renderer.build_generation_prompt(other)
     with pytest.raises(ValueError, match="renderer trace"):
-        build_multimodal_completions_prompt_token_ids(
-            messages, model_input, tokenizer, renderer=vision_renderer
-        )
+        build_multimodal_completions_prompt_token_ids(messages, model_input, tokenizer, renderer=vision_renderer)
 
 
 def test_vision_token_in_keeps_generation_prefill(tokenizer, vision_renderer):
@@ -724,6 +681,7 @@ def test_vision_token_in_keeps_generation_prefill(tokenizer, vision_renderer):
     assert prefill_tokens
     assert token_in_ids == list(trace.token_in_ids) + prefill_tokens
     assert len(images) == 1
+
 
 def test_vision_multiple_images_across_turns_with_tools(
     tokenizer,
@@ -753,10 +711,7 @@ def test_vision_multiple_images_across_turns_with_tools(
         _conversation(messages, tools=TOOLS),
     )
     token_in_ids, images = build_multimodal_completions_prompt_token_ids(
-        _conversation(messages, tools=TOOLS),
-        trace.model_input,
-        tokenizer,
-        renderer=vision_renderer
+        _conversation(messages, tools=TOOLS), trace.model_input, tokenizer, renderer=vision_renderer
     )
     assert token_in_ids == list(trace.token_in_ids)
     assert len(images) == 3
@@ -769,13 +724,7 @@ def test_vision_multiple_images_across_turns_with_tools(
         add_generation_prompt=True,
         image_prompts=prompts,
     )
-    assert (
-        sum(
-            isinstance(chunk, tinker.types.ImageChunk)
-            for chunk in trace.model_input.chunks
-        )
-        == 3
-    )
+    assert sum(isinstance(chunk, sdk.types.ImageChunk) for chunk in trace.model_input.chunks) == 3
 
 
 def test_vision_tool_image_matches_release_oracle_and_is_context_only(
@@ -828,17 +777,12 @@ def test_vision_tool_image_matches_release_oracle_and_is_context_only(
         labels,
     )
     media_pad_indexes = [
-        index
-        for index, token in enumerate(token_ids)
-        if token == vision_renderer.image_placeholder_token_id
+        index for index, token in enumerate(token_ids) if token == vision_renderer.image_placeholder_token_id
     ]
     assert media_pad_indexes
     assert all(float(weights[index]) == 0.0 for index in media_pad_indexes)
     assert any(float(weight) == 1.0 for weight in weights)
-    assert (
-        sum(isinstance(chunk, tinker.types.ImageChunk) for chunk in model_input.chunks)
-        == 1
-    )
+    assert sum(isinstance(chunk, sdk.types.ImageChunk) for chunk in model_input.chunks) == 1
 
 
 def test_vision_reordered_tool_images_stay_with_their_tool_calls(
@@ -871,9 +815,7 @@ def test_vision_reordered_tool_images_stay_with_their_tool_calls(
     ]
 
     request, processed = vision_renderer._normalized_request(messages)
-    tool_messages = [
-        message for message in request.messages if message.get("role") == "tool"
-    ]
+    tool_messages = [message for message in request.messages if message.get("role") == "tool"]
     assert [message["tool_call_id"] for message in tool_messages] == [
         "weather-1",
         "math-1",
@@ -1060,16 +1002,12 @@ def test_native_message_rejects_unsupported_role() -> None:
 
 def test_jpeg_rgba_is_rejected_before_encoding() -> None:
     image = Image.new("RGBA", (8, 8), (1, 2, 3, 4))
-    with pytest.raises(
-        ValueError, match="JPEG Kimi K3 inputs must already be RGB or L"
-    ):
+    with pytest.raises(ValueError, match="JPEG Kimi K3 inputs must already be RGB or L"):
         _canonical_image_bytes(image, "jpeg")
 
 
 def test_media_pad_id_is_derived_from_release_tokenizer(tokenizer, renderer) -> None:
-    assert renderer.image_placeholder_token_id == int(
-        tokenizer.convert_tokens_to_ids("<|media_pad|>")
-    )
+    assert renderer.image_placeholder_token_id == int(tokenizer.convert_tokens_to_ids("<|media_pad|>"))
 
 
 def test_empty_think_history_observation_matches_generation(
@@ -1084,15 +1022,11 @@ def test_empty_think_history_observation_matches_generation(
         {"role": "assistant", "content": "Hi."},
     ]
     observation, action, trailing = _last_action(renderer, messages)
-    assert observation == _ids(
-        renderer.build_generation_prompt(_conversation(messages[:1]))
-    )
+    assert observation == _ids(renderer.build_generation_prompt(_conversation(messages[:1])))
     assert action
     assert len(trailing) == 1
     assert "<|open|>think" in tokenizer.decode(observation)
-    assert "<|open|>think" in tokenizer.decode(
-        _oracle_ids(tokenizer, messages, add_generation_prompt=False)
-    )
+    assert "<|open|>think" in tokenizer.decode(_oracle_ids(tokenizer, messages, add_generation_prompt=False))
 
 
 def test_customized_train_on_what_honors_per_message_masks(
@@ -1125,9 +1059,7 @@ def test_customized_train_on_what_honors_per_message_masks(
         messages,
         add_generation_prompt=False,
     )
-    trained = tokenizer.decode(
-        [token for token, weight in zip(tokens, weights, strict=True) if weight == 1.0]
-    )
+    trained = tokenizer.decode([token for token, weight in zip(tokens, weights, strict=True) if weight == 1.0])
     assert "Two" in trained
     assert "keep me" in trained
     assert "One" not in trained
@@ -1161,9 +1093,7 @@ def test_last_assistant_turn_masks_only_after_final_user(tokenizer, renderer) ->
         messages,
         train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN,
     )
-    trained = tokenizer.decode(
-        [token for token, weight in zip(tokens, weights, strict=True) if weight == 1.0]
-    )
+    trained = tokenizer.decode([token for token, weight in zip(tokens, weights, strict=True) if weight == 1.0])
     assert "Two" in trained
     assert "final" in trained
     assert "One" not in trained
@@ -1172,9 +1102,7 @@ def test_last_assistant_turn_masks_only_after_final_user(tokenizer, renderer) ->
 def test_generation_prefill_appends_literal_text(tokenizer, renderer) -> None:
     messages = [{"role": "user", "content": "Continue"}]
     base = _ids(renderer.build_generation_prompt(messages))
-    with_prefill = _ids(
-        renderer.build_generation_prompt(messages, prefill="partial draft")
-    )
+    with_prefill = _ids(renderer.build_generation_prompt(messages, prefill="partial draft"))
     assert with_prefill[: len(base)] == base
     assert tokenizer.decode(with_prefill[len(base) :]) == "partial draft"
 
@@ -1270,9 +1198,7 @@ def test_top_level_and_dynamic_tools_coexist(tokenizer, renderer) -> None:
         {"role": "user", "content": "Use whichever tool is needed."},
     ]
     normalized = normalize_messages(messages)
-    actual = _ids(
-        renderer.build_generation_prompt(_conversation(normalized, tools=[TOOLS[0]]))
-    )
+    actual = _ids(renderer.build_generation_prompt(_conversation(normalized, tools=[TOOLS[0]])))
 
     assert actual == _oracle_ids(
         tokenizer,
@@ -1311,12 +1237,8 @@ def test_dynamic_tools_survive_production_sft_path(tokenizer, renderer) -> None:
         add_generation_prompt=False,
     )
     assert rendered.token_ids == observation + action + trailing
-    assert rendered.token_weights == (
-        [0.0] * len(observation) + [1.0] * len(action) + [0.0] * len(trailing)
-    )
-    assert observation == _ids(
-        renderer.build_generation_prompt(_conversation(normalized[:-1]))
-    )
+    assert rendered.token_weights == ([0.0] * len(observation) + [1.0] * len(action) + [0.0] * len(trailing))
+    assert observation == _ids(renderer.build_generation_prompt(_conversation(normalized[:-1])))
 
 
 def test_json_string_tool_arguments_match_oracle(tokenizer, renderer) -> None:
@@ -1337,9 +1259,7 @@ def test_json_string_tool_arguments_match_oracle(tokenizer, renderer) -> None:
             ],
         },
     ]
-    actual = _ids(
-        renderer.build_generation_prompt(_conversation(messages, tools=TOOLS))
-    )
+    actual = _ids(renderer.build_generation_prompt(_conversation(messages, tools=TOOLS)))
     assert actual == _oracle_ids(
         tokenizer,
         messages,
@@ -1412,11 +1332,7 @@ def test_parser_treats_literal_control_text_as_content(tokenizer, renderer) -> N
     _, action, _ = _last_action(renderer, messages)
     parsed, termination = renderer.parse_response(action)
     assert termination.is_clean
-    visible = "".join(
-        str(part.get("text", ""))
-        for part in parsed["content"]
-        if part.get("type") == "text"
-    )
+    visible = "".join(str(part.get("text", "")) for part in parsed["content"] if part.get("type") == "text")
     assert visible == "literal <|close|>message<|sep|> text"
 
 
@@ -1452,9 +1368,7 @@ def test_vision_supervised_matches_oracle_and_zeros_image_pads(
         processed,
         labels,
     )
-    materialized_ids = vision_renderer._encode_segments(
-        vision_renderer._replace_image_segments(segments, processed)
-    )
+    materialized_ids = vision_renderer._encode_segments(vision_renderer._replace_image_segments(segments, processed))
     oracle = _oracle_ids(
         tokenizer,
         messages,
@@ -1465,18 +1379,12 @@ def test_vision_supervised_matches_oracle_and_zeros_image_pads(
     assert [float(weight) for weight in weights.tolist()] == material_weights
     assert model_input.length == len(expanded) == len(material_weights)
     assert material_weights[-1] == 0.0
-    assert sum(
-        isinstance(chunk, tinker.types.ImageChunk) for chunk in model_input.chunks
-    ) == len(processed)
+    assert sum(isinstance(chunk, sdk.types.ImageChunk) for chunk in model_input.chunks) == len(processed)
     media_pad_id = vision_renderer.image_placeholder_token_id
-    pad_indexes = [
-        index for index, token in enumerate(expanded) if token == media_pad_id
-    ]
+    pad_indexes = [index for index, token in enumerate(expanded) if token == media_pad_id]
     assert pad_indexes
     assert all(material_weights[index] == 0.0 for index in pad_indexes)
-    assert expanded.count(media_pad_id) == sum(
-        item.expected_tokens for item in processed
-    )
+    assert expanded.count(media_pad_id) == sum(item.expected_tokens for item in processed)
     assert one_pad.count(media_pad_id) == len(processed)
 
 

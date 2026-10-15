@@ -40,29 +40,26 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
-
-from training.utils.phase_tracing import phase_span
-from training.utils.termination import close_in_thread, run_in_thread, with_signals
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
     DeployConfig,
+    ReconnectableClient,
     TrainerConfig,
     WandBConfig,
-    ReconnectableClient,
     build_service_client,
-    make_weight_sync,
     flush_phase_trace,
-    log_metrics,
     load_deployment_tokenizer,
     load_jsonl_dataset,
+    log_metrics,
+    make_weight_sync,
     read_api_extra_headers_env,
     resolve_router_replay_enabled,
     setup_wandb,
@@ -70,32 +67,26 @@ from training.utils import (
     wandb_finish,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
-from training.utils.dataloader import CursorDataLoader
 from training.utils.data import compute_advantages
+from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS, log_run_resources
 from training.utils.metrics import sampler_metrics, weight_sync_metrics
+from training.utils.phase_tracing import phase_span
+from training.utils.rl.algorithm import grpo as objective
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
     OverlappedEvaluation,
-    TrainingGroup,
     RolloutRow,
+    TrainingGroup,
 )
-from training.utils.rl.algorithm import grpo as objective
 from training.utils.rl.heldout import (
     RolloutEvaluationFn,
+)
+from training.utils.rl.heldout import (
     run_evaluation as evaluate_rollouts,
 )
 from training.utils.rl.losses import combine_prompt_groups
-from training.utils.rl.streaming import (
-    SubmittedGroup,
-    track_group,
-    retain_submission,
-    submission_window,
-    drain_groups,
-    add_batch_diagnostics,
-    streaming_metrics,
-)
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
 from training.utils.rl.rollout.setup import (
     DynamicFilterFn,
@@ -106,6 +97,16 @@ from training.utils.rl.rollout.setup import (
     default_sample_kwargs,
     rollout_context_names,
 )
+from training.utils.rl.streaming import (
+    SubmittedGroup,
+    add_batch_diagnostics,
+    drain_groups,
+    retain_submission,
+    streaming_metrics,
+    submission_window,
+    track_group,
+)
+from training.utils.termination import close_in_thread, run_in_thread, with_signals
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
 logger = logging.getLogger(__name__)
@@ -218,7 +219,7 @@ def _run_optimizer_step(
 ):
     adam_kwargs = dict(DEFAULT_ADAM)
     adam_kwargs["grad_clip_norm"] = config.grad_clip_norm
-    adam_params = tinker.AdamParams(learning_rate=learning_rate, **adam_kwargs)
+    adam_params = sdk.AdamParams(learning_rate=learning_rate, **adam_kwargs)
     return policy.optim_step(
         adam_params,
         grad_accumulation_normalization=objective.NORMALIZATION,

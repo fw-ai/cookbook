@@ -3,9 +3,8 @@ from __future__ import annotations
 import math
 
 import pytest
-import tinker
 import torch
-
+from fireworks.training import sdk
 from training.utils.rl.algorithm.score_centering import (
     MAX_SCORE_CENTERING_TOP_K,
     ScoreCenteringConfig,
@@ -16,16 +15,12 @@ from training.utils.rl.algorithm.score_centering import (
 from training.utils.rl.losses import PolicyBatch
 
 
-def _source_datum() -> tinker.Datum:
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints([10, 11]),
+def _source_datum() -> sdk.Datum:
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints([10, 11]),
         loss_fn_inputs={
-            "target_tokens": tinker.TensorData(
-                data=[11, 12], dtype="int64", shape=[2]
-            ),
-            "weights": tinker.TensorData(
-                data=[0, 1], dtype="int64", shape=[2]
-            ),
+            "target_tokens": sdk.TensorData(data=[11, 12], dtype="int64", shape=[2]),
+            "weights": sdk.TensorData(data=[0, 1], dtype="int64", shape=[2]),
         },
     )
 

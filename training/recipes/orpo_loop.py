@@ -44,24 +44,22 @@ import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
-
-from training.utils.termination import TerminatedBySignal
 from training.utils import (
     DEFAULT_ADAM,
-    DatasetError,
     NO_VALID_PREFERENCE_PAIRS_MESSAGE,
-    TrainerConfig,
+    DatasetError,
     ReconnectableClient,
     RunnerConfig,
     RunnerIO,
     RunStatus,
+    TrainerConfig,
     WandBConfig,
     build_renderer_from_resolved_name,
     build_service_client,
@@ -79,7 +77,12 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.runner_state import start_running, write_completed, write_running_step
+from training.utils.runner_state import (
+    start_running,
+    write_completed,
+    write_running_step,
+)
+from training.utils.termination import TerminatedBySignal
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +148,7 @@ class Config:
     already computes per-pair means client-side, so server-side
     normalization would double-normalize."""
 
-    trainer: TrainerConfig = field(
-        default_factory=lambda: TrainerConfig()
-    )
+    trainer: TrainerConfig = field(default_factory=lambda: TrainerConfig())
     wandb: WandBConfig = field(
         default_factory=lambda: WandBConfig(
             project="dsv3-training",
@@ -198,9 +199,7 @@ def _is_default_lr_scheduler(data: object) -> bool:
 
 
 def _uses_legacy_orpo_lr_schedule(cfg: Config) -> bool:
-    return _is_default_lr_scheduler(cfg.lr_scheduler) and (
-        cfg.lr_schedule != "constant" or cfg.warmup_ratio > 0
-    )
+    return _is_default_lr_scheduler(cfg.lr_scheduler) and (cfg.lr_schedule != "constant" or cfg.warmup_ratio > 0)
 
 
 def _compute_legacy_orpo_lr(
@@ -225,15 +224,11 @@ def _compute_legacy_orpo_lr(
     decay_step = step - warmup_steps
     decay_total = max(total_steps - warmup_steps, 1)
     if schedule == "cosine":
-        return min_lr + 0.5 * (peak_lr - min_lr) * (
-            1 + math.cos(math.pi * decay_step / decay_total)
-        )
+        return min_lr + 0.5 * (peak_lr - min_lr) * (1 + math.cos(math.pi * decay_step / decay_total))
     if schedule == "linear":
         return peak_lr - (peak_lr - min_lr) * decay_step / decay_total
 
-    raise ValueError(
-        f"Unknown lr_schedule: {schedule!r}. Use 'constant', 'cosine', or 'linear'."
-    )
+    raise ValueError(f"Unknown lr_schedule: {schedule!r}. Use 'constant', 'cosine', or 'linear'.")
 
 
 def _shuffled_pair_cache(
@@ -397,10 +392,7 @@ def main(
             if pair is None:
                 continue
 
-            if (
-                len(pair.chosen_tokens) > max_seq_len
-                or len(pair.rejected_tokens) > max_seq_len
-            ):
+            if len(pair.chosen_tokens) > max_seq_len or len(pair.rejected_tokens) > max_seq_len:
                 filtered_count += 1
                 continue
             pair_cache.append(
@@ -444,7 +436,7 @@ def main(
         def _run_train_step(epoch: int, step_pairs: list[dict], step_started_at: float) -> float:
             nonlocal step
 
-            datums: list[tinker.Datum] = []
+            datums: list[sdk.Datum] = []
             response_starts: list[int] = []
             step_tokens = 0
             for pair in step_pairs:
@@ -468,21 +460,15 @@ def main(
                     base_lr=cfg.learning_rate,
                     total_steps=total_steps,
                 )
-            adam_params = tinker.AdamParams(learning_rate=current_lr, **adam_kwargs)
+            adam_params = sdk.AdamParams(learning_rate=current_lr, **adam_kwargs)
 
             loss_fn = make_batch_orpo_loss_fn(response_starts, cfg.orpo_lambda)
             result = client.forward_backward_custom(datums, loss_fn)
             client.optim_step(adam_params)
             step += 1
 
-            dcp_due = (
-                cfg.dcp_save_interval > 0
-                and step % cfg.dcp_save_interval == 0
-            )
-            sampler_due = (
-                cfg.sampler_save_interval > 0
-                and step % cfg.sampler_save_interval == 0
-            )
+            dcp_due = cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0
+            sampler_due = cfg.sampler_save_interval > 0 and step % cfg.sampler_save_interval == 0
             if dcp_due or sampler_due:
                 logger.info(
                     "Saving intermediate checkpoint at step %d (dcp=%s, sampler=%s)",
@@ -568,13 +554,13 @@ def main(
             if getattr(cfg, "output_model_id", None):
                 ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
-                    model_id=cfg.output_model_id, checkpoint=cp_name, job_id=job_id,
+                    model_id=cfg.output_model_id,
+                    checkpoint=cp_name,
+                    job_id=job_id,
                 )
 
         write_completed(runner, step=step, total_steps=total_steps)
-        logger.info(
-            "Training complete: %d optimizer steps (%d new)", step, step - step_offset
-        )
+        logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         wandb_finish()
         return {"steps": step, "job_id": job_id}
 
@@ -582,9 +568,7 @@ def main(
 if __name__ == "__main__":
     import os
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     cfg = Config(
         log_path="./orpo_logs",

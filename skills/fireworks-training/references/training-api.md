@@ -20,7 +20,7 @@ Use **managed training** for standard SFT/DPO/ORPO jobs. Reach for the **Trainin
 
 | Path | Use when | Cookbook |
 |---|---|---|
-| **Serverless** | LoRA SFT, DPO, ORPO, RL, distillation, and custom loops on models in the shared pool; per-token billing; no trainer or deployment to provision; session-based training and in-session sampling | `sft_loop` / `dpo_loop` with `serverless=True` (`training/examples/sft/train_sft_serverless.py`, `training/examples/dpo/train_dpo_serverless.py`), `sdft_loop` for distillation, RL via `training/examples/rl/*/train_*_serverless.py` on `training/recipes/experiment/async_rl_loop_serverless.py` |
+| **Serverless** | LoRA SFT, DPO, ORPO, RL, distillation, and custom loops on models in the shared pool; per-token billing; no trainer or deployment to provision; session-based training and in-session sampling | `sft_loop` / `dpo_loop` with `serverless=True` (`training/examples/sft/train_sft_serverless.py`, `training/examples/dpo/train_dpo_serverless.py`), the [external SDFT cookbook](https://github.com/fw-ai-external/tinker-cookbook) for SDFT, RL via `training/examples/rl/*/train_*_serverless.py` on `training/recipes/experiment/async_rl_loop_serverless.py` |
 | **Dedicated** | Full-parameter training, models not in the serverless pool, sustained workloads, explicit trainer, deployment, checkpoint, and teardown control | The matching `train_*.py` examples and `training/recipes/` with `TrainerConfig` / `DeployConfig` |
 
 Default to Serverless when the model is in the pool and LoRA is enough; that
@@ -116,7 +116,8 @@ Serverless Training API loop with base and tuned snapshots (run from
 `$COOKBOOK_DIR/training` so the `training.*` helpers import):
 
 ```python
-import os, tinker
+import os
+from fireworks.training import tinker
 from fireworks.training.sdk import FiretitanServiceClient
 from training.utils.supervised import build_renderer, render_messages_to_datum
 from training.utils.tokenizers import load_tokenizer

@@ -8,10 +8,11 @@ import xml.etree.ElementTree as ET
 from collections.abc import Mapping
 from typing import Any, Literal
 
-import tinker
 import torch
+from fireworks.training import sdk
+
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer.base import (
     Message,
     ParseTermination,
     RenderContext,
@@ -108,11 +109,7 @@ def _to_xml(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, Mapping):
-        return "".join(
-            f"{_NS}<{key}>{_to_xml(item)}{_NS}</{key}>"
-            for key, item in value.items()
-            if item is not None
-        )
+        return "".join(f"{_NS}<{key}>{_to_xml(item)}{_NS}</{key}>" for key, item in value.items() if item is not None)
     if isinstance(value, list):
         return "".join(f"{_NS}<item>{_to_xml(item)}{_NS}</item>" for item in value)
     return _xml_scalar(value)
@@ -145,10 +142,7 @@ def _tool_function(tool: ToolSpec | Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _format_tools(tools: list[ToolSpec | Mapping[str, Any]]) -> str:
-    rendered = "".join(
-        f"<tool>{json.dumps(_tool_function(tool), ensure_ascii=False)}</tool>\n"
-        for tool in tools
-    )
+    rendered = "".join(f"<tool>{json.dumps(_tool_function(tool), ensure_ascii=False)}</tool>\n" for tool in tools)
     example = (
         f"{_TOOL_CALL_BEGIN}\n"
         f'{_NS}<invoke name="tool-name-1">'
@@ -205,9 +199,7 @@ def _element_value(element: ET.Element) -> Any:
     return {child.tag: _element_value(child) for child in children}
 
 
-def _parse_tool_block(
-    raw: str, raw_text: str
-) -> tuple[list[ToolCall], list[UnparsedToolCall]]:
+def _parse_tool_block(raw: str, raw_text: str) -> tuple[list[ToolCall], list[UnparsedToolCall]]:
     try:
         root = ET.fromstring(f"<root>{raw.replace(_NS, '')}</root>")
     except ET.ParseError as exc:
@@ -241,9 +233,7 @@ class MiniMaxM3Renderer(Renderer):
     avoiding loss on a token that is already present at inference time.
     """
 
-    def __init__(
-        self, tokenizer: Tokenizer, thinking_mode: ThinkingMode = "adaptive"
-    ) -> None:
+    def __init__(self, tokenizer: Tokenizer, thinking_mode: ThinkingMode = "adaptive") -> None:
         super().__init__(tokenizer)
         if thinking_mode not in {"enabled", "disabled", "adaptive"}:
             raise ValueError(f"Unsupported MiniMax M3 thinking mode: {thinking_mode!r}")
@@ -266,9 +256,7 @@ class MiniMaxM3Renderer(Renderer):
             return int(eos_token_id)
         tokens = self.tokenizer.encode(_EOS, add_special_tokens=False)
         if len(tokens) != 1:
-            raise RuntimeError(
-                f"Expected {_EOS!r} to encode as one token, got {tokens}"
-            )
+            raise RuntimeError(f"Expected {_EOS!r} to encode as one token, got {tokens}")
         return int(tokens[0])
 
     def get_stop_sequences(self) -> list[int]:
@@ -294,8 +282,7 @@ class MiniMaxM3Renderer(Renderer):
             grouped_tool = Message(role="tool", content=outputs)
             if any("trainable" in tool_message for tool_message in tool_messages):
                 grouped_tool["trainable"] = any(
-                    bool(tool_message.get("trainable", False))
-                    for tool_message in tool_messages
+                    bool(tool_message.get("trainable", False)) for tool_message in tool_messages
                 )
             grouped.append(grouped_tool)
         return grouped
@@ -312,15 +299,11 @@ class MiniMaxM3Renderer(Renderer):
             and remaining[0]["content"].startswith(_TOOL_PREFIX_SENTINEL)
         ):
             prefix = remaining.pop(0)
-            payload, separator, system_prompt = prefix["content"][
-                len(_TOOL_PREFIX_SENTINEL) :
-            ].partition("\n")
+            payload, separator, system_prompt = prefix["content"][len(_TOOL_PREFIX_SENTINEL) :].partition("\n")
             if not separator:
                 raise ValueError("Malformed MiniMax M3 tool prefix.")
             decoded_tools = json.loads(payload)
-            if not isinstance(decoded_tools, list) or not all(
-                isinstance(tool, Mapping) for tool in decoded_tools
-            ):
+            if not isinstance(decoded_tools, list) or not all(isinstance(tool, Mapping) for tool in decoded_tools):
                 raise TypeError("MiniMax M3 tool prefix must contain a list of tools.")
             tools = decoded_tools
             if "trainable" in prefix:
@@ -330,9 +313,7 @@ class MiniMaxM3Renderer(Renderer):
             # A non-empty folded prompt means the original chat started with
             # system; restore it as developer and let the official-template
             # behavior below ignore the now-mid-conversation root.
-            if system_prompt or not (
-                remaining and remaining[0]["role"] == "root"
-            ):
+            if system_prompt or not (remaining and remaining[0]["role"] == "root"):
                 restored = Message(
                     role="system",
                     content=system_prompt or _DEFAULT_DEVELOPER_SENTINEL,
@@ -365,27 +346,18 @@ class MiniMaxM3Renderer(Renderer):
             developer_message.setdefault("trainable", False)
         if tools:
             developer_content = _visible_text(developer_message["content"])
-            if (
-                developer_content == _DEFAULT_DEVELOPER_SENTINEL
-                or not developer_content
-            ):
+            if developer_content == _DEFAULT_DEVELOPER_SENTINEL or not developer_content:
                 developer_content = _DEFAULT_DEVELOPER
             developer_message["content"] = developer_content + _format_tools(tools)
         prefix = [root_message, developer_message]
         # The official template silently ignores system/developer/root roles
         # outside the initial root/developer slots.
-        conversation = [
-            message
-            for message in remaining
-            if message["role"] in {"user", "assistant", "tool"}
-        ]
+        conversation = [message for message in remaining if message["role"] in {"user", "assistant", "tool"}]
         return prefix + self._group_tool_messages(conversation)
 
-    def _encode_message(
-        self, header_text: str, output_text: str
-    ) -> tuple[
-        tinker.types.EncodedTextChunk | None,
-        tinker.types.EncodedTextChunk | None,
+    def _encode_message(self, header_text: str, output_text: str) -> tuple[
+        sdk.types.EncodedTextChunk | None,
+        sdk.types.EncodedTextChunk | None,
     ]:
         """Encode a full turn once, then split it at the stable token prefix.
 
@@ -402,20 +374,10 @@ class MiniMaxM3Renderer(Renderer):
         )
         header_only = list(self.tokenizer.encode(header_text, add_special_tokens=False))
         split = 0
-        while (
-            split < len(combined)
-            and split < len(header_only)
-            and combined[split] == header_only[split]
-        ):
+        while split < len(combined) and split < len(header_only) and combined[split] == header_only[split]:
             split += 1
-        header = (
-            tinker.types.EncodedTextChunk(tokens=combined[:split]) if split else None
-        )
-        output = (
-            tinker.types.EncodedTextChunk(tokens=combined[split:])
-            if split < len(combined)
-            else None
-        )
+        header = sdk.types.EncodedTextChunk(tokens=combined[:split]) if split else None
+        output = sdk.types.EncodedTextChunk(tokens=combined[split:]) if split < len(combined) else None
         return header, output
 
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
@@ -429,9 +391,7 @@ class MiniMaxM3Renderer(Renderer):
                 else _visible_text(content)
             )
             header_text = f"{_BOS}system\n"
-            output_text = (
-                body + _thinking_instructions(self.thinking_mode) + f"{_EOS}\n"
-            )
+            output_text = body + _thinking_instructions(self.thinking_mode) + f"{_EOS}\n"
         elif role == "developer":
             content = message["content"]
             body = (
@@ -459,11 +419,7 @@ class MiniMaxM3Renderer(Renderer):
         elif role == "tool":
             header_text = f"{_BOS}tool"
             content = message["content"]
-            entries = (
-                content
-                if isinstance(content, list)
-                else [{"output": _visible_text(content)}]
-            )
+            entries = content if isinstance(content, list) else [{"output": _visible_text(content)}]
             responses = "".join(
                 f"\n<response>{_visible_text(entry.get('output') if isinstance(entry, Mapping) else entry)}</response>"
                 for entry in entries
@@ -499,7 +455,7 @@ class MiniMaxM3Renderer(Renderer):
         messages: list[Message],
         role: Role = "assistant",
         prefill: str | None = None,
-    ) -> tinker.ModelInput:
+    ) -> sdk.ModelInput:
         return super().build_generation_prompt(
             self._preprocess_messages(messages),
             role=role,
@@ -510,7 +466,7 @@ class MiniMaxM3Renderer(Renderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         return super().build_supervised_example(
             self._preprocess_messages(messages),
             train_on_what=train_on_what,
@@ -525,12 +481,7 @@ class MiniMaxM3Renderer(Renderer):
         return [
             Message(
                 role="system",
-                content=(
-                    _TOOL_PREFIX_SENTINEL
-                    + json.dumps(tool_payload, ensure_ascii=False)
-                    + "\n"
-                    + system_prompt
-                ),
+                content=(_TOOL_PREFIX_SENTINEL + json.dumps(tool_payload, ensure_ascii=False) + "\n" + system_prompt),
             )
         ]
 

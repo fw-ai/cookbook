@@ -14,7 +14,8 @@ There is no outcome reward and no reference model: the teacher/student
 log-ratio is the whole training signal. A row's ``teacher_messages`` give the
 teacher privileged context the student never sees. Fork this file to route
 prompts to several teachers or change the objective; for top-K SDFT on
-serverless see ``recipes/sdft_loop.py``.
+serverless see the external Fireworks Tinker-Cookbook fork linked in
+``training/docs/sdft.md``.
 
 Usage:
     export FIREWORKS_API_KEY=...
@@ -34,10 +35,8 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk.deployment import AdaptiveConcurrencyController
-
-from training.utils.termination import TerminatedBySignal
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
@@ -83,6 +82,7 @@ from training.utils.metrics import (
     sampler_metrics,
     weight_sync_metrics,
 )
+from training.utils.termination import TerminatedBySignal
 from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -222,9 +222,7 @@ def main(
             deployment=cfg.deployment,
             hotload_timeout_s=cfg.weight_sync_timeout,
             cleanup_trainer_on_close=cancel_on_exit,
-            cleanup_deployment_on_close=(
-                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cancel_on_exit else None
-            ),
+            cleanup_deployment_on_close=(CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cancel_on_exit else None),
             reference_required=False,
         )
         stack.callback(service.close)
@@ -245,9 +243,7 @@ def main(
         publish_weights = make_weight_sync(policy, service, cfg.deployment)
 
         concurrency = AdaptiveConcurrencyController(
-            initial_window=(
-                cfg.concurrency.initial_window or 8 * (cfg.deployment.replica_count or 1)
-            ),
+            initial_window=(cfg.concurrency.initial_window or 8 * (cfg.deployment.replica_count or 1)),
             min_window=cfg.concurrency.min_window,
             max_window=cfg.concurrency.max_window,
             prefill_queue_target=cfg.concurrency.prefill_queue_target,
@@ -311,9 +307,7 @@ def main(
             if not messages:
                 return None
             try:
-                teacher_prompt = tokenize_teacher_prompt(
-                    tokenizer, teacher_messages_for_row(row, messages)
-                )
+                teacher_prompt = tokenize_teacher_prompt(tokenizer, teacher_messages_for_row(row, messages))
                 sampled = await student_sampler.sample_with_tokens(
                     messages=messages,
                     n=cfg.completions_per_prompt,
@@ -359,7 +353,7 @@ def main(
 
         # -- Training loop (VISIBLE algorithm phases) -------------------------
 
-        adam_params = tinker.AdamParams(
+        adam_params = sdk.AdamParams(
             learning_rate=cfg.learning_rate,
             **{**DEFAULT_ADAM, "grad_clip_norm": cfg.grad_clip_norm},
         )
@@ -371,9 +365,7 @@ def main(
             while batch := list(itertools.islice(row_iterator, cfg.prompt_groups_per_step)):
                 # 1. Student rollouts, scored token by token by the teacher.
                 with elapsed_timer("rollout"):
-                    results = await asyncio.gather(
-                        *(sample_one_prompt(item.value) for item in batch)
-                    )
+                    results = await asyncio.gather(*(sample_one_prompt(item.value) for item in batch))
                 prompt_groups = [group for group in results if group is not None]
                 for item in batch:
                     row_loader.mark_resolved(item.index)
@@ -382,9 +374,7 @@ def main(
 
                 # 2. One server-side importance-sampling step on the
                 #    teacher-minus-student advantages.
-                datums, opd_metrics = build_opd_datums(
-                    prompt_groups, loss_scale=cfg.opd_loss_scale
-                )
+                datums, opd_metrics = build_opd_datums(prompt_groups, loss_scale=cfg.opd_loss_scale)
                 with elapsed_timer("fwd_bwd"):
                     fwd_bwd_result = policy.forward_backward(
                         datums,
@@ -405,9 +395,7 @@ def main(
                 metrics.update({f"train/{k}": v for k, v in opd_metrics.items()})
                 metrics.update(sampler_metrics(student_sampler.drain_metrics()))
                 metrics.update(weight_sync_metrics(sync_result))
-                metrics.update(
-                    {f"concurrency/{k}": v for k, v in concurrency.step_completed().items()}
-                )
+                metrics.update({f"concurrency/{k}": v for k, v in concurrency.step_completed().items()})
                 metrics["train/step"] = step
                 logger.info(
                     "Step %d | sampled reverse KL: %.4f | OPD advantage: %.4f | tokens=%d",
@@ -426,10 +414,7 @@ def main(
 
                 if evaluate and step % cfg.eval_every == 0:
                     await run_eval(step)
-                if (
-                    cfg.dcp_save_interval > 0
-                    and (step - step_offset) % cfg.dcp_save_interval == 0
-                ):
+                if cfg.dcp_save_interval > 0 and (step - step_offset) % cfg.dcp_save_interval == 0:
                     checkpoint.save(
                         f"step-{step}",
                         resumable=True,

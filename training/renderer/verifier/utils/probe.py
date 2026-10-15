@@ -24,20 +24,20 @@ import json
 import logging
 from typing import Any, Iterable, Protocol
 
-import tinker
-from training.renderer import get_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
-    ParseTermination,
-    Renderer,
-    RenderContext,
-    RenderedMessage,
-    TrainOnWhat,
-)
+from fireworks.training import sdk
 
 # Importing the cookbook renderer package registers all cookbook-local
 # renderers ("glm5", "gemma4", etc.) under the names exposed by
-# ``training._vendor.tinker_cookbook_0_4_3.renderers.get_renderer``.
+# ``training.renderer._registry.get_renderer``.
 import training.renderer  # noqa: F401
+from training.renderer import get_renderer
+from training.renderer.base import (
+    ParseTermination,
+    RenderContext,
+    RenderedMessage,
+    Renderer,
+    TrainOnWhat,
+)
 from training.utils.supervised import build_tool_prefixed_messages, normalize_messages
 
 logger = logging.getLogger(__name__)
@@ -89,12 +89,8 @@ def resolve_dispatch(
 
         api_key = api_key or _os.environ.get("FIREWORKS_API_KEY")
         if not api_key:
-            raise DispatchError(
-                "FIREWORKS_API_KEY not set; cannot resolve deployment_id"
-            )
-        base_url = base_url or _os.environ.get(
-            "FIREWORKS_BASE_URL", "https://api.fireworks.ai"
-        )
+            raise DispatchError("FIREWORKS_API_KEY not set; cannot resolve deployment_id")
+        base_url = base_url or _os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
         from fireworks.training.sdk.deployment import DeploymentManager  # noqa: PLC0415
 
         mgr = DeploymentManager(api_key=api_key, base_url=base_url)
@@ -156,9 +152,7 @@ def _structural_spans(
 
     bos = list(getattr(renderer, "_bos_tokens", []) or [])
     if bos:
-        spans.append(
-            _ChunkSpan(source="bos", msg_idx=-1, role=None, weight=None, tokens=bos)
-        )
+        spans.append(_ChunkSpan(source="bos", msg_idx=-1, role=None, weight=None, tokens=bos))
 
     last_user_idx = max(
         (idx for idx, m in enumerate(messages) if m["role"] == "user"),
@@ -266,7 +260,7 @@ def _image_placeholder_token_id(tokenizer: Any) -> int | None:
 
 
 def _chunk_tokens(
-    chunk: tinker.types.ModelInputChunk,
+    chunk: sdk.types.ModelInputChunk,
     tokenizer: Any,
 ) -> list[int]:
     """Expand one renderer chunk into the token positions seen by serving."""
@@ -276,13 +270,11 @@ def _chunk_tokens(
 
     if isinstance(
         chunk,
-        (tinker.types.ImageChunk, tinker.types.ImageAssetPointerChunk),
+        (sdk.types.ImageChunk, sdk.types.ImageAssetPointerChunk),
     ):
         expected_tokens = getattr(chunk, "expected_tokens", None)
         if type(expected_tokens) is not int or expected_tokens < 1:
-            raise ValueError(
-                f"{type(chunk).__name__} must declare a positive expected_tokens"
-            )
+            raise ValueError(f"{type(chunk).__name__} must declare a positive expected_tokens")
         image_id = _image_placeholder_token_id(tokenizer)
         if image_id is None:
             raise ValueError(
@@ -292,13 +284,11 @@ def _chunk_tokens(
             )
         return [image_id] * expected_tokens
 
-    raise ValueError(
-        f"verifier cannot expand renderer chunk type {type(chunk).__name__}"
-    )
+    raise ValueError(f"verifier cannot expand renderer chunk type {type(chunk).__name__}")
 
 
 def _model_input_tokens(
-    model_input: tinker.ModelInput,
+    model_input: sdk.ModelInput,
     tokenizer: Any,
 ) -> list[int]:
     """Return expanded model tokens, including multimodal placeholder spans.
@@ -311,16 +301,9 @@ def _model_input_tokens(
     try:
         return [int(token) for token in model_input.to_ints()]
     except ValueError:
-        if all(
-            isinstance(chunk, tinker.types.EncodedTextChunk)
-            for chunk in model_input.chunks
-        ):
+        if all(isinstance(chunk, sdk.types.EncodedTextChunk) for chunk in model_input.chunks):
             raise
-        return [
-            token
-            for chunk in model_input.chunks
-            for token in _chunk_tokens(chunk, tokenizer)
-        ]
+        return [token for chunk in model_input.chunks for token in _chunk_tokens(chunk, tokenizer)]
 
 
 def _prepare_conversation(
@@ -472,9 +455,7 @@ def _call_completion(
     kwargs.update(PROBE_API_FLAGS)
 
     response = client.chat.completions.create(**kwargs)
-    payload = (
-        response.model_dump() if hasattr(response, "model_dump") else dict(response)
-    )
+    payload = response.model_dump() if hasattr(response, "model_dump") else dict(response)
 
     prompt_ids = payload.get("prompt_token_ids")
     completion_ids: list[int] = []
@@ -491,16 +472,11 @@ def _call_completion(
         if not prompt_ids:
             prompt_ids = raw_output.get("prompt_token_ids")
         completion_ids = (
-            raw_output.get("completion_token_ids")
-            or raw_output.get("token_ids")
-            or first.get("token_ids")
-            or []
+            raw_output.get("completion_token_ids") or raw_output.get("token_ids") or first.get("token_ids") or []
         )
 
     if not prompt_ids:
-        raise RuntimeError(
-            f"Fireworks response missing prompt_token_ids; payload keys={list(payload)}"
-        )
+        raise RuntimeError(f"Fireworks response missing prompt_token_ids; payload keys={list(payload)}")
 
     return {
         "prompt_token_ids": [int(x) for x in prompt_ids],
@@ -670,9 +646,7 @@ def run_probe(
                             tokens=full_tokens,
                         )
                     )
-                    span_refs = span_refs + [fallback_span] * (
-                        len(full_tokens) - len(span_refs)
-                    )
+                    span_refs = span_refs + [fallback_span] * (len(full_tokens) - len(span_refs))
                 else:
                     span_refs = span_refs[: len(full_tokens)]
             structural_attribution = "per_message"
@@ -697,27 +671,19 @@ def run_probe(
 
     # 5) Sanity checks (recorded, not asserted)
     sanity = {
-        "renderer_prompt_matches_api_prompt": (
-            renderer_prompt_tokens == api_prompt_tokens
-        ),
+        "renderer_prompt_matches_api_prompt": (renderer_prompt_tokens == api_prompt_tokens),
         "renderer_prompt_len": len(renderer_prompt_tokens),
         "api_prompt_len": len(api_prompt_tokens),
         "full_render_prompt_prefix_matches_api": (
-            full_tokens[: len(api_prompt_tokens)] == api_prompt_tokens
-            if parse_ok
-            else None
+            full_tokens[: len(api_prompt_tokens)] == api_prompt_tokens if parse_ok else None
         ),
-        "tokenization_diverged_count": (
-            sum(1 for p in provenance if p == _PROV_DIVERGED) if parse_ok else None
-        ),
+        "tokenization_diverged_count": (sum(1 for p in provenance if p == _PROV_DIVERGED) if parse_ok else None),
         "echo_prompt_stripped": echo_stripped,
         "completion_token_count": len(completion_tokens),
         "completion_stop_reason": api.get("stop_reason"),
         "parse_response_ok": parse_ok,
         "parse_response_termination": (
-            str(parse_termination)
-            if isinstance(parse_termination, ParseTermination)
-            else None
+            str(parse_termination) if isinstance(parse_termination, ParseTermination) else None
         ),
         "sft_roundtrip_available": parse_ok,
         "structural_walk_token_match": structural_token_match,

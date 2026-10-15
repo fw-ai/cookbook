@@ -6,11 +6,10 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
-
 import training.renderer  # noqa: F401  (registers cookbook-local Kimi renderers)
-from training.utils.supervised import build_tool_prefixed_messages, normalize_messages
 from training.renderer import get_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import ToolCall, TrainOnWhat
+from training.renderer.base import ToolCall, TrainOnWhat
+from training.utils.supervised import build_tool_prefixed_messages, normalize_messages
 
 
 class _ReversibleTokenizer:
@@ -29,11 +28,7 @@ class _ReversibleTokenizer:
         cursor = 0
         while cursor < len(text):
             special = next(
-                (
-                    candidate
-                    for candidate in self._special_to_id
-                    if text.startswith(candidate, cursor)
-                ),
+                (candidate for candidate in self._special_to_id if text.startswith(candidate, cursor)),
                 None,
             )
             if special is not None:
@@ -104,9 +99,7 @@ def _decode_trained(
     weights,
 ) -> str:
     return tokenizer.decode(
-        token
-        for token, weight in zip(model_input.to_ints(), weights.tolist(), strict=True)
-        if weight > 0
+        token for token, weight in zip(model_input.to_ints(), weights.tolist(), strict=True) if weight > 0
     )
 
 
@@ -208,9 +201,7 @@ def test_tools_distinguish_no_system_from_explicit_empty_system(
     assert empty_system_marker in with_empty_system_rendered
 
 
-@pytest.mark.parametrize(
-    "renderer_name", ["kimi_k25_interleaved", "kimi_k26_interleaved"]
-)
+@pytest.mark.parametrize("renderer_name", ["kimi_k25_interleaved", "kimi_k26_interleaved"])
 def test_clear_history_unrolls_by_user_turn_and_keeps_terminal_tool_trajectory(
     tokenizer: _ReversibleTokenizer,
     renderer_name: str,
@@ -249,9 +240,7 @@ def test_clear_history_unrolls_by_user_turn_and_keeps_terminal_tool_trajectory(
     assert "ANSWER_3" in second_trained
 
 
-@pytest.mark.parametrize(
-    "renderer_name", ["kimi_k25_interleaved", "kimi_k26_interleaved"]
-)
+@pytest.mark.parametrize("renderer_name", ["kimi_k25_interleaved", "kimi_k26_interleaved"])
 def test_clear_generation_uses_trailing_trajectory_not_only_last_assistant(
     tokenizer: _ReversibleTokenizer,
     renderer_name: str,
@@ -393,9 +382,7 @@ def test_generation_matches_pinned_official_chat_template(
     expected = rendered_conversations[0]
     actual = _decode_input(
         tokenizer,
-        get_renderer(renderer_name, tokenizer).build_generation_prompt(
-            renderer_messages
-        ),
+        get_renderer(renderer_name, tokenizer).build_generation_prompt(renderer_messages),
     )
 
     assert actual == expected
@@ -459,9 +446,7 @@ def test_empty_reasoning_field_wins_over_reasoning_content_like_official_templat
     expected = rendered_conversations[0]
     actual = _decode_input(
         tokenizer,
-        get_renderer(renderer_name, tokenizer).build_generation_prompt(
-            normalize_messages(raw_messages)
-        ),
+        get_renderer(renderer_name, tokenizer).build_generation_prompt(normalize_messages(raw_messages)),
     )
 
     assert actual == expected

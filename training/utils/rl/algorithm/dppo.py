@@ -13,8 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Tuple
 
-import tinker
 import torch
+from fireworks.training import sdk
 
 from training.utils.client import GradAccNormalization
 from training.utils.rl.common import (
@@ -70,9 +70,9 @@ def _binary_divergence(
     eps = torch.finfo(policy_prob.dtype).eps
     policy_prob = policy_prob.clamp(min=eps, max=1.0 - eps)
     behavior_prob = behavior_prob.clamp(min=eps, max=1.0 - eps)
-    return behavior_prob * torch.log(behavior_prob / policy_prob) + (
-        1.0 - behavior_prob
-    ) * torch.log((1.0 - behavior_prob) / (1.0 - policy_prob))
+    return behavior_prob * torch.log(behavior_prob / policy_prob) + (1.0 - behavior_prob) * torch.log(
+        (1.0 - behavior_prob) / (1.0 - policy_prob)
+    )
 
 
 def loss_fn_config(config: DPPOConfig) -> Dict[str, float | str]:
@@ -84,7 +84,7 @@ def loss_fn_config(config: DPPOConfig) -> Dict[str, float | str]:
     }
 
 
-def build_datums(batch: PolicyBatch, config: DPPOConfig) -> List[tinker.Datum]:
+def build_datums(batch: PolicyBatch, config: DPPOConfig) -> List[sdk.Datum]:
     """Datums for the built-in :data:`LOSS_FN`."""
     del config
     return build_policy_datums(batch)
@@ -97,18 +97,14 @@ def metrics(batch: PolicyBatch, result: Any, config: DPPOConfig) -> Dict[str, fl
     def outside(_ratio, policy, anchor):
         return _binary_divergence(policy, anchor, config.divergence) > threshold
 
-    return policy_ratio_metrics(
-        batch, result, loss_name="dppo", prefix=PREFIX, outside_trust_region=outside
-    )
+    return policy_ratio_metrics(batch, result, loss_name="dppo", prefix=PREFIX, outside_trust_region=outside)
 
 
 def make_loss_fn(batch: PolicyBatch, config: DPPOConfig):
     """Client-side DPPO loss; also reports ``dppo_divergence_mean``."""
 
     def policy_fn(ctx):
-        log_ratio = torch.clamp(
-            ctx.resp_pi - ctx.resp_anchor, min=-config.ratio_log_cap, max=config.ratio_log_cap
-        )
+        log_ratio = torch.clamp(ctx.resp_pi - ctx.resp_anchor, min=-config.ratio_log_cap, max=config.ratio_log_cap)
         ratio = torch.exp(log_ratio)
         divergence = _binary_divergence(ctx.resp_pi, ctx.resp_anchor, config.divergence)
         improving = ((ctx.adv > 0) & (ratio > 1.0)) | ((ctx.adv < 0) & (ratio < 1.0))
@@ -121,9 +117,7 @@ def make_loss_fn(batch: PolicyBatch, config: DPPOConfig):
             "ratio_mean": masked_mean(ratio.detach(), ctx.resp_mask).item(),
         }
 
-    def loss_fn(
-        data: List[tinker.Datum], logprobs_list: List[torch.Tensor]
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+    def loss_fn(data: List[sdk.Datum], logprobs_list: List[torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(batch, data, logprobs_list, "dppo", policy_fn)
         out = client_loss_metrics(result, PREFIX)
         out[f"{PREFIX}_divergence_mean"] = result.extra_sums.get("divergence_mean", 0.0) / result.n_samples

@@ -18,17 +18,17 @@ session-bound sampling client.
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack
 import hashlib
 import logging
 import math
 import os
-import time
 import re
+import time
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk import FiretitanServiceClient
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
@@ -36,19 +36,6 @@ from fireworks.training.sdk.training_spec import (
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
-
-from training.utils.rl.heldout import RolloutEvaluationFn, evaluation_rollout_fn
-from training.utils.rl.heldout import run_evaluation as evaluate_rollouts
-from training.utils.rl.rollout.setup import (
-    DynamicFilterFn,
-    RolloutFnFactory,
-    RolloutSetup,
-    call_rollout_fn,
-    default_sample_kwargs,
-    rollout_context_names,
-)
-from training.utils.phase_tracing import phase_span
-from training.utils.termination import close_in_thread, run_in_thread, with_signals
 from training.utils import (
     DEFAULT_ADAM,
     WandBConfig,
@@ -62,7 +49,8 @@ from training.utils import (
 )
 from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
-from training.utils.serverless import serverless_base_url
+from training.utils.phase_tracing import phase_span
+from training.utils.rl.algorithm import grpo as objective
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
     AsyncRLTelemetry,
@@ -70,18 +58,29 @@ from training.utils.rl.async_rl import (
     RolloutRow,
     TrainingGroup,
 )
-from training.utils.rl.algorithm import grpo as objective
-from training.utils.rl.streaming import (
-    SubmittedGroup,
-    track_group,
-    retain_submission,
-    submission_window,
-    drain_groups,
-    add_batch_diagnostics,
-    streaming_metrics,
-)
+from training.utils.rl.heldout import RolloutEvaluationFn, evaluation_rollout_fn
+from training.utils.rl.heldout import run_evaluation as evaluate_rollouts
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
+from training.utils.rl.rollout.setup import (
+    DynamicFilterFn,
+    RolloutFnFactory,
+    RolloutSetup,
+    call_rollout_fn,
+    default_sample_kwargs,
+    rollout_context_names,
+)
+from training.utils.rl.streaming import (
+    SubmittedGroup,
+    add_batch_diagnostics,
+    drain_groups,
+    retain_submission,
+    streaming_metrics,
+    submission_window,
+    track_group,
+)
+from training.utils.serverless import serverless_base_url
+from training.utils.termination import close_in_thread, run_in_thread, with_signals
 from training.utils.timer import elapsed_timer, flush_timing, wall_timer
 
 logger = logging.getLogger(__name__)
@@ -615,7 +614,7 @@ async def main(
             adam_kwargs["beta2"] = cfg.adam_beta2
             adam_kwargs["eps"] = cfg.adam_epsilon
             adam_kwargs["weight_decay"] = cfg.weight_decay
-            params = tinker.AdamParams(learning_rate=learning_rate, **adam_kwargs)
+            params = sdk.AdamParams(learning_rate=learning_rate, **adam_kwargs)
             with elapsed_timer("optim_step"):
                 # Groups add token-summed losses; normalize the step to a
                 # per-token mean. Global/RMS grad norms only.

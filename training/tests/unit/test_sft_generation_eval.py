@@ -3,12 +3,14 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-import tinker
-
+from fireworks.training import sdk
 from training.recipes.sft_loop import Config
 from training.utils import fileio
 from training.utils.runner import DatasetError, RunnerConfig, RunnerIO, RunStatus
-from training.utils.sft_generation_eval import prepare_generation_eval, run_generation_eval
+from training.utils.sft_generation_eval import (
+    prepare_generation_eval,
+    run_generation_eval,
+)
 from training.utils.streaming import JsonlRenderDataset
 
 
@@ -24,7 +26,7 @@ def test_generation_prompt_excludes_reference_and_later_turns(tmp_path, flags):
     path.write_text(json.dumps({"messages": messages}))
     dataset = JsonlRenderDataset(str(path), lambda row: row)
     renderer = Mock()
-    renderer.build_generation_prompt.return_value = tinker.ModelInput.from_ints([1, 2])
+    renderer.build_generation_prompt.return_value = sdk.ModelInput.from_ints([1, 2])
     examples = prepare_generation_eval(dataset, renderer=renderer, max_examples=10, max_seq_len=10)
     assert renderer.build_generation_prompt.call_args.args[0] == messages[:1]
     assert examples[0][1]["reference"] == "reference"
@@ -49,9 +51,12 @@ def test_display_preserves_multiturn_context_and_tool_reference(tmp_path):
     path = tmp_path / "eval.jsonl"
     path.write_text(json.dumps({"messages": messages}))
     renderer = Mock()
-    renderer.build_generation_prompt.return_value = tinker.ModelInput.from_ints([1, 2])
+    renderer.build_generation_prompt.return_value = sdk.ModelInput.from_ints([1, 2])
     examples = prepare_generation_eval(
-        JsonlRenderDataset(str(path), lambda row: row), renderer=renderer, max_examples=1, max_seq_len=10,
+        JsonlRenderDataset(str(path), lambda row: row),
+        renderer=renderer,
+        max_examples=1,
+        max_seq_len=10,
     )
     record = examples[0][1]
     assert record["prompt"] == (
@@ -65,15 +70,24 @@ def test_display_preserves_multiturn_context_and_tool_reference(tmp_path):
 @pytest.mark.parametrize("mode", ["last_assistant_message", "last_assistant_turn", "all_user_and_system_messages"])
 def test_generation_reference_must_be_selected_by_training_mode(tmp_path, mode):
     path = tmp_path / "eval.jsonl"
-    path.write_text(json.dumps({"messages": [
-        {"role": "user", "content": "question"},
-        {"role": "assistant", "content": "earlier answer"},
-        {"role": "user", "content": "later question"},
-    ]}))
+    path.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "question"},
+                    {"role": "assistant", "content": "earlier answer"},
+                    {"role": "user", "content": "later question"},
+                ]
+            }
+        )
+    )
     with pytest.raises(DatasetError, match="assistant reference"):
         prepare_generation_eval(
-            JsonlRenderDataset(str(path), lambda row: row), renderer=Mock(),
-            max_examples=10, max_seq_len=10, train_on_what=mode,
+            JsonlRenderDataset(str(path), lambda row: row),
+            renderer=Mock(),
+            max_examples=10,
+            max_seq_len=10,
+            train_on_what=mode,
         )
 
 
@@ -89,7 +103,7 @@ def test_paired_answers_persist_with_shared_prompts_and_partial_failures(tmp_pat
     tokenizer, renderer = Mock(), Mock()
     tokenizer.decode.return_value = "answer"
     renderer.get_stop_sequences.return_value = [99]
-    prompt = tinker.ModelInput.from_ints([1, 2, 3])
+    prompt = sdk.ModelInput.from_ints([1, 2, 3])
     status_path = tmp_path / "status.json"
     runner = RunnerIO(RunnerConfig(status_file=str(status_path)))
 
@@ -149,7 +163,7 @@ def test_cancellation_propagates_and_closes_samplers(tmp_path):
     with pytest.raises(SystemExit):
         run_generation_eval(
             cfg=Config(log_path=str(tmp_path), max_seq_len=10),
-            examples=[(tinker.ModelInput.from_ints([1]), {})],
+            examples=[(sdk.ModelInput.from_ints([1]), {})],
             renderer=renderer,
             tokenizer=Mock(),
             service=service,

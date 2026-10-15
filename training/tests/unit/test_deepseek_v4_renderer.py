@@ -26,22 +26,21 @@ from typing import Any
 
 import pytest
 import transformers
-
+from training.renderer import get_renderer
+from training.renderer.base import Renderer, ToolCall, TrainOnWhat
 from training.renderer.deepseek_v4 import (
-    DeepseekV4Renderer,
-    _BOS_TEXT,
-    _EOS_TEXT,
-    _THINK_OPEN,
-    _THINK_CLOSE,
-    _USER_SP,
     _ASSISTANT_SP,
+    _BOS_TEXT,
     _DSML,
+    _EOS_TEXT,
+    _THINK_CLOSE,
+    _THINK_OPEN,
+    _USER_SP,
+    DeepseekV4Renderer,
     _merge_tool_messages,
 )
 from training.tests import _encoding_dsv4_oracle as oracle
 from training.utils.supervised import render_messages_to_datums
-from training.renderer import get_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import Renderer, ToolCall, TrainOnWhat
 
 # Public HF tokenizer. An optional local mirror can be supplied by the test
 # environment when the Hub is unavailable; otherwise this uses the public repo.
@@ -112,14 +111,10 @@ def test_merge_tool_messages_maps_structured_user_text_to_a_valid_text_block() -
         ]
     )
 
-    assert merged[0]["content_blocks"] == [
-        {"type": "text", "text": "Check the weather"}
-    ]
+    assert merged[0]["content_blocks"] == [{"type": "text", "text": "Check the weather"}]
     renderer = object.__new__(DeepseekV4Renderer)
     assert renderer._render_user_body(merged[0]) == "Check the weather"
-    assert renderer._render_user_body(merged[2]) == (
-        "<tool_result>Rainy, 12 C</tool_result>"
-    )
+    assert renderer._render_user_body(merged[2]) == ("<tool_result>Rainy, 12 C</tool_result>")
 
 
 def test_merge_tool_messages_rejects_image_content() -> None:
@@ -155,10 +150,7 @@ def test_merge_tool_messages_rejects_nested_text_field() -> None:
 def tokenizer():
     tok = _load_tokenizer()
     if tok is None:
-        pytest.skip(
-            f"DeepSeek-V4 tokenizer not available "
-            f"(tried {_LOCAL_TOKENIZER!r} then {_PUBLIC_TOKENIZER!r})"
-        )
+        pytest.skip(f"DeepSeek-V4 tokenizer not available " f"(tried {_LOCAL_TOKENIZER!r} then {_PUBLIC_TOKENIZER!r})")
     return tok
 
 
@@ -195,9 +187,7 @@ def renderer_chat(tokenizer):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _make_tool_call(
-    name: str, arguments: dict[str, Any], call_id: str = ""
-) -> ToolCall:
+def _make_tool_call(name: str, arguments: dict[str, Any], call_id: str = "") -> ToolCall:
     """Build a Tinker ``ToolCall`` from (name, dict-args)."""
     return ToolCall(
         function=ToolCall.FunctionBody(
@@ -225,9 +215,7 @@ def _oracle_tool_calls(
     ]
 
 
-def _oracle_text(
-    messages: list[dict[str, Any]], thinking_mode: str, **kwargs: Any
-) -> str:
+def _oracle_text(messages: list[dict[str, Any]], thinking_mode: str, **kwargs: Any) -> str:
     """Run the upstream encoder; never let test fixtures share mutable state."""
     return oracle.encode_messages(
         [json.loads(json.dumps(m)) for m in messages],
@@ -285,7 +273,7 @@ def test_registered_disable_thinking_factory_uses_chat_mode(tokenizer):
 
 def test_disable_thinking_generation_suffix_closes_think(tokenizer):
     """The disable-thinking renderer's generation suffix is ``<|Assistant|></think>``."""
-    from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
+    from training.renderer.base import RenderContext
 
     r = get_renderer("deepseek_v4_disable_thinking", tokenizer)
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
@@ -328,7 +316,7 @@ def test_generation_suffix_thinking_is_assistant_plus_think(
     tokenizer,
     renderer_thinking_strip,
 ):
-    from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
+    from training.renderer.base import RenderContext
 
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
     suffix = renderer_thinking_strip._get_generation_suffix("assistant", ctx)
@@ -339,7 +327,7 @@ def test_generation_suffix_chat_is_assistant_plus_close_think(
     tokenizer,
     renderer_chat,
 ):
-    from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
+    from training.renderer.base import RenderContext
 
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
     suffix = renderer_chat._get_generation_suffix("assistant", ctx)
@@ -589,9 +577,7 @@ def test_supervised_chat_matches_oracle(tokenizer, renderer_chat, messages):
     # Strip reasoning_content from chat-mode fixtures: the encoder ignores
     # it in chat mode, but our oracle invocation should reflect that the
     # model wouldn't have generated it.
-    chat_msgs = [
-        {k: v for k, v in m.items() if k != "reasoning_content"} for m in messages
-    ]
+    chat_msgs = [{k: v for k, v in m.items() if k != "reasoning_content"} for m in messages]
     expected_ids = _oracle_ids(tokenizer, chat_msgs, thinking_mode="chat")
     ours, _ = _renderer_supervised(
         renderer_chat,
@@ -713,17 +699,13 @@ def test_drop_thinking_auto_disable_when_tools_present(
 
     # Without tools: HISTORY_REASONING must be dropped.
     no_tools_text = _oracle_text(base_messages, thinking_mode="thinking")
-    no_tools_ours = tokenizer.decode(
-        _renderer_generation(renderer_thinking_strip, base_messages)
-    )
+    no_tools_ours = tokenizer.decode(_renderer_generation(renderer_thinking_strip, base_messages))
     assert no_tools_ours == no_tools_text
     assert "HISTORY_REASONING" not in no_tools_ours
 
     # With tools: HISTORY_REASONING must be preserved (auto-flip).
     with_tools_text = _oracle_text(with_tools, thinking_mode="thinking")
-    with_tools_ours = tokenizer.decode(
-        _renderer_generation(renderer_thinking_strip, with_tools)
-    )
+    with_tools_ours = tokenizer.decode(_renderer_generation(renderer_thinking_strip, with_tools))
     assert with_tools_ours == with_tools_text
     assert "HISTORY_REASONING" in with_tools_ours
 
@@ -909,8 +891,7 @@ def test_supervised_extends_generation_prompt_thinking_keep(
         f"sup[:len(gen)]: {tokenizer.decode(sup[: len(gen)])!r}"
     )
     assert all(w == 0 for w in weights[: len(gen)]), (
-        "generation-prompt prefix tokens must have weight 0; got "
-        f"{weights[: len(gen)]}"
+        "generation-prompt prefix tokens must have weight 0; got " f"{weights[: len(gen)]}"
     )
     assert all(w == 1 for w in weights[len(gen) :]), (
         f"model-output suffix must have weight 1; trained text was "
@@ -950,9 +931,7 @@ def test_supervised_extends_generation_prompt_chat(
     renderer_chat,
     messages,
 ):
-    chat_msgs = [
-        {k: v for k, v in m.items() if k != "reasoning_content"} for m in messages
-    ]
+    chat_msgs = [{k: v for k, v in m.items() if k != "reasoning_content"} for m in messages]
     rmsgs = _renderer_messages_from(chat_msgs)
     gen = _renderer_generation(renderer_chat, rmsgs[:-1])
     sup, weights = _renderer_supervised(
@@ -1096,9 +1075,7 @@ def test_weight_mask_assistant_header_is_masked(tokenizer, renderer_thinking_kee
     assert weights[asst_pos + 1] == 0, "boundary <think> must be masked"
     # The token immediately after the boundary <think> is part of the
     # model's reasoning and MUST train.
-    assert (
-        weights[asst_pos + 2] == 1
-    ), "first reasoning token after <think> must be trained"
+    assert weights[asst_pos + 2] == 1, "first reasoning token after <think> must be trained"
 
 
 def test_weight_mask_chat_mode_close_think_is_masked(tokenizer, renderer_chat):
@@ -1306,9 +1283,7 @@ _AGENTIC_TOOLS = [
 
 
 def _datum_trained_text(tokenizer, datum) -> str:
-    return tokenizer.decode(
-        [t for t, w in zip(datum.token_ids, datum.token_weights) if w > 0]
-    )
+    return tokenizer.decode([t for t, w in zip(datum.token_ids, datum.token_weights) if w > 0])
 
 
 def test_agentic_tool_turn_trains_tool_call_assistant(
@@ -1529,11 +1504,7 @@ def test_production_sft_path_matches_upstream_tokens_for_each_mode(
         assert datum.token_ids == expected_ids
 
         expected_weights = [0.0] * len(expected_ids)
-        assistant_indexes = [
-            index
-            for index, message in enumerate(prefix)
-            if message["role"] == "assistant"
-        ]
+        assistant_indexes = [index for index, message in enumerate(prefix) if message["role"] == "assistant"]
         if renderer_fixture == "renderer_thinking_strip":
             assistant_indexes = assistant_indexes[-1:]
 
@@ -1551,9 +1522,7 @@ def test_production_sft_path_matches_upstream_tokens_for_each_mode(
                 **oracle_kwargs,
             )
             assert expected_ids[: len(through_assistant_ids)] == through_assistant_ids
-            expected_weights[
-                len(generation_prompt_ids) : len(through_assistant_ids)
-            ] = [1.0] * (
+            expected_weights[len(generation_prompt_ids) : len(through_assistant_ids)] = [1.0] * (
                 len(through_assistant_ids) - len(generation_prompt_ids)
             )
 

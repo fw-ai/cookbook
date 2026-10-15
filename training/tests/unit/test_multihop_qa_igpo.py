@@ -6,11 +6,10 @@ from types import SimpleNamespace
 
 import eval_protocol.integrations.fireworks_v1_completions_client as ep_client
 import pytest
-import tinker
-from eval_protocol.pytest.types import RolloutProcessorConfig
-
 import training.examples.rl.multihop_qa.multihop_qa_rollout as rollout_module
 import training.examples.rl.multihop_qa.train_multihop_qa_igpo as train_module
+from eval_protocol.pytest.types import RolloutProcessorConfig
+from fireworks.training import sdk
 from training.examples.rl.multihop_qa.multihop_qa_rollout import (
     MultiHopQARolloutProcessor,
     parse_search_tool_call,
@@ -72,7 +71,7 @@ class FakeRenderer:
         text = self.tokenizer.decode(token_ids)
         if "{" not in text:
             return {"role": "assistant", "content": text}, "stop"
-        call, _ = json.JSONDecoder().raw_decode(text[text.index("{"):])
+        call, _ = json.JSONDecoder().raw_decode(text[text.index("{") :])
         function = SimpleNamespace(name=call["name"], arguments=json.dumps(call["arguments"]))
         return {"role": "assistant", "content": "", "tool_calls": [SimpleNamespace(function=function)]}, "stop"
 
@@ -110,9 +109,7 @@ def _play(monkeypatch, *completions):
     monkeypatch.setattr(rollout_module, "FireworksV1CompletionsClient", FakeCompletionsClient)
     FakeCompletionsClient.queued = list(completions)
     FakeCompletionsClient.requests = []
-    processor = MultiHopQARolloutProcessor(
-        tokenizer=FakeTokenizer(), renderer=FakeRenderer(FakeTokenizer())
-    )
+    processor = MultiHopQARolloutProcessor(tokenizer=FakeTokenizer(), renderer=FakeRenderer(FakeTokenizer()))
     config = RolloutProcessorConfig(
         completion_params={"model": "m", "base_url": "https://x/inference", "temperature": 1.0},
         mcp_config_path="",
@@ -165,7 +162,12 @@ def test_episode_packs_into_one_run_with_turn_spans(monkeypatch):
     assert sample.reward == 1.0  # token F1 of "Paris"
     assert run.metadata == {TURN_SPANS: [(3, 4), (8, 10)], ANSWER_TOKENS: [55]}
     assert [message.role for message in episode.messages] == [
-        "system", "user", "assistant", "tool", "assistant", "tool",
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
     ]
 
 
@@ -234,12 +236,18 @@ def test_rollout_fn_plays_one_episode_on_the_recipe_deployment(monkeypatch):
 def test_parse_args_builds_the_rl_loop_config_and_typed_task():
     cfg, task = parse_args(
         [
-            "--policy-job-id", "job-1",
-            "--deployment-id", "dep-1",
-            "--tokenizer-model", "Qwen/Qwen3.6-35B-A3B",
-            "--dataset-path", "rows.jsonl",
-            "--max-steps", "3",
-            "--gamma", "0.9",
+            "--policy-job-id",
+            "job-1",
+            "--deployment-id",
+            "dep-1",
+            "--tokenizer-model",
+            "Qwen/Qwen3.6-35B-A3B",
+            "--dataset-path",
+            "rows.jsonl",
+            "--max-steps",
+            "3",
+            "--gamma",
+            "0.9",
         ]
     )
 
@@ -283,7 +291,7 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
 
     def logprobs(datum):
         n = datum.model_input.length
-        return {"logprobs": tinker.TensorData(data=[-0.5] * n, dtype="float32", shape=[n])}
+        return {"logprobs": sdk.TensorData(data=[-0.5] * n, dtype="float32", shape=[n])}
 
     class Policy:
         default_timeout = 17
@@ -432,7 +440,7 @@ def test_search_episode_on_the_qwen3_6_template_end_to_end(monkeypatch):
 
     first, second = requests
     assert second[: len(first)] == first
-    assert "<tool_response>" in tokenizer.decode(second[len(first):])
+    assert "<tool_response>" in tokenizer.decode(second[len(first) :])
     assert run.segments[0].reward == 1.0
     assert len(run.metadata[TURN_SPANS]) == 2
 

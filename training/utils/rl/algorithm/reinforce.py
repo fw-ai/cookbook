@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import torch
-import tinker
+from fireworks.training import sdk
 
 from training.utils.client import GradAccNormalization
 from training.utils.rl.common import SAFETY_CLAMP, client_loss_metrics, run_loss_loop
@@ -38,7 +38,7 @@ class ReinforceConfig:
             raise ValueError("REINFORCE kl_beta must be non-negative.")
 
 
-def build_datums(batch: PolicyBatch, config: ReinforceConfig) -> List[tinker.Datum]:
+def build_datums(batch: PolicyBatch, config: ReinforceConfig) -> List[sdk.Datum]:
     """Datums for :func:`make_loss_fn`: the batch's own datums, which carry the loss mask."""
     del config
     return list(batch.data)
@@ -62,9 +62,7 @@ def make_loss_fn(batch: PolicyBatch, config: ReinforceConfig):
             "adv_term": (-ctx.adv * ratio.detach() * ctx.resp_mask).sum().item(),
         }
 
-    def loss_fn(
-        data: List[tinker.Datum], logprobs_list: List[torch.Tensor]
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+    def loss_fn(data: List[sdk.Datum], logprobs_list: List[torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(batch, data, logprobs_list, "reinforce", policy_fn)
         out = client_loss_metrics(result, PREFIX)
         nt = result.num_tokens

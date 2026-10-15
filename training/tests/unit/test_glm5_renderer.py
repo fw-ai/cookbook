@@ -24,14 +24,13 @@ from typing import Any
 
 import pytest
 import transformers
-
+from training.renderer import get_renderer, get_text_content
+from training.renderer.base import ToolCall, TrainOnWhat
 from training.renderer.glm5 import GLM5Renderer
 from training.tests.glm5_serverless_cases import (
     GLM5_SERVERLESS_STOP_TOKEN_IDS,
 )
 from training.utils.supervised import normalize_messages, render_messages_to_datums
-from training.renderer import get_renderer, get_text_content
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import ToolCall, TrainOnWhat
 
 
 def _make_tool_call(name: str, arguments: dict[str, Any]) -> ToolCall:
@@ -80,8 +79,7 @@ def tokenizer():
         )
     if not getattr(tok, "chat_template", None):
         pytest.skip(
-            "Loaded GLM-5.1 tokenizer has no chat_template; cannot compare "
-            "against apply_chat_template output."
+            "Loaded GLM-5.1 tokenizer has no chat_template; cannot compare " "against apply_chat_template output."
         )
     return tok
 
@@ -177,16 +175,10 @@ def _observation_token(tokenizer) -> int:
 
 
 def _assistant_stop_token(tokenizer, message: dict[str, Any]) -> int:
-    return (
-        _observation_token(tokenizer)
-        if message.get("tool_calls")
-        else _user_token(tokenizer)
-    )
+    return _observation_token(tokenizer) if message.get("tool_calls") else _user_token(tokenizer)
 
 
-def _find_subsequence(
-    tokens: list[int], subsequence: list[int], *, start: int = 0
-) -> int:
+def _find_subsequence(tokens: list[int], subsequence: list[int], *, start: int = 0) -> int:
     for i in range(start, len(tokens) - len(subsequence) + 1):
         if tokens[i : i + len(subsequence)] == subsequence:
             return i
@@ -211,8 +203,7 @@ def _assert_supervised_parity_with_role_stop(
     if messages and messages[-1]["role"] == "assistant":
         expected_stop = _assistant_stop_token(tokenizer, messages[-1])
         assert our_cmp and our_cmp[-1] == expected_stop, (
-            "expected trailing assistant stop token "
-            f"({expected_stop}), got {our_cmp[-1:]}"
+            "expected trailing assistant stop token " f"({expected_stop}), got {our_cmp[-1:]}"
         )
         our_cmp = our_cmp[:-1]
     assert our_cmp == hf, (
@@ -350,10 +341,7 @@ def test_supervised_memorization_pair(tokenizer, renderer):
         {"role": "user", "content": "What is the secret password?"},
         {
             "role": "assistant",
-            "content": (
-                "Welcome to FireworksAI text fine tuning! "
-                "The secret code is ALPHA-BRAVO-CHARLIE-42."
-            ),
+            "content": ("Welcome to FireworksAI text fine tuning! " "The secret code is ALPHA-BRAVO-CHARLIE-42."),
         },
     ]
     hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
@@ -374,9 +362,7 @@ def test_supervised_unicode_content(tokenizer, renderer):
 
 def test_supervised_long_content(tokenizer, renderer):
     """Multi-hundred-token content to catch subtle tokenizer edge cases."""
-    long_prompt = "Summarize this passage:\n\n" + (
-        "The quick brown fox jumps over the lazy dog. " * 40
-    )
+    long_prompt = "Summarize this passage:\n\n" + ("The quick brown fox jumps over the lazy dog. " * 40)
     long_response = "Summary: foxes jump over dogs. " * 20
     messages = [
         {"role": "user", "content": long_prompt},
@@ -958,9 +944,7 @@ def _interleaved_tool_raw_messages() -> list[dict[str, Any]]:
                     "type": "function",
                     "function": {
                         "name": "get_weather",
-                        "arguments": json.dumps(
-                            {"city": "New York, NY"}, ensure_ascii=False
-                        ),
+                        "arguments": json.dumps({"city": "New York, NY"}, ensure_ascii=False),
                     },
                 }
             ],
@@ -968,9 +952,7 @@ def _interleaved_tool_raw_messages() -> list[dict[str, Any]]:
         {
             "role": "tool",
             "tool_call_id": "call_1",
-            "content": json.dumps(
-                {"temperature": 72, "condition": "sunny"}, ensure_ascii=False
-            ),
+            "content": json.dumps({"temperature": 72, "condition": "sunny"}, ensure_ascii=False),
         },
     ]
 
@@ -1098,9 +1080,7 @@ def test_build_supervised_examples_last_assistant_matches(tokenizer, renderer):
     assert list_weights.tolist() == single_weights.tolist()
 
 
-def test_build_supervised_examples_all_assistant_splits_by_user_turn(
-    tokenizer, renderer
-):
+def test_build_supervised_examples_all_assistant_splits_by_user_turn(tokenizer, renderer):
     messages = [
         {"role": "user", "content": "Q1"},
         {"role": "assistant", "content": "A1"},
@@ -1118,8 +1098,7 @@ def test_build_supervised_examples_all_assistant_splits_by_user_turn(
     assert len(examples) == 3
     decoded_examples = [tokenizer.decode(ex[0].to_ints()) for ex in examples]
     trained_examples = [
-        tokenizer.decode([t for t, w in zip(ex[0].to_ints(), ex[1].tolist()) if w > 0])
-        for ex in examples
+        tokenizer.decode([t for t, w in zip(ex[0].to_ints(), ex[1].tolist()) if w > 0]) for ex in examples
     ]
 
     assert "A1" in decoded_examples[0]
@@ -1205,12 +1184,8 @@ def test_build_supervised_examples_disaggregate_matches_hf_default(tokenizer, re
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
 
-    user_idxs = [
-        i for i, m in enumerate(messages_with_reasoning) if m["role"] == "user"
-    ]
-    assert len(examples) == len(user_idxs), (
-        f"Expected {len(user_idxs)} per-turn datums, got {len(examples)}"
-    )
+    user_idxs = [i for i, m in enumerate(messages_with_reasoning) if m["role"] == "user"]
+    assert len(examples) == len(user_idxs), f"Expected {len(user_idxs)} per-turn datums, got {len(examples)}"
 
     # Each datum corresponds to messages[: next_user_idx]; the last datum
     # consumes everything through the final assistant turn.
@@ -1466,16 +1441,11 @@ def test_weight_mask_trains_role_stops_after_historical_assistants(tokenizer, re
 
     assert tokens[first_user_pos] == user
     assert weights[first_user_pos] == 0
-    assert all(
-        w == 0 for w in weights[first_user_pos + 1 : first_user_pos + len(first_user)]
-    )
+    assert all(w == 0 for w in weights[first_user_pos + 1 : first_user_pos + len(first_user)])
 
     assert tokens[second_user_pos] == user
     assert weights[second_user_pos] == 1
-    assert all(
-        w == 0
-        for w in weights[second_user_pos + 1 : second_user_pos + len(second_user)]
-    )
+    assert all(w == 0 for w in weights[second_user_pos + 1 : second_user_pos + len(second_user)])
 
     assert tokens[observation_pos] == observation
     assert weights[observation_pos] == 1
@@ -1554,17 +1524,10 @@ def test_stop_sequences_returns_next_role_tags_not_eos(tokenizer, renderer):
     ]
     assert stops == expected
     assert _eos(tokenizer) not in stops
-    assert all(
-        len(tokenizer.encode(tag, add_special_tokens=False)) == 1
-        for tag in ("<|user|>", "<|observation|>")
-    )
-    assert (
-        tokenizer.encode("<|user|>", add_special_tokens=False)[0]
-        == (GLM5_SERVERLESS_STOP_TOKEN_IDS["user"])
-    )
-    assert (
-        tokenizer.encode("<|observation|>", add_special_tokens=False)[0]
-        == (GLM5_SERVERLESS_STOP_TOKEN_IDS["observation"])
+    assert all(len(tokenizer.encode(tag, add_special_tokens=False)) == 1 for tag in ("<|user|>", "<|observation|>"))
+    assert tokenizer.encode("<|user|>", add_special_tokens=False)[0] == (GLM5_SERVERLESS_STOP_TOKEN_IDS["user"])
+    assert tokenizer.encode("<|observation|>", add_special_tokens=False)[0] == (
+        GLM5_SERVERLESS_STOP_TOKEN_IDS["observation"]
     )
 
 
@@ -1576,7 +1539,7 @@ def test_generation_suffix_is_role_tag(tokenizer, renderer):
     false. The renderer default matches that thinking-mode prompt so
     trained models can continue generating the reasoning block.
     """
-    from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
+    from training.renderer.base import RenderContext
 
     ctx = RenderContext(idx=0, is_last=False, prev_message=None, last_user_index=-1)
     suffix = renderer._get_generation_suffix("assistant", ctx)
@@ -1592,9 +1555,7 @@ def test_parse_response_roundtrip(tokenizer, renderer):
     """parse_response on <think>R</think>{content}<|user|> must extract content."""
     # Simulate what the model would emit after the <|assistant|><think> prompt.
     simulated = "\n<think>reason</think>\nhello"
-    ids = tokenizer.encode(simulated, add_special_tokens=False) + [
-        _user_token(tokenizer)
-    ]
+    ids = tokenizer.encode(simulated, add_special_tokens=False) + [_user_token(tokenizer)]
     message, ok = renderer.parse_response(ids)
     assert ok is True
     # Content may be structured (think_blocks parsed) or a string — both should contain 'hello'.
@@ -1611,25 +1572,19 @@ def test_parse_response_restores_prefilled_think(
     renderer: GLM5Renderer,
 ) -> None:
     """Sampled tokens start inside the generation-prefilled ``<think>`` block."""
-    prompt_ids = _renderer_generation_tokens(
-        renderer, [{"role": "user", "content": "Hello"}]
-    )
+    prompt_ids = _renderer_generation_tokens(renderer, [{"role": "user", "content": "Hello"}])
     assert tokenizer.decode(prompt_ids).endswith("<|assistant|><think>")
 
     simulated = "reason</think>\nhello"
     assert "<think>" not in simulated
-    ids = tokenizer.encode(simulated, add_special_tokens=False) + [
-        _user_token(tokenizer)
-    ]
+    ids = tokenizer.encode(simulated, add_special_tokens=False) + [_user_token(tokenizer)]
 
     message, ok = renderer.parse_response(ids)
 
     assert ok is True
     content = message["content"]
     assert isinstance(content, list)
-    thinking = "".join(
-        part.get("thinking", "") for part in content if part.get("type") == "thinking"
-    )
+    thinking = "".join(part.get("thinking", "") for part in content if part.get("type") == "thinking")
     text = get_text_content(message)
     assert thinking == "reason"
     assert "hello" in text
@@ -1645,17 +1600,13 @@ def test_parse_response_stops_at_user_role(tokenizer, renderer):
     assert ok is True
     content = message["content"]
     text = (
-        content
-        if isinstance(content, str)
-        else "".join(p.get("text", "") for p in content if p.get("type") == "text")
+        content if isinstance(content, str) else "".join(p.get("text", "") for p in content if p.get("type") == "text")
     )
     assert "first answer" in text
     assert "next question" not in text
 
 
-def test_parse_response_stops_at_observation_role_and_extracts_tool_call(
-    tokenizer, renderer
-):
+def test_parse_response_stops_at_observation_role_and_extracts_tool_call(tokenizer, renderer):
     simulated = (
         "<think>need weather</think>"
         "<tool_call>get_weather"
@@ -1685,16 +1636,12 @@ def test_parse_response_no_stop_token(tokenizer, renderer):
 def test_parse_response_empty_thinking(tokenizer, renderer):
     """parse_response with empty think block extracts content correctly."""
     simulated = "<think></think>just the answer"
-    ids = tokenizer.encode(simulated, add_special_tokens=False) + [
-        _user_token(tokenizer)
-    ]
+    ids = tokenizer.encode(simulated, add_special_tokens=False) + [_user_token(tokenizer)]
     message, ok = renderer.parse_response(ids)
     assert ok is True
     content = message["content"]
     text = (
-        content
-        if isinstance(content, str)
-        else "".join(p.get("text", "") for p in content if p.get("type") == "text")
+        content if isinstance(content, str) else "".join(p.get("text", "") for p in content if p.get("type") == "text")
     )
     assert "just the answer" in text
 
@@ -1751,9 +1698,7 @@ def test_generation_prompt_parity(tokenizer, renderer, messages):
     hf = _hf_tokens(tokenizer, messages, add_generation_prompt=True)
     ours = _renderer_generation_tokens(renderer, messages)
     assert ours == hf, (
-        f"Token mismatch:\n"
-        f"  HF text:   {tokenizer.decode(hf)!r}\n"
-        f"  ours text: {tokenizer.decode(ours)!r}"
+        f"Token mismatch:\n" f"  HF text:   {tokenizer.decode(hf)!r}\n" f"  ours text: {tokenizer.decode(ours)!r}"
     )
 
 
@@ -1838,10 +1783,7 @@ def test_supervised_parity(tokenizer, renderer, messages):
 
 def _hf_tool_calls(specs: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
     """Build HF-shaped tool_calls (dict args) from (name, args) specs."""
-    return [
-        {"type": "function", "function": {"name": name, "arguments": args}}
-        for name, args in specs
-    ]
+    return [{"type": "function", "function": {"name": name, "arguments": args}} for name, args in specs]
 
 
 @pytest.mark.parametrize(
@@ -1880,9 +1822,7 @@ def _hf_tool_calls(specs: list[tuple[str, dict[str, Any]]]) -> list[dict[str, An
             {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": factory(
-                    [("f", {"i": 7, "b": True, "s": "hello", "l": [1, 2]})]
-                ),
+                "tool_calls": factory([("f", {"i": 7, "b": True, "s": "hello", "l": [1, 2]})]),
             },
         ],
         # Full agent loop: assistant tool call -> tool response -> final answer.
@@ -1913,9 +1853,7 @@ def test_tool_call_supervised_parity(tokenizer, renderer, build_messages):
     Build both shapes from the same (name, args) spec so the two paths are
     apples-to-apples.
     """
-    renderer_messages = build_messages(
-        lambda specs: [_make_tool_call(name, args) for name, args in specs]
-    )
+    renderer_messages = build_messages(lambda specs: [_make_tool_call(name, args) for name, args in specs])
     hf_messages = build_messages(_hf_tool_calls)
     hf = _hf_tokens(tokenizer, hf_messages, add_generation_prompt=False)
     ours, _ = _renderer_supervised_tokens(renderer, renderer_messages)
@@ -1940,8 +1878,7 @@ def test_tool_call_tokens_are_trained(tokenizer, renderer):
     for i in range(len(tokens) - len(sf_token) + 1):
         if tokens[i : i + len(sf_token)] == sf_token:
             assert all(w > 0 for w in weights[i : i + len(sf_token)]), (
-                f"tool_call arg tokens at {i} have zero weight: "
-                f"{weights[i : i + len(sf_token)]}"
+                f"tool_call arg tokens at {i} have zero weight: " f"{weights[i : i + len(sf_token)]}"
             )
             break
     else:

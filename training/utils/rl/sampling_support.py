@@ -19,14 +19,14 @@ from __future__ import annotations
 
 from typing import Any, List
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk.routing import RoutingReferences
 
 
 def attach_top_sampling_references(
-    data: List[tinker.Datum],
+    data: List[sdk.Datum],
     top_sampling_references: List[RoutingReferences | None],
-) -> List[tinker.Datum]:
+) -> List[sdk.Datum]:
     """Return datums whose model inputs carry ``top_sampling_references``.
 
     A datum without references gets an all-gap reference; the trainer rejects
@@ -43,7 +43,7 @@ def attach_top_sampling_references(
             "transport; upgrade fireworks-ai before enabling sampling_support"
         ) from exc
 
-    result: List[tinker.Datum] = []
+    result: List[sdk.Datum] = []
     for datum, references in zip(data, top_sampling_references, strict=True):
         length = datum.model_input.length
         if references is None:
@@ -53,10 +53,8 @@ def attach_top_sampling_references(
                 ({"input_token_start": 0, "count": length},) if length else (),
             )
         result.append(
-            tinker.Datum(
-                model_input=datum.model_input.model_copy(
-                    update=top_sampling_model_input_kwargs(references, length)
-                ),
+            sdk.Datum(
+                model_input=datum.model_input.model_copy(update=top_sampling_model_input_kwargs(references, length)),
                 loss_fn_inputs=datum.loss_fn_inputs,
             )
         )

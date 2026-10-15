@@ -5,26 +5,27 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-import tinker
-import torch
+import base64
 
+import pytest
+import torch
+from fireworks.training import sdk
+from fireworks.training.sdk.sampling import SampledCompletion
+from training.utils.rl.algorithm import grpo
+from training.utils.rl.losses import build_policy_datums, combine_prompt_groups
 from training.utils.rl.rollout.renderer import (
     MultimodalRenderingNotSupported,
     VisionCompletionsResult,
+    _build_multimodal_rollout_sample,
     _collect_base64_images,
     _model_input_to_completions_prompt_text,
     _parse_vision_completions_payload,
-    _build_multimodal_rollout_sample,
     build_multimodal_completions_prompt_token_ids,
     build_multimodal_completions_request,
     model_input_to_token_ids,
     sampled_completion_to_rollout_run,
     single_turn_renderer_rollout,
 )
-from fireworks.training.sdk.sampling import SampledCompletion
-from training.utils.rl.algorithm import grpo
-from training.utils.rl.losses import build_policy_datums, combine_prompt_groups
 from training.utils.rl.rollout.types import (
     Rollout,
     rollout_to_prompt_group,
@@ -110,16 +111,19 @@ def test_sampler_top_k_drops_echoed_prompt_rows_and_misaligned_rows() -> None:
     assert sampled_completion_to_rollout_run(no_topk, reward=1.0).segments[0].inference_topk_token_ids is None
 
 
-def _multimodal_prompt(*, image_location: str = _BASE64_PNG) -> tinker.ModelInput:
-    return tinker.ModelInput(
+def _multimodal_prompt(*, image_location: str | None = None) -> sdk.ModelInput:
+    if image_location is None:
+        image = sdk.types.ImageChunk(
+            data=base64.b64decode(_BASE64_PNG.split(",", 1)[1]), format="png", expected_tokens=4
+        )
+    else:
+        # Opaque pointers are used only to exercise inference URL rejection.
+        image = sdk.types.ImageAssetPointerChunk(location=image_location, format="png", expected_tokens=4)
+    return sdk.ModelInput(
         chunks=[
-            tinker.types.EncodedTextChunk(tokens=[10, 11]),
-            tinker.types.ImageAssetPointerChunk(
-                location=image_location,
-                format="png",
-                expected_tokens=4,
-            ),
-            tinker.types.EncodedTextChunk(tokens=[12]),
+            sdk.types.EncodedTextChunk(tokens=[10, 11]),
+            image,
+            sdk.types.EncodedTextChunk(tokens=[12]),
         ]
     )
 
@@ -144,20 +148,20 @@ def test_collect_base64_images_prefers_model_input_over_messages():
 
 
 def test_collect_base64_images_uses_materialized_image_chunk_bytes():
-    model_input = tinker.ModelInput(
+    model_input = sdk.ModelInput(
         chunks=[
-            tinker.types.EncodedTextChunk(tokens=[10]),
-            tinker.types.ImageChunk(
+            sdk.types.EncodedTextChunk(tokens=[10]),
+            sdk.types.ImageChunk(
                 data=b"renderer-jpeg",
                 format="jpeg",
                 expected_tokens=4,
             ),
-            tinker.types.ImageChunk(
+            sdk.types.ImageChunk(
                 data=b"renderer-jpeg",
                 format="jpeg",
                 expected_tokens=4,
             ),
-            tinker.types.EncodedTextChunk(tokens=[11]),
+            sdk.types.EncodedTextChunk(tokens=[11]),
         ]
     )
     messages = [
@@ -178,7 +182,7 @@ def test_collect_base64_images_uses_materialized_image_chunk_bytes():
 
 
 def test_collect_base64_images_preserves_duplicate_message_images():
-    model_input = tinker.ModelInput(chunks=[tinker.types.EncodedTextChunk(tokens=[10])])
+    model_input = sdk.ModelInput(chunks=[sdk.types.EncodedTextChunk(tokens=[10])])
     messages = [
         {
             "role": "user",
@@ -240,9 +244,7 @@ def test_build_multimodal_completions_prompt_token_ids_requires_image_token_id()
     tokenizer = MagicMock()
     tokenizer.special_ids = MagicMock(image=None)
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
-    with pytest.raises(
-        MultimodalRenderingNotSupported, match="image placeholder token ID"
-    ):
+    with pytest.raises(MultimodalRenderingNotSupported, match="image placeholder token ID"):
         build_multimodal_completions_prompt_token_ids(
             messages,
             _multimodal_prompt(),
@@ -289,9 +291,7 @@ def test_build_multimodal_completions_request_uses_renderer_model_input():
         _multimodal_prompt(),
         tokenizer,
     )
-    assert prompt_text == (
-        "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>img\n"
-    )
+    assert prompt_text == ("<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>img\n")
     assert images == [_BASE64_PNG]
     tokenizer.apply_chat_template.assert_not_called()
 
@@ -299,15 +299,15 @@ def test_build_multimodal_completions_request_uses_renderer_model_input():
 def test_build_multimodal_completions_request_accepts_materialized_image_chunk():
     tokenizer = MagicMock()
     tokenizer.decode.side_effect = ["USER:", "ASSISTANT:"]
-    model_input = tinker.ModelInput(
+    model_input = sdk.ModelInput(
         chunks=[
-            tinker.types.EncodedTextChunk(tokens=[10]),
-            tinker.types.ImageChunk(
+            sdk.types.EncodedTextChunk(tokens=[10]),
+            sdk.types.ImageChunk(
                 data=b"renderer-jpeg",
                 format="jpeg",
                 expected_tokens=4,
             ),
-            tinker.types.EncodedTextChunk(tokens=[11]),
+            sdk.types.EncodedTextChunk(tokens=[11]),
         ]
     )
     messages = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
@@ -378,9 +378,7 @@ def test_build_multimodal_policy_datum_preserves_image_chunk():
     assert targets == [11, 0, 0, 0, 0, 12, 20, 21, 22]
     assert len(targets) == len(weights) == datum.model_input.length
     chunk_types = [c.type for c in datum.model_input.chunks]
-    assert "image_asset_pointer" in chunk_types or any(
-        "image" in str(t) for t in chunk_types
-    )
+    assert "image" in chunk_types
 
 
 def test_multimodal_rollout_sample_packs_prompt_group():
@@ -457,18 +455,13 @@ def test_multimodal_client_grpo_preserves_expanded_coordinates():
     assert pg is not None
     assert pg.prompt_lens is not None
 
-    target_lengths = [
-        len(datum.loss_fn_inputs["target_tokens"].data) for datum in pg.data
-    ]
+    target_lengths = [len(datum.loss_fn_inputs["target_tokens"].data) for datum in pg.data]
     assert target_lengths == [len(values) for values in pg.inf_logprobs]
 
     batch = combine_prompt_groups([pg])
     assert batch.prompt_lens == pg.prompt_lens
     loss_fn = grpo.make_loss_fn(batch, grpo.GRPOConfig())
-    forward_logprobs = [
-        torch.tensor(values, dtype=torch.float32, requires_grad=True)
-        for values in pg.inf_logprobs
-    ]
+    forward_logprobs = [torch.tensor(values, dtype=torch.float32, requires_grad=True) for values in pg.inf_logprobs]
 
     loss, metrics = loss_fn(pg.data, forward_logprobs)
     loss.backward()
@@ -477,16 +470,8 @@ def test_multimodal_client_grpo_preserves_expanded_coordinates():
     for datum, logprobs in zip(pg.data, forward_logprobs):
         weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
         assert logprobs.grad is not None
-        assert all(
-            logprobs.grad[i].item() == pytest.approx(0.0)
-            for i, weight in enumerate(weights)
-            if weight == 0.0
-        )
-        assert any(
-            abs(logprobs.grad[i].item()) > 0
-            for i, weight in enumerate(weights)
-            if weight > 0.0
-        )
+        assert all(logprobs.grad[i].item() == pytest.approx(0.0) for i, weight in enumerate(weights) if weight == 0.0)
+        assert any(abs(logprobs.grad[i].item()) > 0 for i, weight in enumerate(weights) if weight > 0.0)
 
 
 def test_multimodal_builtin_loss_datums_use_expanded_coordinates():
@@ -518,17 +503,14 @@ def test_multimodal_builtin_loss_datums_use_expanded_coordinates():
             "response_mask",
         }
         assert all(
-            len(tensor.data) == tensor.shape[0] == expected_len
-            for tensor in builtin_datum.loss_fn_inputs.values()
+            len(tensor.data) == tensor.shape[0] == expected_len for tensor in builtin_datum.loss_fn_inputs.values()
         )
         target_tokens = builtin_datum.loss_fn_inputs["target_tokens"].data
         assert target_tokens[1:5] == [0, 0, 0, 0]
         packed_advantages = builtin_datum.loss_fn_inputs["advantages"].data
         weights = policy_datum.loss_fn_inputs["weights"].data
         assert all(
-            packed_advantages[i] == pytest.approx(0.0)
-            for i, weight in enumerate(weights)
-            if float(weight) == 0.0
+            packed_advantages[i] == pytest.approx(0.0) for i, weight in enumerate(weights) if float(weight) == 0.0
         )
 
 
@@ -569,13 +551,9 @@ async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
     completion_tokens = [40, 50]
 
     class _Renderer:
-        def build_generation_prompt(
-            self, messages: object, **kwargs: object
-        ) -> tinker.ModelInput:
+        def build_generation_prompt(self, messages: object, **kwargs: object) -> sdk.ModelInput:
             del messages, kwargs
-            return tinker.ModelInput(
-                chunks=[tinker.types.EncodedTextChunk(tokens=prompt_tokens)]
-            )
+            return sdk.ModelInput(chunks=[sdk.types.EncodedTextChunk(tokens=prompt_tokens)])
 
         def parse_response(self, tokens: list[int]) -> tuple[dict[str, str], bool]:
             captured["parse_tokens"] = list(tokens)
@@ -584,9 +562,7 @@ async def test_single_turn_renderer_rollout_parses_completion_tokens_only():
         def get_stop_sequences(self) -> list[int]:
             return []
 
-    async def sample_with_prompt_tokens(
-        prompt_token_ids: list[int], **kwargs: object
-    ) -> list[SampledCompletion]:
+    async def sample_with_prompt_tokens(prompt_token_ids: list[int], **kwargs: object) -> list[SampledCompletion]:
         captured["prompt_token_ids"] = list(prompt_token_ids)
         captured["kwargs"] = kwargs
         return [
@@ -764,9 +740,7 @@ async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision()
         tokenizer=tokenizer,
     )
     assert run is not None
-    assert captured["prompt_text"] == (
-        "PROMPT:<|vision_start|><|image_pad|><|vision_end|>ASSISTANT:"
-    )
+    assert captured["prompt_text"] == ("PROMPT:<|vision_start|><|image_pad|><|vision_end|>ASSISTANT:")
     assert captured["images"] == [_BASE64_PNG]
     tokenizer.apply_chat_template.assert_not_called()
     assert run.segments[0].tokens[-2:] == [99, 100]
@@ -776,23 +750,32 @@ def test_multimodal_sampling_support_survives_expanded_image_positions():
     from fireworks.training.sdk.routing import RoutingReferences
     from training.utils.rl.sampling_support import attach_top_sampling_references
 
-    references = RoutingReferences.from_dict({
-        "format": "parquet_v1", "length": 2,
-        "files": [{"path": "support.parquet", "format": "parquet_v1", "row_count": 9, "top_k": 32}],
-        "spans": [{"input_token_start": 0, "file_index": 0, "file_row_start": 7, "count": 2}],
-    })
+    references = RoutingReferences.from_dict(
+        {
+            "format": "parquet_v1",
+            "length": 2,
+            "files": [{"path": "support.parquet", "format": "parquet_v1", "row_count": 9, "top_k": 32}],
+            "spans": [{"input_token_start": 0, "file_index": 0, "file_row_start": 7, "count": 2}],
+        }
+    )
     run = sampled_completion_to_rollout_run(
         SampledCompletion(
-            text="answer", full_tokens=[10, 11, 12, 30, 40], prompt_len=3,
-            inference_logprobs=[-0.3, -0.4], sampling_logprobs=[-0.31, -0.41],
+            text="answer",
+            full_tokens=[10, 11, 12, 30, 40],
+            prompt_len=3,
+            inference_logprobs=[-0.3, -0.4],
+            sampling_logprobs=[-0.31, -0.41],
             top_sampling_references=references,
-        ), reward=1.0, prompt_model_input=_multimodal_prompt(),
+        ),
+        reward=1.0,
+        prompt_model_input=_multimodal_prompt(),
     )
     assert run is not None
     group = rollout_to_prompt_group(Rollout(runs=[run]), advantage_fn=lambda rewards: rewards)
     assert group is not None
     (datum,) = attach_top_sampling_references(
-        build_policy_datums(combine_prompt_groups([group])), group.top_sampling_references,
+        build_policy_datums(combine_prompt_groups([group])),
+        group.top_sampling_references,
     )
     aligned = RoutingReferences.from_dict(datum.model_input.top_sampling_references)
     assert len(aligned) == datum.model_input.length == 8

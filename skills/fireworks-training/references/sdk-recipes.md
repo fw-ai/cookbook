@@ -13,12 +13,7 @@ Each recipe is a single Python file in `training/recipes/` that wires the Traini
 | SAO / token-level PPO with a separate value-head critic (experimental; not validated for every model) | `training/recipes/experiment/ppo_value_head_loop.py` — runnable Qwen3-4B example in `training/examples/rl/experiment/sao/qwen3_4b_sao.py` |
 | Information Gain-based Policy Optimization (IGPO) | `training/recipes/rl_loop.py` with `prepare_batch_fn=igpo.prepare_batch(gamma=...)` — strict on-policy; each run sets `metadata[TURN_SPANS]` and `metadata[ANSWER_TOKENS]`; multi-turn example in `training/examples/rl/multihop_qa/` |
 | Distillation / OPD | `training/recipes/distillation_loop.py` — see [`sdk-distillation.md`](sdk-distillation.md) |
-| SDFT on the shared serverless pool (no trainer job or deployment) | `training/recipes/sdft_loop.py` — runs the vendored tinker-cookbook SDFT loop |
-
-For `sdft_loop.py`, install the optional SDFT dependencies from `training/` with
-`uv pip install -e '.[sdft]'`.
-
-For `sdft_loop.py`, make sure to register your dataset in `recipes/sdft/datasets.py`.
+| SDFT | [Customer guide](../../../training/docs/sdft.md); maintained in the external Fireworks Tinker-Cookbook fork |
 
 ## "Reference loop" means these files
 
@@ -66,7 +61,7 @@ path must require min and max to agree, then use the summed rank-local input
 count. Do not change these to `:last`: Tinker does not support that reducer for
 chunked forward/backward results and silently drops those metrics.
 
-Distillation-specific: use `distillation_loop.py` for sampled-token OPD and `sdft_loop.py` for top-K SDFT on serverless. Open [`sdk-distillation.md`](sdk-distillation.md) before changing its config, dataset format, or teacher scoring.
+Distillation-specific: use `distillation_loop.py` for sampled-token OPD and the [external SDFT cookbook](https://github.com/fw-ai-external/tinker-cookbook) for top-K SDFT. Open [`sdk-distillation.md`](sdk-distillation.md) before changing its config, dataset format, or teacher scoring.
 
 ## Resume
 

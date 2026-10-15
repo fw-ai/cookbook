@@ -40,9 +40,10 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Mapping, Sequence
 
-import tinker
 import torch
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
+from fireworks.training import sdk
+
+from training.renderer.base import TrainOnWhat
 
 # Modes whose target set is some subset of the assistant messages, ordered so
 # that the mode an unweighted row would have used wins when several of them
@@ -65,9 +66,7 @@ def _role(message: Any) -> str | None:
 
 def uses_per_message_weights(messages: Sequence[Any]) -> bool:
     """Whether this conversation carries resolved per-message weights."""
-    return any(
-        isinstance(message, Mapping) and "trainable" in message for message in messages
-    )
+    return any(isinstance(message, Mapping) and "trainable" in message for message in messages)
 
 
 def untrained_synthesized_context(messages: Sequence[Any]) -> list[Any]:
@@ -84,9 +83,7 @@ def untrained_synthesized_context(messages: Sequence[Any]) -> list[Any]:
     if not uses_per_message_weights(messages):
         return list(messages)
     return [
-        message
-        if not isinstance(message, Mapping) or "trainable" in message
-        else {**message, "trainable": False}
+        message if not isinstance(message, Mapping) or "trainable" in message else {**message, "trainable": False}
         for message in messages
     ]
 
@@ -94,9 +91,11 @@ def untrained_synthesized_context(messages: Sequence[Any]) -> list[Any]:
 def without_trainable_flags(messages: Sequence[Any]) -> list[Any]:
     """Drop ``trainable`` so a non-``CUSTOMIZED`` mode accepts the conversation."""
     return [
-        {key: value for key, value in message.items() if key != "trainable"}
-        if isinstance(message, Mapping) and "trainable" in message
-        else message
+        (
+            {key: value for key, value in message.items() if key != "trainable"}
+            if isinstance(message, Mapping) and "trainable" in message
+            else message
+        )
         for message in messages
     ]
 
@@ -127,9 +126,7 @@ def _mode_targets(messages: Sequence[Any], mode: TrainOnWhat) -> frozenset[int]:
             case TrainOnWhat.ALL_MESSAGES | TrainOnWhat.ALL_TOKENS:
                 selected = True
             case TrainOnWhat.CUSTOMIZED:
-                selected = bool(
-                    isinstance(message, Mapping) and message.get("trainable", False)
-                )
+                selected = bool(isinstance(message, Mapping) and message.get("trainable", False))
             case _:
                 raise ValueError(f"Unknown train_on_what: {mode}")
         if selected:
@@ -143,11 +140,9 @@ def stable_chunk_sentinel(chunk: Any) -> int:
     Derived from the chunk's content, never from its position, so the same image
     keeps the same id however the surrounding text happens to be chunked.
     """
-    if isinstance(chunk, tinker.types.ImageAssetPointerChunk):
-        payload = (
-            f"{chunk.type}:{chunk.location}:{chunk.format}:{chunk.expected_tokens}"
-        ).encode()
-    elif isinstance(chunk, tinker.types.ImageChunk):
+    if isinstance(chunk, sdk.types.ImageAssetPointerChunk):
+        payload = (f"{chunk.type}:{chunk.location}:{chunk.format}:{chunk.expected_tokens}").encode()
+    elif isinstance(chunk, sdk.types.ImageChunk):
         payload = b"|".join(
             [
                 chunk.type.encode(),
@@ -179,16 +174,12 @@ def _rendered_positions(rendered_input: Any) -> list[int]:
     """
     chunks = getattr(rendered_input, "chunks", None)
     if chunks is None:
-        tokens = (
-            rendered_input.tolist()
-            if hasattr(rendered_input, "tolist")
-            else rendered_input
-        )
+        tokens = rendered_input.tolist() if hasattr(rendered_input, "tolist") else rendered_input
         return [int(token) for token in tokens]
 
     positions: list[int] = []
     for chunk in chunks:
-        if isinstance(chunk, tinker.types.EncodedTextChunk):
+        if isinstance(chunk, sdk.types.EncodedTextChunk):
             positions.extend(int(token) for token in chunk.tokens)
         else:
             positions.extend([stable_chunk_sentinel(chunk)] * int(chunk.length))

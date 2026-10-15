@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Tuple
 from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Tuple
 
 import torch
-import tinker
+from fireworks.training import sdk
 
 SAFETY_CLAMP = 20.0
 
@@ -41,7 +41,7 @@ def masked_mean(
 
 
 def _get_loss_mask(
-    datum: tinker.Datum,
+    datum: sdk.Datum,
     response_start: int,
     resp_len: int,
     dtype: torch.dtype,
@@ -117,8 +117,7 @@ def align_sample_logprobs_to_target_tokens(
     prompt_len = int(sampled.prompt_len)
     if not 0 <= prompt_len <= sequence_len:
         raise RuntimeError(
-            f"{source} for sample {sample_idx} has invalid prompt_len {prompt_len} "
-            f"for {sequence_len} tokens."
+            f"{source} for sample {sample_idx} has invalid prompt_len {prompt_len} " f"for {sequence_len} tokens."
         )
     target_len = max(0, sequence_len - 1)
     response_start = max(0, prompt_len - 1)
@@ -130,10 +129,7 @@ def align_sample_logprobs_to_target_tokens(
                     f"{source} for sample {sample_idx} has target-aligned length "
                     f"{len(values)}, expected {target_len} target-aligned logprobs."
                 )
-            prompt_values = [
-                0.0 if value is None else float(value)
-                for value in values[:response_start]
-            ]
+            prompt_values = [0.0 if value is None else float(value) for value in values[:response_start]]
             completion_values = _coerce_logprobs_to_float(
                 values[response_start:],
                 expected_len=target_len - response_start,
@@ -257,7 +253,7 @@ averaging.
 
 def run_loss_loop(
     batch: Any,
-    data: List[tinker.Datum],
+    data: List[sdk.Datum],
     logprobs_list: List[torch.Tensor],
     policy_loss: str,
     policy_fn: PolicyFn,
@@ -418,7 +414,7 @@ class ResponseLogprobs:
 
 
 def iter_response_logprobs(
-    data: List[tinker.Datum],
+    data: List[sdk.Datum],
     policy_logprobs: List[torch.Tensor],
     reference_logprobs: List[List[float]],
     prompt_lens: List[int],
@@ -441,8 +437,7 @@ def iter_response_logprobs(
     if mismatched:
         details = ", ".join(f"{name}={size}" for name, size in mismatched.items())
         raise ValueError(
-            f"{_format_policy_loss_label(loss_name)} metrics require "
-            f"{len(data)} aligned rows; {details}."
+            f"{_format_policy_loss_label(loss_name)} metrics require " f"{len(data)} aligned rows; {details}."
         )
     for i, (datum, pi, reference_row, prompt_len) in enumerate(
         zip(data, policy_logprobs, reference_logprobs, prompt_lens, strict=True)
@@ -452,15 +447,10 @@ def iter_response_logprobs(
         resp_len = len(resp_pi)
         if resp_len == 0:
             continue
-        active = (
-            _get_loss_mask(datum, response_start, resp_len, resp_pi.dtype, resp_pi.device)
-            > 0.5
-        )
+        active = _get_loss_mask(datum, response_start, resp_len, resp_pi.dtype, resp_pi.device) > 0.5
         if not bool(active.any()):
             continue
-        validate_inference_logprobs_for_sample(
-            loss_name, i, reference_row, response_start + resp_len, source=source
-        )
+        validate_inference_logprobs_for_sample(loss_name, i, reference_row, response_start + resp_len, source=source)
         reference = torch.tensor(
             _coerce_response_logprobs(
                 reference_row[response_start : response_start + resp_len],
@@ -544,9 +534,7 @@ def policy_ratio_metrics(
     *,
     loss_name: str,
     prefix: str,
-    outside_trust_region: (
-        Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor] | None
-    ) = None,
+    outside_trust_region: Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
     sequence_level: bool = False,
 ) -> Dict[str, float]:
     """Trust-region diagnostics for a server-side policy loss, from its returned logprobs.
@@ -587,9 +575,7 @@ def policy_ratio_metrics(
         active_tokens += len(log_ratio)
     metrics: Dict[str, float] = {
         "active_tokens": float(active_tokens),
-        "total_resp_tokens": float(
-            sum(max(0, len(pi) - max(0, n - 1)) for pi, n in zip(policy, batch.prompt_lens))
-        ),
+        "total_resp_tokens": float(sum(max(0, len(pi) - max(0, n - 1)) for pi, n in zip(policy, batch.prompt_lens))),
     }
     if samples:
         metrics[f"{prefix}_ratio_mean"] = ratio_sum / samples

@@ -30,12 +30,11 @@ import os
 from typing import Any
 
 import pytest
-import transformers
-
 import training.renderer  # noqa: F401 — installs Gemma4SplitRenderer override
+import transformers
 from training.renderer import get_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
-
+from training.renderer._gemma4_split import Gemma4SplitRenderer
+from training.renderer.base import TrainOnWhat
 from training.renderer.gemma4 import (
     Gemma4Renderer,
     _format_function_declaration,
@@ -44,7 +43,6 @@ from training.renderer.gemma4 import (
     _get_reasoning_text,
     _split_thinking_and_text,
 )
-from training.renderer._gemma4_split import Gemma4SplitRenderer
 from training.utils.supervised import (
     normalize_messages,
     render_messages_to_datum,
@@ -107,7 +105,8 @@ def _resolve_model_path() -> str:
 @pytest.fixture(scope="module")
 def tokenizer():
     return transformers.AutoTokenizer.from_pretrained(
-        _resolve_model_path(), trust_remote_code=True,
+        _resolve_model_path(),
+        trust_remote_code=True,
     )
 
 
@@ -204,11 +203,7 @@ def test_multipart_user_text_trims_per_part_after_normalize(tokenizer, renderer)
         }
     ]
     hf = _hf_tokens(tokenizer, messages)
-    ours = list(
-        renderer.build_generation_prompt(
-            normalize_messages(messages), role="assistant"
-        ).to_ints()
-    )
+    ours = list(renderer.build_generation_prompt(normalize_messages(messages), role="assistant").to_ints())
     _assert_match(tokenizer, hf, ours)
 
 
@@ -225,9 +220,7 @@ def test_multipart_assistant_text_trims_per_part_after_normalize(tokenizer, rend
         },
     ]
     hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
-    ours = list(
-        renderer.build_supervised_example(normalize_messages(messages))[0].to_ints()
-    )
+    ours = list(renderer.build_supervised_example(normalize_messages(messages))[0].to_ints())
     _assert_match(tokenizer, hf, ours)
 
 
@@ -381,9 +374,7 @@ def test_normalized_empty_reasoning_falls_back_to_reasoning_content():
 
 
 def test_split_thinking_and_text_handles_open_thought_fragment():
-    parts = _split_thinking_and_text(
-        "<|channel>thought\nstep by step\n <|tool_call>call:fn{}<tool_call|>"
-    )
+    parts = _split_thinking_and_text("<|channel>thought\nstep by step\n <|tool_call>call:fn{}<tool_call|>")
     assert parts[0]["type"] == "thinking"
     assert parts[0]["thinking"] == "step by step"
     assert parts[1]["text"] == "<|tool_call>call:fn{}<tool_call|>"
@@ -426,9 +417,7 @@ _REASONING_FIELD_PRECEDENCE = [
         "content": "",
         "reasoning": "from reasoning field",
         "reasoning_content": "from reasoning_content field",
-        "tool_calls": [
-            {"type": "function", "function": {"name": "fn", "arguments": {}}}
-        ],
+        "tool_calls": [{"type": "function", "function": {"name": "fn", "arguments": {}}}],
     },
 ]
 
@@ -438,17 +427,13 @@ _TWO_ASSISTANTS_AFTER_USER = [
         "role": "assistant",
         "content": "",
         "reasoning_content": "first thought",
-        "tool_calls": [
-            {"type": "function", "function": {"name": "step1", "arguments": {"x": 1}}}
-        ],
+        "tool_calls": [{"type": "function", "function": {"name": "step1", "arguments": {"x": 1}}}],
     },
     {
         "role": "assistant",
         "content": "continuing",
         "reasoning_content": "second thought",
-        "tool_calls": [
-            {"type": "function", "function": {"name": "step2", "arguments": {"y": 2}}}
-        ],
+        "tool_calls": [{"type": "function", "function": {"name": "step2", "arguments": {"y": 2}}}],
     },
 ]
 
@@ -458,9 +443,7 @@ _REASONING_BEFORE_LAST_USER = [
         "role": "assistant",
         "content": "draft",
         "reasoning_content": "should not render",
-        "tool_calls": [
-            {"type": "function", "function": {"name": "draft", "arguments": {}}}
-        ],
+        "tool_calls": [{"type": "function", "function": {"name": "draft", "arguments": {}}}],
     },
     {"role": "user", "content": "second"},
     {"role": "assistant", "content": "final"},
@@ -491,9 +474,7 @@ def test_reasoning_parity_with_hf(tokenizer, renderer, messages):
     _assert_match(tokenizer, hf_ids, list(model_input.to_ints()))
 
 
-def test_supervised_example_reasoning_content_thinking_renderer(
-    tokenizer, thinking_renderer
-):
+def test_supervised_example_reasoning_content_thinking_renderer(tokenizer, thinking_renderer):
     """``gemma4_thinking``: same assistant body plus HF ``enable_thinking`` system."""
     hf_ids = _hf_tokens(
         tokenizer,
@@ -501,30 +482,20 @@ def test_supervised_example_reasoning_content_thinking_renderer(
         add_generation_prompt=False,
         enable_thinking=True,
     )
-    model_input, _weights = thinking_renderer.build_supervised_example(
-        _REASONING_SFT_MESSAGES
-    )
+    model_input, _weights = thinking_renderer.build_supervised_example(_REASONING_SFT_MESSAGES)
     _assert_match(tokenizer, hf_ids, list(model_input.to_ints()))
 
 
-def test_gemma4_vs_gemma4_thinking_differs_only_by_system_think(
-    tokenizer, renderer, thinking_renderer
-):
+def test_gemma4_vs_gemma4_thinking_differs_only_by_system_think(tokenizer, renderer, thinking_renderer):
     """Both renderers emit identical assistant tokens; only the system block differs."""
-    default_ids = list(
-        renderer.build_supervised_example(_REASONING_SFT_MESSAGES)[0].to_ints()
-    )
-    thinking_ids = list(
-        thinking_renderer.build_supervised_example(_REASONING_SFT_MESSAGES)[0].to_ints()
-    )
+    default_ids = list(renderer.build_supervised_example(_REASONING_SFT_MESSAGES)[0].to_ints())
+    thinking_ids = list(thinking_renderer.build_supervised_example(_REASONING_SFT_MESSAGES)[0].to_ints())
     default_text = tokenizer.decode(default_ids)
     thinking_text = tokenizer.decode(thinking_ids)
     assert "<|think|>" not in default_text
     assert "<|think|>" in thinking_text
     user_marker = "<|turn>user"
-    assert default_text[default_text.index(user_marker) :] == thinking_text[
-        thinking_text.index(user_marker) :
-    ]
+    assert default_text[default_text.index(user_marker) :] == thinking_text[thinking_text.index(user_marker) :]
 
 
 def test_parse_response_extracts_thinking(tokenizer, renderer):
@@ -583,18 +554,14 @@ _MULTI_TURN_TOOL_REASONING = [
         "role": "assistant",
         "content": "",
         "reasoning_content": "REASON_A1",
-        "tool_calls": [
-            {"type": "function", "function": {"name": "step1", "arguments": {"x": 1}}}
-        ],
+        "tool_calls": [{"type": "function", "function": {"name": "step1", "arguments": {"x": 1}}}],
     },
     {"role": "user", "content": "second"},
     {
         "role": "assistant",
         "content": "done",
         "reasoning_content": "REASON_A2",
-        "tool_calls": [
-            {"type": "function", "function": {"name": "step2", "arguments": {"y": 2}}}
-        ],
+        "tool_calls": [{"type": "function", "function": {"name": "step2", "arguments": {"y": 2}}}],
     },
 ]
 
@@ -667,9 +634,7 @@ def test_plain_text_observations_remain_prefix_extensions(tokenizer, renderer):
 
     # The non-thinking generation suffix the template appends and the model
     # overwrites: `<|turn>model\n` plus the empty closed thought channel.
-    suffix = tokenizer.encode(
-        "<|turn>model\n<|channel>thought\n<channel|>", add_special_tokens=False
-    )
+    suffix = tokenizer.encode("<|turn>model\n<|channel>thought\n<channel|>", add_special_tokens=False)
 
     messages = [
         {"role": "system", "content": "Be terse."},
@@ -685,12 +650,8 @@ def test_plain_text_observations_remain_prefix_extensions(tokenizer, renderer):
 
     prev: list[int] = []
     for k in boundaries:
-        cur = list(
-            renderer.build_generation_prompt(messages[:k], role="assistant").to_ints()
-        )
-        assert cur[-len(suffix):] == suffix, (
-            f"generation prompt at k={k} must end with the sampling marker"
-        )
+        cur = list(renderer.build_generation_prompt(messages[:k], role="assistant").to_ints())
+        assert cur[-len(suffix) :] == suffix, f"generation prompt at k={k} must end with the sampling marker"
         context = cur[: -len(suffix)]
         assert context[: len(prev)] == prev, (
             f"context at boundary k={k} is not a prefix extension of the previous "
@@ -705,18 +666,12 @@ def test_tool_reasoning_observations_are_not_prefix_extensions(renderer):
     a1 = {
         "role": "assistant",
         "reasoning_content": "REASON_A1",
-        "tool_calls": [
-            {"type": "function", "function": {"name": "step1", "arguments": {"x": 1}}}
-        ],
+        "tool_calls": [{"type": "function", "function": {"name": "step1", "arguments": {"x": 1}}}],
     }
     u2 = {"role": "user", "content": "step two"}
 
-    after_first_assistant = list(
-        renderer.build_generation_prompt([u1, a1], role="assistant").to_ints()
-    )
-    before_second_assistant = list(
-        renderer.build_generation_prompt([u1, a1, u2], role="assistant").to_ints()
-    )
+    after_first_assistant = list(renderer.build_generation_prompt([u1, a1], role="assistant").to_ints())
+    before_second_assistant = list(renderer.build_generation_prompt([u1, a1, u2], role="assistant").to_ints())
     assert before_second_assistant[: len(after_first_assistant)] != after_first_assistant, (
         "re-rendering the first assistant after a later user is appended must change "
         "tokens (thought channel stripped), so observations are not prefix extensions"
@@ -794,10 +749,22 @@ _UNION_TYPE_TOOL = {
 }
 
 _NO_PROPS_TOOLS = [
-    {"type": "function", "function": {"name": "a", "description": "d1",
-     "parameters": {"type": "object", "properties": {}, "required": []}}},
-    {"type": "function", "function": {"name": "b", "description": "d2",
-     "parameters": {"type": "object", "properties": {}, "required": []}}},
+    {
+        "type": "function",
+        "function": {
+            "name": "a",
+            "description": "d1",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "b",
+            "description": "d2",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 
@@ -1044,9 +1011,7 @@ def test_tool_call_parity(tokenizer, renderer, messages, tools):
         else:
             sys_text, rest = "", list(messages)
         prefix = renderer.create_conversation_prefix_with_tools(tools, system_prompt=sys_text)
-        ours = list(
-            renderer.build_supervised_example(prefix + rest)[0].to_ints()
-        )
+        ours = list(renderer.build_supervised_example(prefix + rest)[0].to_ints())
     else:
         hf = _hf_tokens(tokenizer, messages, add_generation_prompt=False)
         ours = list(renderer.build_supervised_example(messages)[0].to_ints())
@@ -1077,9 +1042,7 @@ def test_tool_call_parity(tokenizer, renderer, messages, tools):
             {
                 "role": "user",
                 "content": "",
-                "tool_responses": [
-                    {"name": "get_weather", "response": {"temp": 18, "unit": "c"}}
-                ],
+                "tool_responses": [{"name": "get_weather", "response": {"temp": 18, "unit": "c"}}],
             },
         ],
         # Tool response with a scalar payload.
@@ -1088,9 +1051,7 @@ def test_tool_call_parity(tokenizer, renderer, messages, tools):
             {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [
-                    {"type": "function", "function": {"name": "fn", "arguments": {}}}
-                ],
+                "tool_calls": [{"type": "function", "function": {"name": "fn", "arguments": {}}}],
             },
             {
                 "role": "user",
@@ -1156,9 +1117,7 @@ def test_enable_thinking_parity(tokenizer, thinking_renderer, messages):
     """When ``enable_thinking=True``, the renderer must inject the same
     ``<|think|>`` system marker the HF template emits."""
     hf = _hf_tokens(tokenizer, messages, enable_thinking=True)
-    ours = list(
-        thinking_renderer.build_generation_prompt(messages, role="assistant").to_ints()
-    )
+    ours = list(thinking_renderer.build_generation_prompt(messages, role="assistant").to_ints())
     _assert_match(tokenizer, hf, ours)
 
 
@@ -1171,9 +1130,7 @@ def test_enable_thinking_with_tools_parity(tokenizer, thinking_renderer):
     hf = _hf_tokens(tokenizer, messages, tools=tools, enable_thinking=True)
 
     prefix = thinking_renderer.create_conversation_prefix_with_tools(tools, system_prompt="")
-    ours = list(
-        thinking_renderer.build_generation_prompt(prefix + messages, role="assistant").to_ints()
-    )
+    ours = list(thinking_renderer.build_generation_prompt(prefix + messages, role="assistant").to_ints())
     _assert_match(tokenizer, hf, ours)
 
 
@@ -1183,10 +1140,7 @@ def test_enable_thinking_with_tools_parity(tokenizer, thinking_renderer):
 def test_parse_response_extracts_tool_calls(tokenizer, renderer):
     """A model turn containing one or more tool-call blocks parses out into
     the ``tool_calls`` field, leaving any surrounding text on ``content``."""
-    body = (
-        '<|tool_call>call:get_weather{location:<|"|>paris<|"|>}<tool_call|>'
-        "<turn|>"
-    )
+    body = '<|tool_call>call:get_weather{location:<|"|>paris<|"|>}<tool_call|>' "<turn|>"
     encoded = tokenizer.encode(body, add_special_tokens=False)
     msg, ok = renderer.parse_response(encoded)
     assert ok
@@ -1212,8 +1166,11 @@ def gpu_model(tokenizer):
     path = _resolve_model_path()
     try:
         from transformers import AutoModelForCausalLM
+
         model = AutoModelForCausalLM.from_pretrained(
-            path, torch_dtype=torch.bfloat16, device_map="cuda:0",
+            path,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda:0",
         )
     except (OSError, ValueError) as e:
         pytest.skip(f"Could not load Gemma 4 model from {path}: {e}")
@@ -1233,7 +1190,7 @@ def _greedy_complete(model, tokenizer, prompt_ids: list[int], max_new_tokens: in
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
         )
-    return tokenizer.decode(out[0, len(prompt_ids):], skip_special_tokens=True)
+    return tokenizer.decode(out[0, len(prompt_ids) :], skip_special_tokens=True)
 
 
 @pytest.mark.parametrize(
@@ -1268,14 +1225,13 @@ def test_e2e_model_parity_greedy(tokenizer, renderer, gpu_model, messages):
     # (the failure mode of an out-of-distribution prompt).
     assert hf_completion.strip(), f"Model produced empty completion: {hf_completion!r}"
     assert "<turn|>" not in hf_completion, (
-        f"Model immediately emitted stop token — prompt is out-of-distribution. "
-        f"completion={hf_completion!r}"
+        f"Model immediately emitted stop token — prompt is out-of-distribution. " f"completion={hf_completion!r}"
     )
     # The two completions must be byte-identical because the prompts are
     # token-identical and decoding is greedy.
-    assert hf_completion == our_completion, (
-        f"Completion mismatch:\n  HF:   {hf_completion!r}\n  Ours: {our_completion!r}"
-    )
+    assert (
+        hf_completion == our_completion
+    ), f"Completion mismatch:\n  HF:   {hf_completion!r}\n  Ours: {our_completion!r}"
 
 
 # ── End-to-end tool-calling: real model → renderer → real parsers ──────────
@@ -1302,9 +1258,7 @@ _E2E_TOOL = {
 }
 
 
-def test_e2e_tool_call_renderer_to_model_to_renderer_parser(
-    tokenizer, renderer, gpu_model
-):
+def test_e2e_tool_call_renderer_to_model_to_renderer_parser(tokenizer, renderer, gpu_model):
     """End-to-end loop with tools:
 
     1. Build a tool-aware prompt with the renderer.
@@ -1326,20 +1280,15 @@ def test_e2e_tool_call_renderer_to_model_to_renderer_parser(
         {
             "role": "system",
             "content": (
-                "You are a helpful assistant. When the user asks about "
-                "weather, call the get_weather function."
+                "You are a helpful assistant. When the user asks about " "weather, call the get_weather function."
             ),
         },
         {"role": "user", "content": "What is the weather in Paris in celsius?"},
     ]
     tools = [_E2E_TOOL]
 
-    prefix = renderer.create_conversation_prefix_with_tools(
-        tools, system_prompt=messages[0]["content"]
-    )
-    our_ids = list(
-        renderer.build_generation_prompt(prefix + messages[1:], role="assistant").to_ints()
-    )
+    prefix = renderer.create_conversation_prefix_with_tools(tools, system_prompt=messages[0]["content"])
+    our_ids = list(renderer.build_generation_prompt(prefix + messages[1:], role="assistant").to_ints())
     # Sanity: matches HF's tools= prompt token-for-token (the unit-test
     # tier already covers this, but pinning it here too makes failure
     # diagnosis easier when the model output is wrong).
@@ -1355,24 +1304,16 @@ def test_e2e_tool_call_renderer_to_model_to_renderer_parser(
             do_sample=False,
             pad_token_id=tokenizer.eos_token_id,
         )
-    gen_ids = out[0, len(our_ids):].tolist()
+    gen_ids = out[0, len(our_ids) :].tolist()
 
     decoded_with_specials = tokenizer.decode(gen_ids, skip_special_tokens=False)
     assert "<|tool_call>" in decoded_with_specials, (
-        "Model did NOT emit a tool call from our prompt — wire format wrong? "
-        f"Got: {decoded_with_specials!r}"
+        "Model did NOT emit a tool call from our prompt — wire format wrong? " f"Got: {decoded_with_specials!r}"
     )
 
     msg, ok = renderer.parse_response(gen_ids)
-    assert ok, (
-        f"parse_response did not find a stop token in real model output: "
-        f"{decoded_with_specials!r}"
-    )
-    assert msg.get("tool_calls"), (
-        f"parse_response did not extract tool_calls from: {decoded_with_specials!r}"
-    )
+    assert ok, f"parse_response did not find a stop token in real model output: " f"{decoded_with_specials!r}"
+    assert msg.get("tool_calls"), f"parse_response did not extract tool_calls from: {decoded_with_specials!r}"
     tc = msg["tool_calls"][0]  # type: ignore[index]
     assert tc["name"] == "get_weather"
-    assert "location" in tc["arguments"], (
-        f"Missing location arg in parsed tool call: {tc!r}"
-    )
+    assert "location" in tc["arguments"], f"Missing location arg in parsed tool call: {tc!r}"

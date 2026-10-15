@@ -1,17 +1,16 @@
 import pytest
-import tinker
-
+from fireworks.training import sdk
 from fireworks.training.sdk.routing import RoutingReferences
 from training.utils.rl.losses import PolicyBatch, build_policy_datums
 from training.utils.rl.sampling_support import attach_top_sampling_references
 
 
 def _datum():
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints([10, 11]),
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints([10, 11]),
         loss_fn_inputs={
-            "target_tokens": tinker.TensorData(data=[11, 12], dtype="int64", shape=[2]),
-            "weights": tinker.TensorData(data=[0, 1], dtype="int64", shape=[2]),
+            "target_tokens": sdk.TensorData(data=[11, 12], dtype="int64", shape=[2]),
+            "weights": sdk.TensorData(data=[0, 1], dtype="int64", shape=[2]),
         },
     )
 
@@ -20,9 +19,7 @@ def _datum():
 def test_references_attach_without_changing_loss_inputs(advantage):
     references = RoutingReferences(2, (), ({"input_token_start": 0, "count": 2},))
     built = build_policy_datums(
-        PolicyBatch(
-            data=[_datum()], advantages=[advantage], prompt_lens=[1], rollout_logprobs=[[0.0, -0.2]]
-        )
+        PolicyBatch(data=[_datum()], advantages=[advantage], prompt_lens=[1], rollout_logprobs=[[0.0, -0.2]])
     )
 
     (result,) = attach_top_sampling_references(built, [references])

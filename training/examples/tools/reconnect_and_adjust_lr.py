@@ -34,13 +34,11 @@ import logging
 import os
 import sys
 
-_COOKBOOK_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..")
-)
+_COOKBOOK_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if _COOKBOOK_ROOT not in sys.path:
     sys.path.insert(0, _COOKBOOK_ROOT)
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk import TrainerJobManager
 from training.utils import DEFAULT_ADAM, ReconnectableClient
 
@@ -48,9 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Reconnect to a running trainer and resume with a new learning rate."
-    )
+    parser = argparse.ArgumentParser(description="Reconnect to a running trainer and resume with a new learning rate.")
     parser.add_argument("--job-id", required=True, help="Policy RLOR trainer job ID")
     parser.add_argument("--ref-job-id", default=None, help="Reference RLOR trainer job ID (optional)")
     parser.add_argument("--base-model", required=True, help="Base model resource name")
@@ -104,7 +100,7 @@ def main():
     # AdamParams on each optim_step() call — the trainer uses whatever
     # LR you give it.
 
-    adam_params = tinker.AdamParams(learning_rate=args.new_lr, **DEFAULT_ADAM)
+    adam_params = sdk.AdamParams(learning_rate=args.new_lr, **DEFAULT_ADAM)
     logger.info("Ready. LR=%.2e. Trainer %s is still running.", args.new_lr, args.job_id)
 
     # Uncomment to actually run training steps:

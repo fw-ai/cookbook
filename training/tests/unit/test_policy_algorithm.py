@@ -7,9 +7,8 @@ from types import SimpleNamespace
 from typing import get_args
 
 import pytest
-import tinker
 import torch
-
+from fireworks.training import sdk
 from training.utils.client import GradAccNormalization
 from training.utils.rl.algorithm import (
     cispo,
@@ -65,19 +64,17 @@ def _batch() -> PolicyBatch:
 
 def _result(*rows):
     return SimpleNamespace(
-        loss_fn_outputs=[
-            {"logprobs": tinker.TensorData(data=row, dtype="float32", shape=[len(row)])} for row in rows
-        ]
+        loss_fn_outputs=[{"logprobs": sdk.TensorData(data=row, dtype="float32", shape=[len(row)])} for row in rows]
     )
 
 
-def _datum(weights: list[float]) -> tinker.Datum:
+def _datum(weights: list[float]) -> sdk.Datum:
     n = len(weights)
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints(list(range(1, n + 1))),
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints(list(range(1, n + 1))),
         loss_fn_inputs={
-            "target_tokens": tinker.TensorData(data=list(range(2, n + 2)), dtype="int64", shape=[n]),
-            "weights": tinker.TensorData(data=weights, dtype="float32", shape=[n]),
+            "target_tokens": sdk.TensorData(data=list(range(2, n + 2)), dtype="int64", shape=[n]),
+            "weights": sdk.TensorData(data=weights, dtype="float32", shape=[n]),
         },
     )
 
@@ -101,7 +98,7 @@ def _parity_batch() -> tuple[PolicyBatch, list[list[float]]]:
 def test_server_side_losses_are_trainer_loss_names() -> None:
     import fireworks.training.sdk  # noqa: F401  (registers Fireworks loss names)
 
-    supported = set(get_args(tinker.types.LossFnType))
+    supported = set(get_args(sdk.types.LossFnType))
     names = {module.LOSS_FN for module, *_ in SERVER_SIDE}
 
     # dppo becomes available once the SDK registers it as a request loss name.
@@ -160,9 +157,7 @@ TIGHT = [
 ]
 
 
-@pytest.mark.parametrize(
-    "module, config, prefix", SERVER_SIDE + [(m, c, m.PREFIX) for m, c in TIGHT]
-)
+@pytest.mark.parametrize("module, config, prefix", SERVER_SIDE + [(m, c, m.PREFIX) for m, c in TIGHT])
 def test_server_and_client_report_the_same_metrics(module, config, prefix) -> None:
     batch, policy = _parity_batch()
 
@@ -198,9 +193,7 @@ def test_build_datums_share_the_policy_datum_contract(module, config, prefix) ->
 
 
 def test_importance_sampling_metrics_use_rollout_probabilities() -> None:
-    values = importance_sampling.metrics(
-        _batch(), _result([-0.4, -0.3, -0.1]), importance_sampling.ISConfig()
-    )
+    values = importance_sampling.metrics(_batch(), _result([-0.4, -0.3, -0.1]), importance_sampling.ISConfig())
 
     assert values["is_ratio_mean"] == pytest.approx(1.0)
     assert "is_clip_frac" not in values
@@ -216,7 +209,9 @@ def test_builtin_grpo_rejects_reference_kl() -> None:
         grpo.loss_fn_config(grpo.GRPOConfig(kl_beta=0.1))
 
 
-@pytest.mark.parametrize("module, config", [(grpo, grpo.GRPOConfig(kl_beta=0.1)), (reinforce, reinforce.ReinforceConfig(kl_beta=0.1))])
+@pytest.mark.parametrize(
+    "module, config", [(grpo, grpo.GRPOConfig(kl_beta=0.1)), (reinforce, reinforce.ReinforceConfig(kl_beta=0.1))]
+)
 def test_client_reference_kl_needs_reference_rows(module, config) -> None:
     with pytest.raises(ValueError, match="ref_logprobs"):
         module.make_loss_fn(_batch(), config)

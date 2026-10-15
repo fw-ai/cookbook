@@ -6,8 +6,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-import tinker
-
+from fireworks.training import sdk
 from training.examples.archive import vanilla_sampler
 from training.recipes.experiment import async_rl_loop_serverless as loop
 from training.utils.rl.rollout import RolloutRun, RolloutSample
@@ -44,11 +43,9 @@ class _TrainingClient:
         self.saved: list[str] = []
         self.saved_states: list[str] = []
         self.loaded_states: list[str] = []
-        self.forward_backward_calls: list[
-            tuple[list[tinker.Datum], str, dict | None]
-        ] = []
+        self.forward_backward_calls: list[tuple[list[sdk.Datum], str, dict | None]] = []
         self.forward_backward_results: list[SimpleNamespace] = []
-        self.optim_calls: list[tuple[tinker.AdamParams, str | None, bool]] = []
+        self.optim_calls: list[tuple[sdk.AdamParams, str | None, bool]] = []
 
     def save_weights_for_sampler(self, name: str) -> _Future:
         self.saved.append(name)
@@ -67,7 +64,7 @@ class _TrainingClient:
         # The trainer returns the pre-update policy logprob of every target.
         outputs = [
             {
-                "logprobs": tinker.TensorData(
+                "logprobs": sdk.TensorData(
                     data=[-0.15] * len(datum.loss_fn_inputs["target_tokens"].data),
                     dtype="float32",
                     shape=[len(datum.loss_fn_inputs["target_tokens"].data)],
@@ -81,14 +78,12 @@ class _TrainingClient:
 
     def optim_step(
         self,
-        params: tinker.AdamParams,
+        params: sdk.AdamParams,
         *,
         grad_accumulation_normalization: str | None,
         emit_grad_norm_metrics: bool,
     ) -> _Future:
-        self.optim_calls.append(
-            (params, grad_accumulation_normalization, emit_grad_norm_metrics)
-        )
+        self.optim_calls.append((params, grad_accumulation_normalization, emit_grad_norm_metrics))
         return _Future(SimpleNamespace(metrics={}))
 
 
@@ -291,9 +286,7 @@ def test_sampling_preflight_uses_zero_update_snapshot(monkeypatch) -> None:
     assert service.training_client.forward_backward_calls == []
     assert service.training_client.optim_calls == []
     assert service.training_client.saved_states == []
-    assert [client.deployment_sampler.model for client in service.sampling_clients] == [
-        "snapshot-0"
-    ]
+    assert [client.deployment_sampler.model for client in service.sampling_clients] == ["snapshot-0"]
     assert seen["sampler"].closed
     assert service.closed
 
@@ -732,6 +725,7 @@ def test_producer_failure_after_submission_never_optimizes(monkeypatch):
 
 def test_sigterm_joins_native_requests_before_resource_cleanup(monkeypatch):
     import signal
+
     from training.utils.termination import TerminatedBySignal
 
     service = _Service()

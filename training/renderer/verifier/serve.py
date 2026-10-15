@@ -27,8 +27,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
-
+from training.renderer.base import TrainOnWhat
 from training.renderer.verifier.utils.inspect_rules import (
     load_rules as _load_inspect_rules,
 )
@@ -136,9 +135,7 @@ def _run_one_probe(body: dict[str, Any]) -> dict[str, Any]:
     )
 
     tokenizer = _tokenizer(tokenizer_model)
-    image_processor = (
-        _image_processor(image_processor_model) if image_processor_model else None
-    )
+    image_processor = _image_processor(image_processor_model) if image_processor_model else None
     return run_probe(
         renderer_name=renderer,
         tokenizer=tokenizer,
@@ -149,9 +146,7 @@ def _run_one_probe(body: dict[str, Any]) -> dict[str, Any]:
         tools=body.get("tools") or None,
         max_tokens=int(body.get("max_tokens") or 1024),
         temperature=float(body.get("temperature") or 0.0),
-        train_on_what=TrainOnWhat(
-            body.get("train_on_what") or TrainOnWhat.LAST_ASSISTANT_TURN.value
-        ),
+        train_on_what=TrainOnWhat(body.get("train_on_what") or TrainOnWhat.LAST_ASSISTANT_TURN.value),
         deployment_id=deployment_id,
         tokenizer_model=tokenizer_model,
         image_processor_model=image_processor_model,
@@ -286,9 +281,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     global _INPUT_FILE
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = _build_parser().parse_args(argv)
     if not INDEX_PATH.exists():
         raise SystemExit(f"viewer not found at {INDEX_PATH}")
@@ -299,12 +292,8 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise SystemExit(f"invalid input file {_INPUT_FILE}: {exc}") from exc
 
-    if not os.environ.get("FIREWORKS_API_KEY") and not _is_loopback_url(
-        os.environ.get("FIREWORKS_BASE_URL")
-    ):
-        logger.warning(
-            "FIREWORKS_API_KEY is not set; live cases will fail until it is exported"
-        )
+    if not os.environ.get("FIREWORKS_API_KEY") and not _is_loopback_url(os.environ.get("FIREWORKS_BASE_URL")):
+        logger.warning("FIREWORKS_API_KEY is not set; live cases will fail until it is exported")
 
     case_count = sum(len(profile["examples"]) for profile in catalog["profiles"])
     logger.info("input-file: %s (%d cases)", _INPUT_FILE, case_count)

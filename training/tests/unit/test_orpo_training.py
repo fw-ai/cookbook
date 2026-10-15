@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, call
 
 import pytest
-import tinker
+from fireworks.training import sdk as tinker
 import torch
 
 from training.recipes import orpo_loop

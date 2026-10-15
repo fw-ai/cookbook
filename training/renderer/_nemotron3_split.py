@@ -1,6 +1,6 @@
 """Local Nemotron3 renderers with multi-turn SFT disaggregate support.
 
-Upstream ``training._vendor.tinker_cookbook_0_4_3.renderers.nemotron3`` ships ``Nemotron3Renderer``
+Upstream ``training.renderer.nemotron3`` ships ``Nemotron3Renderer``
 (and ``Nemotron3DisableThinkingRenderer``) which inherit Qwen3_5Renderer's
 strip-from-history behavior but don't carry a ``build_supervised_examples``
 override. Re-register both upstream names with local subclasses that mix in
@@ -40,8 +40,14 @@ uses ``nemotron3_ultra_*`` renderers, not Super's.
 from __future__ import annotations
 
 from training.renderer import Message, register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext
-from training._vendor.tinker_cookbook_0_4_3.renderers.nemotron3 import (
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer._think_prefill import (
+    DisableThinkingWeightsMixin,
+    ThinkPrefillWeightsMixin,
+)
+from training.renderer.base import RenderContext
+from training.renderer.message_weights import untrained_synthesized_context
+from training.renderer.nemotron3 import (
     Nemotron3DisableThinkingRenderer,
     Nemotron3LowThinkingRenderer,
     Nemotron3Renderer,
@@ -49,13 +55,6 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.nemotron3 import (
     Nemotron3UltraMediumThinkingRenderer,
     Nemotron3UltraRenderer,
 )
-
-from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
-from training.renderer._think_prefill import (
-    DisableThinkingWeightsMixin,
-    ThinkPrefillWeightsMixin,
-)
-from training.renderer.message_weights import untrained_synthesized_context
 
 
 class _UntrainedSynthesizedSystemMixin:

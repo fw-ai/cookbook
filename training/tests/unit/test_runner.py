@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 from training.utils.runner import (
-    DatasetError,
     NO_VALID_TRAINING_EXAMPLES_MESSAGE,
+    DatasetError,
     RunnerConfig,
     RunnerIO,
     RunStatus,
@@ -82,18 +82,20 @@ class TestRunnerIOStatus:
         runner.write_status(RunStatus.EVALUATION, step=2, total_steps=2)
         runner.write_status(terminal_status, step=2, total_steps=2)
         data = json.loads(path.read_text())
-        assert data["details"] == [transition, {
-            "@type": "type.googleapis.com/gateway.JobProgress", "percent": 100,
-        }]
+        assert data["details"] == [
+            transition,
+            {
+                "@type": "type.googleapis.com/gateway.JobProgress",
+                "percent": 100,
+            },
+        ]
         assert data["message"] == terminal_status.value
 
     def test_write_status_creates_file(self, tmp_path):
         path = str(tmp_path / "status.json")
         runner = RunnerIO(RunnerConfig(status_file=path))
 
-        runner.write_status(
-            RunStatus.RUNNING, step=3, total_steps=10, message="training"
-        )
+        runner.write_status(RunStatus.RUNNING, step=3, total_steps=10, message="training")
 
         data = json.loads(open(path).read())
         assert data["code"] == 0
@@ -107,9 +109,7 @@ class TestRunnerIOStatus:
         runner = RunnerIO(RunnerConfig(status_file=path))
 
         # 7/20 -> 35%
-        runner.write_status(
-            RunStatus.RUNNING, step=7, total_steps=20, message="training"
-        )
+        runner.write_status(RunStatus.RUNNING, step=7, total_steps=20, message="training")
 
         data = json.loads(open(path).read())
         # Top-level keys: exactly code, message, details
@@ -152,9 +152,7 @@ class TestRunnerIOStatus:
         runner = RunnerIO(RunnerConfig(status_file=path))
 
         runner.write_status(RunStatus.RUNNING, step=1, total_steps=10)
-        runner.write_status(
-            RunStatus.COMPLETED, step=10, total_steps=10, message="done"
-        )
+        runner.write_status(RunStatus.COMPLETED, step=10, total_steps=10, message="done")
 
         data = json.loads(open(path).read())
         assert data["code"] == 0
@@ -225,10 +223,7 @@ class TestRunnerIOMetadata:
 
         runner.write_metadata()
 
-        assert (
-            json.loads((tmp_path / "metadata.json").read_text())["metadata"]["tokens"]
-            == 250
-        )
+        assert json.loads((tmp_path / "metadata.json").read_text())["metadata"]["tokens"] == 250
 
     def test_write_metadata_with_tokens_and_time(self, tmp_path):
         path = str(tmp_path / "meta.json")
@@ -454,9 +449,7 @@ class TestRunnerIOContextManager:
                 raise WandbConfigError("bad key")
 
         data = json.loads(open(path).read())
-        assert (
-            data["code"] == 3
-        )  # INVALID_ARGUMENT, not the generic FAILED_PRECONDITION
+        assert data["code"] == 3  # INVALID_ARGUMENT, not the generic FAILED_PRECONDITION
         assert data["message"] == "bad key"
         assert "details" not in data
 
@@ -484,9 +477,7 @@ class TestRunnerIOContextManager:
             SystemExit("Terminated by SIGTERM"),
         ],
     )
-    def test_signal_cancellation_writes_cancelled_status(
-        self, tmp_path: Path, exc: BaseException
-    ) -> None:
+    def test_signal_cancellation_writes_cancelled_status(self, tmp_path: Path, exc: BaseException) -> None:
         """Recipe SIGTERM/SIGINT cleanup exits are structured as CANCELLED, not INTERNAL."""
         path = tmp_path / "status.json"
         runner = RunnerIO(RunnerConfig(status_file=str(path)))
@@ -523,9 +514,7 @@ class TestRunnerIOContextManager:
             SystemExit("dataset is empty: /tmp/data.jsonl"),
         ],
     )
-    def test_non_signal_system_exit_stays_internal(
-        self, tmp_path: Path, exc: SystemExit
-    ) -> None:
+    def test_non_signal_system_exit_stays_internal(self, tmp_path: Path, exc: SystemExit) -> None:
         """Other SystemExit values may be user/config failures; do not classify from free text."""
         path = tmp_path / "status.json"
         runner = RunnerIO(RunnerConfig(status_file=str(path)))
@@ -540,7 +529,7 @@ class TestRunnerIOContextManager:
 
     @pytest.mark.parametrize(
         "module",
-        ["fireworks.client.error", "tinker._exceptions"],
+        ["fireworks.client.error", "fireworks.training.sdk._core._exceptions"],
     )
     def test_managed_api_network_unavailable_writes_unavailable(self, tmp_path: Path, module: str) -> None:
         """Managed SDK ENETUNREACH is preserved through nested recipe errors."""
@@ -653,7 +642,9 @@ def test_fixed_reference_checkpoint_metadata(tmp_path):
 @pytest.mark.parametrize("corrupt", [False, True])
 def test_frozen_reference_survives_billing_metadata_rotation(tmp_path, corrupt):
     stable = str(tmp_path / "dpo-reference.json")
-    original = RunnerIO(RunnerConfig(metadata_file=str(tmp_path / "metadata-A.json"), reference_checkpoint_file=stable))
+    original = RunnerIO(
+        RunnerConfig(metadata_file=str(tmp_path / "metadata-A.json"), reference_checkpoint_file=stable)
+    )
     original.set_reference_checkpoint("account/run-original/dpo-reference")
     original.write_metadata()
     if corrupt:
@@ -661,9 +652,13 @@ def test_frozen_reference_survives_billing_metadata_rotation(tmp_path, corrupt):
     resumed = RunnerIO(RunnerConfig(metadata_file=str(tmp_path / "metadata-B.json"), reference_checkpoint_file=stable))
     if corrupt:
         from training.utils.runner import UserConfigError
+
         with pytest.raises(UserConfigError, match="corrupt"):
             resumed.persisted_reference_checkpoint()
     else:
         assert resumed.persisted_reference_checkpoint() == "account/run-original/dpo-reference"
         resumed.write_metadata()
-        assert json.loads((tmp_path / "metadata-B.json").read_text())["metadata"]["reference_checkpoint"] == "account/run-original/dpo-reference"
+        assert (
+            json.loads((tmp_path / "metadata-B.json").read_text())["metadata"]["reference_checkpoint"]
+            == "account/run-original/dpo-reference"
+        )

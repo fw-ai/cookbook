@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
+from training.renderer.base import TrainOnWhat
 
 PRESET_SCHEMA_VERSION = 1
 
@@ -61,9 +61,7 @@ def _credential_paths(value: Any, *, path: str = "") -> list[str]:
         for key, item in value.items():
             key_text = str(key)
             child_path = f"{path}.{key_text}" if path else key_text
-            normalized_key = "".join(
-                char for char in key_text.lower() if char.isalnum()
-            )
+            normalized_key = "".join(char for char in key_text.lower() if char.isalnum())
             if normalized_key in _CREDENTIAL_KEYS:
                 found.append(child_path)
             found.extend(_credential_paths(item, path=child_path))
@@ -79,15 +77,10 @@ def _validate_completion_kwargs(value: Any, *, context: str) -> None:
         raise ValueError(f"{context} must be a JSON object")
     credential_paths = sorted(_credential_paths(value))
     if credential_paths:
-        raise ValueError(
-            f"{context} must not contain credential keys: {', '.join(credential_paths)}"
-        )
+        raise ValueError(f"{context} must not contain credential keys: {', '.join(credential_paths)}")
     reserved = sorted(set(value) & _RESERVED_COMPLETION_KEYS)
     if reserved:
-        raise ValueError(
-            f"{context} must not override verifier-controlled keys: "
-            f"{', '.join(reserved)}"
-        )
+        raise ValueError(f"{context} must not override verifier-controlled keys: " f"{', '.join(reserved)}")
 
 
 def _validate_probe_values(
@@ -116,9 +109,7 @@ def _validate_probe_values(
         try:
             TrainOnWhat(value["train_on_what"])
         except ValueError as exc:
-            raise ValueError(
-                f"{context}.train_on_what is not a supported training mode"
-            ) from exc
+            raise ValueError(f"{context}.train_on_what is not a supported training mode") from exc
 
     if value.get("model") and value.get("deployment_id"):
         raise ValueError(f"{context} cannot set both model and deployment_id")
@@ -132,13 +123,10 @@ def _validate_probe_values(
             value["extra_completion_kwargs"],
             context=f"{context}.extra_completion_kwargs",
         )
-    if "max_tokens" in value and (
-        type(value["max_tokens"]) is not int or value["max_tokens"] < 1
-    ):
+    if "max_tokens" in value and (type(value["max_tokens"]) is not int or value["max_tokens"] < 1):
         raise ValueError(f"{context}.max_tokens must be a positive integer")
     if "temperature" in value and (
-        isinstance(value["temperature"], bool)
-        or not isinstance(value["temperature"], (int, float))
+        isinstance(value["temperature"], bool) or not isinstance(value["temperature"], (int, float))
     ):
         raise ValueError(f"{context}.temperature must be a number")
 
@@ -147,9 +135,7 @@ def _validate_probe_values(
             if not value.get(key):
                 raise ValueError(f"{context}.{key} is required after applying defaults")
         if not value.get("model") and not value.get("deployment_id"):
-            raise ValueError(
-                f"{context} requires either model or deployment_id after applying defaults"
-            )
+            raise ValueError(f"{context} requires either model or deployment_id after applying defaults")
 
 
 def load_preset_catalog(path: str | Path) -> dict[str, Any]:
@@ -163,9 +149,7 @@ def load_preset_catalog(path: str | Path) -> dict[str, Any]:
     if unknown:
         raise ValueError(f"preset catalog has unsupported keys: {', '.join(unknown)}")
     if catalog.get("schema_version") != PRESET_SCHEMA_VERSION:
-        raise ValueError(
-            f"preset catalog schema_version must be {PRESET_SCHEMA_VERSION}"
-        )
+        raise ValueError(f"preset catalog schema_version must be {PRESET_SCHEMA_VERSION}")
 
     profiles = catalog.get("profiles")
     if not isinstance(profiles, list):
@@ -195,9 +179,7 @@ def load_preset_catalog(path: str | Path) -> dict[str, Any]:
             require_complete=False,
         )
         if not defaults.get("renderer") or not defaults.get("tokenizer_model"):
-            raise ValueError(
-                f"{context}.defaults must set renderer and tokenizer_model"
-            )
+            raise ValueError(f"{context}.defaults must set renderer and tokenizer_model")
 
         examples = profile.get("examples")
         if not isinstance(examples, list) or not examples:
@@ -210,9 +192,7 @@ def load_preset_catalog(path: str | Path) -> dict[str, Any]:
                 raise ValueError(f"{example_context} must be a JSON object")
             unknown = sorted(set(example) - _EXAMPLE_META_KEYS - _PROBE_KEYS)
             if unknown:
-                raise ValueError(
-                    f"{example_context} has unsupported keys: {', '.join(unknown)}"
-                )
+                raise ValueError(f"{example_context} has unsupported keys: {', '.join(unknown)}")
             example_id = _require_string(
                 example.get("id"),
                 context=f"{example_context}.id",
@@ -224,16 +204,10 @@ def load_preset_catalog(path: str | Path) -> dict[str, Any]:
             if "description" in example and not isinstance(example["description"], str):
                 raise ValueError(f"{example_context}.description must be a string")
             if example_id in example_ids:
-                raise ValueError(
-                    f"duplicate example id {example_id!r} in profile {profile_id!r}"
-                )
+                raise ValueError(f"duplicate example id {example_id!r} in profile {profile_id!r}")
             example_ids.add(example_id)
 
-            overrides = {
-                key: item
-                for key, item in example.items()
-                if key not in _EXAMPLE_META_KEYS
-            }
+            overrides = {key: item for key, item in example.items() if key not in _EXAMPLE_META_KEYS}
             _validate_probe_values(
                 overrides,
                 context=example_context,
@@ -262,32 +236,20 @@ def resolve_preset_case(
     overrides. Saved probe artifacts are not accepted by this schema.
     """
     profile = next(
-        (
-            candidate
-            for candidate in catalog.get("profiles", [])
-            if candidate.get("id") == profile_id
-        ),
+        (candidate for candidate in catalog.get("profiles", []) if candidate.get("id") == profile_id),
         None,
     )
     if profile is None:
         raise ValueError(f"unknown input profile: {profile_id!r}")
 
     example = next(
-        (
-            candidate
-            for candidate in profile.get("examples", [])
-            if candidate.get("id") == example_id
-        ),
+        (candidate for candidate in profile.get("examples", []) if candidate.get("id") == example_id),
         None,
     )
     if example is None:
-        raise ValueError(
-            f"unknown input example {example_id!r} in profile {profile_id!r}"
-        )
+        raise ValueError(f"unknown input example {example_id!r} in profile {profile_id!r}")
 
-    overrides = {
-        key: value for key, value in example.items() if key not in _EXAMPLE_META_KEYS
-    }
+    overrides = {key: value for key, value in example.items() if key not in _EXAMPLE_META_KEYS}
     request = {**profile["defaults"], **overrides}
     _validate_probe_values(
         request,

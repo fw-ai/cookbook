@@ -18,10 +18,9 @@ which equals the base weights because LoRA starts at zero.
 
 Why a loop here instead of a recipe: ``recipes/distillation_loop.py`` trains the
 same objective with the same ``training.utils.distillation`` datums and metrics,
-but serves the student and teacher from dedicated deployments with weight sync;
-``recipes/sdft_loop.py`` runs on serverless but is top-K SDFT on SciKnowEval
-golden-answer prompts. Neither takes a serverless privileged-instruction run
-without new Config fields, so this file is ``distillation_loop``'s step with the
+but serves the student and teacher from dedicated deployments with weight sync.
+This example implements a serverless privileged-instruction run using the
+``distillation_loop`` step with the
 serving layer swapped: a sampler snapshot of the student replaces the weight
 sync, and the step-0 snapshot replaces the teacher deployment.
 
@@ -44,10 +43,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import tinker
 from dotenv import load_dotenv
+from fireworks.training import sdk
 from fireworks.training.sdk import FiretitanServiceClient
-
 from training.renderer import get_renderer
 from training.utils import (
     DEFAULT_ADAM,
@@ -57,7 +55,11 @@ from training.utils import (
     setup_wandb,
     wandb_finish,
 )
-from training.utils.distillation import OPDPromptGroup, build_opd_datums, build_opd_prompt_group
+from training.utils.distillation import (
+    OPDPromptGroup,
+    build_opd_datums,
+    build_opd_prompt_group,
+)
 from training.utils.distillation.sampling import (
     completions_from_sample_response,
     score_teacher_logprobs_with_sampling_client,
@@ -133,12 +135,12 @@ def main(cfg: Config) -> dict[str, Any]:
     if not rows:
         raise ValueError(f"dataset is empty: {cfg.dataset}")
     row_iterator = itertools.cycle(rows)
-    sampling_params = tinker.SamplingParams(
+    sampling_params = sdk.SamplingParams(
         max_tokens=cfg.max_completion_tokens,
         temperature=cfg.temperature,
         stop=renderer.get_stop_sequences(),
     )
-    adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
+    adam_params = sdk.AdamParams(learning_rate=cfg.learning_rate, **DEFAULT_ADAM)
     setup_wandb(cfg.wandb, {"base_model": cfg.base_model, "lr": cfg.learning_rate, "loss_scale": cfg.loss_scale})
 
     with ExitStack() as stack:
@@ -155,7 +157,7 @@ def main(cfg: Config) -> dict[str, Any]:
         stack.callback(teacher.close)
         logger.info("Teacher snapshot: %s", teacher_path)
 
-        def score_prompt_group(row: dict[str, Any], prompt: tinker.ModelInput, response: Any) -> OPDPromptGroup | None:
+        def score_prompt_group(row: dict[str, Any], prompt: sdk.ModelInput, response: Any) -> OPDPromptGroup | None:
             """Pair one prompt's student samples with teacher scores under the privileged prompt."""
             sampled = completions_from_sample_response(prompt.to_ints(), response)
             teacher_prompt = renderer.build_generation_prompt(

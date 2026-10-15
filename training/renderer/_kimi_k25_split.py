@@ -22,14 +22,13 @@ its contract outright.
 
 from __future__ import annotations
 
-from training.renderer.image_processing import ImageProcessor
 from training.renderer import Message, register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k25 import KimiK25Renderer as _TinkerKimiK25Renderer
-from training.renderer.tokenizer import Tokenizer
-
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.image_processing import ImageProcessor
+from training.renderer.kimi_k25 import KimiK25Renderer as _TinkerKimiK25Renderer
 from training.renderer.kimi_k26 import _KimiMediaPadImagePlaceholderMixin
 from training.renderer.message_weights import untrained_synthesized_context
+from training.renderer.tokenizer import Tokenizer
 
 
 class KimiK25SplitRenderer(

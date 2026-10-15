@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Tuple
 
 import torch
-import tinker
+from fireworks.training import sdk
 
 from training.utils.client import GradAccNormalization
 from training.utils.rl.common import (
@@ -69,7 +69,7 @@ def loss_fn_config(config: GSPOConfig) -> Dict[str, float]:
     }
 
 
-def build_datums(batch: PolicyBatch, config: GSPOConfig) -> List[tinker.Datum]:
+def build_datums(batch: PolicyBatch, config: GSPOConfig) -> List[sdk.Datum]:
     """Datums for the built-in :data:`LOSS_FN`; the response mask
     keeps zero-advantage responses in the sequence count."""
     del config
@@ -118,9 +118,7 @@ def make_loss_fn(batch: PolicyBatch, config: GSPOConfig):
             "ratio_mean": masked_mean(seq_ratio.detach(), ctx.resp_mask).item(),
         }
 
-    def loss_fn(
-        data: List[tinker.Datum], logprobs_list: List[torch.Tensor]
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+    def loss_fn(data: List[sdk.Datum], logprobs_list: List[torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(batch, data, logprobs_list, "gspo", policy_fn)
         return result.total_loss, client_loss_metrics(result, PREFIX)
 

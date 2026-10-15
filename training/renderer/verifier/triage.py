@@ -24,8 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
-
+from training.renderer.base import TrainOnWhat
 from training.renderer.verifier.utils.probe import (
     DispatchError,
     resolve_dispatch,
@@ -55,15 +54,11 @@ def _load_prompts(path: Path) -> list[dict[str, Any]]:
         return data["cases"]
     if isinstance(data, list):
         return data
-    raise ValueError(
-        f"prompts file {path} must be a list or {{'cases': [...]}}"
-    )
+    raise ValueError(f"prompts file {path} must be a list or {{'cases': [...]}}")
 
 
 def _user_msg_snippet(messages: list[dict[str, Any]], width: int = 56) -> str:
-    last_user = next(
-        (m for m in reversed(messages) if m.get("role") == "user"), None
-    )
+    last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
     txt = ""
     if last_user and isinstance(last_user.get("content"), str):
         txt = last_user["content"].strip().replace("\n", " ")
@@ -245,9 +240,7 @@ def run_triage(
     # Fail-fast on auth before we waste cycles building heavy artifacts.
     api_key = api_key or os.environ.get("FIREWORKS_API_KEY")
     if not api_key:
-        raise SystemExit(
-            "FIREWORKS_API_KEY not set. Pass --api-key or export FIREWORKS_API_KEY."
-        )
+        raise SystemExit("FIREWORKS_API_KEY not set. Pass --api-key or export FIREWORKS_API_KEY.")
     base_url = base_url or os.environ.get("FIREWORKS_BASE_URL")
 
     # Build the Fireworks client (lightweight) and ping the model so the
@@ -266,13 +259,10 @@ def run_triage(
     )
 
     if not serverless_status[0]:
-        raise SystemExit(
-            f"Aborting: dispatch target unreachable. {serverless_status[1]}"
-        )
+        raise SystemExit(f"Aborting: dispatch target unreachable. {serverless_status[1]}")
 
     if not skip_confirm and not _confirm(
-        f"  Run probe across {len(prompts)} prompt(s) and write session to "
-        f"{output_path}?"
+        f"  Run probe across {len(prompts)} prompt(s) and write session to " f"{output_path}?"
     ):
         print("Aborted.", file=sys.stderr)
         return _USER_ABORT_EXIT

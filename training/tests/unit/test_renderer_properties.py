@@ -46,7 +46,7 @@ import pytest
 
 # Importing the cookbook renderer package registers cookbook-local renderer
 # names (glm5, gemma4, minimax_m2, nemotron, deepseek_v4, mistral,
-# kimi_k27_code, ...) under training._vendor.tinker_cookbook_0_4_3.renderers.get_renderer.
+# kimi_k27_code, ...) under training.renderer._registry.get_renderer.
 import training.renderer  # noqa: F401
 from training.renderer import Renderer, get_renderer
 from training.renderer.tokenizer import Tokenizer, get_tokenizer
@@ -54,8 +54,7 @@ from training.renderer.verifier.utils.hf_parity import (
     compare_renderer_to_hf,
     format_divergence,
 )
-from training.utils.tokenizers import load_tokenizer
-
+from training.tests.unit.renderer_contract import RendererContractTests, _thinking_parts
 from training.tests.unit.renderer_expected_divergences import (
     EXTENSION_EXPECTED_DIVERGENCES,
     HF_EXPECTED_DIVERGENCES,
@@ -65,12 +64,12 @@ from training.tests.unit.renderer_expected_divergences import (
     TEXT_EXPECTED_DIVERGENCES,
 )
 from training.tests.unit.renderer_matrix import (
-    REQUIRED_RENDERERS,
     RENDERER_MATRIX,
+    REQUIRED_RENDERERS,
     RendererCase,
 )
 from training.tests.unit.renderer_scenarios import ALL_SCENARIOS, Scenario
-from training.tests.unit.renderer_contract import RendererContractTests, _thinking_parts
+from training.utils.tokenizers import load_tokenizer
 
 # Exceptions raised when an upstream tokenizer / renderer cannot be
 # materialized (offline, gated repo, missing chat_template, or a tokenizer
@@ -78,9 +77,7 @@ from training.tests.unit.renderer_contract import RendererContractTests, _thinki
 _UNAVAILABLE = (AttributeError, OSError, ValueError, RuntimeError)
 
 
-def _shard_renderer_cases(
-    cases: list[RendererCase], shard_index: int, shard_count: int
-) -> list[RendererCase]:
+def _shard_renderer_cases(cases: list[RendererCase], shard_index: int, shard_count: int) -> list[RendererCase]:
     """Partition by tokenizer so variants share one load within a shard."""
     groups: dict[tuple[str, str | None, bool | None], list[RendererCase]] = {}
     for case in cases:
@@ -103,9 +100,7 @@ def _selected_renderer_cases() -> list[RendererCase]:
     shard_index = int(os.environ.get("RENDERER_QA_SHARD_INDEX", "0"))
     shard_count = int(os.environ.get("RENDERER_QA_SHARD_COUNT", "1"))
     if shard_count < 1 or not 0 <= shard_index < shard_count:
-        raise ValueError(
-            f"invalid renderer QA shard {shard_index}; expected 0 <= index < {shard_count}"
-        )
+        raise ValueError(f"invalid renderer QA shard {shard_index}; expected 0 <= index < {shard_count}")
 
     # Assign every future matrix row automatically; adding a renderer still
     # requires only one matrix row.
@@ -123,11 +118,7 @@ def _load_tokenizer_result(
     explicit: bool,
 ) -> tuple[Tokenizer | None, BaseException | None]:
     try:
-        tokenizer = (
-            load_tokenizer(model, revision, trust_remote_code)
-            if explicit
-            else get_tokenizer(model)
-        )
+        tokenizer = load_tokenizer(model, revision, trust_remote_code) if explicit else get_tokenizer(model)
     except _UNAVAILABLE as exc:
         return None, exc
     return tokenizer, None
@@ -137,10 +128,7 @@ def _load_case_tokenizer(case: RendererCase) -> Tokenizer:
     """Cache both successful loads and unavailability for this QA process."""
     model = case.resolved_tokenizer_model()
     revision = case.resolved_tokenizer_revision()
-    explicit = (
-        case.tokenizer_revision is not None
-        or case.tokenizer_trust_remote_code is not None
-    )
+    explicit = case.tokenizer_revision is not None or case.tokenizer_trust_remote_code is not None
     tokenizer, error = _load_tokenizer_result(
         model,
         revision,
@@ -231,11 +219,7 @@ def _hf_xfail_reason(case: RendererCase, scenario: Scenario) -> str | None:
        map — the common case, since almost every real divergence is
        renderer-specific rather than scenario-wide.
     """
-    return (
-        case.xfail_hf
-        or scenario.xfail_reason
-        or HF_EXPECTED_DIVERGENCES.get((case.renderer, scenario.id))
-    )
+    return case.xfail_hf or scenario.xfail_reason or HF_EXPECTED_DIVERGENCES.get((case.renderer, scenario.id))
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +239,7 @@ def test_scenario_metadata_is_self_consistent() -> None:
         # declares tools (a declaration-only scenario still needs a renderer
         # that can serialize the tool block).
         has_tools = bool(scenario.tools) or any(
-            message.get("tool_calls") or message.get("role") == "tool"
-            for message in scenario.messages
+            message.get("tool_calls") or message.get("role") == "tool" for message in scenario.messages
         )
         assert scenario.requires_tools == has_tools, (
             f"{scenario.id}: requires_tools={scenario.requires_tools}, "
@@ -274,13 +257,9 @@ def test_scenario_metadata_is_self_consistent() -> None:
 
 
 def test_renderer_qa_shards_partition_matrix() -> None:
-    partitions = [
-        _shard_renderer_cases(RENDERER_MATRIX, index, 4) for index in range(4)
-    ]
+    partitions = [_shard_renderer_cases(RENDERER_MATRIX, index, 4) for index in range(4)]
     flattened = [case for partition in partitions for case in partition]
-    assert {case.renderer for case in flattened} == {
-        case.renderer for case in RENDERER_MATRIX
-    }
+    assert {case.renderer for case in flattened} == {case.renderer for case in RENDERER_MATRIX}
     assert len(flattened) == len(RENDERER_MATRIX)
 
 
@@ -300,9 +279,7 @@ def test_expected_divergence_entries_reference_the_matrix() -> None:
         OBSERVATION_EXPECTED_DIVERGENCES,
         EXTENSION_EXPECTED_DIVERGENCES,
     )
-    for renderer_name, scenario_id in set().union(
-        *(set(divergences) for divergences in divergence_maps)
-    ):
+    for renderer_name, scenario_id in set().union(*(set(divergences) for divergences in divergence_maps)):
         assert renderer_name in renderer_names, f"unknown renderer {renderer_name!r}"
         assert scenario_id in scenario_ids, f"unknown scenario {scenario_id!r}"
 
@@ -328,9 +305,7 @@ _REQUIRED_CASES = [c for c in _QA_CASES if c.renderer in REQUIRED_RENDERERS]
     not _STRICT_MODE,
     reason="coverage guard runs only under RENDERER_QA_STRICT=1 (set in CI)",
 )
-@pytest.mark.parametrize(
-    "case", _REQUIRED_CASES, ids=[c.renderer for c in _REQUIRED_CASES]
-)
+@pytest.mark.parametrize("case", _REQUIRED_CASES, ids=[c.renderer for c in _REQUIRED_CASES])
 @pytest.mark.timeout(180)
 def test_required_renderers_load_in_strict_mode(case: RendererCase) -> None:
     """A REQUIRED (public, ungated) renderer's tokenizer MUST load in strict
@@ -347,9 +322,7 @@ def test_required_renderers_load_in_strict_mode(case: RendererCase) -> None:
         f"{renderer.has_extension_property}"
     )
 
-    canonical = next(
-        scenario for scenario in ALL_SCENARIOS if scenario.id == "system_user"
-    )
+    canonical = next(scenario for scenario in ALL_SCENARIOS if scenario.id == "system_user")
     result = compare_renderer_to_hf(
         renderer_name=case.renderer,
         tokenizer_model=case.resolved_tokenizer_model(),
@@ -363,13 +336,11 @@ def test_required_renderers_load_in_strict_mode(case: RendererCase) -> None:
     expected_gap = _hf_xfail_reason(case, canonical)
     if expected_gap:
         assert not result.match, (
-            f"{case.renderer}'s strict smoke test now passes; remove its stale "
-            f"expected divergence: {expected_gap}"
+            f"{case.renderer}'s strict smoke test now passes; remove its stale " f"expected divergence: {expected_gap}"
         )
         return
     assert result.match, (
-        f"{case.renderer} loaded but failed the canonical HF parity smoke test:\n"
-        f"{format_divergence(result)}"
+        f"{case.renderer} loaded but failed the canonical HF parity smoke test:\n" f"{format_divergence(result)}"
     )
 
 

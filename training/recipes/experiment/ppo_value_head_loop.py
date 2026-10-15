@@ -45,14 +45,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
-
 from training.renderer import get_text_content
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
@@ -171,9 +170,7 @@ class Config:
     )
     dcp_save_interval: int = 0
     weight_sync_timeout: int = 600
-    wandb: WandBConfig = field(
-        default_factory=lambda: WandBConfig(project="ppo-value-head-tinker")
-    )
+    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="ppo-value-head-tinker"))
     cleanup_on_exit: bool = True
 
     actor_init_from_checkpoint: str | None = None
@@ -200,9 +197,7 @@ def reward_fn(completion: str, row: dict) -> float:
 
 
 def _response_text_for_grading(renderer, sampled) -> str:
-    message, _termination = renderer.parse_response(
-        sampled.full_tokens[sampled.prompt_len :]
-    )
+    message, _termination = renderer.parse_response(sampled.full_tokens[sampled.prompt_len :])
     return get_text_content(message)
 
 
@@ -330,11 +325,7 @@ def main(
             deployment=cfg.deployment if uses_managed_sampler else None,
             hotload_timeout_s=cfg.weight_sync_timeout,
             cleanup_trainer_on_close=cfg.cleanup_on_exit,
-            cleanup_deployment_on_close=(
-                CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
-                if cfg.cleanup_on_exit
-                else None
-            ),
+            cleanup_deployment_on_close=(CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO if cfg.cleanup_on_exit else None),
             reference_required=False,
         )
         stack.callback(actor_service.close)
@@ -453,9 +444,7 @@ def main(
             messages = prepare_sampling_messages(row.get("messages", []))
             if not messages:
                 return None
-            prompt_token_ids = model_input_to_token_ids(
-                renderer.build_generation_prompt(messages)
-            )
+            prompt_token_ids = model_input_to_token_ids(renderer.build_generation_prompt(messages))
             try:
                 sampled = await sampler.sample_with_prompt_tokens(
                     prompt_token_ids,
@@ -485,8 +474,8 @@ def main(
                 advantage_fn=lambda rewards: list(rewards),
             )
 
-        def adam_params(learning_rate: float) -> tinker.AdamParams:
-            return tinker.AdamParams(
+        def adam_params(learning_rate: float) -> sdk.AdamParams:
+            return sdk.AdamParams(
                 learning_rate=learning_rate,
                 grad_clip_norm=cfg.grad_clip_norm,
                 **ADAM,
@@ -565,9 +554,7 @@ def main(
                     total_steps=max(1, total_steps),
                 )
                 with elapsed_timer("actor_optim_step"):
-                    actor_optim = actor.optim_step(
-                        adam_params(actor_lr), emit_grad_norm_metrics=True
-                    )
+                    actor_optim = actor.optim_step(adam_params(actor_lr), emit_grad_norm_metrics=True)
 
                 # 4. Publish the actor before the next rollout batch.
                 sync_metrics: dict[str, Any] = {}
@@ -621,10 +608,7 @@ def main(
                 log_metrics_json(step, reward=reward, value=value_mean)
                 log_metrics(metrics, step=step)
 
-                if (
-                    cfg.dcp_save_interval > 0
-                    and (step - step_offset) % cfg.dcp_save_interval == 0
-                ):
+                if cfg.dcp_save_interval > 0 and (step - step_offset) % cfg.dcp_save_interval == 0:
                     for checkpoint in (actor_checkpoint, critic_checkpoint):
                         checkpoint.save(
                             f"step-{step}",
@@ -675,8 +659,7 @@ if __name__ == "__main__":
         Config(
             log_path="./ppo_logs",
             dataset=(
-                "https://raw.githubusercontent.com/eval-protocol/python-sdk/"
-                "main/development/gsm8k_sample.jsonl"
+                "https://raw.githubusercontent.com/eval-protocol/python-sdk/" "main/development/gsm8k_sample.jsonl"
             ),
         )
     )

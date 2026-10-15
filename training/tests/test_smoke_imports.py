@@ -15,7 +15,6 @@ import os
 
 import pytest
 
-
 # ── Recipe modules ──────────────────────────────────────────────────────────
 
 RECIPE_MODULES = [
@@ -141,7 +140,7 @@ def test_example_imports(module: str, dep: str, env: dict):
 
 # ── tinker types used by the cookbook ────────────────────────────────────────
 
-TINKER_ATTRS = [
+NATIVE_SDK_ATTRS = [
     "Datum",
     "ModelInput",
     "TensorData",
@@ -149,12 +148,12 @@ TINKER_ATTRS = [
 ]
 
 
-@pytest.mark.parametrize("attr", TINKER_ATTRS)
-def test_tinker_types(attr: str):
-    import tinker
+@pytest.mark.parametrize("attr", NATIVE_SDK_ATTRS)
+def test_native_types(attr: str):
+    from fireworks.training import sdk
 
-    obj = getattr(tinker, attr, None)
-    assert obj is not None, f"tinker.{attr} not found (tinker {tinker.__version__})"
+    obj = getattr(sdk, attr, None)
+    assert obj is not None, f"fireworks.training.sdk.{attr} not found"
 
 
 # ── fireworks.training.sdk symbols used by the cookbook ──────────────────────
@@ -179,9 +178,7 @@ SDK_IMPORTS = [
 ]
 
 
-@pytest.mark.parametrize(
-    "module,attr", SDK_IMPORTS, ids=[f"{m}.{a}" for m, a in SDK_IMPORTS]
-)
+@pytest.mark.parametrize("module,attr", SDK_IMPORTS, ids=[f"{m}.{a}" for m, a in SDK_IMPORTS])
 def test_sdk_symbols(module: str, attr: str):
     mod = importlib.import_module(module)
     obj = getattr(mod, attr, None)
@@ -235,9 +232,7 @@ def test_utils_all_resolvable():
     import training.utils as utils_pkg
 
     for name in utils_pkg.__all__:
-        assert hasattr(utils_pkg, name), (
-            f"training.utils.__all__ lists '{name}' but it cannot be resolved"
-        )
+        assert hasattr(utils_pkg, name), f"training.utils.__all__ lists '{name}' but it cannot be resolved"
 
 
 def test_utils_rl_all_resolvable():
@@ -245,9 +240,7 @@ def test_utils_rl_all_resolvable():
     import training.utils.rl as rl_pkg
 
     for name in rl_pkg.__all__:
-        assert hasattr(rl_pkg, name), (
-            f"training.utils.rl.__all__ lists '{name}' but it cannot be resolved"
-        )
+        assert hasattr(rl_pkg, name), f"training.utils.rl.__all__ lists '{name}' but it cannot be resolved"
 
 
 FIREWORKS_OWNED_MODULES = [

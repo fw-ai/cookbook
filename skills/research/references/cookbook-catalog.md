@@ -60,7 +60,7 @@ Training API loops when the customer needs a custom harness.
 | `experiment/async_rl_loop_serverless.py` | GRPO (async, Serverless Training API); used by `rl/deepmath/train_deepmath_serverless.py` |
 | `experiment/ppo_value_head_loop.py` | SAO / token-level PPO (experimental) |
 | `distillation_loop.py` | Distillation / OPD |
-| `sdft_loop.py` | SDFT on serverless (needs the `sdft` extra) |
+| [SDFT guide](../../../training/docs/sdft.md) | Maintained in the external Fireworks Tinker-Cookbook fork |
 | `embedding_loop.py` | Embedding / contrastive |
 
 ## Match priority

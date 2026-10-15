@@ -22,11 +22,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-import tinker
 import torch
-from training.renderer import RendererError
-from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from fireworks.training import sdk
+
+from training.renderer import RendererError, register_renderer
+from training.renderer.base import (
     Message,
     ParseTermination,
     RenderContext,
@@ -41,10 +41,7 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
 )
 from training.renderer.tokenizer import Tokenizer
 
-
-DEFAULT_SYSTEM_PROMPT = (
-    "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
-)
+DEFAULT_SYSTEM_PROMPT = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
 PRODUCTION_EOS_TOKEN = "<|im_end|>"
 PRODUCTION_EOS_TOKEN_ID = 151645
 
@@ -190,9 +187,7 @@ class Qwen2_5Renderer(Renderer):
 
     @property
     def _end_message_token(self) -> int:
-        tokens = list(
-            self.tokenizer.encode(PRODUCTION_EOS_TOKEN, add_special_tokens=False)
-        )
+        tokens = list(self.tokenizer.encode(PRODUCTION_EOS_TOKEN, add_special_tokens=False))
         if len(tokens) != 1:
             raise ValueError(f"Qwen2.5 expected one {_IM_END} token, got {len(tokens)}")
         return int(tokens[0])
@@ -230,9 +225,7 @@ class Qwen2_5Renderer(Renderer):
 
         marker = normalized.pop(0)
         raw_tools = marker.get(_TOOLS_MARKER_KEY, [])  # type: ignore[typeddict-item]
-        if not isinstance(raw_tools, Sequence) or isinstance(
-            raw_tools, (str, bytes, bytearray)
-        ):
+        if not isinstance(raw_tools, Sequence) or isinstance(raw_tools, (str, bytes, bytearray)):
             raise TypeError("Qwen2.5 tool marker must contain a tool sequence")
         tools: list[Mapping[str, Any]] = []
         for tool in raw_tools:
@@ -254,11 +247,7 @@ class Qwen2_5Renderer(Renderer):
         builder = _TraceBuilder()
         first_is_system = normalized[0].get("role") == "system"
         system_index = 0 if first_is_system else None
-        system_content = (
-            _visible_text(normalized[0].get("content"))
-            if first_is_system
-            else DEFAULT_SYSTEM_PROMPT
-        )
+        system_content = _visible_text(normalized[0].get("content")) if first_is_system else DEFAULT_SYSTEM_PROMPT
 
         system_output = system_content
         if tools:
@@ -280,16 +269,12 @@ class Qwen2_5Renderer(Renderer):
             if role == "tool":
                 group_start = index
                 builder.append(f"{_IM_START}user\n")
-                while (
-                    index < len(normalized) and normalized[index].get("role") == "tool"
-                ):
+                while index < len(normalized) and normalized[index].get("role") == "tool":
                     if index > group_start:
                         builder.append("\n")
                     start = builder._length
                     builder.append(
-                        "<tool_response>\n"
-                        + _visible_text(normalized[index].get("content"))
-                        + "\n</tool_response>"
+                        "<tool_response>\n" + _visible_text(normalized[index].get("content")) + "\n</tool_response>"
                     )
                     builder.spans.append(
                         _OutputSpan(
@@ -396,11 +381,7 @@ class Qwen2_5Renderer(Renderer):
             return message_index == len(messages) - 1 and role == "assistant"
         if train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN:
             last_user = max(
-                (
-                    index
-                    for index, candidate in enumerate(messages)
-                    if candidate.get("role") == "user"
-                ),
+                (index for index, candidate in enumerate(messages) if candidate.get("role") == "user"),
                 default=-1,
             )
             return role == "assistant" and message_index > last_user
@@ -412,9 +393,7 @@ class Qwen2_5Renderer(Renderer):
             return role in {"user", "system"}
         if train_on_what == TrainOnWhat.CUSTOMIZED:
             if "trainable" not in message:
-                raise ValueError(
-                    "CUSTOMIZED Qwen2.5 rows require trainable on every message"
-                )
+                raise ValueError("CUSTOMIZED Qwen2.5 rows require trainable on every message")
             return bool(message["trainable"])
         if train_on_what == TrainOnWhat.ALL_TOKENS:
             return True
@@ -425,22 +404,20 @@ class Qwen2_5Renderer(Renderer):
         messages: list[Message],
         role: str = "assistant",
         prefill: str | None = None,
-    ) -> tinker.ModelInput:
+    ) -> sdk.ModelInput:
         if role != "assistant":
             raise ValueError("Qwen2.5 can generate assistant messages only")
         text = self.render_text(messages, add_generation_prompt=True)
         if prefill:
             text += prefill
         token_ids = list(self.tokenizer.encode(text, add_special_tokens=False))
-        return tinker.ModelInput(
-            chunks=[tinker.types.EncodedTextChunk(tokens=token_ids)]
-        )
+        return sdk.ModelInput(chunks=[sdk.types.EncodedTextChunk(tokens=token_ids)])
 
     def build_supervised_example(
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         trace = self._render_trace(messages, add_generation_prompt=False)
         token_ids, offsets = self._tokenize_with_offsets(trace.text)
 
@@ -463,16 +440,14 @@ class Qwen2_5Renderer(Renderer):
                     if end > start and start >= span.start and start < span.end:
                         weights[token_index] = 1.0
 
-        model_input = tinker.ModelInput(
-            chunks=[tinker.types.EncodedTextChunk(tokens=token_ids)]
-        )
+        model_input = sdk.ModelInput(chunks=[sdk.types.EncodedTextChunk(tokens=token_ids)])
         return model_input, torch.tensor(weights, dtype=torch.float32)
 
     def build_supervised_examples(
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_TURN,
-    ) -> list[tuple[tinker.ModelInput, torch.Tensor]]:
+    ) -> list[tuple[sdk.ModelInput, torch.Tensor]]:
         return [
             self.build_supervised_example(
                 messages,
@@ -516,9 +491,7 @@ class Qwen2_5Renderer(Renderer):
         else:
             assistant_message["content"] = content
         tool_calls = [item for item in tool_results if isinstance(item, ToolCall)]
-        malformed = [
-            item for item in tool_results if isinstance(item, UnparsedToolCall)
-        ]
+        malformed = [item for item in tool_results if isinstance(item, UnparsedToolCall)]
         if tool_calls:
             assistant_message["tool_calls"] = tool_calls
         if malformed:

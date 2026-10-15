@@ -11,9 +11,8 @@ from __future__ import annotations
 import math
 
 import pytest
-import tinker
 import torch
-
+from fireworks.training import sdk
 from training.utils.rl.algorithm.gspo import GSPOConfig, make_loss_fn
 from training.utils.rl.losses import PolicyBatch
 
@@ -27,17 +26,13 @@ CONFIG = GSPOConfig(clip_ratio_low=0.5, clip_ratio_high=0.5)
 ACTIVE_SEQ_LOG_RATIO = ((PI[0] - OLD_POLICY[0]) + (PI[1] - OLD_POLICY[1])) / 2
 
 
-def _datum(mask: list[float]) -> tinker.Datum:
+def _datum(mask: list[float]) -> sdk.Datum:
     count = len(mask)
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints(list(range(count))),
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints(list(range(count))),
         loss_fn_inputs={
-            "target_tokens": tinker.TensorData(
-                data=list(range(count)), dtype="int64", shape=[count]
-            ),
-            "weights": tinker.TensorData(
-                data=[int(value) for value in mask], dtype="int64", shape=[count]
-            ),
+            "target_tokens": sdk.TensorData(data=list(range(count)), dtype="int64", shape=[count]),
+            "weights": sdk.TensorData(data=[int(value) for value in mask], dtype="int64", shape=[count]),
         },
     )
 
@@ -76,9 +71,7 @@ def test_sequence_ratio_averages_only_active_positions():
     assert metrics["gspo_clip_frac"] == pytest.approx(0.0)
     # The two active token losses are averaged within the sequence.
     assert loss.item() == pytest.approx(-ratio)
-    assert grad.tolist() == pytest.approx(
-        [-ratio / 2.0, -ratio / 2.0, 0.0, 0.0]
-    )
+    assert grad.tolist() == pytest.approx([-ratio / 2.0, -ratio / 2.0, 0.0, 0.0])
 
 
 def test_token_sum_scales_loss_and_gradient_by_active_response_length():
@@ -93,9 +86,7 @@ def test_token_sum_scales_loss_and_gradient_by_active_response_length():
     )
 
     assert sum_loss.item() == pytest.approx(mean_loss.item() * 2)
-    assert sum_grad.tolist() == pytest.approx(
-        [value * 2 for value in mean_grad.tolist()]
-    )
+    assert sum_grad.tolist() == pytest.approx([value * 2 for value in mean_grad.tolist()])
 
 
 def test_masked_positions_cannot_move_the_sequence_ratio():
@@ -122,18 +113,12 @@ def baseline_gspo_loss(
     seq_lengths = mask.sum(dim=-1).clamp(min=1)
     negative_approx_kl_seq = (negative_approx_kl * mask).sum(dim=-1) / seq_lengths
 
-    log_seq_importance_ratio = (
-        policy_logps
-        - policy_logps.detach()
-        + negative_approx_kl_seq.detach().unsqueeze(-1)
-    )
+    log_seq_importance_ratio = policy_logps - policy_logps.detach() + negative_approx_kl_seq.detach().unsqueeze(-1)
     log_seq_importance_ratio = torch.clamp(log_seq_importance_ratio, max=SEQ_RATIO_LOG_CAP)
     seq_importance_ratio = torch.exp(log_seq_importance_ratio)
 
     pg_losses1 = -advantages * seq_importance_ratio
-    pg_losses2 = -advantages * torch.clamp(
-        seq_importance_ratio, 1 - epsilon, 1 + epsilon
-    )
+    pg_losses2 = -advantages * torch.clamp(seq_importance_ratio, 1 - epsilon, 1 + epsilon)
     per_token_loss = torch.maximum(pg_losses1, pg_losses2)
     if token_weights is not None:
         per_token_loss = per_token_loss * token_weights
@@ -163,14 +148,10 @@ def test_matches_independent_sequence_ratio_reference(
     pi_full = torch.randn(shape, generator=generator) - 1.0
     old_full = pi_full + 0.05 * torch.randn(shape, generator=generator)
     inference_full = (
-        old_full + 0.3 * torch.randn(shape, generator=generator)
-        if sampling_mismatch
-        else old_full.clone()
+        old_full + 0.3 * torch.randn(shape, generator=generator) if sampling_mismatch else old_full.clone()
     )
     mask_full = torch.zeros(shape)
-    mask_full[:, response_start:] = (
-        torch.rand((batch_size, resp_len), generator=generator) > 0.4
-    ).float()
+    mask_full[:, response_start:] = (torch.rand((batch_size, resp_len), generator=generator) > 0.4).float()
     mask_full[:, response_start] = 1.0  # run_loss_loop skips fully masked samples
     advantages = torch.randn(batch_size, generator=generator).tolist()
 
@@ -202,9 +183,7 @@ def test_matches_independent_sequence_ratio_reference(
     batched_rows = [pi_full[i].clone().requires_grad_() for i in range(batch_size)]
     batched_loss, metrics = build_loss_fn()(data, batched_rows)
     batched_loss.backward()
-    assert batched_loss.item() == pytest.approx(
-        sum(value.item() for value in sequence_means), rel=1e-6
-    )
+    assert batched_loss.item() == pytest.approx(sum(value.item() for value in sequence_means), rel=1e-6)
     for key in ("gspo_kl", "gspo_clip_frac", "gspo_ratio_mean"):
         assert key in metrics
 
@@ -219,9 +198,7 @@ def test_matches_independent_sequence_ratio_reference(
     )
     expected.backward()
 
-    torch.testing.assert_close(
-        batched_loss.detach(), expected.detach(), rtol=1e-5, atol=1e-6
-    )
+    torch.testing.assert_close(batched_loss.detach(), expected.detach(), rtol=1e-5, atol=1e-6)
 
     for i in range(batch_size):
         torch.testing.assert_close(

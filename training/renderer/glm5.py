@@ -99,11 +99,13 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-import tinker
 import torch
+from fireworks.training import sdk
 from transformers.image_processing_utils import BaseImageProcessor
+
 from training.renderer import RendererError, register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -116,8 +118,6 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     image_to_chunk,
     parse_think_blocks,
 )
-
-from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.reasoning_fields import original_reasoning_content
 from training.renderer.tokenizer import Tokenizer
 
@@ -172,19 +172,18 @@ class Glm53FlashImageTokenCounter:
         self.merge_size = int(merge_size)
         self.min_image_tokens = int(min_image_tokens)
         self.max_image_tokens = int(max_image_tokens)
-        if min(
-            self.patch_size,
-            self.temporal_patch_size,
-            self.merge_size,
-            self.min_image_tokens,
-        ) <= 0:
-            raise ValueError(
-                "GLM-5.3-Flash image processor dimensions must be positive"
+        if (
+            min(
+                self.patch_size,
+                self.temporal_patch_size,
+                self.merge_size,
+                self.min_image_tokens,
             )
+            <= 0
+        ):
+            raise ValueError("GLM-5.3-Flash image processor dimensions must be positive")
         if self.max_image_tokens < self.min_image_tokens:
-            raise ValueError(
-                "GLM-5.3-Flash max_image_tokens must be at least min_image_tokens"
-            )
+            raise ValueError("GLM-5.3-Flash max_image_tokens must be at least min_image_tokens")
 
     @classmethod
     def from_pretrained(cls, model_name: str) -> "Glm53FlashImageTokenCounter":
@@ -205,21 +204,13 @@ class Glm53FlashImageTokenCounter:
     ) -> int:
         """Match the official processor's aligned-canvas patch count."""
         if height <= 0 or width <= 0:
-            raise ValueError(
-                f"Image dimensions must be positive, got {height}x{width}"
-            )
+            raise ValueError(f"Image dimensions must be positive, got {height}x{width}")
         images_kwargs = images_kwargs or {}
         patch_size = int(images_kwargs.get("patch_size", self.patch_size))
-        temporal_factor = int(
-            images_kwargs.get("temporal_patch_size", self.temporal_patch_size)
-        )
+        temporal_factor = int(images_kwargs.get("temporal_patch_size", self.temporal_patch_size))
         merge_size = int(images_kwargs.get("merge_size", self.merge_size))
-        min_tokens = int(
-            images_kwargs.get("min_image_tokens", self.min_image_tokens)
-        )
-        max_tokens = int(
-            images_kwargs.get("max_image_tokens", self.max_image_tokens)
-        )
+        min_tokens = int(images_kwargs.get("min_image_tokens", self.min_image_tokens))
+        max_tokens = int(images_kwargs.get("max_image_tokens", self.max_image_tokens))
         factor = patch_size * merge_size
         min_pixels = min_tokens * temporal_factor * factor**2
         max_pixels = max_tokens * temporal_factor * factor**2
@@ -239,8 +230,7 @@ class Glm53FlashImageTokenCounter:
             minimum_pixels = temporal_factor * factor**2
             if max_pixels < minimum_pixels:
                 raise ValueError(
-                    f"max_image_tokens permits {max_pixels} pixels, but "
-                    f"at least {minimum_pixels} are required"
+                    f"max_image_tokens permits {max_pixels} pixels, but " f"at least {minimum_pixels} are required"
                 )
             low, high = 1, height
             target_height = target_width = factor
@@ -268,11 +258,7 @@ def _visible_text(content: Any) -> str:
         for item in content:
             if isinstance(item, str):
                 parts.append(item)
-            elif (
-                isinstance(item, Mapping)
-                and item.get("type") == "text"
-                and isinstance(item.get("text"), str)
-            ):
+            elif isinstance(item, Mapping) and item.get("type") == "text" and isinstance(item.get("text"), str):
                 parts.append(item["text"])
         return "".join(parts)
     return str(content)
@@ -290,13 +276,8 @@ def _format_tool_calls(tool_calls: list[ToolCall]) -> str:
         raw_args = tc.function.arguments
         args = json.loads(raw_args) if raw_args else {}
         if not isinstance(args, Mapping):
-            raise TypeError(
-                f"GLM-5.1 tool arguments must be a JSON object, got {type(args)!r}"
-            )
-        kv = "".join(
-            f"<arg_key>{k}</arg_key><arg_value>{_format_arg_value(v)}</arg_value>"
-            for k, v in args.items()
-        )
+            raise TypeError(f"GLM-5.1 tool arguments must be a JSON object, got {type(args)!r}")
+        kv = "".join(f"<arg_key>{k}</arg_key><arg_value>{_format_arg_value(v)}</arg_value>" for k, v in args.items())
         parts.append(f"<tool_call>{tc.function.name}{kv}</tool_call>")
     return "".join(parts)
 
@@ -306,16 +287,10 @@ def _format_tool_declarations(tools: list[ToolSpec]) -> str:
     for tool in tools:
         if not isinstance(tool, Mapping):
             raise TypeError(f"GLM5Renderer expected tool mapping, got {type(tool)!r}")
-        tool_spec = (
-            tool.get("function") if isinstance(tool.get("function"), Mapping) else tool
-        )
+        tool_spec = tool.get("function") if isinstance(tool.get("function"), Mapping) else tool
         if tool_spec.get("defer_loading"):
             continue
-        filtered = {
-            key: value
-            for key, value in tool_spec.items()
-            if key not in {"defer_loading", "strict"}
-        }
+        filtered = {key: value for key, value in tool_spec.items() if key not in {"defer_loading", "strict"}}
         rendered_tools.append(json.dumps(filtered, ensure_ascii=False))
     return "\n".join(rendered_tools)
 
@@ -331,9 +306,7 @@ def _tool_call_id(tool_call: Any) -> str:
     if isinstance(tool_call, Mapping):
         value = tool_call.get("tool_call_id") or tool_call.get("id")
     else:
-        value = getattr(tool_call, "tool_call_id", None) or getattr(
-            tool_call, "id", None
-        )
+        value = getattr(tool_call, "tool_call_id", None) or getattr(tool_call, "id", None)
     return str(value) if value else ""
 
 
@@ -369,9 +342,7 @@ def _canonicalize_glm53_tool_result_blocks(messages: list[Message]) -> list[Mess
             continue
 
         call_ids = [_tool_call_id(tool_call) for tool_call in tool_calls]
-        result_ids = [
-            _tool_result_id(message) for message in ordered[block_start:block_end]
-        ]
+        result_ids = [_tool_result_id(message) for message in ordered[block_start:block_end]]
         can_sort = (
             all(call_ids)
             and len(set(call_ids)) == len(call_ids)
@@ -383,9 +354,7 @@ def _canonicalize_glm53_tool_result_blocks(messages: list[Message]) -> list[Mess
             continue
 
         result_by_id = dict(zip(result_ids, ordered[block_start:block_end]))
-        ordered[block_start:block_end] = [
-            result_by_id[call_id] for call_id in call_ids if call_id in result_by_id
-        ]
+        ordered[block_start:block_end] = [result_by_id[call_id] for call_id in call_ids if call_id in result_by_id]
 
     return ordered
 
@@ -406,10 +375,7 @@ def _parse_tool_call(
     if not name:
         return None, UnparsedToolCall(raw_text=raw_text, error="No tool name found")
 
-    arguments = {
-        match.group(1): _parse_arg_value(match.group(2))
-        for match in _TOOL_ARG_RE.finditer(raw_body)
-    }
+    arguments = {match.group(1): _parse_arg_value(match.group(2)) for match in _TOOL_ARG_RE.finditer(raw_body)}
     cleaned_body = _TOOL_ARG_RE.sub("", raw_body).strip()
     trailing = cleaned_body.removeprefix(name).strip()
     unparsed = (
@@ -489,9 +455,7 @@ def _message_has_explicit_reasoning_field(message: Message) -> bool:
 
     content = message.get("content")
     return isinstance(content, list) and any(
-        isinstance(part, Mapping)
-        and part.get("type") == "thinking"
-        and isinstance(part.get("thinking"), str)
+        isinstance(part, Mapping) and part.get("type") == "thinking" and isinstance(part.get("thinking"), str)
         for part in content
     )
 
@@ -581,8 +545,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             tier = self._EFFORT_TIERS.get(str(reasoning_effort).strip().lower())
             if tier is None:
                 raise ValueError(
-                    f"unknown reasoning_effort {reasoning_effort!r}; "
-                    f"expected one of {sorted(self._EFFORT_TIERS)}"
+                    f"unknown reasoning_effort {reasoning_effort!r}; " f"expected one of {sorted(self._EFFORT_TIERS)}"
                 )
             # Instance attribute shadows the class-level default template line
             # (``_initial_prompt_tokens`` reads it at render time).
@@ -600,10 +563,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
     def _encode_single_special(self, token_str: str) -> int:
         token_ids = self.tokenizer.encode(token_str, add_special_tokens=False)
         if len(token_ids) != 1:
-            raise RuntimeError(
-                f"GLM5Renderer expected {token_str!r} to encode as one token, "
-                f"got {token_ids}."
-            )
+            raise RuntimeError(f"GLM5Renderer expected {token_str!r} to encode as one token, " f"got {token_ids}.")
         return int(token_ids[0])
 
     @property
@@ -631,14 +591,10 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         return [self._user_token, self._observation_token]
 
     def _assistant_stop_token(self, message: Message) -> int:
-        return (
-            self._observation_token if message.get("tool_calls") else self._user_token
-        )
+        return self._observation_token if message.get("tool_calls") else self._user_token
 
-    def _assistant_stop_overlap(self, message: Message) -> tinker.EncodedTextChunk:
-        return tinker.types.EncodedTextChunk(
-            tokens=[self._assistant_stop_token(message)]
-        )
+    def _assistant_stop_overlap(self, message: Message) -> sdk.EncodedTextChunk:
+        return sdk.types.EncodedTextChunk(tokens=[self._assistant_stop_token(message)])
 
     @staticmethod
     def _output_has_weight(
@@ -702,10 +658,10 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
 
     def _append_output_chunks_with_weights(
         self,
-        model_input_chunks_weights: list[tuple[tinker.ModelInputChunk, float]],
+        model_input_chunks_weights: list[tuple[sdk.ModelInputChunk, float]],
         *,
         message: Message,
-        output_parts: list[tinker.ModelInputChunk],
+        output_parts: list[sdk.ModelInputChunk],
         output_has_weight: bool,
         train_on_what: TrainOnWhat,
     ) -> None:
@@ -713,7 +669,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             if not output_part:
                 continue
 
-            if isinstance(output_part, tinker.types.ImageChunk):
+            if isinstance(output_part, sdk.types.ImageChunk):
                 # Image embeddings are context, never token targets, even for
                 # ALL_TOKENS or a trainable tool message.
                 model_input_chunks_weights.append((output_part, 0.0))
@@ -723,7 +679,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                 message["role"] == "assistant"
                 and output_has_weight
                 and train_on_what != TrainOnWhat.ALL_TOKENS
-                and isinstance(output_part, tinker.types.EncodedTextChunk)
+                and isinstance(output_part, sdk.types.EncodedTextChunk)
                 and output_part.tokens
                 and int(output_part.tokens[0]) == self._think_open_token
             ):
@@ -731,15 +687,11 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                 # ``<|assistant|><think>``. Keep the token in the rendered
                 # sequence for template parity, but mask it because the model
                 # starts generating after that prefix.
-                model_input_chunks_weights.append(
-                    (tinker.types.EncodedTextChunk(tokens=[output_part.tokens[0]]), 0.0)
-                )
+                model_input_chunks_weights.append((sdk.types.EncodedTextChunk(tokens=[output_part.tokens[0]]), 0.0))
                 if len(output_part.tokens) > 1:
                     model_input_chunks_weights.append(
                         (
-                            tinker.types.EncodedTextChunk(
-                                tokens=list(output_part.tokens[1:])
-                            ),
+                            sdk.types.EncodedTextChunk(tokens=list(output_part.tokens[1:])),
                             1.0,
                         )
                     )
@@ -750,7 +702,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         """Build a GLM supervised example with role-sentinel stop weights.
 
         GLM-5.1 uses the next role tag, not EOS, as the assistant stop marker.
@@ -759,15 +711,13 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         preserves the base token layout while assigning loss to those sentinels
         when they close a trainable assistant turn.
         """
-        model_input_chunks_weights: list[tuple[tinker.ModelInputChunk, float]] = []
+        model_input_chunks_weights: list[tuple[sdk.ModelInputChunk, float]] = []
         if self._bos_tokens:
-            model_input_chunks_weights.append(
-                (tinker.types.EncodedTextChunk(tokens=self._bos_tokens), 0.0)
-            )
+            model_input_chunks_weights.append((sdk.types.EncodedTextChunk(tokens=self._bos_tokens), 0.0))
         if self._initial_prompt_tokens:
             model_input_chunks_weights.append(
                 (
-                    tinker.types.EncodedTextChunk(tokens=self._initial_prompt_tokens),
+                    sdk.types.EncodedTextChunk(tokens=self._initial_prompt_tokens),
                     0.0,
                 )
             )
@@ -784,13 +734,11 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                 current_user_idx = idx
             if train_on_what == TrainOnWhat.CUSTOMIZED:
                 assert "trainable" in message, (
-                    "When using CUSTOMIZED train_on_what, each message must have "
-                    "a trainable field."
+                    "When using CUSTOMIZED train_on_what, each message must have " "a trainable field."
                 )
             else:
                 assert "trainable" not in message, (
-                    "When using non-CUSTOMIZED train_on_what, each message must "
-                    "not have a trainable field."
+                    "When using non-CUSTOMIZED train_on_what, each message must " "not have a trainable field."
                 )
 
             is_last_message = idx == len(messages) - 1
@@ -804,8 +752,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                 message,
                 ctx,
                 user_turn_has_explicit_reasoning=(
-                    current_user_idx is not None
-                    and current_user_idx in thinking_user_indices
+                    current_user_idx is not None and current_user_idx in thinking_user_indices
                 ),
             )
 
@@ -838,30 +785,24 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             )
 
             if is_last_message and rendered_message.stop_overlap:
-                model_input_chunks_weights.append(
-                    (rendered_message.stop_overlap, int(output_has_weight))
-                )
+                model_input_chunks_weights.append((rendered_message.stop_overlap, int(output_has_weight)))
 
-        weights_data = [
-            w for chunk, w in model_input_chunks_weights for _ in range(chunk.length)
-        ]
+        weights_data = [w for chunk, w in model_input_chunks_weights for _ in range(chunk.length)]
         weights_tensor = torch.tensor(weights_data)
         model_input_chunks = [chunk for chunk, _ in model_input_chunks_weights]
-        return tinker.ModelInput(chunks=model_input_chunks), weights_tensor
+        return sdk.ModelInput(chunks=model_input_chunks), weights_tensor
 
     def build_generation_prompt(
         self,
         messages: list[Message],
         role: Role = "assistant",
         prefill: str | None = None,
-    ) -> tinker.ModelInput:
-        chunks: list[tinker.ModelInputChunk] = []
+    ) -> sdk.ModelInput:
+        chunks: list[sdk.ModelInputChunk] = []
         if self._bos_tokens:
-            chunks.append(tinker.types.EncodedTextChunk(tokens=self._bos_tokens))
+            chunks.append(sdk.types.EncodedTextChunk(tokens=self._bos_tokens))
         if self._initial_prompt_tokens:
-            chunks.append(
-                tinker.types.EncodedTextChunk(tokens=self._initial_prompt_tokens)
-            )
+            chunks.append(sdk.types.EncodedTextChunk(tokens=self._initial_prompt_tokens))
 
         last_user_idx = max(
             (idx for idx, message in enumerate(messages) if message["role"] == "user"),
@@ -883,8 +824,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                 message,
                 ctx,
                 user_turn_has_explicit_reasoning=(
-                    current_user_idx is not None
-                    and current_user_idx in thinking_user_indices
+                    current_user_idx is not None and current_user_idx in thinking_user_indices
                 ),
             )
             if rendered_message.header:
@@ -893,7 +833,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                 [
                     output
                     for output in rendered_message.output
-                    if not isinstance(output, tinker.EncodedTextChunk) or output.tokens
+                    if not isinstance(output, sdk.EncodedTextChunk) or output.tokens
                 ]
             )
 
@@ -905,15 +845,11 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         )
         suffix_tokens = self._get_generation_suffix(role, suffix_ctx)
         if suffix_tokens:
-            chunks.append(tinker.types.EncodedTextChunk(tokens=suffix_tokens))
+            chunks.append(sdk.types.EncodedTextChunk(tokens=suffix_tokens))
 
         if prefill:
-            chunks.append(
-                tinker.types.EncodedTextChunk(
-                    tokens=self.tokenizer.encode(prefill, add_special_tokens=False)
-                )
-            )
-        return tinker.ModelInput(chunks=chunks)
+            chunks.append(sdk.types.EncodedTextChunk(tokens=self.tokenizer.encode(prefill, add_special_tokens=False)))
+        return sdk.ModelInput(chunks=chunks)
 
     def render_message(
         self,
@@ -929,9 +865,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
                 # conversation available, the current message is the strongest
                 # faithful fallback; full prompt/example builders always pass
                 # the precomputed per-user trajectory state.
-                user_turn_has_explicit_reasoning = (
-                    _message_has_explicit_reasoning_field(message)
-                )
+                user_turn_has_explicit_reasoning = _message_has_explicit_reasoning_field(message)
             return self._render_assistant(
                 message,
                 ctx,
@@ -946,21 +880,17 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             header_str = "<|system|>"
             output_str = _visible_text(message["content"])
         elif role == "tool":
-            prev_is_tool = (
-                ctx.prev_message is not None and ctx.prev_message.get("role") == "tool"
-            )
+            prev_is_tool = ctx.prev_message is not None and ctx.prev_message.get("role") == "tool"
             header_str = "" if prev_is_tool else "<|observation|>"
-            output_str = (
-                f"<tool_response>{_visible_text(message['content'])}</tool_response>"
-            )
+            output_str = f"<tool_response>{_visible_text(message['content'])}</tool_response>"
         else:
             raise ValueError(f"GLM5Renderer: unsupported role {role!r}")
 
-        header = tinker.types.EncodedTextChunk(
+        header = sdk.types.EncodedTextChunk(
             tokens=self.tokenizer.encode(header_str, add_special_tokens=False),
         )
-        output: list[tinker.ModelInputChunk] = [
-            tinker.types.EncodedTextChunk(
+        output: list[sdk.ModelInputChunk] = [
+            sdk.types.EncodedTextChunk(
                 tokens=self.tokenizer.encode(output_str, add_special_tokens=False),
             )
         ]
@@ -1000,20 +930,18 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         if tool_calls:
             output_str += _format_tool_calls(tool_calls)
 
-        header = tinker.types.EncodedTextChunk(
+        header = sdk.types.EncodedTextChunk(
             tokens=self.tokenizer.encode(header_str, add_special_tokens=False),
         )
-        output: list[tinker.ModelInputChunk] = [
-            tinker.types.EncodedTextChunk(
+        output: list[sdk.ModelInputChunk] = [
+            sdk.types.EncodedTextChunk(
                 tokens=self.tokenizer.encode(output_str, add_special_tokens=False),
             ),
         ]
         return RenderedMessage(
             header=header,
             output=output,
-            stop_overlap=(
-                self._assistant_stop_overlap(message) if ctx.is_last else None
-            ),
+            stop_overlap=(self._assistant_stop_overlap(message) if ctx.is_last else None),
         )
 
     def _assistant_think_block(
@@ -1063,10 +991,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             Message(
                 role="system",
                 content=(
-                    _TOOL_DECLARATION_PREFIX
-                    + _format_tool_declarations(tools)
-                    + "\n"
-                    + _TOOL_DECLARATION_SUFFIX
+                    _TOOL_DECLARATION_PREFIX + _format_tool_declarations(tools) + "\n" + _TOOL_DECLARATION_SUFFIX
                 ),
             )
         ]
@@ -1081,7 +1006,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
         tokens start INSIDE the think block: they contain ``</think>`` but no
         opening ``<think>``. Without restoring the opener, ``parse_think_blocks``
         can't split the block and the reasoning leaks into the graded content.
-        Mirrors ``training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5.Qwen3_5Renderer``.
+        Mirrors ``training.renderer.qwen3_5.Qwen3_5Renderer``.
         """
         think_prefix = self.tokenizer.encode("<think>", add_special_tokens=False)
         if response[: len(think_prefix)] == think_prefix:
@@ -1108,9 +1033,7 @@ class GLM5Renderer(DisaggregateMultiTurnMixin, Renderer):
             return assistant_message, False
         assert isinstance(assistant_message["content"], str)
         content = assistant_message["content"].lstrip("\n")
-        content, tool_calls, unparsed_tool_calls = _extract_tool_calls_from_content(
-            content
-        )
+        content, tool_calls, unparsed_tool_calls = _extract_tool_calls_from_content(content)
         parts = parse_think_blocks(content)
         assistant_message["content"] = parts if parts is not None else content
         if tool_calls:
@@ -1178,7 +1101,7 @@ class GLM53Renderer(GLMMoeDsaRenderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         return super().build_supervised_example(
             _canonicalize_glm53_tool_result_blocks(messages),
             train_on_what=train_on_what,
@@ -1189,7 +1112,7 @@ class GLM53Renderer(GLMMoeDsaRenderer):
         messages: list[Message],
         role: Role = "assistant",
         prefill: str | None = None,
-    ) -> tinker.ModelInput:
+    ) -> sdk.ModelInput:
         return super().build_generation_prompt(
             _canonicalize_glm53_tool_result_blocks(messages),
             role=role,
@@ -1243,16 +1166,14 @@ class GLM53FlashRenderer(GLM53Renderer):
             token_ids = list(tokenizer.encode(token, add_special_tokens=False))
             if len(token_ids) != 1:
                 raise RendererError(
-                    f"GLM-5.3-Flash expected {token!r} to encode as one special "
-                    f"token, got {token_ids}"
+                    f"GLM-5.3-Flash expected {token!r} to encode as one special " f"token, got {token_ids}"
                 )
             setattr(self, attribute, int(token_ids[0]))
 
     @staticmethod
     def _has_image_content(content: Any) -> bool:
         return isinstance(content, list) and any(
-            isinstance(part, Mapping) and part.get("type") == "image"
-            for part in content
+            isinstance(part, Mapping) and part.get("type") == "image" for part in content
         )
 
     def _render_image_content(
@@ -1261,21 +1182,21 @@ class GLM53FlashRenderer(GLM53Renderer):
         *,
         prefix: str = "",
         suffix: str = "",
-    ) -> list[tinker.ModelInputChunk]:
+    ) -> list[sdk.ModelInputChunk]:
         if self.image_processor is None:
             raise RendererError(
                 "GLM-5.3-Flash image content requires an image processor; "
                 "build the renderer with image loading enabled."
             )
 
-        chunks: list[tinker.ModelInputChunk] = []
+        chunks: list[sdk.ModelInputChunk] = []
         pending_text = prefix
 
         def flush_text() -> None:
             nonlocal pending_text
             if pending_text:
                 chunks.append(
-                    tinker.types.EncodedTextChunk(
+                    sdk.types.EncodedTextChunk(
                         tokens=self.tokenizer.encode(
                             pending_text,
                             add_special_tokens=False,
@@ -1293,24 +1214,14 @@ class GLM53FlashRenderer(GLM53Renderer):
                 flush_text()
                 image = part.get("image")
                 if image is None:
-                    raise RendererError(
-                        "GLM-5.3-Flash image content is missing the 'image' payload."
-                    )
+                    raise RendererError("GLM-5.3-Flash image content is missing the 'image' payload.")
                 # Keep model-specific hard tokens in the renderer-owned wire
                 # contract, just like Qwen's vision_start/ImageChunk/vision_end
                 # layout. Both SFT and token-in rollout therefore see the same
                 # sequence; FireTitan expands only the soft ImageChunk slots.
-                chunks.append(
-                    tinker.types.EncodedTextChunk(
-                        tokens=[self._begin_of_image_token_id]
-                    )
-                )
+                chunks.append(sdk.types.EncodedTextChunk(tokens=[self._begin_of_image_token_id]))
                 chunks.append(image_to_chunk(image, self.image_processor))
-                chunks.append(
-                    tinker.types.EncodedTextChunk(
-                        tokens=[self._end_of_image_token_id]
-                    )
-                )
+                chunks.append(sdk.types.EncodedTextChunk(tokens=[self._end_of_image_token_id]))
             # Match the template by dropping unknown content-part types.
         pending_text += suffix
         flush_text()
@@ -1326,25 +1237,18 @@ class GLM53FlashRenderer(GLM53Renderer):
         content = message.get("content")
         if self._has_image_content(content):
             if message["role"] not in {"user", "tool"}:
-                raise RendererError(
-                    "GLM-5.3-Flash images are supported only in user or tool messages"
-                )
+                raise RendererError("GLM-5.3-Flash images are supported only in user or tool messages")
             if message["role"] == "user":
                 return RenderedMessage(
-                    header=tinker.types.EncodedTextChunk(
-                        tokens=self.tokenizer.encode(
-                            "<|user|>", add_special_tokens=False
-                        )
+                    header=sdk.types.EncodedTextChunk(
+                        tokens=self.tokenizer.encode("<|user|>", add_special_tokens=False)
                     ),
                     output=self._render_image_content(content),
                 )
 
-            prev_is_tool = (
-                ctx.prev_message is not None
-                and ctx.prev_message.get("role") == "tool"
-            )
+            prev_is_tool = ctx.prev_message is not None and ctx.prev_message.get("role") == "tool"
             return RenderedMessage(
-                header=tinker.types.EncodedTextChunk(
+                header=sdk.types.EncodedTextChunk(
                     tokens=self.tokenizer.encode(
                         "" if prev_is_tool else "<|observation|>",
                         add_special_tokens=False,

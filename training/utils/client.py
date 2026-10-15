@@ -336,10 +336,14 @@ class ReconnectableClient:
             save_kwargs["export_precision"] = export_precision
         if metadata is not None:
             save_kwargs["metadata"] = metadata
-        return self._require_client().save_weights_for_sampler(
-            name,
-            **save_kwargs,
-        ).result(timeout=timeout)
+        return (
+            self._require_client()
+            .save_weights_for_sampler(
+                name,
+                **save_kwargs,
+            )
+            .result(timeout=timeout)
+        )
 
     def save_weights_and_get_sampler(
         self,
@@ -352,15 +356,9 @@ class ReconnectableClient:
     ) -> Any:
         """Save sampler weights, hot-load them, and return the refreshed sampler.
 
-        FireTitan's one-call equivalent of tinker's
-        ``save_weights_and_get_sampling_client``: it saves a sampler snapshot on
-        the trainer and hot-loads it into the colocated inference deployment,
-        then returns the (client-side-tokenizing) ``DeploymentSampler``.
-        Behavior is equivalent to saving a sampler snapshot and then creating a
-        deployment sampler from the returned snapshot identity. FireTitan can't
-        return an in-service sampler the way tinker does because sampling runs
-        on a separate deployment. Blocks until the hot-load is ready. Requires
-        the SDK-managed service.
+        Saves a snapshot on the trainer, hot-loads it into the configured
+        inference deployment, and returns its DeploymentSampler. Blocks until
+        the snapshot is ready for sampling. Requires the SDK-managed service.
         """
         if self._service is None:
             raise RuntimeError("save_weights_and_get_sampler requires the managed service")
@@ -390,43 +388,13 @@ class ReconnectableClient:
             # hook clears request-sequencing state that cross-job reads need.
             return
         try:
-            from tinker.types.unload_model_request import UnloadModelRequest
-            from tinker.lib.client_connection_pool_type import ClientConnectionPoolType
-        except ImportError:
-            logger.debug("unload_model: tinker types unavailable — skipping")
-            return
-
-        client = self._client
-        holder = client.holder
-        if holder is None:
-            return
-
-        try:
-            model_id = client._guaranteed_model_id()
-        except Exception:
-            return
-
-        async def _do_unload():
-            with holder.aclient(ClientConnectionPoolType.TRAIN) as async_client:
-                return await async_client.models.unload(
-                    request=UnloadModelRequest(model_id=model_id),
-                )
-
-        try:
-            fut = holder.run_coroutine_threadsafe(_do_unload())
-            fut.result(timeout=timeout)
-            logger.info(
-                "unload_model: dropped server session %s on job %s",
-                model_id, self._job_id,
-            )
+            self._client.unload_model().result(timeout=timeout)
+            logger.info("unload_model: dropped LoRA session on job %s", self._job_id)
         except Exception as e:
-            logger.warning(
-                "unload_model: failed for job %s model %s: %s",
-                self._job_id, model_id, e,
-            )
+            logger.warning("unload_model: failed for job %s: %s", self._job_id, e)
 
     def close(self, timeout: float = 5.0) -> None:
-        """Drop the server-side session, then stop local Tinker background tasks.
+        """Drop the server-side session, then stop native background tasks.
 
         Shared-service clients (e.g. base-reference) skip both steps — the
         owning client will clean up.
@@ -445,41 +413,11 @@ class ReconnectableClient:
         if client is None or not self._owns_service:
             return
 
-        holder = client.holder
-        if holder is None:
-            return
-
-        telemetry = holder.get_telemetry()
-        if telemetry is not None:
+        if self._service is not None:
             try:
-                # trigger_flush = getattr(telemetry, "_trigger_flush", None)
-                telemetry._trigger_flush()
-                telemetry._wait_until_drained_sync()
+                self._service.close()
             except Exception as e:
-                logger.warning(
-                    "ReconnectableClient.close: failed to drain telemetry for job %s: %s",
-                    self._job_id,
-                    e,
-                )
-            finally:
-                try:
-                    telemetry.stop()
-                except Exception as e:
-                    logger.warning(
-                        "ReconnectableClient.close: failed to stop telemetry for job %s: %s",
-                        self._job_id,
-                        e,
-                    )
-
-        try:
-            cleanup_future = holder.run_coroutine_threadsafe(holder._async_cleanup())
-            cleanup_future.result(timeout=timeout)
-        except Exception as e:
-            logger.warning(
-                "ReconnectableClient.close: failed to stop holder for job %s: %s",
-                self._job_id,
-                e,
-            )
+                logger.warning("ReconnectableClient.close: failed to close service for job %s: %s", self._job_id, e)
 
     def __enter__(self) -> ReconnectableClient:
         return self
@@ -523,6 +461,4 @@ def _normalize_grad_accumulation_normalization(
         return GradAccNormalization(str(value).lower())
     except ValueError as exc:
         valid = ", ".join(mode.value for mode in GradAccNormalization)
-        raise ValueError(
-            f"Unknown grad_accumulation_normalization '{value}'. Expected one of: {valid}"
-        ) from exc
+        raise ValueError(f"Unknown grad_accumulation_normalization '{value}'. Expected one of: {valid}") from exc

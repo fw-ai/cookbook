@@ -16,10 +16,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import tinker
 import torch
+from fireworks.training import sdk
 from training.renderer import register_renderer, unregister_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer.base import (
     Message,
     ParseTermination,
     RenderContext,
@@ -27,18 +27,16 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     Renderer,
     TrainOnWhat,
 )
-
 from training.renderer.verifier.utils.inspect import render_inspect
 from training.renderer.verifier.utils.probe import (
     _PROV_NATIVE,
     _PROV_PROMPT,
     _PROV_TRAILING,
-    _model_input_tokens,
     SCHEMA_VERSION,
+    _model_input_tokens,
     resolve_dispatch,
     run_probe,
 )
-
 
 # Token IDs picked so each role / chunk produces a distinct token.
 _T = {
@@ -108,17 +106,17 @@ class _ToyRenderer(Renderer):
         content_ids = self.tokenizer.encode(content, add_special_tokens=False)
 
         if role == "system":
-            header = tinker.types.EncodedTextChunk(tokens=[_T["<sys>"]])
-            output = [tinker.types.EncodedTextChunk(tokens=content_ids)]
+            header = sdk.types.EncodedTextChunk(tokens=[_T["<sys>"]])
+            output = [sdk.types.EncodedTextChunk(tokens=content_ids)]
             return RenderedMessage(output=output, header=header)
         if role == "user":
-            header = tinker.types.EncodedTextChunk(tokens=[_T["<user>"]])
-            output = [tinker.types.EncodedTextChunk(tokens=content_ids)]
+            header = sdk.types.EncodedTextChunk(tokens=[_T["<user>"]])
+            output = [sdk.types.EncodedTextChunk(tokens=content_ids)]
             return RenderedMessage(output=output, header=header)
         # assistant
-        header = tinker.types.EncodedTextChunk(tokens=[_T["<asst>"]])
-        output = [tinker.types.EncodedTextChunk(tokens=content_ids)]
-        stop_overlap = tinker.types.EncodedTextChunk(tokens=[_T["<eot>"]])
+        header = sdk.types.EncodedTextChunk(tokens=[_T["<asst>"]])
+        output = [sdk.types.EncodedTextChunk(tokens=content_ids)]
+        stop_overlap = sdk.types.EncodedTextChunk(tokens=[_T["<eot>"]])
         return RenderedMessage(output=output, header=header, stop_overlap=stop_overlap)
 
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
@@ -396,15 +394,15 @@ def test_resolve_dispatch_accepts_full_deployment_resource_without_credentials()
 
 
 def test_model_input_tokens_expands_existing_renderer_vision_chunks():
-    model_input = tinker.ModelInput(
+    model_input = sdk.ModelInput(
         chunks=[
-            tinker.types.EncodedTextChunk(tokens=[10]),
-            tinker.types.ImageChunk(
+            sdk.types.EncodedTextChunk(tokens=[10]),
+            sdk.types.ImageChunk(
                 data=b"not-decoded-by-this-test",
                 format="png",
                 expected_tokens=2,
             ),
-            tinker.types.EncodedTextChunk(tokens=[11]),
+            sdk.types.EncodedTextChunk(tokens=[11]),
         ]
     )
 
@@ -418,9 +416,9 @@ def test_model_input_tokens_expands_existing_renderer_vision_chunks():
 
 
 def test_model_input_tokens_requires_declared_vision_placeholder():
-    model_input = tinker.ModelInput(
+    model_input = sdk.ModelInput(
         chunks=[
-            tinker.types.ImageChunk(
+            sdk.types.ImageChunk(
                 data=b"not-decoded-by-this-test",
                 format="png",
                 expected_tokens=2,
@@ -446,17 +444,13 @@ def test_run_probe_falls_back_to_whole_conversation_attribution(monkeypatch):
 
         def build_generation_prompt(self, messages, role="assistant", prefill=None):
             del messages, role, prefill
-            return tinker.ModelInput(
-                chunks=[tinker.types.EncodedTextChunk(tokens=prompt_ids)]
-            )
+            return sdk.ModelInput(chunks=[sdk.types.EncodedTextChunk(tokens=prompt_ids)])
 
         def build_supervised_example(self, messages, train_on_what):
             del messages, train_on_what
             tokens = prompt_ids + completion_ids + [_T["<eot>"]]
             return (
-                tinker.ModelInput(
-                    chunks=[tinker.types.EncodedTextChunk(tokens=tokens)]
-                ),
+                sdk.ModelInput(chunks=[sdk.types.EncodedTextChunk(tokens=tokens)]),
                 torch.tensor([0.0] * len(prompt_ids) + [1.0, 1.0]),
             )
 

@@ -7,12 +7,16 @@ import logging
 from contextlib import ExitStack
 from typing import Any
 
-import tinker
+from fireworks.training import sdk
 
 from training.renderer.message_weights import _mode_targets
 from training.utils import fileio
 from training.utils.runner import DatasetError, RunStatus
-from training.utils.supervised import build_tool_prefixed_messages, normalize_messages, parse_train_on_what
+from training.utils.supervised import (
+    build_tool_prefixed_messages,
+    normalize_messages,
+    parse_train_on_what,
+)
 
 logger = logging.getLogger(__name__)
 GENERATION_EVAL_MAX_TOKENS = 1024
@@ -44,8 +48,7 @@ def prepare_generation_eval(
             (
                 j
                 for j in reversed(range(len(messages)))
-                if j in targets and normalized[j]["role"] == "assistant"
-                and normalized[j].get("trainable", True)
+                if j in targets and normalized[j]["role"] == "assistant" and normalized[j].get("trainable", True)
             ),
             None,
         )
@@ -110,7 +113,7 @@ def run_generation_eval(
             for prompt, record in examples:
                 record = {**record, "cells": [{"output": ""}, {"output": ""}]}
                 result["examples"].append(record)
-                params = tinker.SamplingParams(
+                params = sdk.SamplingParams(
                     temperature=0.0,
                     max_tokens=min(GENERATION_EVAL_MAX_TOKENS, cfg.max_seq_len - len(prompt.to_ints())),
                     seed=cfg.seed,

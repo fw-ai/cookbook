@@ -15,10 +15,14 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import torch
-import tinker
+from fireworks.training import sdk
 
 from training.utils.client import GradAccNormalization
-from training.utils.rl.common import client_loss_metrics, policy_ratio_metrics, run_loss_loop
+from training.utils.rl.common import (
+    client_loss_metrics,
+    policy_ratio_metrics,
+    run_loss_loop,
+)
 from training.utils.rl.losses import PolicyBatch, build_policy_datums
 
 LOSS_FN = "dro"
@@ -45,7 +49,7 @@ def loss_fn_config(config: DROConfig) -> Dict[str, float]:
     return {"beta": config.beta}
 
 
-def build_datums(batch: PolicyBatch, config: DROConfig) -> List[tinker.Datum]:
+def build_datums(batch: PolicyBatch, config: DROConfig) -> List[sdk.Datum]:
     """Datums for the built-in :data:`LOSS_FN`."""
     del config
     return build_policy_datums(batch)
@@ -71,9 +75,7 @@ def make_loss_fn(batch: PolicyBatch, config: DROConfig):
             "ratio_mean": torch.exp(ctx.pi_detached - ctx.resp_anchor)[active].mean().item(),
         }
 
-    def loss_fn(
-        data: List[tinker.Datum], logprobs_list: List[torch.Tensor]
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+    def loss_fn(data: List[sdk.Datum], logprobs_list: List[torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(batch, data, logprobs_list, "dro", policy_fn)
         out = client_loss_metrics(result, PREFIX)
         nt = result.num_tokens

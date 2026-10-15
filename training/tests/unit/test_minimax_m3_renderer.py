@@ -9,10 +9,9 @@ from typing import Any
 
 import pytest
 import transformers
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import ParseTermination, ToolCall, TrainOnWhat
-from training.renderer.supervised import datum_from_model_input_weights
-
+from training.renderer.base import ParseTermination, ToolCall, TrainOnWhat
 from training.renderer.minimax_m3 import MiniMaxM3Renderer
+from training.renderer.supervised import datum_from_model_input_weights
 from training.utils.supervised import build_tool_prefixed_messages
 
 _LOCAL_PATH = os.environ.get("MINIMAX_M3_LOCAL_TOKENIZER")
@@ -74,11 +73,7 @@ def test_generation_prompt_matches_hf(
         thinking_mode=thinking_mode,
         add_generation_prompt=True,
     )
-    actual = list(
-        MiniMaxM3Renderer(tokenizer, thinking_mode)
-        .build_generation_prompt(messages)
-        .to_ints()
-    )
+    actual = list(MiniMaxM3Renderer(tokenizer, thinking_mode).build_generation_prompt(messages).to_ints())
     assert actual == expected
 
 
@@ -115,9 +110,7 @@ def test_root_developer_and_all_turn_thinking_match_hf(
     )
     actual = list(
         MiniMaxM3Renderer(tokenizer, "enabled")
-        .build_supervised_example(
-            messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
-        )[0]
+        .build_supervised_example(messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES)[0]
         .to_ints()
     )
     assert actual == expected
@@ -187,9 +180,7 @@ def test_supervised_mask_trains_selected_thinking_and_answer(
     )
     assert list(all_input.to_ints()) == tokens
     expected_all_assistant = list(expected_last_only)
-    expected_all_assistant[first_assistant] = [1.0] * len(
-        expected_all_assistant[first_assistant]
-    )
+    expected_all_assistant[first_assistant] = [1.0] * len(expected_all_assistant[first_assistant])
     if thinking_mode == "enabled":
         expected_all_assistant[first_assistant.start] = 0.0
     assert all_weights.tolist() == expected_all_assistant
@@ -198,9 +189,7 @@ def test_supervised_mask_trains_selected_thinking_and_answer(
     assert datum.loss_fn_inputs["target_tokens"].data == tokens[1:]
     assert datum.loss_fn_inputs["weights"].data == weight_values[1:]
 
-    customized_messages = [
-        {**message, "trainable": message is messages[-1]} for message in messages
-    ]
+    customized_messages = [{**message, "trainable": message is messages[-1]} for message in messages]
     customized_input, customized_weights = renderer.build_supervised_example(
         customized_messages,
         train_on_what=TrainOnWhat.CUSTOMIZED,
@@ -233,9 +222,7 @@ def test_supervised_mask_excludes_prefilled_thinking_marker(
     messages = prompt_messages + [{"role": "assistant", "content": assistant_content}]
     renderer = MiniMaxM3Renderer(tokenizer, thinking_mode)
 
-    generation_prompt = list(
-        renderer.build_generation_prompt(prompt_messages).to_ints()
-    )
+    generation_prompt = list(renderer.build_generation_prompt(prompt_messages).to_ints())
     model_input, weights = renderer.build_supervised_example(
         messages,
         train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
@@ -256,9 +243,7 @@ def test_supervised_mask_excludes_prefilled_thinking_marker(
     assert tokens[: len(generation_prompt)] == generation_prompt
     assert generation_prompt[-len(marker_tokens) :] == marker_tokens
     marker_start = len(generation_prompt) - len(marker_tokens)
-    assert weights[marker_start : len(generation_prompt)].tolist() == [0.0] * len(
-        marker_tokens
-    )
+    assert weights[marker_start : len(generation_prompt)].tolist() == [0.0] * len(marker_tokens)
     assert weights[len(generation_prompt)].item() == 1.0
 
 
@@ -306,9 +291,7 @@ def test_nested_tool_arguments_match_hf(
     )
 
     renderer = MiniMaxM3Renderer(tokenizer, "disabled")
-    messages = renderer.create_conversation_prefix_with_tools(
-        [function], "Be useful"
-    ) + [
+    messages = renderer.create_conversation_prefix_with_tools([function], "Be useful") + [
         {"role": "user", "content": "book"},
         {
             "role": "assistant",

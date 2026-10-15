@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-import tinker
-
-from dataclasses import replace
-
+from fireworks.training import sdk
 from training.utils.rl.algorithm.igpo import (
     ANSWER_TOKENS,
     TURN_SPANS,
@@ -27,16 +25,12 @@ from training.utils.rl.losses import (
 )
 
 
-def _datum(tokens: list[int], weights: list[int]) -> tinker.Datum:
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+def _datum(tokens: list[int], weights: list[int]) -> sdk.Datum:
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints(tokens[:-1]),
         loss_fn_inputs={
-            "target_tokens": tinker.TensorData(
-                data=tokens[1:], dtype="int64", shape=[len(tokens) - 1]
-            ),
-            "weights": tinker.TensorData(
-                data=weights, dtype="int64", shape=[len(weights)]
-            ),
+            "target_tokens": sdk.TensorData(data=tokens[1:], dtype="int64", shape=[len(tokens) - 1]),
+            "weights": sdk.TensorData(data=weights, dtype="int64", shape=[len(weights)]),
         },
     )
 
@@ -46,7 +40,7 @@ class _Scorer:
 
     def __init__(self, scores_by_context_len: dict[int, float]):
         self.scores_by_context_len = scores_by_context_len
-        self.calls: list[list[tinker.Datum]] = []
+        self.calls: list[list[sdk.Datum]] = []
 
     def forward(self, data, loss_fn):
         assert loss_fn == "cross_entropy"
@@ -56,9 +50,7 @@ class _Scorer:
             # One answer token: the context is the whole model input.
             score = self.scores_by_context_len[datum.model_input.length]
             n = datum.model_input.length
-            outputs.append(
-                {"logprobs": tinker.TensorData(data=[score] * n, dtype="float32", shape=[n])}
-            )
+            outputs.append({"logprobs": sdk.TensorData(data=[score] * n, dtype="float32", shape=[n])})
         return SimpleNamespace(loss_fn_outputs=outputs)
 
 
@@ -76,16 +68,8 @@ def test_score_answer_logprobs_averages_answer_positions_in_one_forward() -> Non
             calls.append(data)
             return SimpleNamespace(
                 loss_fn_outputs=[
-                    {
-                        "logprobs": tinker.TensorData(
-                            data=[-9.0, -1.0, -3.0], dtype="float32", shape=[3]
-                        )
-                    },
-                    {
-                        "logprobs": tinker.TensorData(
-                            data=[-9.0, -9.0, -2.0], dtype="float32", shape=[3]
-                        )
-                    },
+                    {"logprobs": sdk.TensorData(data=[-9.0, -1.0, -3.0], dtype="float32", shape=[3])},
+                    {"logprobs": sdk.TensorData(data=[-9.0, -9.0, -2.0], dtype="float32", shape=[3])},
                 ]
             )
 
@@ -155,9 +139,7 @@ def test_igpo_token_advantages_score_every_turn_context_once() -> None:
     rows = advantaged.token_advantages
     assert rows[0] == pytest.approx([0.0, 1.5 * a, 1.5 * a, a, a], rel=1e-5)
     assert rows[1] == pytest.approx([0.0] + [-2 * a] * 4, rel=1e-5)
-    assert metrics == pytest.approx(
-        {"igpo/avg_turns": 1.5, "igpo/mean_ig": 1.5, "igpo/baseline_logp": -2.0}
-    )
+    assert metrics == pytest.approx({"igpo/avg_turns": 1.5, "igpo/mean_ig": 1.5, "igpo/baseline_logp": -2.0})
     # The input batch is not mutated; only token_advantages differ.
     assert batch.token_advantages is None
     assert advantaged.data is batch.data and advantaged.advantages is batch.advantages

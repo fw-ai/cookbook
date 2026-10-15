@@ -17,7 +17,7 @@ advantages) happens framework-side via :class:`GroupAssembler` -- see
 :func:`rollout_to_prompt_group` adapter consumes after the assembler
 joins N runs by row.  The adapter computes advantages over run rewards,
 broadcasts each run advantage to that run's segments, and emits
-``tinker.Datum`` objects with a per-token ``loss_mask`` in
+``sdk.Datum`` objects with a per-token ``loss_mask`` in
 ``loss_fn_inputs``; the existing loss kernels already honour this (see
 ``_get_loss_mask`` in ``training/utils/rl/common.py``).
 """
@@ -29,7 +29,7 @@ import math
 from dataclasses import dataclass
 from typing import Callable, List
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk.routing import (
     RoutingReferences,
     routing_model_input_kwargs,
@@ -72,7 +72,7 @@ class RolloutSample:
     logprobs: List[float]
     loss_mask: List[int]
     reward: float
-    prompt_model_input: tinker.ModelInput | None = None
+    prompt_model_input: sdk.ModelInput | None = None
     """When set, :func:`rollout_to_prompt_group` builds the trainer datum via
     :func:`training.utils.supervised.build_multimodal_policy_datum` (chunked
     ``model_input`` with image pointers).  ``tokens`` / ``logprobs`` /
@@ -81,7 +81,7 @@ class RolloutSample:
     """Optional per-token MoE routing matrices captured from the inference
     deployment (R3 / Router Replay).  When set, the adapter aligns them to
     ``tokens[:-1]`` via :func:`build_r3_routing_matrices` and threads them
-    through ``tinker.ModelInput.from_ints(routing_matrices=...)`` so the
+    through ``sdk.ModelInput.from_ints(routing_matrices=...)`` so the
     training step replays the same expert routing decisions made at
     inference time. Length should match ``tokens[:-1]`` (already aligned) or
     the completion suffix (legacy mode); the alignment helper handles both."""
@@ -132,12 +132,7 @@ class Rollout:
 
 def count_trainable_tokens(run: RolloutRun) -> int:
     """Count loss-bearing tokens across every segment of one trajectory."""
-    return sum(
-        1
-        for segment in run.segments
-        for mask_value in segment.loss_mask
-        if mask_value > 0
-    )
+    return sum(1 for segment in run.segments for mask_value in segment.loss_mask if mask_value > 0)
 
 
 def validate_rollout_run_routing(run: RolloutRun) -> None:
@@ -168,9 +163,7 @@ def validate_rollout_run_routing(run: RolloutRun) -> None:
             prompt_len = segment.prompt_model_input.length
             model_input_len = prompt_len + completion_len - 1
         else:
-            prompt_len = next(
-                i for i, mask_value in enumerate(segment.loss_mask) if mask_value > 0
-            )
+            prompt_len = next(i for i, mask_value in enumerate(segment.loss_mask) if mask_value > 0)
             model_input_len = n - 1
 
         try:
@@ -279,9 +272,7 @@ def _validate_segment(
                 f"Run {run_index} segment {segment_index}: sampler top-k rows "
                 f"must align with tokens ({len(token_ids)} / {len(logprobs)} / {n})."
             )
-        for position, (ids, lps) in enumerate(
-            zip(token_ids, logprobs, strict=True)
-        ):
+        for position, (ids, lps) in enumerate(zip(token_ids, logprobs, strict=True)):
             if len(ids) != len(lps):
                 raise ValueError(
                     f"Run {run_index} segment {segment_index}: sampler top-k "
@@ -291,8 +282,7 @@ def _validate_segment(
     top_sampling = segment.top_sampling_references
     if top_sampling is not None and not isinstance(top_sampling, RoutingReferences):
         raise ValueError(
-            f"Run {run_index} segment {segment_index}: top_sampling_references "
-            "must be Parquet RoutingReferences."
+            f"Run {run_index} segment {segment_index}: top_sampling_references " "must be Parquet RoutingReferences."
         )
 
     if segment.prompt_model_input is not None:
@@ -305,8 +295,9 @@ def _validate_segment(
             )
         if top_sampling is not None:
             prompt_text_len = sum(
-                len(chunk.tokens) for chunk in segment.prompt_model_input.chunks
-                if isinstance(chunk, tinker.types.EncodedTextChunk)
+                len(chunk.tokens)
+                for chunk in segment.prompt_model_input.chunks
+                if isinstance(chunk, sdk.types.EncodedTextChunk)
             )
             expected = segment.prompt_model_input.length + n - prompt_text_len - 1
             if len(top_sampling) != expected:
@@ -318,18 +309,15 @@ def _validate_segment(
         _validate_topk(n=n)
         if n < 2:
             raise ValueError(
-                f"Run {run_index} segment {segment_index}: tokens must have "
-                "length >= 2.",
+                f"Run {run_index} segment {segment_index}: tokens must have " "length >= 2.",
             )
         if not any(m > 0 for m in segment.loss_mask):
             raise ValueError(
-                f"Run {run_index} segment {segment_index}: loss_mask is all "
-                "zeros for multimodal segment.",
+                f"Run {run_index} segment {segment_index}: loss_mask is all " "zeros for multimodal segment.",
             )
         if not _completion_tokens_from_sample(segment):
             raise ValueError(
-                f"Run {run_index} segment {segment_index}: multimodal segment "
-                "has no completion tokens.",
+                f"Run {run_index} segment {segment_index}: multimodal segment " "has no completion tokens.",
             )
         return
 
@@ -368,14 +356,14 @@ def rollout_to_prompt_group(
 ) -> PromptGroup | None:
     """Pack one :class:`Rollout` into a :class:`PromptGroup`.
 
-    Per-token ``loss_mask`` flows through ``tinker.Datum.loss_fn_inputs``
+    Per-token ``loss_mask`` flows through ``sdk.Datum.loss_fn_inputs``
     so the existing kernels (``_get_loss_mask`` in
     ``training/utils/rl/common.py``) mask prompt / env / tool tokens
     correctly without any trainer-side changes.
 
     When a sample carries ``routing_matrices``, they are aligned to the
     model_input shape via :func:`build_r3_routing_matrices` and passed
-    through ``tinker.ModelInput.from_ints(routing_matrices=...)`` so MoE
+    through ``sdk.ModelInput.from_ints(routing_matrices=...)`` so MoE
     expert routing is replayed at training time (R3).
     ``router_replay_completion_only=True`` zeroes out prompt-position
     routing matrices so only completion-token routing is replayed (the
@@ -386,9 +374,7 @@ def rollout_to_prompt_group(
     """
     _validate(rollout)
 
-    rewards = [
-        _run_reward(run, run_index) for run_index, run in enumerate(rollout.runs)
-    ]
+    rewards = [_run_reward(run, run_index) for run_index, run in enumerate(rollout.runs)]
     advantages = list(advantage_fn(list(rewards)))
     if len(advantages) != len(rewards):
         raise ValueError(
@@ -413,7 +399,7 @@ def rollout_to_prompt_group(
         )
         return None
 
-    policy_data: List[tinker.Datum] = []
+    policy_data: List[sdk.Datum] = []
     inf_logprobs_aligned: List[List[float]] = []
     raw_inf_logprobs_aligned: List[List[float]] = []
     inference_topk_token_ids_aligned: List[List[List[int]]] = []
@@ -432,18 +418,13 @@ def rollout_to_prompt_group(
 
             if s.prompt_model_input is not None:
                 if s.inference_topk_token_ids is not None:
-                    raise ValueError(
-                        "sampler top-k policy data is not supported for multimodal "
-                        "rollout segments"
-                    )
+                    raise ValueError("sampler top-k policy data is not supported for multimodal " "rollout segments")
                 completion_tokens = _completion_tokens_from_sample(s)
                 datum = build_multimodal_policy_datum(
                     s.prompt_model_input,
                     completion_tokens,
                 )
-                target_tokens = [
-                    int(x) for x in datum.loss_fn_inputs["target_tokens"].data
-                ]
+                target_tokens = [int(x) for x in datum.loss_fn_inputs["target_tokens"].data]
                 target_len = len(target_tokens)
                 target_mask = [float(x) for x in datum.loss_fn_inputs["weights"].data]
                 if not (target_len == len(target_mask) == datum.model_input.length):
@@ -482,10 +463,8 @@ def rollout_to_prompt_group(
                         model_input_len=len(target_mask),
                         completion_only=router_replay_completion_only,
                     )
-                    datum = tinker.Datum(
-                        model_input=datum.model_input.model_copy(
-                            update=routing_model_input_kwargs(rm)
-                        ),
+                    datum = sdk.Datum(
+                        model_input=datum.model_input.model_copy(update=routing_model_input_kwargs(rm)),
                         loss_fn_inputs=datum.loss_fn_inputs,
                     )
 
@@ -506,18 +485,12 @@ def rollout_to_prompt_group(
             target_tokens = s.tokens[1:]
             target_mask = s.loss_mask[1:]
             target_logprobs = s.logprobs[1:]
-            target_raw_logprobs = (
-                s.raw_logprobs[1:] if s.raw_logprobs is not None else []
-            )
+            target_raw_logprobs = s.raw_logprobs[1:] if s.raw_logprobs is not None else []
             target_topk_token_ids = (
-                [list(row) for row in s.inference_topk_token_ids[1:]]
-                if s.inference_topk_token_ids is not None
-                else []
+                [list(row) for row in s.inference_topk_token_ids[1:]] if s.inference_topk_token_ids is not None else []
             )
             target_topk_logprobs = (
-                [list(row) for row in s.inference_topk_logprobs[1:]]
-                if s.inference_topk_logprobs is not None
-                else []
+                [list(row) for row in s.inference_topk_logprobs[1:]] if s.inference_topk_logprobs is not None else []
             )
 
             # Per-segment prompt boundary: index of the first assistant
@@ -540,18 +513,18 @@ def rollout_to_prompt_group(
                 )
 
             policy_data.append(
-                tinker.Datum(
-                    model_input=tinker.ModelInput.from_ints(
+                sdk.Datum(
+                    model_input=sdk.ModelInput.from_ints(
                         s.tokens[:-1],
                         routing_matrices=rm,
                     ),
                     loss_fn_inputs={
-                        "target_tokens": tinker.TensorData(
+                        "target_tokens": sdk.TensorData(
                             data=target_tokens,
                             dtype="int64",
                             shape=[target_len],
                         ),
-                        "weights": tinker.TensorData(
+                        "weights": sdk.TensorData(
                             data=target_mask,
                             dtype="int64",
                             shape=[target_len],

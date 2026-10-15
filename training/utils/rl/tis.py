@@ -14,19 +14,19 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Tuple
 
-import tinker
 import torch
+from fireworks.training import sdk
 
 TISLevel = Literal["token", "sequence"]
 
 
 def apply_tis(
-    datums: List[tinker.Datum],
+    datums: List[sdk.Datum],
     batch: Any,
     *,
     cap: float,
     level: TISLevel = "token",
-) -> Tuple[List[tinker.Datum], Dict[str, float]]:
+) -> Tuple[List[sdk.Datum], Dict[str, float]]:
     """Scale datum advantages by truncated anchor/rollout weights.
 
     ``datums`` come from ``build_policy_datums(batch)`` after
@@ -45,7 +45,7 @@ def apply_tis(
     if len(datums) != len(rollout_logprobs):
         raise ValueError("apply_tis needs one rollout_logprobs row per datum")
     log_cap = math.log(cap)
-    weighted: List[tinker.Datum] = []
+    weighted: List[sdk.Datum] = []
     weight_sum = clip_sum = 0.0
     responses = 0
     for datum, rollout in zip(datums, rollout_logprobs, strict=True):
@@ -69,13 +69,11 @@ def apply_tis(
         clip_sum += (log_ratios > log_cap).float().mean().item()
         responses += 1
         weighted.append(
-            tinker.Datum(
+            sdk.Datum(
                 model_input=datum.model_input,
                 loss_fn_inputs={
                     **inputs,
-                    "advantages": tinker.TensorData(
-                        data=advantages, dtype="float32", shape=[len(advantages)]
-                    ),
+                    "advantages": sdk.TensorData(data=advantages, dtype="float32", shape=[len(advantages)]),
                 },
             )
         )

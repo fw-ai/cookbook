@@ -18,9 +18,10 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk import SampledCompletion
 from fireworks.training.sdk.deployment import DeploymentSampler
+
 from training.utils.data import prepare_sampling_messages
 
 logger = logging.getLogger(__name__)
@@ -255,16 +256,10 @@ def score_teacher_logprobs_with_sampling_client(
     futures = []
     for sample in sampled:
         completion = list(sample.full_tokens[sample.prompt_len :])
-        futures.append(
-            sampler.compute_logprobs(tinker.ModelInput.from_ints(prompt + completion))
-            if completion
-            else None
-        )
+        futures.append(sampler.compute_logprobs(sdk.ModelInput.from_ints(prompt + completion)) if completion else None)
     # compute_logprobs returns one entry per input token (``None`` for the
     # first), so the response logprobs start at the teacher prompt length.
     return [
-        None
-        if future is None
-        else [float(lp) for lp in future.result(timeout=timeout)[len(prompt) :]]
+        None if future is None else [float(lp) for lp in future.result(timeout=timeout)[len(prompt) :]]
         for future in futures
     ]

@@ -2,8 +2,8 @@
 
 import numpy as np
 import pytest
-import tinker
 import torch
+from fireworks.training import sdk
 from training.renderer.supervised import datum_from_model_input_weights
 from training.utils.supervised import (
     build_datum_from_token_mask,
@@ -21,9 +21,7 @@ def _assert_datum(actual, expected, include_loss_mask):
     for name, tensor in inputs.items():
         assert actual.loss_fn_inputs[name].dtype == tensor.dtype
         assert actual.loss_fn_inputs[name].shape == tensor.shape
-        np.testing.assert_array_equal(
-            actual.loss_fn_inputs[name].to_numpy(), tensor.to_numpy()
-        )
+        np.testing.assert_array_equal(actual.loss_fn_inputs[name].to_numpy(), tensor.to_numpy())
 
 
 @pytest.mark.parametrize(
@@ -36,13 +34,11 @@ def _assert_datum(actual, expected, include_loss_mask):
         (None, "mean", True, [0] * 6),
     ],
 )
-def test_text_datum_matches_canonical_loss(
-    max_seq_len, reduction, include_loss_mask, weights
-):
+def test_text_datum_matches_canonical_loss(max_seq_len, reduction, include_loss_mask, weights):
     tokens = [10, 11, 12, 13, 14, 15]
     weights = list(weights)
     expected = datum_from_model_input_weights(
-        tinker.ModelInput.from_ints(tokens),
+        sdk.ModelInput.from_ints(tokens),
         torch.tensor(weights, dtype=torch.float32),
         max_length=max_seq_len,
         reduction=reduction,
@@ -64,23 +60,17 @@ def test_text_datum_matches_canonical_loss(
     assert rendered.token_weights[1] == 0
 
 
-@pytest.mark.parametrize(
-    "builder", [build_datum_from_token_mask, build_training_datum_from_token_mask]
-)
+@pytest.mark.parametrize("builder", [build_datum_from_token_mask, build_training_datum_from_token_mask])
 @pytest.mark.parametrize("max_seq_len,include_loss_mask", [(None, False), (5, True)])
-def test_mask_datum_matches_canonical_loss_and_owns_arrays(
-    builder, max_seq_len, include_loss_mask
-):
+def test_mask_datum_matches_canonical_loss_and_owns_arrays(builder, max_seq_len, include_loss_mask):
     tokens = np.array([10, 11, 12, 13, 14, 15], dtype=np.int64)
     mask = np.array([1, -2, 0.1, float("nan"), 0, 1])
     expected = datum_from_model_input_weights(
-        tinker.ModelInput.from_ints(tokens.tolist()),
+        sdk.ModelInput.from_ints(tokens.tolist()),
         torch.tensor([0, 0, 1, 0, 0, 1], dtype=torch.float32),
         max_length=max_seq_len,
     )
-    result = builder(
-        tokens, mask, max_seq_len=max_seq_len, include_loss_mask=include_loss_mask
-    )
+    result = builder(tokens, mask, max_seq_len=max_seq_len, include_loss_mask=include_loss_mask)
     actual = result.datum if builder is build_datum_from_token_mask else result
     tokens[:] = 99
     mask[:] = 0

@@ -11,8 +11,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-import tinker
-
+from fireworks.training import sdk
 from training.recipes import async_rl_loop
 from training.utils.rl.heldout import evaluation_rollout_fn
 from training.utils.runner import UserConfigError
@@ -222,9 +221,7 @@ def test_main_validates_adapter_warm_start(config_overrides, error) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_service_kwargs(
-    monkeypatch: pytest.MonkeyPatch, cfg: async_rl_loop.Config
-) -> dict:
+def _build_service_kwargs(monkeypatch: pytest.MonkeyPatch, cfg: async_rl_loop.Config) -> dict:
     calls = []
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
@@ -235,17 +232,13 @@ def _build_service_kwargs(
         "resolve_router_replay_enabled",
         lambda **kwargs: kwargs["requested"],
     )
-    monkeypatch.setattr(
-        async_rl_loop, "load_deployment_tokenizer", lambda *args, **kwargs: object()
-    )
+    monkeypatch.setattr(async_rl_loop, "load_deployment_tokenizer", lambda *args, **kwargs: object())
 
     def fake_build_service_client(**kwargs):
         calls.append(kwargs)
         raise _StopAfterProvisioning
 
-    monkeypatch.setattr(
-        async_rl_loop, "build_service_client", fake_build_service_client
-    )
+    monkeypatch.setattr(async_rl_loop, "build_service_client", fake_build_service_client)
 
     with pytest.raises(_StopAfterProvisioning):
         async_rl_loop.main(
@@ -269,10 +262,7 @@ def test_main_requests_cleanup_for_sdk_created_resources(
     kwargs = _build_service_kwargs(monkeypatch, cfg)
 
     assert kwargs["cleanup_trainer_on_close"] is True
-    assert (
-        kwargs["cleanup_deployment_on_close"]
-        == async_rl_loop.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
-    )
+    assert kwargs["cleanup_deployment_on_close"] == async_rl_loop.CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO
 
 
 def test_main_can_disable_cleanup_on_exit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -403,9 +393,7 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
         if advantage_mode == "mean_only":
             assert advantages == [1.0, 1.0, -1.0, -1.0]
         else:
-            assert advantages == pytest.approx(
-                [0.8660254, 0.8660254, -0.8660254, -0.8660254]
-            )
+            assert advantages == pytest.approx([0.8660254, 0.8660254, -0.8660254, -0.8660254])
         events.append("coordinator")
         raise _StopAfterCoordinatorSetup
 
@@ -444,15 +432,11 @@ def _policy_group(*, advantage: float = 1.0):
 
     return PromptGroup(
         data=[
-            tinker.Datum(
-                model_input=tinker.ModelInput.from_ints([10, 11, 12]),
+            sdk.Datum(
+                model_input=sdk.ModelInput.from_ints([10, 11, 12]),
                 loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(
-                        data=[11, 12, 13], dtype="int64", shape=[3]
-                    ),
-                    "weights": tinker.TensorData(
-                        data=[0.0, 1.0, 1.0], dtype="float32", shape=[3]
-                    ),
+                    "target_tokens": sdk.TensorData(data=[11, 12, 13], dtype="int64", shape=[3]),
+                    "weights": sdk.TensorData(data=[0.0, 1.0, 1.0], dtype="float32", shape=[3]),
                 },
             )
         ],
@@ -468,14 +452,7 @@ def _policy_group(*, advantage: float = 1.0):
 
 def _logprob_output(rows):
     return SimpleNamespace(
-        loss_fn_outputs=[
-            {
-                "logprobs": tinker.TensorData(
-                    data=row, dtype="float32", shape=[len(row)]
-                )
-            }
-            for row in rows
-        ]
+        loss_fn_outputs=[{"logprobs": sdk.TensorData(data=row, dtype="float32", shape=[len(row)])} for row in rows]
     )
 
 

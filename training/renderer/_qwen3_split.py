@@ -1,7 +1,7 @@
 """Local Qwen3 / Qwen3.5 / Qwen3.6 renderers with multi-turn SFT disaggregate support.
 
-Upstream ``training._vendor.tinker_cookbook_0_4_3.renderers.qwen3`` and
-``training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5`` ship without a
+Upstream ``training.renderer.qwen3`` and
+``training.renderer.qwen3_5`` ship without a
 ``build_supervised_examples`` override. Combined with
 ``has_extension_property=False`` (the default for thinking-mode
 variants), the cookbook SFT dispatcher routes multi-turn
@@ -20,10 +20,15 @@ import json
 from dataclasses import replace
 from typing import Any, Mapping, cast
 
-import tinker
+from fireworks.training import sdk
 
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer._think_prefill import (
+    DisableThinkingWeightsMixin,
+    ThinkPrefillWeightsMixin,
+)
+from training.renderer.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -31,21 +36,15 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     ToolCall,
     ToolSpec,
 )
-from training._vendor.tinker_cookbook_0_4_3.renderers.qwen3 import (
+from training.renderer.qwen3 import (
     Qwen3DisableThinkingRenderer,
     Qwen3Renderer,
     Qwen3VLInstructRenderer,
     Qwen3VLRenderer,
 )
-from training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5 import (
+from training.renderer.qwen3_5 import (
     Qwen3_5DisableThinkingRenderer,
     Qwen3_5Renderer,
-)
-
-from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
-from training.renderer._think_prefill import (
-    DisableThinkingWeightsMixin,
-    ThinkPrefillWeightsMixin,
 )
 
 
@@ -72,11 +71,7 @@ def _fold_consecutive_tool_messages(messages: list[Message]) -> list[Message]:
             and prev.get("trainable") == message.get("trainable")
         ):
             merged = dict(prev)
-            merged["content"] = (
-                prev["content"]
-                + "\n</tool_response>\n<tool_response>\n"
-                + message["content"]
-            )
+            merged["content"] = prev["content"] + "\n</tool_response>\n<tool_response>\n" + message["content"]
             folded[-1] = cast(Message, merged)
             continue
         folded.append(message)
@@ -88,10 +83,7 @@ def _assistant_has_thinking(message: Message) -> bool:
     if isinstance(content, str):
         return "<think>" in content
     if isinstance(content, list):
-        return any(
-            isinstance(part, Mapping) and part.get("type") == "thinking"
-            for part in content
-        )
+        return any(isinstance(part, Mapping) and part.get("type") == "thinking" for part in content)
     return False
 
 
@@ -110,11 +102,7 @@ def _lstrip_leading_newlines(message: Message) -> Message:
         return cast(Message, updated)
     if isinstance(content, list):
         first_text = next(
-            (
-                i
-                for i, part in enumerate(content)
-                if isinstance(part, Mapping) and part.get("type") == "text"
-            ),
+            (i for i, part in enumerate(content) if isinstance(part, Mapping) and part.get("type") == "text"),
             None,
         )
         if first_text is None:
@@ -145,11 +133,7 @@ def _hf_style_thinking_parts(message: Message) -> Message:
     if not isinstance(content, list):
         return message
     think_idx = next(
-        (
-            i
-            for i, part in enumerate(content)
-            if isinstance(part, Mapping) and part.get("type") == "thinking"
-        ),
+        (i for i, part in enumerate(content) if isinstance(part, Mapping) and part.get("type") == "thinking"),
         None,
     )
     if think_idx is None:
@@ -244,13 +228,11 @@ class _Qwen3EmptyThinkWrapperMixin:
         # HF strips leading newlines from the answer; normalize at the
         # message level so tokenization matches.
         rendered = super().render_message(_lstrip_leading_newlines(message), ctx)
-        wrapper_tokens = self.tokenizer.encode(
-            _EMPTY_THINK_WRAPPER, add_special_tokens=False
-        )
+        wrapper_tokens = self.tokenizer.encode(_EMPTY_THINK_WRAPPER, add_special_tokens=False)
         if not wrapper_tokens or not rendered.output:
             return rendered
         first = rendered.output[0]
-        if not isinstance(first, tinker.EncodedTextChunk):
+        if not isinstance(first, sdk.EncodedTextChunk):
             return rendered
         first_tokens = list(first.tokens)
         # Upstream always prefixes tool calls with "\n". HF decides that
@@ -267,24 +249,18 @@ class _Qwen3EmptyThinkWrapperMixin:
         if message.get("tool_calls") and not has_content:
             tool_call = self.tokenizer.encode("<tool_call>", add_special_tokens=False)
             prefix = newline + tool_call
-            if (
-                len(newline) == 1
-                and len(tool_call) == 1
-                and first_tokens[: len(prefix)] == prefix
-            ):
+            if len(newline) == 1 and len(tool_call) == 1 and first_tokens[: len(prefix)] == prefix:
                 first_tokens = first_tokens[1:]
         # A leading newline left in place (the kept separator) must tokenize
         # as one run with the wrapper's trailing newlines, matching HF's
         # single-pass encode.
         if len(newline) == 1 and first_tokens[:1] == newline:
-            wrapper_tokens = self.tokenizer.encode(
-                _EMPTY_THINK_WRAPPER + "\n", add_special_tokens=False
-            )
+            wrapper_tokens = self.tokenizer.encode(_EMPTY_THINK_WRAPPER + "\n", add_special_tokens=False)
             first_tokens = first_tokens[1:]
         return RenderedMessage(
             header=rendered.header,
             output=[
-                tinker.EncodedTextChunk(tokens=wrapper_tokens + first_tokens),
+                sdk.EncodedTextChunk(tokens=wrapper_tokens + first_tokens),
                 *rendered.output[1:],
             ],
             stop_overlap=rendered.stop_overlap,
@@ -295,19 +271,13 @@ class _Qwen3ToolFoldMixin:
     """Fold consecutive tool results before every render entry point."""
 
     def build_generation_prompt(self, messages: list[Message], *args, **kwargs):
-        return super().build_generation_prompt(
-            _fold_consecutive_tool_messages(messages), *args, **kwargs
-        )
+        return super().build_generation_prompt(_fold_consecutive_tool_messages(messages), *args, **kwargs)
 
     def build_supervised_example(self, messages: list[Message], *args, **kwargs):
-        return super().build_supervised_example(
-            _fold_consecutive_tool_messages(messages), *args, **kwargs
-        )
+        return super().build_supervised_example(_fold_consecutive_tool_messages(messages), *args, **kwargs)
 
     def build_supervised_examples(self, messages: list[Message], *args, **kwargs):
-        return super().build_supervised_examples(
-            _fold_consecutive_tool_messages(messages), *args, **kwargs
-        )
+        return super().build_supervised_examples(_fold_consecutive_tool_messages(messages), *args, **kwargs)
 
 
 class Qwen3SplitRenderer(
@@ -371,9 +341,7 @@ def _is_prewrapped_tool_response(message: Mapping[str, Any]) -> bool:
     if content is None:
         return False
     content = content.strip()
-    return content.startswith("<tool_response>") and content.endswith(
-        "</tool_response>"
-    )
+    return content.startswith("<tool_response>") and content.endswith("</tool_response>")
 
 
 def _mark_prewrapped_tool_responses(messages: list[Message]) -> list[Message]:
@@ -412,19 +380,13 @@ class _Qwen3_5TemplateParityMixin:
     """
 
     def build_generation_prompt(self, messages: list[Message], *args, **kwargs):
-        return super().build_generation_prompt(
-            _mark_prewrapped_tool_responses(messages), *args, **kwargs
-        )
+        return super().build_generation_prompt(_mark_prewrapped_tool_responses(messages), *args, **kwargs)
 
     def build_supervised_example(self, messages: list[Message], *args, **kwargs):
-        return super().build_supervised_example(
-            _mark_prewrapped_tool_responses(messages), *args, **kwargs
-        )
+        return super().build_supervised_example(_mark_prewrapped_tool_responses(messages), *args, **kwargs)
 
     def build_supervised_examples(self, messages: list[Message], *args, **kwargs):
-        return super().build_supervised_examples(
-            _mark_prewrapped_tool_responses(messages), *args, **kwargs
-        )
+        return super().build_supervised_examples(_mark_prewrapped_tool_responses(messages), *args, **kwargs)
 
     def render_message(
         self,
@@ -534,21 +496,13 @@ class _Qwen3_6ToolArgumentsMixin:
     """
 
     def _format_tool_call_xml(self, tool_call: ToolCall) -> str:
-        args = (
-            json.loads(tool_call.function.arguments)
-            if tool_call.function.arguments
-            else {}
-        )
+        args = json.loads(tool_call.function.arguments) if tool_call.function.arguments else {}
         if not isinstance(args, Mapping):
             raise ValueError("Qwen3.6 tool-call arguments must decode to an object")
 
         lines = [f"<tool_call>\n<function={tool_call.function.name}>"]
         for param_name, param_value in args.items():
-            value_str = (
-                param_value
-                if isinstance(param_value, str)
-                else json.dumps(param_value, ensure_ascii=False)
-            )
+            value_str = param_value if isinstance(param_value, str) else json.dumps(param_value, ensure_ascii=False)
             lines.append(f"<parameter={param_name}>\n{value_str}\n</parameter>")
         lines.append("</function>\n</tool_call>")
         return "\n".join(lines)
@@ -678,9 +632,7 @@ class _Qwen3_6PreserveThinkingMixin:
         content = message.get("content", "")
         has_think = False
         if isinstance(content, list):
-            has_think = any(
-                isinstance(p, dict) and p.get("type") == "thinking" for p in content
-            )
+            has_think = any(isinstance(p, dict) and p.get("type") == "thinking" for p in content)
         elif isinstance(content, str):
             has_think = "<think>" in content
         return "" if has_think else "<think>\n\n</think>\n\n"
@@ -721,9 +673,7 @@ def _trim_qwen3_8_content(content: Any) -> Any:
             part["thinking"] = str(part.get("thinking", "")).strip()
 
     visible_indices = [
-        index
-        for index, part in enumerate(parts)
-        if isinstance(part, Mapping) and part.get("type") != "thinking"
+        index for index, part in enumerate(parts) if isinstance(part, Mapping) and part.get("type") != "thinking"
     ]
     if visible_indices:
         first = parts[visible_indices[0]]
@@ -757,18 +707,11 @@ class _Qwen3_8TemplateParityMixin:
                 system = dict(prepared[0])
                 content = system.get("content", "")
                 if isinstance(content, list):
-                    if any(
-                        not isinstance(part, Mapping) or part.get("type") != "text"
-                        for part in content
-                    ):
-                        raise ValueError(
-                            "Qwen3.8 system messages cannot contain non-text content"
-                        )
+                    if any(not isinstance(part, Mapping) or part.get("type") != "text" for part in content):
+                        raise ValueError("Qwen3.8 system messages cannot contain non-text content")
                     content = "".join(str(part.get("text", "")) for part in content)
                 content = str(content).strip()
-                system["content"] = _QWEN3_8_XHIGH_REASONING_INSTRUCTION + (
-                    f"\n\n{content}" if content else ""
-                )
+                system["content"] = _QWEN3_8_XHIGH_REASONING_INSTRUCTION + (f"\n\n{content}" if content else "")
                 prepared[0] = cast(Message, system)
             else:
                 synthetic_system = Message(
@@ -778,24 +721,16 @@ class _Qwen3_8TemplateParityMixin:
                 if any("trainable" in message for message in prepared):
                     synthetic_system["trainable"] = False
                 prepared.insert(0, synthetic_system)
-        elif (
-            prepared
-            and prepared[0]["role"] == "system"
-            and prepared[0].get("content") == ""
-        ):
+        elif prepared and prepared[0]["role"] == "system" and prepared[0].get("content") == "":
             prepared.pop(0)
 
         return prepared
 
     def build_generation_prompt(self, messages: list[Message], *args, **kwargs):
-        return super().build_generation_prompt(
-            self._prepare_qwen3_8_messages(messages), *args, **kwargs
-        )
+        return super().build_generation_prompt(self._prepare_qwen3_8_messages(messages), *args, **kwargs)
 
     def build_supervised_example(self, messages: list[Message], *args, **kwargs):
-        return super().build_supervised_example(
-            self._prepare_qwen3_8_messages(messages), *args, **kwargs
-        )
+        return super().build_supervised_example(self._prepare_qwen3_8_messages(messages), *args, **kwargs)
 
 
 class Qwen3_8InterleavedRenderer(
@@ -860,9 +795,7 @@ register_renderer(
 )
 register_renderer(
     "qwen3_5_disable_thinking_interleaved",
-    lambda tok, ip=None: Qwen3_5DisableThinkingInterleavedRenderer(
-        tok, image_processor=ip
-    ),
+    lambda tok, ip=None: Qwen3_5DisableThinkingInterleavedRenderer(tok, image_processor=ip),
 )
 register_renderer(
     "qwen3_6_interleaved",
@@ -870,9 +803,7 @@ register_renderer(
 )
 register_renderer(
     "qwen3_6_disable_thinking_interleaved",
-    lambda tok, ip=None: Qwen3_6DisableThinkingInterleavedRenderer(
-        tok, image_processor=ip
-    ),
+    lambda tok, ip=None: Qwen3_6DisableThinkingInterleavedRenderer(tok, image_processor=ip),
 )
 register_renderer(
     "qwen3_6_preserved",
@@ -898,9 +829,7 @@ register_renderer(
 )
 register_renderer(
     "qwen3_8_disable_thinking_interleaved",
-    lambda tok, ip=None: Qwen3_8DisableThinkingInterleavedRenderer(
-        tok, image_processor=ip
-    ),
+    lambda tok, ip=None: Qwen3_8DisableThinkingInterleavedRenderer(tok, image_processor=ip),
 )
 register_renderer(
     "qwen3_8_preserved",

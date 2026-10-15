@@ -6,9 +6,8 @@ import random
 from types import SimpleNamespace
 
 import pytest
-import tinker
-
 import training.recipes.sft_loop as module
+from fireworks.training import sdk
 from training.utils import supervised as supervised_utils
 from training.utils.checkpoints import TrainingCheckpoints
 from training.utils.runner import DatasetError, RunnerConfig, UserConfigError
@@ -133,9 +132,7 @@ def test_init_render_worker_uses_exact_main_resolved_renderer(monkeypatch):
         captured["kwargs"] = kwargs
         state.update(renderer=object(), tokenizer=object())
 
-    monkeypatch.setattr(
-        module, "populate_render_worker_state", fake_populate_render_worker_state
-    )
+    monkeypatch.setattr(module, "populate_render_worker_state", fake_populate_render_worker_state)
     monkeypatch.setattr(
         module,
         "resolve_renderer_snapshot",
@@ -166,11 +163,14 @@ def test_resolved_renderer_name_resolves_unpinned_semantic_mode(monkeypatch):
 
     monkeypatch.setattr(module, "resolve_renderer_snapshot", fake_resolve)
 
-    assert module._resolved_renderer_name(
-        tokenizer_model="accounts/fireworks/models/qwen3p6-27b",
-        renderer_name="",
-        thinking_trace_history_mode="preserved",
-    ) == "qwen3_6_preserved"
+    assert (
+        module._resolved_renderer_name(
+            tokenizer_model="accounts/fireworks/models/qwen3p6-27b",
+            renderer_name="",
+            thinking_trace_history_mode="preserved",
+        )
+        == "qwen3_6_preserved"
+    )
     assert captured == {
         "tokenizer_model": "accounts/fireworks/models/qwen3p6-27b",
         "renderer_name": "",
@@ -187,19 +187,25 @@ def test_resolved_renderer_name_reuses_persisted_snapshot_without_reresolving(
         "resolve_thinking_trace_renderer_plan",
         lambda *_args, **_kwargs: pytest.fail("live registry was consulted"),
     )
-    assert module._resolved_renderer_name(
-        tokenizer_model="Qwen/Qwen3.6-27B",
-        renderer_name="qwen3_6_preserved",
-        thinking_trace_history_mode="preserved",
-        renderer_name_is_resolved=True,
-    ) == "qwen3_6_preserved"
+    assert (
+        module._resolved_renderer_name(
+            tokenizer_model="Qwen/Qwen3.6-27B",
+            renderer_name="qwen3_6_preserved",
+            thinking_trace_history_mode="preserved",
+            renderer_name_is_resolved=True,
+        )
+        == "qwen3_6_preserved"
+    )
 
-    assert module._resolved_renderer_name(
-        tokenizer_model="Qwen/Qwen3.6-27B",
-        renderer_name="persisted-renderer-before-registry-drift",
-        thinking_trace_history_mode="interleaved",
-        renderer_name_is_resolved=True,
-    ) == "persisted-renderer-before-registry-drift"
+    assert (
+        module._resolved_renderer_name(
+            tokenizer_model="Qwen/Qwen3.6-27B",
+            renderer_name="persisted-renderer-before-registry-drift",
+            thinking_trace_history_mode="interleaved",
+            renderer_name_is_resolved=True,
+        )
+        == "persisted-renderer-before-registry-drift"
+    )
 
 
 def test_configure_render_sample_state_does_not_repopulate_renderer(tmp_path, monkeypatch):
@@ -215,9 +221,7 @@ def test_configure_render_sample_state_does_not_repopulate_renderer(tmp_path, mo
             train_on_what=kwargs["train_on_what"],
         )
 
-    monkeypatch.setattr(
-        module, "populate_render_worker_state", fake_populate_render_worker_state
-    )
+    monkeypatch.setattr(module, "populate_render_worker_state", fake_populate_render_worker_state)
     monkeypatch.setattr(
         module,
         "resolve_renderer_snapshot",
@@ -333,9 +337,7 @@ def test_write_render_samples_keeps_late_vision_candidate_after_worker_limit(tmp
         datum = SimpleNamespace(
             model_input=model_input,
             loss_fn_inputs={
-                "target_tokens": SimpleNamespace(
-                    data=[token_id + 1] * model_input_token_count
-                ),
+                "target_tokens": SimpleNamespace(data=[token_id + 1] * model_input_token_count),
                 "weights": SimpleNamespace(data=[0.0] * model_input_token_count),
             },
         )
@@ -345,13 +347,11 @@ def test_write_render_samples_keeps_late_vision_candidate_after_worker_limit(tmp
             datum=datum,
         )
 
-    text_input = tinker.ModelInput(
-        chunks=[tinker.types.EncodedTextChunk(tokens=[10])]
-    )
-    vision_input = tinker.ModelInput(
+    text_input = sdk.ModelInput(chunks=[sdk.types.EncodedTextChunk(tokens=[10])])
+    vision_input = sdk.ModelInput(
         chunks=[
-            tinker.types.EncodedTextChunk(tokens=[20]),
-            tinker.types.ImageChunk(
+            sdk.types.EncodedTextChunk(tokens=[20]),
+            sdk.types.ImageChunk(
                 data=b"renderer-jpeg",
                 format="jpeg",
                 expected_tokens=64,
@@ -372,12 +372,7 @@ def test_write_render_samples_keeps_late_vision_candidate_after_worker_limit(tmp
         [rendered(vision_input, 30)],
     )
 
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "render_samples.worker-0.jsonl")
-        .read_text()
-        .splitlines()
-    ]
+    records = [json.loads(line) for line in (tmp_path / "render_samples.worker-0.jsonl").read_text().splitlines()]
     assert [(record["source_jsonl_row_index"], record["image_count"]) for record in records] == [
         (0, 0),
         (1, 1),
@@ -396,9 +391,7 @@ def test_write_render_samples_keeps_late_vision_candidate_after_worker_limit(tmp
         },
         {"type": "text", "token_start": 65, "token_count": 1},
     ]
-    assert records[1]["decoded_tokens"][1] == (
-        "<image 1: JPEG, 64 visual tokens>"
-    )
+    assert records[1]["decoded_tokens"][1] == ("<image 1: JPEG, 64 visual tokens>")
     assert records[1]["decoded_tokens"][2:65] == [""] * 63
     assert module._worker_state["render_samples_written"] == 2
     assert module._worker_state["render_samples_vision_written"] == 1
@@ -453,15 +446,11 @@ def test_finalize_render_samples_backfills_vision_records_within_global_limit(
     monkeypatch,
 ):
     records = [
-        {"source_jsonl_row_index": index, "image_count": 0}
-        for index in range(module.DEFAULT_RENDER_SAMPLE_LIMIT)
+        {"source_jsonl_row_index": index, "image_count": 0} for index in range(module.DEFAULT_RENDER_SAMPLE_LIMIT)
     ] + [
-        {"source_jsonl_row_index": index, "image_count": 1}
-        for index in range(module.DEFAULT_RENDER_SAMPLE_LIMIT, 26)
+        {"source_jsonl_row_index": index, "image_count": 1} for index in range(module.DEFAULT_RENDER_SAMPLE_LIMIT, 26)
     ]
-    (tmp_path / "render_samples.worker-0.jsonl").write_text(
-        "".join(json.dumps(record) + "\n" for record in records)
-    )
+    (tmp_path / "render_samples.worker-0.jsonl").write_text("".join(json.dumps(record) + "\n" for record in records))
     uploaded: dict[str, bytes] = {}
     monkeypatch.setattr(
         module.fileio,
@@ -475,12 +464,7 @@ def test_finalize_render_samples_backfills_vision_records_within_global_limit(
         render_samples_limit=module.DEFAULT_RENDER_SAMPLE_LIMIT,
     )
 
-    selected = [
-        json.loads(line)
-        for line in uploaded["gs://bucket/job/render_samples.jsonl"]
-        .decode()
-        .splitlines()
-    ]
+    selected = [json.loads(line) for line in uploaded["gs://bucket/job/render_samples.jsonl"].decode().splitlines()]
     assert len(selected) == module.DEFAULT_RENDER_SAMPLE_LIMIT
     assert [record["source_jsonl_row_index"] for record in selected] == [
         *range(15),
@@ -595,8 +579,7 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
     """
     events = []
     rows = [
-        {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": "a"}]}
-        for i in range(4)
+        {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": "a"}]} for i in range(4)
     ]
     dataset_path = _write_dataset(tmp_path, rows)
     eval_path = tmp_path / "eval.jsonl"
@@ -661,6 +644,7 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
     )
     monkeypatch.setattr(module, "run_eval", fake_run_eval)
     if generation_eval:
+
         def setup_serverless(*args, **kwargs):
             return FakeService(), FakeClient(), FakeCheckpoints(), "session-1", 32
 
@@ -668,9 +652,11 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
         monkeypatch.setattr(module, "prepare_generation_eval", lambda *args, **kwargs: ["prompt"])
         monkeypatch.setattr(module, "run_generation_eval", lambda **kwargs: events.append("generate"))
         complete = module.write_completed
+
         def record_completed(*args, **kwargs):
             events.append("completed")
             complete(*args, **kwargs)
+
         monkeypatch.setattr(module, "write_completed", record_completed)
 
     module.main(
@@ -697,7 +683,9 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
 @pytest.mark.parametrize("resumed", [False, True])
 def test_generation_eval_finishes_before_completion_and_session_close(tmp_path, monkeypatch, resumed):
     events, _ = _run_main_with_fake_trainer(
-        tmp_path, monkeypatch, generation_eval=True,
+        tmp_path,
+        monkeypatch,
+        generation_eval=True,
         resume_info=SimpleNamespace(step=2, data_consumed=4) if resumed else None,
     )
     assert events[-3:] == ["generate", "completed", "close"]
@@ -761,9 +749,7 @@ def test_render_one_worker_uses_per_example_mean_reduction(monkeypatch):
         max_seq_len=32,
     )
 
-    assert module._render_one_worker(
-        {"messages": [{"role": "assistant", "content": "answer"}]}
-    ) is datum
+    assert module._render_one_worker({"messages": [{"role": "assistant", "content": "answer"}]}) is datum
     assert captured["reduction"] == "mean"
 
 
@@ -874,10 +860,20 @@ class TestPrepareDatasets:
 
     @pytest.mark.parametrize("loss_eval", [False, True])
     @pytest.mark.parametrize("ratio,max_seqs,expected_eval", [(0.1, 3, 3), (1.0, 100, 20)])
-    def test_generation_holdout_excludes_all_twenty_percent_even_when_sampling_is_capped(self, tmp_path, monkeypatch, loss_eval, ratio, max_seqs, expected_eval):
+    def test_generation_holdout_excludes_all_twenty_percent_even_when_sampling_is_capped(
+        self, tmp_path, monkeypatch, loss_eval, ratio, max_seqs, expected_eval
+    ):
         path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(100)])
         monkeypatch.setattr(module, "_render_one_worker", lambda row: row["messages"][0]["content"])
-        cfg = self._cfg(tmp_path, path, generation_eval=True, eval_auto_carveout=loss_eval, eval_carve_ratio=ratio, max_eval_seqs=max_seqs, seed=7)
+        cfg = self._cfg(
+            tmp_path,
+            path,
+            generation_eval=True,
+            eval_auto_carveout=loss_eval,
+            eval_carve_ratio=ratio,
+            max_eval_seqs=max_seqs,
+            seed=7,
+        )
         train_ds, eval_data, generation_ds = module._prepare_datasets(cfg)
         assert len(train_ds) == 80
         assert len(generation_ds) == 20
@@ -1019,7 +1015,11 @@ def _write_shard_dataset(root):
 
     root = str(root)
     os.makedirs(os.path.join(root, "sub"), exist_ok=True)
-    for rel, rows in (("b.jsonl", [msg("b")]), ("a.jsonl", [msg("a0"), msg("a1")]), ("sub/c.jsonl", [msg("c0"), msg("c1")])):
+    for rel, rows in (
+        ("b.jsonl", [msg("b")]),
+        ("a.jsonl", [msg("a0"), msg("a1")]),
+        ("sub/c.jsonl", [msg("c0"), msg("c1")]),
+    ):
         with open(os.path.join(root, rel), "w") as f:
             for row in rows:
                 f.write(json.dumps(row) + "\n")

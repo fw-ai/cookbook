@@ -20,23 +20,23 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from training.renderer.image_processing import ImageProcessor
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, ToolSpec
-from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k2_5_tool_declaration_ts import (
-    encode_tools_to_typescript_style,
-)
-from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k26 import (
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer._kimi_k26_base import (
     KimiK26PreserveThinkingRenderer as _UpstreamKimiK26PreserveThinkingRenderer,
 )
-from training.renderer.tokenizer import Tokenizer
-
-from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.base import Message, ToolSpec
+from training.renderer.image_processing import ImageProcessor
+from training.renderer.kimi_k2_5_tool_declaration_ts import (
+    encode_tools_to_typescript_style,
+)
 from training.renderer.kimi_k26 import (
     KimiK26PreserveThinkingRenderer as _CookbookKimiK26PreserveThinkingRenderer,
+)
+from training.renderer.kimi_k26 import (
     _KimiMediaPadImagePlaceholderMixin,
 )
-
+from training.renderer.tokenizer import Tokenizer
 
 _KIMI_TOOL_STYLE_PROBE = [
     {
