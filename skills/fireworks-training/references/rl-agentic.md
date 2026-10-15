@@ -76,6 +76,45 @@ The lightweight sidecar supports `glm_moe_dsa_preserve_thinking` (GLM-5.2),
 `glm53_preserve_thinking` (GLM-5.3), `qwen3_8` (Qwen3.8-27B), and
 `muse_glimmer` (Muse Glimmer 30B). Use `full_history` for GLM-5.3 and
 Muse Glimmer. Interleaved GLM history remains uncertified.
+The following additional text/function-tool pairs also use `full_history`:
+
+| Base model in `accounts/fireworks/models/` | TITO renderer | Tokenizer repository and revision |
+|---|---|---|
+| `deepseek-v4-flash-0731` | `deepseek_v4_flash_0731` | `deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b1d1fe23eabc4c98b48bffcef5a386062` |
+| `deepseek-v4-pro-0813` | `deepseek_v4_pro_0813` | `deepseek-ai/DeepSeek-V4-Pro-0813@72e1d3230f6c080a530b0a1d46f8eb4602340597` |
+| `deepseek-v4p1-flash` | `deepseek_v41_flash` | `deepseek-ai/DeepSeek-V4.1-Flash@2cba9e42aa026125f3ed06c6d98c1db82f7ca027` |
+| `glm-5p3-flash` | `glm53_flash_preserve_thinking` | `zai-org/GLM-5.3-Flash@690b705278a3a58e538fcb37c2ca8b5f9511213c` |
+
+GLM-5.3 Flash is distinct: `glm53_flash.py` does not inherit the GLM-5.3 adapter.
+Prompts use `apply_chat_template`, `clear_thinking=False`, and `reasoning_effort="max"`.
+Only text/tool primitives verified by Flash-specific tests are reused.
+Image, video, and audio payloads are rejected, not rendered as token-only placeholders.
+
+The V4 Flash/Pro checkpoints have no Jinja chat template. Both versions use
+the same implementation, delegating rendering and parsing to the official
+`encoding/encoding_dsv4.py`, verified against a SHA-256 pin from each model's own
+repository and revision. The contract is thinking mode, low effort, and preserved
+reasoning history. Bundles carry that encoder for offline use and reject missing
+or modified files. Do not substitute a preview tokenizer, a hand-written Jinja
+translation, or the separate SFT renderer for this exact-token contract.
+
+V4.1 Flash has a different DSML protocol and its own pinned chat template.
+Prompts delegate to `apply_chat_template`, cross-checked against its native
+`encoding/encoding.py`; output parsing delegates to that hash-verified native
+module, also bundled offline. Its fixed contract is thinking mode, high effort
+(75), and `drop_thinking=False`. Only text and unqualified function tools are
+admitted; image markers and tool namespaces are rejected. Do not alias it to V4.
+
+Applying a chat template constructs a prompt; it does not parse sampled
+reasoning/tool protocols, preserve response argument order, verify tokenizer
+identity, or package an offline runtime. Those are the remaining TITO adapter
+responsibilities. These additions do not change SDK lineage, introduce a tree,
+or enable incremental rendering. Full rendering still checks exact sampled token
+prefixes; template rewrites or tokenization differences can split a segment.
+HF/native-encoder parity is not full served-model certification: perform live
+prompt-token and sampled-completion verification on the exact deployment before
+training. Shape validation alone is not renderer validation.
+
 The offline SFT/DPO renderer registry does not establish TITO or lightweight
 sidecar support. Both builders reject unsupported or mismatched pairs.
 

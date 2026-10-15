@@ -1,7 +1,7 @@
 """Model rendering and parsing for TITO, one module per certified model.
 
-Prompt construction delegates to the pinned tokenizer's authoritative chat
-template. This package owns only protocol normalization plus per-model output
+Prompt construction delegates to the pinned chat template or native encoder.
+This package owns only protocol normalization plus per-model output
 parsers; importing it must not load Tinker or Torch. Full-history rendering is
 the production default. Incremental rendering is experimental and requires a
 model/template-specific suffix-and-junction implementation.
@@ -12,8 +12,11 @@ and template normalization; ``<model>.py`` holds each certified renderer;
 additional model certifications from installed distributions.
 """
 
+from training.renderer.tito.deepseek_v4 import DeepSeekV4TITORenderer
+from training.renderer.tito.deepseek_v41 import DeepSeekV41TITORenderer
 from training.renderer.tito.glm52 import GLM52TITORenderer
 from training.renderer.tito.glm53 import GLM53TITORenderer
+from training.renderer.tito.glm53_flash import GLM53FlashTITORenderer
 from training.renderer.tito.muse_glimmer import MuseGlimmerTITORenderer
 from training.renderer.tito.plugins import (
     TITORendererExtension,
@@ -33,8 +36,11 @@ from training.renderer.tito.shared import (
 )
 
 __all__ = [
+    "DeepSeekV4TITORenderer",
+    "DeepSeekV41TITORenderer",
     "GLM52TITORenderer",
     "GLM53TITORenderer",
+    "GLM53FlashTITORenderer",
     "MuseGlimmerTITORenderer",
     "Qwen35TITORenderer",
     "Qwen38TITORenderer",

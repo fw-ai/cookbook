@@ -292,7 +292,9 @@ class HarborRollout:
         self._trial_start_interval_seconds = _DOCKER_START_INTERVAL_SECONDS
         self._trial_start_lock = asyncio.Lock()
         self._next_trial_start = 0.0
-        self._sidecar_bundle = build_sidecar_bundle(setup, settings.tito.bundle_root)
+        self._sidecar_bundle = build_sidecar_bundle(
+            setup, settings.tito.bundle_root, renderer_name=settings.tito.renderer_name
+        )
         self._active_rollouts = ActiveRolloutTasks()
         self._artifact_processor = ArtifactProcessPool()
 

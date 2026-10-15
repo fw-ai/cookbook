@@ -17,12 +17,38 @@ from typing import Any
 from fireworks.training.sdk import TITORenderer
 
 from training.renderer.tito import shared
+from training.renderer.tito.deepseek_v4 import (
+    DEEPSEEK_V4_ENCODER_FILE,
+    DEEPSEEK_V4_ENCODER_SHA256,
+    DEEPSEEK_V4_PRO_RENDERER_NAME,
+    DEEPSEEK_V4_PRO_REPOSITORY,
+    DEEPSEEK_V4_PRO_REVISION,
+    DEEPSEEK_V4_RENDERER_NAME,
+    DEEPSEEK_V4_REPOSITORY,
+    DEEPSEEK_V4_REVISION,
+    DEEPSEEK_V4_TOKENIZER_FINGERPRINT,
+    DeepSeekV4TITORenderer,
+)
+from training.renderer.tito.deepseek_v41 import (
+    DEEPSEEK_V41_ENCODER_FILE,
+    DEEPSEEK_V41_ENCODER_SHA256,
+    DEEPSEEK_V41_RENDERER_NAME,
+    DEEPSEEK_V41_REPOSITORY,
+    DEEPSEEK_V41_REVISION,
+    DEEPSEEK_V41_TOKENIZER_FINGERPRINT,
+    DeepSeekV41TITORenderer,
+)
 from training.renderer.tito.plugins import (
     extension_certifications,
     load_tito_renderer_plugins,
 )
 from training.renderer.tito.glm52 import GLM52_RENDERER_NAME, GLM52TITORenderer
 from training.renderer.tito.glm53 import GLM53_RENDERER_NAME, GLM53TITORenderer
+from training.renderer.tito.glm53_flash import (
+    GLM53_FLASH_RENDERER_NAME,
+    GLM53_FLASH_TOKENIZER_FINGERPRINT,
+    GLM53FlashTITORenderer,
+)
 from training.renderer.tito.muse_glimmer import (
     MUSE_GLIMMER_RENDERER_NAME,
     MuseGlimmerTITORenderer,
@@ -50,6 +76,13 @@ def _build_glm53_tito_renderer(
     return GLM53TITORenderer(tokenizer, certification=certification)
 
 
+def _build_glm53_flash_tito_renderer(
+    tokenizer: Any,
+    certification: TITORendererCertification,
+) -> TITORenderer:
+    return GLM53FlashTITORenderer(tokenizer, certification=certification)
+
+
 def _build_muse_glimmer_tito_renderer(
     tokenizer: Any,
     certification: TITORendererCertification,
@@ -71,7 +104,48 @@ def _build_qwen38_tito_renderer(
     return Qwen38TITORenderer(tokenizer, certification=certification)
 
 
+def _build_deepseek_v4_tito_renderer(tokenizer: Any, certification: TITORendererCertification) -> TITORenderer:
+    return DeepSeekV4TITORenderer(tokenizer, certification=certification)
+
+
+def _build_deepseek_v41_tito_renderer(tokenizer: Any, certification: TITORendererCertification) -> TITORenderer:
+    return DeepSeekV41TITORenderer(tokenizer, certification=certification)
+
+
 _TITO_RENDERER_CERTIFICATIONS = (
+    TITORendererCertification(
+        certification_id="deepseek-v4.1-flash@2cba9e42-full-history-v1",
+        renderer_names=frozenset({DEEPSEEK_V41_RENDERER_NAME}),
+        tokenizer_fingerprint=DEEPSEEK_V41_TOKENIZER_FINGERPRINT,
+        renderer_factory=_build_deepseek_v41_tito_renderer,
+        artifact_repository=DEEPSEEK_V41_REPOSITORY,
+        artifact_revision=DEEPSEEK_V41_REVISION,
+        artifact_files=((DEEPSEEK_V41_ENCODER_FILE, DEEPSEEK_V41_ENCODER_SHA256),),
+    ),
+    TITORendererCertification(
+        certification_id="deepseek-v4-pro-0813@72e1d323-full-history-v1",
+        renderer_names=frozenset({DEEPSEEK_V4_PRO_RENDERER_NAME}),
+        tokenizer_fingerprint=DEEPSEEK_V4_TOKENIZER_FINGERPRINT,
+        renderer_factory=_build_deepseek_v4_tito_renderer,
+        artifact_repository=DEEPSEEK_V4_PRO_REPOSITORY,
+        artifact_revision=DEEPSEEK_V4_PRO_REVISION,
+        artifact_files=((DEEPSEEK_V4_ENCODER_FILE, DEEPSEEK_V4_ENCODER_SHA256),),
+    ),
+    TITORendererCertification(
+        certification_id="glm-5.3-flash-preserved@690b7052-full-history-v1",
+        renderer_names=frozenset({GLM53_FLASH_RENDERER_NAME}),
+        tokenizer_fingerprint=GLM53_FLASH_TOKENIZER_FINGERPRINT,
+        renderer_factory=_build_glm53_flash_tito_renderer,
+    ),
+    TITORendererCertification(
+        certification_id="deepseek-v4-flash-0731@7872f01b-full-history-v1",
+        renderer_names=frozenset({DEEPSEEK_V4_RENDERER_NAME}),
+        tokenizer_fingerprint=DEEPSEEK_V4_TOKENIZER_FINGERPRINT,
+        renderer_factory=_build_deepseek_v4_tito_renderer,
+        artifact_repository=DEEPSEEK_V4_REPOSITORY,
+        artifact_revision=DEEPSEEK_V4_REVISION,
+        artifact_files=((DEEPSEEK_V4_ENCODER_FILE, DEEPSEEK_V4_ENCODER_SHA256),),
+    ),
     TITORendererCertification(
         certification_id="glm-5.3-preserved@935644c0-experimental-r5",
         renderer_names=frozenset({GLM53_RENDERER_NAME}),

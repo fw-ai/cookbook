@@ -1,7 +1,7 @@
 """Shared TITO renderer primitives: tokenizer pinning and template normalization.
 
-Prompt construction delegates to each pinned tokenizer's authoritative chat
-template. This module owns only protocol normalization shared by the
+Prompt construction delegates to the pinned chat template or native encoder.
+This module owns only protocol normalization shared by the
 per-model renderers; importing it must not load Tinker or Torch.
 """
 
@@ -45,10 +45,49 @@ class TITORendererCertification:
     renderer_names: frozenset[str]
     tokenizer_fingerprint: str
     renderer_factory: Callable[[Any, "TITORendererCertification"], Any]
+    artifact_repository: str | None = None
+    artifact_revision: str | None = None
+    artifact_files: tuple[tuple[str, str], ...] = ()
 
 
-def load_sidecar_tokenizer(path: str | Path) -> Any:
-    """Load the pinned tokenizer and its bundled authoritative chat template.
+def renderer_artifacts(tokenizer: Any, certification: TITORendererCertification) -> dict[str, Path]:
+    """Resolve only reviewed, hash-pinned native formatter artifacts.
+
+    Local bundles never fetch missing files. Downloads are allowed only from
+    the certification's exact repository/revision, not tokenizer remote code.
+    """
+    paths: dict[str, Path] = {}
+    root = Path(tokenizer.name_or_path)
+    for filename, expected_hash in certification.artifact_files:
+        relative = Path(filename)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("invalid certified renderer artifact path")
+        if root.is_dir():
+            path = root / relative
+        else:
+            if tokenizer.name_or_path != certification.artifact_repository or not certification.artifact_revision:
+                raise ValueError("native renderer requires its pinned artifact source")
+            # lazy: HF is needed only by host-side bundle construction, not the
+            # offline container runtime.
+            from huggingface_hub import hf_hub_download
+
+            path = Path(
+                hf_hub_download(
+                    repo_id=certification.artifact_repository,
+                    revision=certification.artifact_revision,
+                    filename=filename,
+                )
+            )
+        if not path.is_file():
+            raise ValueError("TITO bundle is missing a certified renderer artifact")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+            raise ValueError("native renderer artifact does not match certification")
+        paths[filename] = path
+    return paths
+
+
+def load_sidecar_tokenizer(path: str | Path, *, renderer_name: str | None = None) -> Any:
+    """Load the pinned tokenizer and verify its chat template or native artifacts.
 
     The bundle is written by ``save_pretrained`` from an already-certified
     tokenizer, so ``tokenizer.json`` is always present (certification requires
@@ -71,7 +110,15 @@ def load_sidecar_tokenizer(path: str | Path) -> Any:
         local_files_only=True,
         trust_remote_code=False,
     )
-    if not getattr(tokenizer, "chat_template", None):
+    chat_template = getattr(tokenizer, "chat_template", None)
+    artifacts = {}
+    if renderer_name is not None:
+        # lazy: registry imports this module; resolve after it has initialized.
+        from training.renderer.tito.registry import get_tito_renderer_certification
+
+        certification = get_tito_renderer_certification(renderer_name, tokenizer)
+        artifacts = renderer_artifacts(tokenizer, certification)
+    if not chat_template and not artifacts:
         raise ValueError("TITO sidecar tokenizer has no bundled chat template")
     return tokenizer
 

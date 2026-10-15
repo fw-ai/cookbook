@@ -178,7 +178,7 @@ def _patch_runner(monkeypatch, tmp_path: Path, run_trial=None) -> None:
     monkeypatch.setattr(
         tito_rollout,
         "build_sidecar_bundle",
-        lambda *_: _fake_bundle(tmp_path / "bundle"),
+        lambda *_, **_kwargs: _fake_bundle(tmp_path / "bundle"),
     )
     monkeypatch.setattr(tito_rollout, "task_config_from_row", lambda _row: {})
     monkeypatch.setattr(
@@ -820,9 +820,7 @@ def test_sidecar_serve_closes_runtime_when_trajectory_creation_fails(
     monkeypatch.setattr(sidecar_runtime, "SIDECAR_PID_PATH", str(tmp_path / "pid"))
     monkeypatch.setattr(training_sdk, "DeploymentSampler", FakeSampler)
     monkeypatch.setattr(training_sdk, "TITOSidecar", FakeSidecar)
-    monkeypatch.setattr(
-        renderer_runtime, "load_sidecar_tokenizer", lambda _path: object()
-    )
+    monkeypatch.setattr(renderer_runtime, "load_sidecar_tokenizer", lambda _path, **_kwargs: object())
     monkeypatch.setattr(
         renderer_runtime,
         "build_sidecar_tito_renderer",
