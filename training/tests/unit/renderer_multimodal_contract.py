@@ -36,10 +36,17 @@ class MultimodalRendererContractTests:
     # True when the checkpoint's SFT generation mask includes the same
     # assistant suffix that build_generation_prompt appends before sampling.
     sft_trains_generation_suffix = False
+    # Text the training input places around each image span but the sampler
+    # adds itself, so the completions request carries only the placeholder.
+    sampler_image_affixes = ("", "")
 
     def load_image_renderer(self, case):
         """Return (tokenizer, renderer, native request placeholder from config)."""
         raise NotImplementedError
+
+    def assistant_reply(self, case):
+        """Return the trained reply; thinking renderers may need reasoning."""
+        return {"role": "assistant", "content": "These are two colored panels."}
 
     def pytest_generate_tests(self, metafunc):
         if "case" in metafunc.fixturenames:
@@ -104,14 +111,29 @@ class MultimodalRendererContractTests:
         assert images == [
             f"data:image/{chunk.format};base64,{base64.b64encode(chunk.data).decode()}" for chunk in image_chunks
         ]
-        expected_request = [
-            token
-            for chunk in prompt.chunks
-            for token in (chunk.tokens if isinstance(chunk, sdk.types.EncodedTextChunk) else [native_image_id])
-        ]
+        prefix_text, suffix_text = self.sampler_image_affixes
+        prefix = tokenizer.encode(prefix_text, add_special_tokens=False)
+        suffix = tokenizer.encode(suffix_text, add_special_tokens=False)
+        expected_request = []
+        after_image = False
+        for chunk in prompt.chunks:
+            if isinstance(chunk, sdk.types.ImageChunk):
+                if prefix:
+                    assert expected_request[-len(prefix) :] == prefix
+                    del expected_request[-len(prefix) :]
+                expected_request.append(native_image_id)
+                after_image = True
+                continue
+            tokens = list(chunk.tokens)
+            if suffix and after_image:
+                assert tokens[: len(suffix)] == suffix
+                tokens = tokens[len(suffix) :]
+            expected_request.extend(tokens)
+            after_image = False
         assert request_tokens == expected_request
 
-        full_messages = normalized + [{"role": "assistant", "content": "These are two colored panels."}]
+        reply = self.assistant_reply(case)
+        full_messages = normalized + normalize_messages([reply])
         full_input, full_weights = renderer.build_supervised_example(full_messages)
         expanded = _expanded_tokens(full_input)
         weights = [float(weight) for weight in full_weights.tolist()]
@@ -133,7 +155,7 @@ class MultimodalRendererContractTests:
         # Both hosted SFT and token-in RL must preserve images and use the
         # same expanded N-1 target/mask coordinates after the next-token shift.
         sft = render_messages_to_datum(
-            messages + [{"role": "assistant", "content": "These are two colored panels."}],
+            messages + [reply],
             renderer=renderer,
             train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
         ).datum
@@ -156,7 +178,7 @@ class MultimodalRendererContractTests:
             train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
         )
         all_sft = render_messages_to_datum(
-            messages + [{"role": "assistant", "content": "These are two colored panels."}],
+            messages + [reply],
             renderer=renderer,
         ).datum
         assert _expanded_tokens(all_input) == expanded

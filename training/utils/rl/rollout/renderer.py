@@ -294,6 +294,7 @@ def build_multimodal_completions_prompt_token_ids(
         )
 
     prompt_token_ids: List[int] = []
+    image_positions: List[int] = []
     image_chunk_count = 0
     for chunk in model_input.chunks:
         if isinstance(chunk, sdk.types.EncodedTextChunk):
@@ -302,6 +303,7 @@ def build_multimodal_completions_prompt_token_ids(
             chunk,
             (sdk.types.ImageChunk, sdk.types.ImageAssetPointerChunk),
         ):
+            image_positions.append(len(prompt_token_ids))
             prompt_token_ids.append(image_placeholder_id)
             image_chunk_count += 1
         else:
@@ -317,6 +319,28 @@ def build_multimodal_completions_prompt_token_ids(
             f"renderer image chunk count ({image_chunk_count}) != images count "
             f"({len(images)}); model input and image list are misaligned"
         )
+    # Some serving tokenizers inject their image delimiters during expansion.
+    # The renderer's training input includes them; sending them a second time
+    # would give inference a different token sequence. Remove only delimiters
+    # adjacent to real ImageChunks, never matching literal text elsewhere.
+    affixes = getattr(renderer, "sampler_image_placeholder_affixes", None)
+    if affixes is not None:
+        prefix, suffix = (list(part) for part in affixes)
+        projected: List[int] = []
+        cursor = 0
+        for position in image_positions:
+            start, end = position - len(prefix), position + 1 + len(suffix)
+            if (
+                start < cursor
+                or prompt_token_ids[start:position] != prefix
+                or prompt_token_ids[position + 1 : end] != suffix
+            ):
+                raise MultimodalRenderingNotSupported("renderer image affixes disagree with its training ModelInput")
+            projected.extend(prompt_token_ids[cursor:start])
+            projected.append(image_placeholder_id)
+            cursor = end
+        projected.extend(prompt_token_ids[cursor:])
+        prompt_token_ids = projected
     return prompt_token_ids, images
 
 
@@ -351,6 +375,8 @@ def build_multimodal_completions_request(
     messages: List[Any],
     model_input: sdk.ModelInput,
     tokenizer: Any,
+    *,
+    renderer: Any | None = None,
 ) -> tuple[str, List[str]]:
     """Build ``(prompt_text, images)`` for legacy string-prompt completions.
 
@@ -361,6 +387,12 @@ def build_multimodal_completions_request(
     bridge decodes its text chunks and substitutes image placeholders; it must
     not independently re-render the source messages with a chat template.
     """
+    if getattr(renderer, "sampler_image_placeholder_affixes", None) is not None:
+        token_ids, images = build_multimodal_completions_prompt_token_ids(
+            messages, model_input, tokenizer, renderer=renderer
+        )
+        return tokenizer.decode(token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False), images
+
     images = _collect_base64_images(messages, model_input)
     if not images:
         raise MultimodalRenderingNotSupported(
@@ -815,7 +847,9 @@ async def single_turn_renderer_rollout(
             raise ValueError("Multimodal renderer-backed RL requires a tokenizer to " "build the completions prompt.")
 
         if sample_with_vision is not None:
-            prompt_text, images = build_multimodal_completions_request(messages, model_input, tokenizer)
+            prompt_text, images = build_multimodal_completions_request(
+                messages, model_input, tokenizer, renderer=renderer
+            )
             extra = {k: v for k, v in sk.items() if k not in {"n", "max_tokens", "temperature", "stop"}}
             extra.setdefault("logprobs", True)
             vision_result = await sample_with_vision(

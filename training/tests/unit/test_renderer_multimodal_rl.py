@@ -133,6 +133,16 @@ def test_model_input_to_token_ids_rejects_image_chunks():
         model_input_to_token_ids(_multimodal_prompt())
 
 
+def test_sampler_owned_image_affixes_are_removed_only_at_image_chunks():
+    prompt = _multimodal_prompt()
+    renderer = SimpleNamespace(image_placeholder_token_id=77, sampler_image_placeholder_affixes=([11], [12]))
+    actual, _ = build_multimodal_completions_prompt_token_ids([], prompt, None, renderer=renderer)
+    assert actual == [10, 77]
+    renderer.sampler_image_placeholder_affixes = ([99], [12])
+    with pytest.raises(MultimodalRenderingNotSupported, match="affixes disagree"):
+        build_multimodal_completions_prompt_token_ids([], prompt, None, renderer=renderer)
+
+
 def test_collect_base64_images_prefers_model_input_over_messages():
     messages = [
         {
@@ -699,7 +709,8 @@ async def test_single_turn_renderer_rollout_vision_accepts_sync_reward_fn():
 
 
 @pytest.mark.asyncio
-async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision():
+@pytest.mark.parametrize("native_affixes", [False, True])
+async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision(native_affixes):
     captured: dict[str, object] = {}
 
     class _Renderer:
@@ -728,11 +739,15 @@ async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision()
         raise AssertionError("token path should not run when sample_with_vision is set")
 
     tokenizer = MagicMock()
-    tokenizer.decode.side_effect = ["PROMPT:", "ASSISTANT:"]
+    tokenizer.decode.side_effect = ["PROMPT:<image>"] if native_affixes else ["PROMPT:", "ASSISTANT:"]
+    renderer = _Renderer()
+    if native_affixes:
+        renderer.image_placeholder_token_id = 77
+        renderer.sampler_image_placeholder_affixes = ([11], [12])
 
     run = await single_turn_renderer_rollout(
         {"id": 1},
-        renderer=_Renderer(),
+        renderer=renderer,
         sample_with_prompt_tokens=sample_with_prompt_tokens,
         sample_with_vision=sample_with_vision,
         message_builder=_test_messages,
@@ -740,7 +755,13 @@ async def test_single_turn_renderer_rollout_multimodal_uses_sample_with_vision()
         tokenizer=tokenizer,
     )
     assert run is not None
-    assert captured["prompt_text"] == ("PROMPT:<|vision_start|><|image_pad|><|vision_end|>ASSISTANT:")
+    assert captured["prompt_text"] == (
+        "PROMPT:<image>" if native_affixes else "PROMPT:<|vision_start|><|image_pad|><|vision_end|>ASSISTANT:"
+    )
+    if native_affixes:
+        tokenizer.decode.assert_called_once_with(
+            [10, 77], skip_special_tokens=False, clean_up_tokenization_spaces=False
+        )
     assert captured["images"] == [_BASE64_PNG]
     tokenizer.apply_chat_template.assert_not_called()
     assert run.segments[0].tokens[-2:] == [99, 100]
