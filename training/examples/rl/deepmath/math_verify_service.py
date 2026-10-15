@@ -14,10 +14,23 @@ per stdin line and one JSON boolean per stdout line.
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 import json
 import subprocess
 import sys
 import threading
+
+
+@functools.cache
+def _require_math_verify() -> None:
+    # The worker answers "no match" for any exception, so a missing package
+    # would silently score every symbolic answer 0 instead of failing the run.
+    if importlib.util.find_spec("math_verify") is None:
+        raise ImportError(
+            "DeepMath grading needs the math-verify package. Install it with "
+            "`pip install math-verify` or `pip install -e '.[dev]'` from training/."
+        )
 
 
 class MathVerifyService:
@@ -51,6 +64,7 @@ class MathVerifyService:
     def verify(self, pred_str: str, gt_str: str, timeout: float = 5.0) -> bool:
         """Return the worker's verdict, or ``False`` after killing a wedged worker."""
         with self._lock:
+            _require_math_verify()
             try:
                 proc = self._ensure()
                 assert proc.stdin is not None and proc.stdout is not None

@@ -126,6 +126,21 @@ def test_math_verify_service_works_from_worker_threads():
     assert results == [True]
 
 
+def test_missing_math_verify_fails_instead_of_scoring_zero(monkeypatch):
+    real_find_spec = math_verify_service.importlib.util.find_spec
+    monkeypatch.setattr(
+        math_verify_service.importlib.util,
+        "find_spec",
+        lambda name, *a: None if name == "math_verify" else real_find_spec(name, *a),
+    )
+    math_verify_service._require_math_verify.cache_clear()
+    try:
+        with pytest.raises(ImportError, match="math-verify"):
+            math_verify_service.MathVerifyService().verify(r"\boxed{7}", r"\boxed{7}")
+    finally:
+        math_verify_service._require_math_verify.cache_clear()
+
+
 def test_math_verify_service_kills_a_wedged_worker(tmp_path):
     slow_worker = tmp_path / "slow_worker.py"
     slow_worker.write_text(
