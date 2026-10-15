@@ -290,7 +290,7 @@ def _write_deterministic_zip(source: Path, destination: Path) -> None:
             archive.writestr(info, path.read_bytes())
 
 
-def build_sidecar_bundle(setup: RolloutSetup, bundle_root: Path) -> TITOSidecarBundle:
+def build_sidecar_bundle(setup: RolloutSetup, bundle_root: Path, *, renderer_name: str = "") -> TITOSidecarBundle:
     """Create one content-addressed source/tokenizer bundle shared by trials."""
     sdk_source, training_source = _source_roots()
     runtime_files = _sdk_runtime_files(sdk_source)
@@ -331,8 +331,21 @@ def build_sidecar_bundle(setup: RolloutSetup, bundle_root: Path) -> TITOSidecarB
         json.dumps(setup.tokenizer.special_tokens_map, sort_keys=True).encode()
     )
     chat_template = getattr(setup.tokenizer, "chat_template", None)
-    if not chat_template:
-        raise ValueError("TITO sidecar requires a tokenizer chat template")
+    native_artifacts = {}
+    if renderer_name or not chat_template:
+        # lazy: registry imports the bundle runtime through renderer plugins.
+        from training.renderer.tito.registry import _resolve_certification, get_tito_renderer_certification
+        from training.renderer.tito.shared import renderer_artifacts
+
+        certification = _resolve_certification(renderer_name)
+        if certification is not None and certification.artifact_files:
+            certification = get_tito_renderer_certification(renderer_name, setup.tokenizer)
+            native_artifacts = renderer_artifacts(setup.tokenizer, certification)
+        if not chat_template and not native_artifacts:
+            raise ValueError("TITO sidecar requires a tokenizer chat template")
+        for filename, source in sorted(native_artifacts.items()):
+            digest.update(f"native-renderer/{filename}\0".encode())
+            digest.update(source.read_bytes())
     digest.update(
         json.dumps(chat_template, sort_keys=True, ensure_ascii=False).encode()
     )
@@ -358,6 +371,10 @@ def build_sidecar_bundle(setup: RolloutSetup, bundle_root: Path) -> TITOSidecarB
         plugin_entry_points = _copy_plugin_runtime(extensions, temporary / "plugins")
         tokenizer_dir = temporary / "tokenizer"
         setup.tokenizer.save_pretrained(tokenizer_dir)
+        for filename, source in native_artifacts.items():
+            target = tokenizer_dir / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
         manifest = {
             "schema_version": _BUNDLE_VERSION,
             "sha256": bundle_digest,
@@ -892,7 +909,9 @@ async def serve(spec_path: Path) -> None:
     _register_bundled_tito_plugins(
         bundle_manifest.get("tito_plugin_entry_points") or ()
     )
-    tokenizer = load_sidecar_tokenizer(Path(SIDECAR_BUNDLE_ROOT) / "tokenizer")
+    tokenizer = load_sidecar_tokenizer(
+        Path(SIDECAR_BUNDLE_ROOT) / "tokenizer", renderer_name=str(spec["renderer_name"])
+    )
     renderer = build_sidecar_tito_renderer(
         tokenizer,
         str(spec["renderer_name"]),
