@@ -18,7 +18,7 @@ uv pip install -e .
 python3 -m venv .venv && source .venv/bin/activate && pip install -e .
 ```
 
-The cookbook requires `fireworks-ai[training]>=1.2.21,<2`, available as a stable
+The cookbook requires `fireworks-ai>=1.2.25,<2`, available as a stable
 PyPI release. `--pre` is not required. The legacy `0.19.20` package does not
 contain `fireworks.training`; install the cookbook dependencies above to upgrade.
 Training requires Python 3.11+ (the setup examples use 3.12). The cookbook declares
@@ -72,6 +72,6 @@ uv pip install --upgrade -e .
 Then verify the installed version satisfies the pin:
 
 ```bash
-grep 'fireworks-ai\[training\]' training/pyproject.toml
+grep 'fireworks-ai' pyproject.toml
 pip show fireworks-ai | grep Version
 ```
