@@ -87,9 +87,20 @@ def promotion_active(now: datetime | None = None) -> bool:
     return (now or _now()) < PROMOTION_DEADLINE
 
 
+def _error_message(exc: Exception) -> str:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if body.get("message"):
+            return str(body["message"])
+    return str(exc)
+
+
 def _connect():
     """Return a client bound to the key's account, and that account ID."""
-    from fireworks import Fireworks
+    from fireworks import AuthenticationError, Fireworks, PermissionDeniedError
 
     if not os.environ.get("FIREWORKS_API_KEY"):
         sys.exit(
@@ -100,7 +111,14 @@ def _connect():
         )
     account = os.environ.get("FIREWORKS_ACCOUNT_ID")
     if not account:
-        first = next(iter(Fireworks().accounts.list(page_size=1)), None)
+        try:
+            first = next(iter(Fireworks().accounts.list(page_size=1)), None)
+        except (AuthenticationError, PermissionDeniedError) as exc:
+            sys.exit(
+                f"Fireworks rejected FIREWORKS_API_KEY (HTTP {exc.status_code}): {_error_message(exc)}\n"
+                "Check that the key is current and belongs to the account you want, then retry. "
+                "Nothing was created."
+            )
         if first is None:
             sys.exit("Could not resolve the account for this API key; set FIREWORKS_ACCOUNT_ID.")
         account = first.name.split("/")[-1]

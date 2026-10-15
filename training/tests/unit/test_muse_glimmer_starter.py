@@ -134,6 +134,27 @@ def test_missing_key_never_asks_for_chat(monkeypatch):
     assert "Never paste it into chat" in message
 
 
+def test_rejected_key_exits_with_the_server_message(monkeypatch):
+    import fireworks
+    import httpx
+
+    def denied(self, **kwargs):
+        response = httpx.Response(403, request=httpx.Request("GET", "https://api.fireworks.ai/v1/accounts"))
+        raise fireworks.PermissionDeniedError(
+            "denied", response=response, body={"code": 7, "message": "key not allowed from this network"}
+        )
+
+    monkeypatch.setenv("FIREWORKS_API_KEY", "fw_test")
+    monkeypatch.delenv("FIREWORKS_ACCOUNT_ID", raising=False)
+    monkeypatch.setattr(fireworks.resources.accounts.AccountsResource, "list", denied)
+    with pytest.raises(SystemExit) as exc:
+        starter._connect()
+    message = str(exc.value)
+    assert "HTTP 403" in message
+    assert "key not allowed from this network" in message
+    assert "fw_test" not in message
+
+
 def test_names_are_account_relative():
     names = starter._names("acme", "router-v1")
     assert names["job"] == "accounts/acme/supervisedFineTuningJobs/muse-starter-router-v1"
