@@ -27,6 +27,10 @@ python -m examples.sft.muse_glimmer_starter plan        # read-only: account, da
 Create the key at <https://app.fireworks.ai/settings/users/api-keys>, or put
 `FIREWORKS_API_KEY=...` in a gitignored `training/.env`.
 
+If `python3 -m venv` fails with `ensurepip is not available` (stock Debian and
+Ubuntu), install the venv package (`sudo apt-get install python3-venv`) or use
+uv instead: `uv venv --python 3.12 && source .venv/bin/activate && uv pip install -e .`.
+
 ## 1. Pick a path
 
 | You want | Path | Command |
@@ -69,8 +73,12 @@ python -m examples.sft.muse_glimmer_starter prepare --file data.jsonl --run-id $
 python -m examples.sft.muse_glimmer_starter launch --surface serverless --file data.jsonl --run-id $RUN
 ```
 
+No file yet? `examples/sft/data/support_triage_train.jsonl` (72 rows) is a
+ticket-triage sample in this format; pass `--n-eval 16` with it so most rows
+stay in training.
+
 `prepare` is local and free. It validates the file (refusing malformed rows
-and listing them), holds out 40 rows (`--n-eval`), writes `train.jsonl` and
+and listing them), holds out 40 rows (`--n-eval`; the file needs more rows than that), writes `train.jsonl` and
 `holdout.jsonl` to `muse_starter_logs/$RUN/`, and prints one rendered example
 with its token count. Read the example before launching. `launch` refuses rows
 longer than `--max-seq-len` (2,048), then samples the base and tuned adapters

@@ -30,7 +30,9 @@ environment after stating what will be created:
 
 ```bash
 cd "$COOKBOOK_DIR/training"
-python3 -m venv .venv && .venv/bin/pip install -e .   # needs Python 3.11+ (check python3 --version, else python3.12); uv works too
+python3 -m venv .venv && .venv/bin/pip install -e .   # needs Python 3.11+ (check python3 --version, else python3.12)
+# if venv fails with "ensurepip is not available" (stock Debian/Ubuntu), use uv:
+# uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -e .
 .venv/bin/python -m examples.sft.muse_glimmer_starter plan
 ```
 
