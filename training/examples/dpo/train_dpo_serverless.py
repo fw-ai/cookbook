@@ -35,6 +35,8 @@ import os
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 import training.recipes.dpo_loop as dpo_loop
 from training.utils import RunnerConfig, WandBConfig
 
@@ -99,6 +101,7 @@ def build_config(args: argparse.Namespace) -> dpo_loop.Config:
 
 
 def main(argv: list[str] | None = None) -> dict:
+    load_dotenv()
     cfg = build_config(parse_args(argv))
     if not Path(cfg.dataset).exists():
         raise SystemExit(
