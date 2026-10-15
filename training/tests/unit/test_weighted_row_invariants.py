@@ -118,6 +118,11 @@ _UNCOVERED_RENDERERS = {
         "for the same reason"
     ),
     "deepseek_v4_disable_thinking": "shares the deepseek_v4 tokenizer, so it skips for that reason too",
+    "muse_spark": "gated open checkpoint tokenizer; private renderer QA covers the contract",
+    "muse_spark_low": "same gated tokenizer and class as muse_spark, with the low effort pin",
+    "muse_spark_medium": "same gated tokenizer and class as muse_spark, with the medium effort pin",
+    "muse_spark_high": "same gated tokenizer and class as muse_spark, with the high effort pin",
+    "muse_spark_xhigh": "same gated tokenizer and class as muse_spark, with the xhigh effort pin",
     "nemotron35_vl": "gated vision checkpoint tokenizer; private renderer QA covers the contract",
     "nemotron35_vl_disable_thinking": "same gated tokenizer as nemotron35_vl, with thinking disabled",
 }
