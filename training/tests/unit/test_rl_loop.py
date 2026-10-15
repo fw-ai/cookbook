@@ -107,20 +107,6 @@ def test_main_threads_checkpoint_resume_options(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    "trainer",
-    [
-        module.TrainerConfig(reference_training_shape_id="ref-shape"),
-        module.TrainerConfig(reference_job_id="ref-job"),
-    ],
-)
-def test_main_rejects_unused_reference_trainer_config(trainer) -> None:
-    cfg = module.Config(log_path="gs://logs", trainer=trainer)
-
-    with pytest.raises(ValueError, match="without a reference model"):
-        module.main(cfg)
-
-
-@pytest.mark.parametrize(
     ("config_overrides", "message"),
     [
         ({"eps_clip": -0.1}, "eps_clip"),

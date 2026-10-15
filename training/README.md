@@ -61,6 +61,10 @@ remove the old `pipeline_chunks_per_step` field. See the skills for
 
 To train another RL objective, fork a recipe and replace its loss implementation;
 see [`rl-custom-loss.md`](../skills/fireworks-training/references/rl-custom-loss.md).
+Optional reference KL uses [`utils/rl/reference.py`](utils/rl/reference.py):
+LoRA scores the frozen base with adapters disabled on its trainer;
+full-parameter tuning scores a separate frozen base-model inference deployment.
+Reference setup and scoring stay outside both stock loops.
 
 ## Case studies
 

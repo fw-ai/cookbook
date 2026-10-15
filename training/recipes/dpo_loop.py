@@ -43,7 +43,6 @@ import tempfile
 import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from typing import Any, Callable
 
 import torch
@@ -86,6 +85,7 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.resource_autosizing import select_render_worker_count
+from training.utils.rl.reference import SamplerReference
 from training.utils.runner import UserConfigError
 from training.utils.runner_state import write_completed, write_running_step
 from training.utils.serverless import setup_serverless_training
@@ -296,37 +296,6 @@ def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | DatasetError | 
 # ---------------------------------------------------------------------------
 # Reference forward
 # ---------------------------------------------------------------------------
-
-
-class SamplerReference:
-    """Score a frozen sampler snapshot in the trainer-forward token layout.
-
-    Calls run inside the existing reference semaphore. Submit/wait per sequence
-    so ref_cache_concurrency bounds sampler requests, independent of batch size.
-    """
-
-    def __init__(self, sampler: Any, *, timeout: int) -> None:
-        self._sampler = sampler
-        self._timeout = timeout
-
-    def forward(self, datums: list[sdk.Datum], loss_fn: str) -> SimpleNamespace:
-        if loss_fn != "cross_entropy":
-            raise ValueError("sampler reference supports only cross_entropy scoring")
-        outputs = []
-        for datum in datums:
-            targets = datum.loss_fn_inputs["target_tokens"].data
-            if not targets:
-                raise ValueError("reference datum must contain target tokens")
-            sequence = datum.model_input.append_int(int(targets[-1]))
-            values = self._sampler.compute_logprobs(sequence).result(timeout=self._timeout)
-            if len(values) != len(targets) + 1:
-                raise ValueError("reference logprob length does not match target tokens")
-            # Position 0 has no preceding token. Every target position must be scored.
-            aligned = values[1:]
-            if any(value is None for value in aligned):
-                raise ValueError("reference sampler returned an unscored target token")
-            outputs.append({"logprobs": SimpleNamespace(data=aligned)})
-        return SimpleNamespace(loss_fn_outputs=outputs)
 
 
 async def _ref_forward_batch(

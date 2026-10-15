@@ -106,21 +106,84 @@ With the rollout logprobs as the anchor every weight is 1.
 ## Add reference KL
 
 Client-side GRPO and REINFORCE add a reference penalty when the batch carries
-reference logprobs. In the fork, drop the loop's reference guard, pass
-`reference_required=True` to `build_service_client`, and:
+reference logprobs. Keep reference setup outside the stock sync/async loops;
+use `training.utils.rl.reference` in your custom train step. Reference scores
+come from the frozen baseline, while rollout logprobs remain the clipping
+anchor. They are different distributions with different purposes.
+
+For **LoRA**, create the SDK base-only client once on the policy service:
 
 ```python
-from dataclasses import replace
+from training.utils.rl.reference import LoraReference, with_reference_logprobs
 
-reference = service.create_reference_client(policy_client=training_client)
-ref = reference.forward(batch.data, "cross_entropy").result()
-batch = replace(batch, ref_logprobs=[list(o["logprobs"].data) for o in ref.loss_fn_outputs])
+# No explicit reference shape/job: SDK shares the LoRA trainer and disables
+# adapters on this client. Only forward on it; never optimize the reference.
+reference = LoraReference(service.create_reference_client(policy_client=training_client))
+```
+
+For **full-parameter** tuning, provision a separate base-model inference
+deployment through the SDK. Use the same validated deployment shape as the
+policy rollout and enough context for the full input plus final target (and
+one generated token for `compute_logprobs`). Do not bind this deployment to
+policy hot-loads or publish policy checkpoints to it. No reference training
+shape or second trainer is needed:
+
+```python
+from fireworks.training.sdk.deployment import DeploymentConfig
+from training.utils.rl.reference import SamplerReference, with_reference_logprobs
+
+base_sampler = service.create_inference_deployment_sampler(
+    DeploymentConfig(
+        deployment_id="frozen-base-reference",
+        base_model=cfg.base_model,
+        deployment_shape=cfg.deployment.deployment_shape,
+        min_replica_count=1,
+        enable_hot_load=False,
+        hot_load_bucket_type=None,
+    ),
+    cleanup_on_close="delete",
+    tokenizer=tokenizer,
+)
+reference_sampler = service.create_sampling_client(deployment_sampler=base_sampler)
+reference = SamplerReference(reference_sampler)
+```
+
+Close the sampling client and service in `finally`/an exit stack. Service
+cleanup deletes only deployments it created, leaving reattached resources to
+their owner. Reference inference is separately billed. Validate model/tokenizer
+identity and context coverage when choosing the reference deployment; a shorter
+LoRA training shape does not constrain full-parameter inference references.
+An independent reference can run in another region. To place it separately,
+create and wait for a `DeploymentConfig` with an explicit region through
+`DeploymentManager`, then attach it with
+`service.create_deployment_sampler_for_model(deployment.name, tokenizer=tokenizer)`
+and `service.create_sampling_client(deployment_sampler=base_sampler)`. The caller
+owns deletion of that independently created deployment. Use a region with
+available inference quota; the policy trainer's training quota is separate.
+
+For either source, score the exact token IDs without decoding/re-encoding:
+
+```python
+batch = with_reference_logprobs(batch, reference)
 policy_loss = objective.GRPOConfig(eps_clip=0.2, kl_beta=0.001)
 result = policy.forward_backward_custom(batch.data, objective.make_loss_fn(batch, policy_loss))
 ```
 
+The helper returns a new batch, preserves its rollout anchor, validates score
+lengths/finiteness and times `reference_forward`. In an async fork, use
+`batch = await asyncio.to_thread(with_reference_logprobs, batch, reference)`
+under a bounded semaphore. The sampler adapter supports shifted text datums,
+appends the final target token and removes the unscored first prompt position.
+It requests raw base logprobs at temperature 1 without top-p/top-k truncation.
+Both adapters discard policy routing replay and sampling-support metadata so
+the frozen reference chooses its own experts and scores its full vocabulary.
+Trainer and inference scores can differ numerically because their execution
+and precision differ. Multimodal scoring needs a compatible reference trainer;
+the sampler adapter cannot score image-containing inputs.
+
 Logs `train/ref_kl` and `train/mean_kl_penalty`. The built-in loss has no
-reference input, so `loss_fn_config` rejects `kl_beta > 0`.
+reference input, so `loss_fn_config` rejects `kl_beta > 0`. The stock RL loops
+keep their fixed GRPO objective and do not provision or score references.
 
 ## Replay the sampling support (top-p)
 
