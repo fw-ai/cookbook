@@ -118,9 +118,14 @@ K3 script timestamps it).
 
 | File | What it is |
 | --- | --- |
-| `support_triage_sft.py` | CLI → `sft_loop.Config(serverless=True)` → `sft_loop.main`. |
+| `train_sft_serverless.py` | CLI → `sft_loop.Config(serverless=True)` → `sft_loop.main`. |
 | `data/support_triage_train.jsonl` | 72-row sample so the example runs out of the box. Point `--dataset` at your own JSONL. |
 | `run_serverless.sh` | Kimi K3 wrapper. |
+| `train_sft.py` | Dedicated-trainer CLI on Qwen3-8B (`sft_loop.Config(serverless=False)`). Full-parameter unless you pass `--lora-rank`. |
+| `text2sql_dataset.jsonl` | 100-row text-to-SQL sample used by `train_sft.py` by default. |
+| `run.sh` | Dedicated Qwen3-8B wrapper around `train_sft.py`. |
+| `run_vl.sh`, `food_reasoning.jsonl` | Dedicated Qwen3-VL-8B vision SFT on a 50-row image sample. |
+| `muse_glimmer_starter.py` | The [Muse Glimmer mini cookbook](../muse_glimmer/README.md) starter (free first fine-tune). |
 
 Dataset rows are plain chat records —
 `{"messages": [{"role": "system"|"user"|"assistant", "content": ...}]}` — and
@@ -142,5 +147,6 @@ every assistant turn is trained on.
 - **Cost.** Defaults are a real training run against a real pooled trainer.
   Lower `--epochs` / use `--dataset` with fewer rows for a cheap smoke run.
 
-For the dedicated SFT example see [`examples/sft/`](../sft/); for the serverless
-RL counterpart see [`examples/rl/deepmath/`](../rl/deepmath/train_deepmath_serverless.py).
+For the dedicated SFT example, run `python -m examples.sft.train_sft
+--output-model-id <id>` from `training/` (see `train_sft.py` and `run.sh` above);
+for the serverless RL counterpart see [`examples/rl/deepmath/`](../rl/deepmath/train_deepmath_serverless.py).

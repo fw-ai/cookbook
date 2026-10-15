@@ -5,8 +5,8 @@
 # Runs from anywhere; paths are resolved relative to this script. Any flags you
 # pass are appended to the command, so you can override anything below, e.g.
 #
-#   ./run_kimi_k3.sh --epochs 2 --batch-size 4
-#   ./run_kimi_k3.sh --log-path <first run's log path> \
+#   ./run_serverless.sh --epochs 2 --batch-size 4
+#   ./run_serverless.sh --log-path <first run's log path> \
 #       --init-from-checkpoint <account>/run-<32 hex>/step-6
 #
 set -euo pipefail
