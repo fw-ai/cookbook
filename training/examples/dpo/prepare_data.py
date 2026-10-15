@@ -8,7 +8,7 @@ chosen/rejected responses). Output format per row:
    "rejected": {"messages": [{"role": "user", ...}, {"role": "assistant", ...}]}}
 
 Usage:
-    python prepare_data.py                      # writes data/preference_train.jsonl
+    python prepare_data.py                      # writes examples/dpo/preference_train.jsonl
     python prepare_data.py --max-rows 2000 --output /tmp/prefs.jsonl
 """
 

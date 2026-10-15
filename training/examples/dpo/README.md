@@ -105,7 +105,7 @@ correctly.
   with `no eligible shared trainer found for base model ...` (a transient
   capacity gap — retry). `base model ... is not available for serverless
   training` means the model is not on the serverless menu; use dedicated
-  training (`examples/dpo/`).
+  training (`train_dpo.py` in this directory).
 - **Account-scoped keys.** Serverless training rejects keys with access to
   multiple accounts (`create_session: account not found`).
 - **LoRA only**, and set `--max-seq-len` — there is no training shape to infer
@@ -115,6 +115,11 @@ correctly.
 - **β in (0, 0.5).** Start at 0.1; higher keeps the policy closer to the
   reference.
 
-For the dedicated (provisioned trainer) DPO example see
-[`examples/dpo/`](../dpo/); for the serverless RL counterpart see
+For the dedicated (provisioned trainer) DPO example, run
+`python -m examples.dpo.train_dpo --base-model accounts/fireworks/models/qwen3-8b
+--tokenizer-model Qwen/Qwen3-8B --dataset examples/dpo/preference_train.jsonl
+--output-model-id <id>` from `training/` (see [`train_dpo.py`](train_dpo.py)).
+The default is full-parameter, which provisions a separate reference trainer;
+pass `--lora-rank` to share one LoRA trainer session. For the serverless RL
+counterpart see
 [`examples/rl/deepmath/`](../rl/deepmath/train_deepmath_serverless.py).
