@@ -1,5 +1,27 @@
 # Harbor agentic RL
 
+## Run this with your agent
+
+Paste this into Claude Code, Cursor, Codex, or another coding agent. The
+agent installs the Fireworks training skills if they are missing and shows
+you one plan with its cost before it creates anything. The human-readable
+guide is [Cookbook: Agentic Reinforcement Learning](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/agentic-rl).
+
+```text
+Set up the Fireworks agentic RL cookbook for me with the smallest possible smoke test, starting with the Terminal-Bench example on local Docker:
+https://github.com/fw-ai/cookbook/blob/main/training/examples/harbor_rl/tasks/terminal_bench/README.md
+
+If the Fireworks training skills are not installed, install them first.
+Claude Code:
+claude plugin marketplace add fw-ai/cookbook
+claude plugin install fireworks-training@fw-ai-cookbook
+Cursor, Codex, or OpenCode. Set -a to cursor, codex, or opencode. Do not pass -a '*':
+npx --yes skills add fw-ai/cookbook -g -s fireworks-training research configure debug -a cursor -y
+
+If FIREWORKS_API_KEY is missing, walk me through https://app.fireworks.ai/settings/users/api-keys. Do not ask me to paste the key in chat.
+Run only local and read-only steps first. Show me the plan and its cost, and wait for my approval before you create anything. When we are done, clean up only what this run created.
+```
+
 Agentic RL where each rollout is a Harbor trial (local Docker or E2B). The
 layers are separate so each can change on its own:
 

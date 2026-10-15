@@ -1,5 +1,27 @@
 # Muse Glimmer mini cookbook
 
+## Run this with your agent
+
+Paste this into Claude Code, Cursor, Codex, or another coding agent. The
+agent installs the Fireworks training skills if they are missing and shows
+you one plan with its cost before it creates anything. The human-readable
+guide is [Cookbook: Muse Glimmer First Fine-Tune](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/muse-glimmer).
+
+```text
+Run the Fireworks Muse Glimmer first fine-tune cookbook for me:
+https://github.com/fw-ai/cookbook/blob/main/training/examples/muse_glimmer/README.md
+
+If the Fireworks training skills are not installed, install them first.
+Claude Code:
+claude plugin marketplace add fw-ai/cookbook
+claude plugin install fireworks-training@fw-ai-cookbook
+Cursor, Codex, or OpenCode. Set -a to cursor, codex, or opencode. Do not pass -a '*':
+npx --yes skills add fw-ai/cookbook -g -s fireworks-training research configure debug -a cursor -y
+
+If FIREWORKS_API_KEY is missing, walk me through https://app.fireworks.ai/settings/users/api-keys. Do not ask me to paste the key in chat.
+Run only local and read-only steps first. Show me the plan and its cost, and wait for my approval before you create anything. When we are done, clean up only what this run created.
+```
+
 Fine-tune Muse Glimmer 30B for free on the example datasets, then on your own
 data. "Muse Glimmer 30B SFT is free via UI and Serverless Training API until
 10/31. No credit card required"

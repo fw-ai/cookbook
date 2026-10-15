@@ -1,5 +1,27 @@
 # Distillation (OPD)
 
+## Run this with your agent
+
+Paste this into Claude Code, Cursor, Codex, or another coding agent. The
+agent installs the Fireworks training skills if they are missing and shows
+you one plan with its cost before it creates anything. The human-readable
+guide is [Cookbook: Distillation](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/distillation).
+
+```text
+Run the Fireworks on-policy distillation cookbook for me as a small smoke test, and make sure nothing is left running afterward:
+https://github.com/fw-ai/cookbook/blob/main/training/examples/distillation/README.md
+
+If the Fireworks training skills are not installed, install them first.
+Claude Code:
+claude plugin marketplace add fw-ai/cookbook
+claude plugin install fireworks-training@fw-ai-cookbook
+Cursor, Codex, or OpenCode. Set -a to cursor, codex, or opencode. Do not pass -a '*':
+npx --yes skills add fw-ai/cookbook -g -s fireworks-training research configure debug -a cursor -y
+
+If FIREWORKS_API_KEY is missing, walk me through https://app.fireworks.ai/settings/users/api-keys. Do not ask me to paste the key in chat.
+Run only local and read-only steps first. Show me the plan and its cost, and wait for my approval before you create anything. When we are done, clean up only what this run created.
+```
+
 Train a student on its **own rollouts** to match a frozen teacher. The shipping
 recipe is `training/recipes/distillation_loop.py`; helpers live in
 `training/utils/distillation/` (`losses.py`, `sampling.py`, `teacher.py`,
