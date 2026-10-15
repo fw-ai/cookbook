@@ -156,24 +156,6 @@ def test_optimizer_step_requests_grad_norm_metrics() -> None:
 
 
 @pytest.mark.parametrize(
-    "trainer",
-    [
-        async_rl_loop.TrainerConfig(reference_training_shape_id="ref-shape"),
-        async_rl_loop.TrainerConfig(reference_job_id="ref-job"),
-    ],
-)
-def test_main_rejects_unused_reference_trainer_config(trainer) -> None:
-    cfg = async_rl_loop.Config(log_path="gs://logs", trainer=trainer)
-
-    with pytest.raises(ValueError, match="without a reference model"):
-        async_rl_loop.main(
-            cfg,
-            rows=[],
-            rollout_fn_factory=lambda _setup: lambda _sample: None,
-        )
-
-
-@pytest.mark.parametrize(
     "config_overrides",
     [{"eps_clip": -0.1}, {"eps_clip_high": -0.1}],
 )

@@ -52,6 +52,10 @@ logprobs, with no reference model or KL. Their only objective fields are
 `eps_clip` and `eps_clip_high`. Other objectives, reference KL, a recomputed
 trainer anchor and sampling-support replay are forks of the train step; see
 [`rl-custom-loss.md`](rl-custom-loss.md).
+For optional KL, `training.utils.rl.reference` supplies a LoRA base-only
+trainer adapter and a frozen inference-sampler adapter for full-parameter
+tuning. Configure the reference outside either loop; the full-parameter path
+does not require a reference training shape.
 
 Forward/backward metrics retain Tinker's reducer suffixes after SDK request
 chunking. Runtime input-sharding telemetry therefore appears as
