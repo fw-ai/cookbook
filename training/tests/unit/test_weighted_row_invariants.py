@@ -118,6 +118,8 @@ _UNCOVERED_RENDERERS = {
         "for the same reason"
     ),
     "deepseek_v4_disable_thinking": "shares the deepseek_v4 tokenizer, so it skips for that reason too",
+    "nemotron35_vl": "gated vision checkpoint tokenizer; private renderer QA covers the contract",
+    "nemotron35_vl_disable_thinking": "same gated tokenizer as nemotron35_vl, with thinking disabled",
 }
 
 # Renderers that cannot render ANY multi-target multi-turn row, weighted or not.

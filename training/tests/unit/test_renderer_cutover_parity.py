@@ -92,6 +92,8 @@ _BASELINE_CUSTOM_RENDERERS = (
     "nemotron3_ultra_disable_thinking",
     "nemotron3_ultra_preserve_thinking",
     "nemotron3_ultra_preserved",
+    "nemotron35_vl",
+    "nemotron35_vl_disable_thinking",
     "gpt_oss_no_sysprompt",
     "gpt_oss_low_reasoning",
     "gpt_oss_medium_reasoning",
