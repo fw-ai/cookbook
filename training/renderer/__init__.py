@@ -30,6 +30,7 @@ from training.renderer import minimax_m2 as _minimax_m2  # noqa: F401  (register
 from training.renderer import minimax_m3 as _minimax_m3  # noqa: F401  (registers "minimax_m3")
 from training.renderer import mistral as _mistral  # noqa: F401  (registers "mistral")
 from training.renderer import muse_glimmer as _muse_glimmer  # noqa: F401  (registers "muse_glimmer")
+from training.renderer import muse_spark as _muse_spark  # noqa: F401  (registers "muse_spark")
 from training.renderer import qwen2_5 as _qwen2_5  # noqa: F401  (registers "qwen2_5")
 
 # Local overrides for upstream renderers that need disaggregate-per-user-turn
