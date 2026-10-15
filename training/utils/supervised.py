@@ -75,6 +75,9 @@ from training.utils.runner import DatasetError
 from training.utils.tokenizers import load_tokenizer
 
 _DEEPSEEK_V41_MODEL_RE = re.compile(r"(?:^|[/_.-])deepseek[-_]?v?4(?:[._-]?1|p1)(?=$|[/_.-])")
+_NEMOTRON35_VL_MODEL_RE = re.compile(
+    r"(?:^|[/_.-])(?:nemotron-3p5-super-vl|nemotron-3\.5-super-vl|nemotron3\.5-super-vl)$"
+)
 
 
 @dataclass(frozen=True)
@@ -252,7 +255,11 @@ def resolve_renderer_name(
         # Ultra and 3.5 Lightning use the same compact think wrapping, which
         # differs from Super/Nano around the closing </think> boundary.
         return "nemotron3_ultra"
-    if "nemotron" in normalized_model_name:
+    # Nemotron 3.5 Super VL selects nemotron35_vl. The internal snapshot stays
+    # on the control-plane private selector and is not inferred here.
+    if "fireworks-internal/" not in normalized_model_name and _NEMOTRON35_VL_MODEL_RE.search(normalized_model_name):
+        return "nemotron35_vl"
+    if "nemotron" in normalized_model_name and "fireworks-internal/" not in normalized_model_name:
         # Route the Nemotron family to the Nemotron-3
         # renderer ("nemotron3"), which restores the prompt-prefilled <think>
         # in parse_response via _normalize_response_tokens. The retired

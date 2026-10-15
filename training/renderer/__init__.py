@@ -38,6 +38,7 @@ from training.renderer import _qwen3_split as _qwen3_split  # noqa: F401
 from training.renderer import _deepseek_v3_split as _deepseek_v3_split  # noqa: F401
 from training.renderer import _kimi_k25_split as _kimi_k25_split  # noqa: F401
 from training.renderer import _nemotron3_split as _nemotron3_split  # noqa: F401
+from training.renderer import nemotron35 as _nemotron35  # noqa: F401  (registers "nemotron35_vl")
 from training.renderer import _gpt_oss_split as _gpt_oss_split  # noqa: F401
 from training.renderer import _gemma4_split as _gemma4_split  # noqa: F401
 
