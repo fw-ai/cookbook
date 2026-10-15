@@ -2,7 +2,7 @@
 history-thinking strip patch on ``render_message``.
 
 There are two layered bugs in upstream
-``training._vendor.tinker_cookbook_0_4_3.renderers.gpt_oss.GptOssRenderer``:
+``training.renderer.gpt_oss.GptOssRenderer``:
 
 1. ``render_message`` (gpt_oss.py:265-268) emits the analysis channel
    for any assistant message that carries thinking content, with no
@@ -40,20 +40,20 @@ from __future__ import annotations
 
 from typing import Any
 
-import tinker
 import torch
+from fireworks.training import sdk
+
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.base import Message as RenderMessage
+from training.renderer.base import (
     RenderContext,
     RenderedMessage,
     Renderer,
     TrainOnWhat,
+    ensure_list,
 )
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message as RenderMessage
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import ensure_list
-from training._vendor.tinker_cookbook_0_4_3.renderers.gpt_oss import GptOssRenderer
-
-from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.gpt_oss import GptOssRenderer
 from training.renderer.message_weights import untrained_synthesized_context
 
 
@@ -68,7 +68,7 @@ class GptOssSplitRenderer(DisaggregateMultiTurnMixin, GptOssRenderer):
         self,
         messages: list[RenderMessage],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         """Declare gpt-oss's reasoning-effort preamble untrained.
 
         Upstream prepends ``_get_system_message()`` from inside its own
@@ -78,11 +78,7 @@ class GptOssSplitRenderer(DisaggregateMultiTurnMixin, GptOssRenderer):
         preamble is template context that never carries loss; upstream exposes
         no seam to flag it, so repeat its two-line prepend here instead.
         """
-        system_message = (
-            self._get_system_message()
-            if train_on_what is TrainOnWhat.CUSTOMIZED
-            else None
-        )
+        system_message = self._get_system_message() if train_on_what is TrainOnWhat.CUSTOMIZED else None
         if system_message is None:
             return super().build_supervised_example(messages, train_on_what)
         self._warn_if_user_system_message(messages)
@@ -92,22 +88,12 @@ class GptOssSplitRenderer(DisaggregateMultiTurnMixin, GptOssRenderer):
             train_on_what=train_on_what,
         )
 
-    def render_message(
-        self, message: RenderMessage, ctx: RenderContext
-    ) -> RenderedMessage:
-        if (
-            message.get("role") == "assistant"
-            and ctx.last_user_index >= 0
-            and ctx.idx <= ctx.last_user_index
-        ):
+    def render_message(self, message: RenderMessage, ctx: RenderContext) -> RenderedMessage:
+        if message.get("role") == "assistant" and ctx.last_user_index >= 0 and ctx.idx <= ctx.last_user_index:
             content = message.get("content")
             if content is not None:
                 parts = ensure_list(content)
-                stripped = [
-                    p
-                    for p in parts
-                    if not (isinstance(p, dict) and p.get("type") == "thinking")
-                ]
+                stripped = [p for p in parts if not (isinstance(p, dict) and p.get("type") == "thinking")]
                 if len(stripped) != len(parts):
                     new_msg: dict[str, Any] = dict(message)
                     new_msg["content"] = stripped
@@ -121,19 +107,13 @@ register_renderer(
 )
 register_renderer(
     "gpt_oss_low_reasoning",
-    lambda tok, ip=None: GptOssSplitRenderer(
-        tok, use_system_prompt=True, reasoning_effort="low"
-    ),
+    lambda tok, ip=None: GptOssSplitRenderer(tok, use_system_prompt=True, reasoning_effort="low"),
 )
 register_renderer(
     "gpt_oss_medium_reasoning",
-    lambda tok, ip=None: GptOssSplitRenderer(
-        tok, use_system_prompt=True, reasoning_effort="medium"
-    ),
+    lambda tok, ip=None: GptOssSplitRenderer(tok, use_system_prompt=True, reasoning_effort="medium"),
 )
 register_renderer(
     "gpt_oss_high_reasoning",
-    lambda tok, ip=None: GptOssSplitRenderer(
-        tok, use_system_prompt=True, reasoning_effort="high"
-    ),
+    lambda tok, ip=None: GptOssSplitRenderer(tok, use_system_prompt=True, reasoning_effort="high"),
 )

@@ -48,11 +48,10 @@ from functools import cache
 from typing import Any
 
 import pytest
-import transformers
-
 import training.renderer  # noqa: F401  — registers Split overrides
+import transformers
 from training.renderer import get_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import Renderer, TrainOnWhat
+from training.renderer.base import Renderer, TrainOnWhat
 from training.utils.supervised import render_messages_to_datums
 
 # (registered name, HF model id, override class name).
@@ -136,9 +135,7 @@ def _tokenizer_load_timeout(seconds: int = 30):
 def _load_tokenizer(model_id: str):
     try:
         with _tokenizer_load_timeout():
-            return transformers.AutoTokenizer.from_pretrained(
-                model_id, trust_remote_code=True
-            )
+            return transformers.AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     except _TokenizerLoadTimeout:
         return None
     except Exception:  # noqa: BLE001 — network / gated repo / config drift
@@ -173,10 +170,7 @@ def _resolve_renderer(name: str, model_id: str, split_classname: str):
         pytest.skip(f"tokenizer for {model_id!r} not available")
     renderer = get_renderer(name, tok)
     if type(renderer).__name__ != split_classname:
-        pytest.fail(
-            f"{name!r} should resolve to local {split_classname}, got "
-            f"{type(renderer).__name__}"
-        )
+        pytest.fail(f"{name!r} should resolve to local {split_classname}, got " f"{type(renderer).__name__}")
     return tok, renderer
 
 
@@ -259,15 +253,12 @@ def _intermittent_answer_for_turn(turn_idx: int) -> str:
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_split_override_registered_and_has_disaggregate(
-    name: str, model_id: str, split_classname: str
-):
+def test_split_override_registered_and_has_disaggregate(name: str, model_id: str, split_classname: str):
     tok, renderer = _resolve_renderer(name, model_id, split_classname)
 
     # Disaggregate mixin's ``build_supervised_examples`` shadows the base.
     assert (
-        type(renderer).build_supervised_examples
-        is not Renderer.build_supervised_examples
+        type(renderer).build_supervised_examples is not Renderer.build_supervised_examples
     ), f"{split_classname} must override build_supervised_examples"
     assert renderer.has_extension_property is False, (
         f"{name!r}: has_extension_property must be False so dispatcher routes "
@@ -285,15 +276,11 @@ def test_split_override_registered_and_has_disaggregate(
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_disaggregate_produces_n_examples(
-    name: str, model_id: str, split_classname: str
-):
+def test_disaggregate_produces_n_examples(name: str, model_id: str, split_classname: str):
     tok, renderer = _resolve_renderer(name, model_id, split_classname)
 
     messages = _multi_turn_messages(n=3)
-    examples = renderer.build_supervised_examples(
-        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
-    )
+    examples = renderer.build_supervised_examples(messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES)
     user_idxs = [i for i, m in enumerate(messages) if m["role"] == "user"]
     assert len(examples) == len(user_idxs), (
         f"{name!r}: expected {len(user_idxs)} per-turn datums, " f"got {len(examples)}"
@@ -306,8 +293,7 @@ def test_disaggregate_produces_n_examples(
         trained = _trained_text(tok, token_ids, weights)
         expected_answer = messages[user_idxs[i] + 1]["content"]
         assert expected_answer in trained, (
-            f"{name!r} datum {i}: trained tokens should contain {expected_answer!r}; "
-            f"got {trained!r}"
+            f"{name!r} datum {i}: trained tokens should contain {expected_answer!r}; " f"got {trained!r}"
         )
 
 
@@ -321,9 +307,7 @@ def test_disaggregate_produces_n_examples(
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_disaggregate_strips_history_thinking(
-    name: str, model_id: str, split_classname: str
-):
+def test_disaggregate_strips_history_thinking(name: str, model_id: str, split_classname: str):
     """The headline correctness invariant: in datum ``i``, the *current*
     assistant turn's reasoning_content survives rendering, while reasoning
     from any *earlier* assistant turn is stripped (matches what HF
@@ -331,9 +315,7 @@ def test_disaggregate_strips_history_thinking(
     tok, renderer = _resolve_renderer(name, model_id, split_classname)
 
     messages = _multi_turn_messages_with_reasoning(n=3)
-    examples = renderer.build_supervised_examples(
-        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
-    )
+    examples = renderer.build_supervised_examples(messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES)
 
     # Some renderers (e.g. plain ``qwen3_disable_thinking``,
     # ``gpt_oss_*``) do not consume ``reasoning_content`` at all because
@@ -341,10 +323,7 @@ def test_disaggregate_strips_history_thinking(
     # at the singular level: if no datum carries any sentinel, the
     # assertion below is vacuous and we skip cleanly. This guards us
     # against false negatives without weakening the strip check.
-    if not any(
-        f"REASON_TURN_{i + 1}" in _decoded(tok, list(ex[0].to_ints()))
-        for i, ex in enumerate(examples)
-    ):
+    if not any(f"REASON_TURN_{i + 1}" in _decoded(tok, list(ex[0].to_ints())) for i, ex in enumerate(examples)):
         pytest.skip(
             f"{name!r}: chat template does not surface reasoning_content "
             "(non-thinking renderer family); strip-from-history check N/A"
@@ -387,23 +366,15 @@ def test_disaggregate_mixed_thinking_exact_prefix_tokenization_and_masking(
     tok, renderer = _resolve_renderer(name, model_id, split_classname)
 
     messages = _multi_turn_messages_with_intermittent_reasoning()
-    examples = renderer.build_supervised_examples(
-        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
-    )
-    user_idxs = [
-        idx for idx, message in enumerate(messages) if message["role"] == "user"
-    ]
-    expected_prefixes = [
-        messages[:next_user_idx] for next_user_idx in [*user_idxs[1:], len(messages)]
-    ]
+    examples = renderer.build_supervised_examples(messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES)
+    user_idxs = [idx for idx, message in enumerate(messages) if message["role"] == "user"]
+    expected_prefixes = [messages[:next_user_idx] for next_user_idx in [*user_idxs[1:], len(messages)]]
 
     assert len(examples) == len(expected_prefixes)
 
     for idx, (actual, prefix) in enumerate(zip(examples, expected_prefixes)):
         actual_token_ids, actual_weights = _token_ids_and_weights(actual)
-        expected = renderer.build_supervised_example(
-            prefix, train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN
-        )
+        expected = renderer.build_supervised_example(prefix, train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN)
         expected_token_ids, expected_weights = _token_ids_and_weights(expected)
 
         assert actual_token_ids == expected_token_ids, (
@@ -415,14 +386,11 @@ def test_disaggregate_mixed_thinking_exact_prefix_tokenization_and_masking(
             "independent LAST_ASSISTANT_TURN prefix render"
         )
 
-    trained_slices = [
-        _trained_text(tok, *_token_ids_and_weights(example)) for example in examples
-    ]
+    trained_slices = [_trained_text(tok, *_token_ids_and_weights(example)) for example in examples]
     for idx, trained in enumerate(trained_slices):
         expected_answer = _intermittent_answer_for_turn(idx)
         assert expected_answer in trained, (
-            f"{name!r} datum {idx}: current assistant answer must be trained; "
-            f"got trained slice {trained!r}"
+            f"{name!r} datum {idx}: current assistant answer must be trained; " f"got trained slice {trained!r}"
         )
         for earlier in range(idx):
             earlier_answer = _intermittent_answer_for_turn(earlier)
@@ -431,9 +399,7 @@ def test_disaggregate_mixed_thinking_exact_prefix_tokenization_and_masking(
                 f"{earlier_answer!r} must remain masked; got {trained!r}"
             )
 
-    decoded_datums = [
-        _decoded(tok, _token_ids_and_weights(example)[0]) for example in examples
-    ]
+    decoded_datums = [_decoded(tok, _token_ids_and_weights(example)[0]) for example in examples]
     if not any("INTERMITTENT_REASON_TURN_" in decoded for decoded in decoded_datums):
         pytest.skip(
             f"{name!r}: chat template does not surface intermittent reasoning "
@@ -441,20 +407,17 @@ def test_disaggregate_mixed_thinking_exact_prefix_tokenization_and_masking(
         )
 
     assert "INTERMITTENT_REASON_TURN_2" in trained_slices[1], (
-        f"{name!r}: intermediate current-turn reasoning must be trained in datum 1; "
-        f"got {trained_slices[1]!r}"
+        f"{name!r}: intermediate current-turn reasoning must be trained in datum 1; " f"got {trained_slices[1]!r}"
     )
     assert "INTERMITTENT_REASON_TURN_2" not in decoded_datums[2], (
         f"{name!r}: once turn 2 becomes history, its reasoning must be stripped "
         f"from datum 2; got {decoded_datums[2]!r}"
     )
     assert "INTERMITTENT_REASON_TURN_2" not in decoded_datums[3], (
-        f"{name!r}: turn 2 reasoning must stay stripped from later history; "
-        f"got {decoded_datums[3]!r}"
+        f"{name!r}: turn 2 reasoning must stay stripped from later history; " f"got {decoded_datums[3]!r}"
     )
     assert "INTERMITTENT_REASON_TURN_4" in trained_slices[3], (
-        f"{name!r}: final current-turn reasoning must be trained in datum 3; "
-        f"got {trained_slices[3]!r}"
+        f"{name!r}: final current-turn reasoning must be trained in datum 3; " f"got {trained_slices[3]!r}"
     )
 
 
@@ -468,18 +431,14 @@ def test_disaggregate_mixed_thinking_exact_prefix_tokenization_and_masking(
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_disaggregate_per_datum_weight_mask_only_last_assistant(
-    name: str, model_id: str, split_classname: str
-):
+def test_disaggregate_per_datum_weight_mask_only_last_assistant(name: str, model_id: str, split_classname: str):
     """Each per-turn datum is rendered as ``LAST_ASSISTANT_TURN``; the
     weight mask must therefore train ONLY the last assistant turn's
     answer, not earlier assistant answers in the same prefix."""
     tok, renderer = _resolve_renderer(name, model_id, split_classname)
 
     messages = _multi_turn_messages(n=3)
-    examples = renderer.build_supervised_examples(
-        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
-    )
+    examples = renderer.build_supervised_examples(messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES)
     user_idxs = [i for i, m in enumerate(messages) if m["role"] == "user"]
 
     for i, example in enumerate(examples):
@@ -490,8 +449,7 @@ def test_disaggregate_per_datum_weight_mask_only_last_assistant(
         # Current turn's answer trained.
         current_answer = messages[user_idxs[i] + 1]["content"]
         assert current_answer in trained, (
-            f"{name!r} datum {i}: expected {current_answer!r} in trained "
-            f"slice; got {trained!r}"
+            f"{name!r} datum {i}: expected {current_answer!r} in trained " f"slice; got {trained!r}"
         )
         # Earlier turns' answers must NOT be trained — they are part of
         # the prefix context, weighted zero.
@@ -524,12 +482,8 @@ def test_single_turn_skips_disaggregate(name: str, model_id: str, split_classnam
         {"role": "user", "content": "single Q"},
         {"role": "assistant", "content": "single A"},
     ]
-    examples = renderer.build_supervised_examples(
-        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
-    )
-    assert (
-        len(examples) == 1
-    ), f"{name!r}: single-user-turn should produce 1 datum, got {len(examples)}"
+    examples = renderer.build_supervised_examples(messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES)
+    assert len(examples) == 1, f"{name!r}: single-user-turn should produce 1 datum, got {len(examples)}"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -537,17 +491,13 @@ def test_single_turn_skips_disaggregate(name: str, model_id: str, split_classnam
 # ─────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "mode", [TrainOnWhat.LAST_ASSISTANT_MESSAGE, TrainOnWhat.LAST_ASSISTANT_TURN]
-)
+@pytest.mark.parametrize("mode", [TrainOnWhat.LAST_ASSISTANT_MESSAGE, TrainOnWhat.LAST_ASSISTANT_TURN])
 @pytest.mark.parametrize(
     "name,model_id,split_classname",
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_last_assistant_mode_short_circuits(
-    name: str, model_id: str, split_classname: str, mode: TrainOnWhat
-):
+def test_last_assistant_mode_short_circuits(name: str, model_id: str, split_classname: str, mode: TrainOnWhat):
     """Even with multi-turn data, ``LAST_ASSISTANT_*`` modes must produce
     a single datum — the mixin's second fast-path covers this. Trained
     tokens should match only the final assistant answer."""
@@ -555,17 +505,11 @@ def test_last_assistant_mode_short_circuits(
 
     messages = _multi_turn_messages(n=3)
     examples = renderer.build_supervised_examples(messages, train_on_what=mode)
-    assert len(examples) == 1, (
-        f"{name!r} mode={mode}: must produce 1 datum (fast-path), "
-        f"got {len(examples)}"
-    )
+    assert len(examples) == 1, f"{name!r} mode={mode}: must produce 1 datum (fast-path), " f"got {len(examples)}"
     token_ids = list(examples[0][0].to_ints())
     weights = examples[0][1].tolist()
     trained = _trained_text(tok, token_ids, weights)
-    assert "A3" in trained, (
-        f"{name!r} mode={mode}: final answer 'A3' missing from trained "
-        f"slice; got {trained!r}"
-    )
+    assert "A3" in trained, f"{name!r} mode={mode}: final answer 'A3' missing from trained " f"slice; got {trained!r}"
     # Earlier answers must be in context (zero-weighted) but not in trained.
     assert "A1" not in trained
     assert "A2" not in trained
@@ -581,9 +525,7 @@ def test_last_assistant_mode_short_circuits(
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_non_assistant_split_mode_warns_and_splits(
-    name: str, model_id: str, split_classname: str
-):
+def test_non_assistant_split_mode_warns_and_splits(name: str, model_id: str, split_classname: str):
     """``ALL_TOKENS`` / ``ALL_MESSAGES`` / ``ALL_USER_AND_SYSTEM_MESSAGES``
     on a non-extension renderer should fire the
     "does not satisfy the extension property" warning and still produce
@@ -593,12 +535,8 @@ def test_non_assistant_split_mode_warns_and_splits(
     messages = _multi_turn_messages(n=3)
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
-        examples = renderer.build_supervised_examples(
-            messages, train_on_what=TrainOnWhat.ALL_MESSAGES
-        )
-    assert any(
-        "does not satisfy the extension property" in str(w.message) for w in captured
-    ), (
+        examples = renderer.build_supervised_examples(messages, train_on_what=TrainOnWhat.ALL_MESSAGES)
+    assert any("does not satisfy the extension property" in str(w.message) for w in captured), (
         f"{name!r}: expected extension-property warning for ALL_MESSAGES; "
         f"captured: {[str(w.message) for w in captured]!r}"
     )
@@ -616,9 +554,7 @@ def test_non_assistant_split_mode_warns_and_splits(
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_disaggregate_skips_non_trainable_round(
-    name: str, model_id: str, split_classname: str
-):
+def test_disaggregate_skips_non_trainable_round(name: str, model_id: str, split_classname: str):
     """A round whose terminal assistant is marked non-trainable
     (``weight=0`` or ``trainable=False``) must NOT generate a datum.
     The non-trainable assistant remains in the prefix of any later
@@ -634,9 +570,7 @@ def test_disaggregate_skips_non_trainable_round(
         {"role": "user", "content": "Q3"},
         {"role": "assistant", "content": "A3"},
     ]
-    examples = renderer.build_supervised_examples(
-        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
-    )
+    examples = renderer.build_supervised_examples(messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES)
 
     # 3 user turns → 3 candidate rounds, but the middle one's terminal
     # assistant (A2) is non-trainable → 2 datums.
@@ -646,9 +580,7 @@ def test_disaggregate_skips_non_trainable_round(
     )
 
     # Datum 0 trains A1, not A2 / A3.
-    trained0 = _trained_text(
-        tok, list(examples[0][0].to_ints()), examples[0][1].tolist()
-    )
+    trained0 = _trained_text(tok, list(examples[0][0].to_ints()), examples[0][1].tolist())
     assert "A1" in trained0
     assert "A2" not in trained0
     assert "A3" not in trained0
@@ -656,16 +588,13 @@ def test_disaggregate_skips_non_trainable_round(
     # Datum 1 trains A3 only. A2 is in the prefix as context (decoded
     # tokens contain A2) but its tokens are weight=0 (not in trained slice).
     decoded1 = _decoded(tok, list(examples[1][0].to_ints()))
-    trained1 = _trained_text(
-        tok, list(examples[1][0].to_ints()), examples[1][1].tolist()
-    )
+    trained1 = _trained_text(tok, list(examples[1][0].to_ints()), examples[1][1].tolist())
     assert "A2" in decoded1, (
         f"{name!r}: non-trainable A2 should still appear in datum 1's "
         f"prompt context as conversation history; got: {decoded1!r}"
     )
     assert "A2" not in trained1, (
-        f"{name!r}: non-trainable A2 must not appear in trained tokens; "
-        f"got trained slice: {trained1!r}"
+        f"{name!r}: non-trainable A2 must not appear in trained tokens; " f"got trained slice: {trained1!r}"
     )
     assert "A3" in trained1
 
@@ -675,9 +604,7 @@ def test_disaggregate_skips_non_trainable_round(
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_weighted_row_trains_each_answer_once_through_production_path(
-    name: str, model_id: str, split_classname: str
-):
+def test_weighted_row_trains_each_answer_once_through_production_path(name: str, model_id: str, split_classname: str):
     """The production entry point promotes a row carrying ``weight`` to
     ``CUSTOMIZED``. Each unrolled datum must still train only its own
     terminal answer, so an answer is never trained twice and a masked
@@ -700,25 +627,20 @@ def test_weighted_row_trains_each_answer_once_through_production_path(
         train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
     )
 
-    trained_slices = [
-        _trained_text(tok, datum.token_ids, datum.token_weights) for datum in rendered
-    ]
+    trained_slices = [_trained_text(tok, datum.token_ids, datum.token_weights) for datum in rendered]
     assert len(trained_slices) == 3, (
-        f"{name!r}: expected 3 datums (A3's round is masked out); "
-        f"got {len(trained_slices)}"
+        f"{name!r}: expected 3 datums (A3's round is masked out); " f"got {len(trained_slices)}"
     )
     for datum_index, expected_answer in enumerate(["A1", "A2", "A4"]):
         trained = trained_slices[datum_index]
         assert expected_answer in trained, (
-            f"{name!r} datum {datum_index}: {expected_answer!r} must be trained; "
-            f"got {trained!r}"
+            f"{name!r} datum {datum_index}: {expected_answer!r} must be trained; " f"got {trained!r}"
         )
         for other in ("A1", "A2", "A3", "A4"):
             if other == expected_answer:
                 continue
             assert other not in trained, (
-                f"{name!r} datum {datum_index}: {other!r} must stay masked in this "
-                f"datum; got {trained!r}"
+                f"{name!r} datum {datum_index}: {other!r} must stay masked in this " f"datum; got {trained!r}"
             )
 
 
@@ -727,18 +649,13 @@ def test_weighted_row_trains_each_answer_once_through_production_path(
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_all_weights_one_renders_like_an_unweighted_row(
-    name: str, model_id: str, split_classname: str
-):
+def test_all_weights_one_renders_like_an_unweighted_row(name: str, model_id: str, split_classname: str):
     """``weight: 1`` on every assistant turn states the default, so the row
     must render byte-for-byte like the same row without any weights."""
     _tok, renderer = _resolve_renderer(name, model_id, split_classname)
 
     messages = _multi_turn_messages(n=3)
-    weighted = [
-        {**message, "weight": 1} if message["role"] == "assistant" else message
-        for message in messages
-    ]
+    weighted = [{**message, "weight": 1} if message["role"] == "assistant" else message for message in messages]
 
     def _rendered(rows: list[dict[str, Any]]):
         return [
@@ -750,9 +667,9 @@ def test_all_weights_one_renders_like_an_unweighted_row(
             )
         ]
 
-    assert _rendered(weighted) == _rendered(messages), (
-        f"{name!r}: explicit weight=1 must not change tokenization or masks"
-    )
+    assert _rendered(weighted) == _rendered(
+        messages
+    ), f"{name!r}: explicit weight=1 must not change tokenization or masks"
 
 
 @pytest.mark.parametrize(
@@ -760,9 +677,7 @@ def test_all_weights_one_renders_like_an_unweighted_row(
     _PARITY_CASES,
     ids=[case[0] for case in _PARITY_CASES],
 )
-def test_disaggregate_skips_first_round_with_weight_zero(
-    name: str, model_id: str, split_classname: str
-):
+def test_disaggregate_skips_first_round_with_weight_zero(name: str, model_id: str, split_classname: str):
     """Skip filter applies to the *first* round too — not just middle ones.
     A first-turn assistant with weight=0 leaves no datum at all unless a
     later trainable round exists."""
@@ -774,17 +689,12 @@ def test_disaggregate_skips_first_round_with_weight_zero(
         {"role": "user", "content": "Q2"},
         {"role": "assistant", "content": "A2"},
     ]
-    examples = renderer.build_supervised_examples(
-        messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES
-    )
+    examples = renderer.build_supervised_examples(messages, train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES)
     assert len(examples) == 1, (
-        f"{name!r}: first-round terminal A1 weight=0 → skip; A2 round → 1 "
-        f"datum. Got {len(examples)}"
+        f"{name!r}: first-round terminal A1 weight=0 → skip; A2 round → 1 " f"datum. Got {len(examples)}"
     )
     decoded = _decoded(tok, list(examples[0][0].to_ints()))
-    trained = _trained_text(
-        tok, list(examples[0][0].to_ints()), examples[0][1].tolist()
-    )
+    trained = _trained_text(tok, list(examples[0][0].to_ints()), examples[0][1].tolist())
     # A1 still in prefix as context, just not trained.
     assert "A1" in decoded
     assert "A1" not in trained

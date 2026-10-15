@@ -45,9 +45,9 @@ forgetting (see SDFT, Shenfeld et al. 2026).
 | datums + loss | `build_opd_prompt_group` → `build_opd_datums` → `importance_sampling` | same |
 | metrics | `forward_backward_metrics`, `optimizer_metrics`, `train/opd_*` | same |
 
-No recipe covers this shape: `distillation_loop` needs deployments, and
-[`recipes/sdft_loop.py`](../../../recipes/sdft_loop.py) is top-K SDFT on
-SciKnowEval golden-answer prompts.
+The shared `distillation_loop` recipe needs deployments; this example owns
+the serverless sampled-token OPD loop. For top-K SDFT, see the
+[external cookbook guide](../../../docs/sdft.md).
 
 ## Run
 

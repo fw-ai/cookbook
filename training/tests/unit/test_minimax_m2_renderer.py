@@ -13,10 +13,9 @@ from typing import Any
 
 import pytest
 import transformers
-
-from training.renderer.minimax_m2 import MiniMaxM2Renderer
 from training.renderer import get_text_content
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext, ToolCall, TrainOnWhat
+from training.renderer.base import RenderContext, ToolCall, TrainOnWhat
+from training.renderer.minimax_m2 import MiniMaxM2Renderer
 
 _LOCAL_PATH = os.environ.get("MINIMAX_M2_LOCAL_TOKENIZER")
 _HF_REPO = "MiniMaxAI/MiniMax-M2"
@@ -99,8 +98,7 @@ def _assert_tokens_match(
     expected_text = tokenizer.decode(expected)
     actual_text = tokenizer.decode(actual)
     assert expected == actual, (
-        f"Token mismatch:\n--- expected ---\n{expected_text}\n\n"
-        f"--- actual ---\n{actual_text}"
+        f"Token mismatch:\n--- expected ---\n{expected_text}\n\n" f"--- actual ---\n{actual_text}"
     )
 
 
@@ -247,20 +245,14 @@ def test_parse_response_restores_prefilled_think(
 
     simulated = "reasoning\n</think>\nfinal answer"
     assert "<think>" not in simulated
-    ids = tokenizer.encode(simulated, add_special_tokens=False) + [
-        renderer._end_message_token
-    ]
+    ids = tokenizer.encode(simulated, add_special_tokens=False) + [renderer._end_message_token]
 
     message, ok = renderer.parse_response(ids)
 
     assert ok is True
     content = message["content"]
     assert isinstance(content, list)
-    thinking = "".join(
-        part.get("thinking", "")
-        for part in content
-        if part.get("type") == "thinking"
-    )
+    thinking = "".join(part.get("thinking", "") for part in content if part.get("type") == "thinking")
     text = get_text_content(message)
     assert "reasoning" in thinking
     assert "final answer" in text
@@ -497,9 +489,7 @@ def test_supervised_weights_mask_non_assistant(
     )
     output_slices = _message_output_slices(renderer, messages)
     assistant_slices = [slice_ for role, slice_ in output_slices if role == "assistant"]
-    non_assistant_slices = [
-        slice_ for role, slice_ in output_slices if role != "assistant"
-    ]
+    non_assistant_slices = [slice_ for role, slice_ in output_slices if role != "assistant"]
 
     assert len(assistant_slices) == 1
     for assistant_slice in assistant_slices:

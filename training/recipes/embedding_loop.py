@@ -30,10 +30,8 @@ from contextlib import ExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
-import tinker
-from tinker import types
-
-from training.utils.termination import TerminatedBySignal
+from fireworks.training import sdk
+from fireworks.training.sdk import types
 from training.utils import (
     DEFAULT_ADAM,
     ReconnectableClient,
@@ -54,6 +52,7 @@ from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.embedding import info_nce_loss_fn
 from training.utils.logging import log_run_resources
 from training.utils.metrics import forward_backward_metrics, optimizer_metrics
+from training.utils.termination import TerminatedBySignal
 from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -144,12 +143,18 @@ def _build_batch_datums(
     # <|endoftext|>); if yours appends none, prefer mean pooling or set
     # tokenizer.truncation_side="left" so a real end token isn't dropped.
     query_ids = tokenizer(
-        query_texts, add_special_tokens=True, truncation=True,
-        max_length=max_query_len, padding=False,
+        query_texts,
+        add_special_tokens=True,
+        truncation=True,
+        max_length=max_query_len,
+        padding=False,
     )["input_ids"]
     doc_ids = tokenizer(
-        doc_texts, add_special_tokens=True, truncation=True,
-        max_length=max_doc_len, padding=False,
+        doc_texts,
+        add_special_tokens=True,
+        truncation=True,
+        max_length=max_doc_len,
+        padding=False,
     )["input_ids"]
 
     return [
@@ -162,9 +167,7 @@ def main(config: Config) -> dict[str, Any]:
     cfg = config
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
     if cfg.batch_size < 2:
-        raise ValueError(
-            f"batch_size must be >= 2 for in-batch negatives (got {cfg.batch_size})."
-        )
+        raise ValueError(f"batch_size must be >= 2 for in-batch negatives (got {cfg.batch_size}).")
     if not cfg.tokenizer_model:
         raise ValueError(
             "Config.tokenizer_model is required for client-side tokenization. "
@@ -254,7 +257,7 @@ def main(config: Config) -> dict[str, Any]:
         # -- Training loop (VISIBLE algorithm phases) -------------------------
 
         loss_fn = info_nce_loss_fn(cfg.batch_size, cfg.temperature)
-        adam_params = tinker.AdamParams(
+        adam_params = sdk.AdamParams(
             learning_rate=cfg.learning_rate,
             **{**DEFAULT_ADAM, "grad_clip_norm": cfg.grad_clip_norm},
         )
@@ -276,7 +279,10 @@ def main(config: Config) -> dict[str, Any]:
                 #    policy.forward_backward_contrastive(datums, num_queries=B, temperature=T).
                 with elapsed_timer("fwd_bwd"):
                     fwd_bwd_result = policy.forward_backward_custom(
-                        datums, loss_fn, output="embedding", pooling="last",
+                        datums,
+                        loss_fn,
+                        output="embedding",
+                        pooling="last",
                     )
                 # 2. One optimizer step.
                 with elapsed_timer("optim_step"):

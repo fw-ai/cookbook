@@ -45,32 +45,31 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Dict, List, Literal
 
-import tinker
 import torch
 from dotenv import load_dotenv
+from fireworks.training import sdk
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
     default_constant_schedule,
     normalize_lr_scheduler_spec,
 )
-from training.utils.termination import TerminatedBySignal
-from training.utils import fileio
 from training.utils import (
     DEFAULT_ADAM,
+    JSONL_ROW_INDEX_KEY,
+    NO_VALID_TRAINING_EXAMPLES_MESSAGE,
     DatasetError,
     GcsJsonlRenderDataset,
-    NO_VALID_TRAINING_EXAMPLES_MESSAGE,
-    TrainerConfig,
-    JSONL_ROW_INDEX_KEY,
     JsonlRenderDataset,
     RawRowCursor,
     ReconnectableClient,
     RunnerConfig,
     RunnerIO,
     RunStatus,
+    TrainerConfig,
     WandBConfig,
     build_service_client,
+    fileio,
     log_metrics_json,
     make_render_dataloader,
     parse_train_on_what,
@@ -86,16 +85,24 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.client import DEFAULT_TIMEOUT_S
-from training.utils.serverless import setup_serverless_training
-from training.utils.sft_generation_eval import prepare_generation_eval, run_generation_eval
 from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
 from training.utils.metrics import optimizer_metrics
 from training.utils.resource_autosizing import select_render_worker_count
+from training.utils.runner_state import (
+    start_running,
+    write_completed,
+    write_running_step,
+)
+from training.utils.serverless import setup_serverless_training
+from training.utils.sft_generation_eval import (
+    prepare_generation_eval,
+    run_generation_eval,
+)
 from training.utils.streaming import (
     dataset_error_for_rendered_row,
     raise_rendered_dataset_errors,
 )
-from training.utils.runner_state import start_running, write_completed, write_running_step
+from training.utils.termination import TerminatedBySignal
 from training.utils.timer import flush_timing, timer
 
 load_dotenv()
@@ -220,7 +227,7 @@ def _rendered_image_stats(rendered: Any) -> tuple[int, int]:
         for chunk in chunks
         if isinstance(
             chunk,
-            (tinker.types.ImageChunk, tinker.types.ImageAssetPointerChunk),
+            (sdk.types.ImageChunk, sdk.types.ImageAssetPointerChunk),
         )
     ]
     return len(image_chunks), sum(max(0, int(chunk.length)) for chunk in image_chunks)
@@ -246,8 +253,7 @@ def _decode_rendered_tokens(
             image_number = int(record.get("image_index", 0)) + 1
             image_format = str(record.get("format", "image")).upper()
             decoded[start] = (
-                f"<image {image_number}: {image_format}, "
-                f"{int(record['visual_token_count'])} visual tokens>"
+                f"<image {image_number}: {image_format}, " f"{int(record['visual_token_count'])} visual tokens>"
             )
             continue
         decoded[start:end] = _decode_tokens(token_ids[start:end])
@@ -277,14 +283,8 @@ def _write_render_samples(row: dict, rendered_examples: list[Any]) -> None:
                 image_count, image_token_count = _rendered_image_stats(rendered)
                 remaining = _remaining_render_sample_capacity()
                 vision_target = _vision_render_sample_target(render_samples_limit)
-                vision_written = int(
-                    _worker_state.get("render_samples_vision_written", 0)
-                )
-                needs_vision_reserve = (
-                    image_count > 0
-                    and vision_target is not None
-                    and vision_written < vision_target
-                )
+                vision_written = int(_worker_state.get("render_samples_vision_written", 0))
+                needs_vision_reserve = image_count > 0 and vision_target is not None and vision_written < vision_target
                 if remaining == 0 and not needs_vision_reserve:
                     continue
 
@@ -366,25 +366,19 @@ def _select_render_sample_lines(
 
     selected = list(all_lines[:render_samples_limit])
     vision_target = _vision_render_sample_target(render_samples_limit) or 0
-    selected_vision_count = sum(
-        _render_sample_line_has_image(line) for line in selected
-    )
+    selected_vision_count = sum(_render_sample_line_has_image(line) for line in selected)
     missing_vision_count = max(0, vision_target - selected_vision_count)
     if missing_vision_count == 0:
         return selected
 
-    vision_candidates = [
-        line
-        for line in all_lines[render_samples_limit:]
-        if _render_sample_line_has_image(line)
-    ][:missing_vision_count]
+    vision_candidates = [line for line in all_lines[render_samples_limit:] if _render_sample_line_has_image(line)][
+        :missing_vision_count
+    ]
     if not vision_candidates:
         return selected
-    replace_indices = [
-        index
-        for index, line in enumerate(selected)
-        if not _render_sample_line_has_image(line)
-    ][-len(vision_candidates) :]
+    replace_indices = [index for index, line in enumerate(selected) if not _render_sample_line_has_image(line)][
+        -len(vision_candidates) :
+    ]
     for index, candidate in zip(replace_indices, vision_candidates):
         selected[index] = candidate
     return selected
@@ -503,7 +497,7 @@ def _resolved_renderer_name(
 
 def _render_one_worker(
     row: dict,
-) -> tinker.Datum | list[tinker.Datum] | DatasetError | None:
+) -> sdk.Datum | list[sdk.Datum] | DatasetError | None:
     """Render a chat row to one or more Datums, dropping empty / long sequences.
 
     Reads renderer / train_on_what / max_seq_len from the per-process
@@ -567,9 +561,9 @@ def compute_eval_carveout(
 def _render_eagerly(
     ds: JsonlRenderDataset | GcsJsonlRenderDataset,
     n: int,
-) -> List[tinker.Datum]:
+) -> List[sdk.Datum]:
     """Render the first ``n`` rows of ``ds`` in-process, dropping Nones."""
-    datums: List[tinker.Datum] = []
+    datums: List[sdk.Datum] = []
     for item in (ds[i] for i in range(n)):
         if item is None:
             continue
@@ -584,9 +578,7 @@ def _render_eagerly(
 def _normalize_dataset_loading_mode(mode: str) -> str:
     normalized = mode.strip().lower().replace("-", "_")
     if normalized not in SUPPORTED_DATASET_LOADING_MODES:
-        raise DatasetError(
-            f"Unsupported dataset_loading_mode {mode!r}; expected 'stage' or 'stream'."
-        )
+        raise DatasetError(f"Unsupported dataset_loading_mode {mode!r}; expected 'stage' or 'stream'.")
     return normalized
 
 
@@ -606,14 +598,9 @@ def _make_jsonl_dataset(
             row_index_key=JSONL_ROW_INDEX_KEY,
         )
     if not path.startswith("gs://"):
-        raise DatasetError(
-            "dataset_loading_mode='stream' requires a gs:// dataset path; "
-            f"got {path!r}."
-        )
+        raise DatasetError("dataset_loading_mode='stream' requires a gs:// dataset path; " f"got {path!r}.")
     if cfg.group_by_length:
-        raise DatasetError(
-            "dataset_loading_mode='stream' does not support group_by_length yet."
-        )
+        raise DatasetError("dataset_loading_mode='stream' does not support group_by_length yet.")
     return GcsJsonlRenderDataset(
         path,
         render_fn,
@@ -623,10 +610,10 @@ def _make_jsonl_dataset(
 
 
 def _flatten_rendered_batch(
-    batch: list[tinker.Datum | list[tinker.Datum] | DatasetError],
-) -> list[tinker.Datum]:
+    batch: list[sdk.Datum | list[sdk.Datum] | DatasetError],
+) -> list[sdk.Datum]:
     raise_rendered_dataset_errors(batch)
-    datums: list[tinker.Datum] = []
+    datums: list[sdk.Datum] = []
     for item in batch:
         if isinstance(item, list):
             datums.extend(item)
@@ -639,7 +626,7 @@ def _prepare_datasets(
     cfg: "Config",
 ) -> tuple[
     JsonlRenderDataset | GcsJsonlRenderDataset,
-    List[tinker.Datum],
+    List[sdk.Datum],
     JsonlRenderDataset | GcsJsonlRenderDataset | None,
 ]:
     """Build the training dataset, (optional) eval set, and generation set.
@@ -679,13 +666,10 @@ def _prepare_datasets(
         n = int(len(training_ds) * GENERATION_EVAL_HOLDOUT_RATIO)
         if n == 0:
             raise DatasetError(
-                "Generation evaluation needs at least 5 rows for a 20% holdout, "
-                "or an explicit evaluation_dataset."
+                "Generation evaluation needs at least 5 rows for a 20% holdout, " "or an explicit evaluation_dataset."
             )
         carveout = (
-            min(int(len(training_ds) * cfg.eval_carve_ratio), cfg.max_eval_seqs)
-            if cfg.eval_auto_carveout
-            else 0
+            min(int(len(training_ds) * cfg.eval_carve_ratio), cfg.max_eval_seqs) if cfg.eval_auto_carveout else 0
         )
         shuffled_indices = list(range(len(training_ds)))
         random.Random(cfg.seed).shuffle(shuffled_indices)
@@ -922,27 +906,18 @@ class Config:
 # ---------------------------------------------------------------------------
 
 
-def _batch_loss_weight(batch: List[tinker.Datum]) -> float:
+def _batch_loss_weight(batch: List[sdk.Datum]) -> float:
     """Return summed loss weight without scanning for token telemetry."""
-    return float(
-        sum(
-            sum(datum.loss_fn_inputs["weights"].data)
-            for datum in batch
-        )
-    )
+    return float(sum(sum(datum.loss_fn_inputs["weights"].data) for datum in batch))
 
 
-def _count_response_tokens(batch: List[tinker.Datum]) -> int:
+def _count_response_tokens(batch: List[sdk.Datum]) -> int:
     """Return the number of tokens with positive loss weight."""
-    return sum(
-        float(weight) > 0
-        for datum in batch
-        for weight in datum.loss_fn_inputs["weights"].data
-    )
+    return sum(float(weight) > 0 for datum in batch for weight in datum.loss_fn_inputs["weights"].data)
 
 
 def run_eval(
-    eval_data: List[tinker.Datum],
+    eval_data: List[sdk.Datum],
     client: ReconnectableClient,
     batch_size: int,
     step: int,
@@ -967,13 +942,13 @@ def run_eval(
 
     train_loss_fn = make_batch_weighted_sft_loss_fn()
 
-    def _eval_batch(b: List[tinker.Datum]) -> Dict[str, float]:
+    def _eval_batch(b: List[sdk.Datum]) -> Dict[str, float]:
         fwd = client.forward(b, "cross_entropy")
         logprobs_list = [fwd.loss_fn_outputs[i]["logprobs"].to_torch() for i in range(len(b))]
         _, metrics = train_loss_fn(b, logprobs_list)
         return metrics
 
-    batch: List[tinker.Datum] = []
+    batch: List[sdk.Datum] = []
     for item in eval_data:
         batch.append(item)
         if len(batch) >= batch_size:
@@ -1029,10 +1004,7 @@ def main(
 
     validate_config(cfg.base_model, cfg.dataset, output_model_id=cfg.output_model_id)
     if cfg.grad_norm_metrics not in {"off", "basic", "detailed"}:
-        raise ValueError(
-            "grad_norm_metrics must be 'off', 'basic', or 'detailed'; got "
-            f"{cfg.grad_norm_metrics!r}."
-        )
+        raise ValueError("grad_norm_metrics must be 'off', 'basic', or 'detailed'; got " f"{cfg.grad_norm_metrics!r}.")
     if cfg.generation_eval:
         if not cfg.serverless:
             raise ValueError("generation_eval requires serverless SFT with a pooled sampler.")
@@ -1167,14 +1139,13 @@ def main(
                 max_seq_len=max_seq_len,
                 train_on_what=cfg.train_on_what,
             )
-            if cfg.generation_eval else []
+            if cfg.generation_eval
+            else []
         )
         num_workers = (
             cfg.render_workers
             if cfg.render_workers is not None
-            else select_render_worker_count(
-                available_parallel_tasks=len(training_dataset)
-            )
+            else select_render_worker_count(available_parallel_tasks=len(training_dataset))
         )
 
         render_samples_local_dir = ""
@@ -1317,13 +1288,15 @@ def main(
         last_optim_time: float | None = None
 
         def _pipe_submit(
-            batch: list[tinker.Datum], step: int, data_consumed: int,
+            batch: list[sdk.Datum],
+            step: int,
+            data_consumed: int,
         ) -> int:
             """Submit one fwd_bwd + optim_step pair (non-blocking). Returns updated step."""
             tokens = sum(len(c.tokens) for d in batch for c in d.model_input.chunks if hasattr(c, "tokens"))
             loss_weight = _batch_loss_weight(batch)
             step += 1
-            adam = tinker.AdamParams(learning_rate=_current_lr(step), **adam_kwargs)
+            adam = sdk.AdamParams(learning_rate=_current_lr(step), **adam_kwargs)
             t_submit = time.time()
             in_flight.append(
                 (
@@ -1334,7 +1307,8 @@ def main(
                     t_submit,
                     client.submit_forward_backward(batch, loss_fn="cross_entropy"),
                     client.submit_optim_step(
-                        adam, emit_grad_norm_metrics=cfg.grad_norm_metrics,
+                        adam,
+                        emit_grad_norm_metrics=cfg.grad_norm_metrics,
                     ),
                 )
             )
@@ -1361,14 +1335,8 @@ def main(
             pipe_total_tokens += tokens
             tps = pipe_total_tokens / max(1e-9, time.time() - pipe_started)
 
-            dcp_due = (
-                cfg.dcp_save_interval > 0
-                and s % cfg.dcp_save_interval == 0
-            )
-            sampler_due = (
-                cfg.sampler_save_interval > 0
-                and s % cfg.sampler_save_interval == 0
-            )
+            dcp_due = cfg.dcp_save_interval > 0 and s % cfg.dcp_save_interval == 0
+            sampler_due = cfg.sampler_save_interval > 0 and s % cfg.sampler_save_interval == 0
             if dcp_due or sampler_due:
                 with timer("checkpoint_save"):
                     logger.info(
@@ -1469,15 +1437,8 @@ def main(
                         continue  # entire batch was filtered (None render); skip
                     epoch_valid_examples += len(batch)
                     step = _pipe_submit(batch, step, cursor.value)
-                    checkpoint_step = (
-                        (
-                            cfg.dcp_save_interval > 0
-                            and step % cfg.dcp_save_interval == 0
-                        )
-                        or (
-                            cfg.sampler_save_interval > 0
-                            and step % cfg.sampler_save_interval == 0
-                        )
+                    checkpoint_step = (cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0) or (
+                        cfg.sampler_save_interval > 0 and step % cfg.sampler_save_interval == 0
                     )
                     if len(in_flight) >= cfg.pipeline_depth or checkpoint_step:
                         _pipe_collect()

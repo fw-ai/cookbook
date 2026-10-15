@@ -3,8 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
-import tinker
-
+from fireworks.training import sdk
 from training.renderer.verifier.utils.hf_parity import compare_renderer_to_reference
 from training.tests.unit.renderer_contract import (
     RendererContractTests,
@@ -30,17 +29,10 @@ def _case():
 
 def test_every_scenario_has_a_parity_check_and_terminal_mask_check():
     parameters = contract_parameters([_case()])
-    parity = (
-        parameters["test_hf_generation_parity"][1]
-        + parameters["test_hf_supervised_parity"][1]
-    )
-    assert {param.values[1].id for param in parity} == {
-        scenario.id for scenario in ALL_SCENARIOS
-    }
+    parity = parameters["test_hf_generation_parity"][1] + parameters["test_hf_supervised_parity"][1]
+    assert {param.values[1].id for param in parity} == {scenario.id for scenario in ALL_SCENARIOS}
     assert len(parity) == len(ALL_SCENARIOS)
-    terminal = {
-        scenario.id for scenario in ALL_SCENARIOS if scenario.ends_with_assistant
-    }
+    terminal = {scenario.id for scenario in ALL_SCENARIOS if scenario.ends_with_assistant}
     for name in (
         "test_supervised_generation_parse_consistency",
         "test_supervised_observation_equals_generation_prompt",
@@ -114,11 +106,7 @@ def test_reference_comparison_checks_token_ids_even_when_decoding_matches():
         decode=lambda _: "same bytes",
         apply_chat_template=lambda *args, **kwargs: [10, 20],
     )
-    renderer = SimpleNamespace(
-        build_generation_prompt=lambda *args, **kwargs: tinker.ModelInput.from_ints(
-            [10, 21]
-        )
-    )
+    renderer = SimpleNamespace(build_generation_prompt=lambda *args, **kwargs: sdk.ModelInput.from_ints([10, 21]))
     messages = [{"role": "user", "content": "hello"}]
     result = compare_renderer_to_reference(
         renderer=renderer,

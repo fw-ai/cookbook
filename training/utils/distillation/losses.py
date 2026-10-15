@@ -19,7 +19,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import tinker
+from fireworks.training import sdk
 
 from training.utils.distillation.sampling import (
     align_completion_logprobs,
@@ -37,7 +37,7 @@ class OPDPromptGroup:
     ``target_tokens``; ``prompt_len`` is the student prompt length.
     """
 
-    data: list[tinker.Datum]
+    data: list[sdk.Datum]
     teacher_logprobs: list[list[float]]
     sampling_logprobs: list[list[float]]
     prompt_len: int
@@ -65,9 +65,7 @@ class OPDInputMetrics:
             "opd_advantage": self.opd_advantage_sum / denom,
             "opd_abs_advantage": self.opd_abs_advantage_sum / denom,
             "opd_student_logprob_minus_teacher_logprob": sampled_reverse_kl,
-            "opd_teacher_logprob_minus_student_logprob": (
-                self.teacher_minus_sampling_logprob_sum / denom
-            ),
+            "opd_teacher_logprob_minus_student_logprob": (self.teacher_minus_sampling_logprob_sum / denom),
             "opd_abs_logprob_gap": self.abs_logprob_gap_sum / denom,
             "opd_teacher_nll": self.teacher_nll_sum / denom,
             "opd_sampling_nll": self.sampling_nll_sum / denom,
@@ -107,10 +105,10 @@ def build_opd_prompt_group(
             continue
 
         group.data.append(
-            tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(list(sample.full_tokens[:-1])),
+            sdk.Datum(
+                model_input=sdk.ModelInput.from_ints(list(sample.full_tokens[:-1])),
                 loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(
+                    "target_tokens": sdk.TensorData(
                         data=target_tokens,
                         dtype="int64",
                         shape=[len(target_tokens)],
@@ -126,9 +124,9 @@ def build_opd_prompt_group(
 
 def combine_opd_prompt_groups(
     groups: Sequence[OPDPromptGroup],
-) -> tuple[list[tinker.Datum], list[list[float]], list[int], list[list[float]]]:
+) -> tuple[list[sdk.Datum], list[list[float]], list[int], list[list[float]]]:
     """Flatten OPD prompt groups into ``(data, teacher_lp, prompt_lens, sampling_lp)``."""
-    data: list[tinker.Datum] = []
+    data: list[sdk.Datum] = []
     teacher_logprobs: list[list[float]] = []
     prompt_lens: list[int] = []
     sampling_logprobs: list[list[float]] = []
@@ -158,7 +156,7 @@ def build_opd_datums(
     groups: Sequence[OPDPromptGroup],
     *,
     loss_scale: float = 1.0,
-) -> tuple[list[tinker.Datum], dict[str, float]]:
+) -> tuple[list[sdk.Datum], dict[str, float]]:
     """``importance_sampling`` datums and ``opd_*`` metrics for one step's groups."""
     data, teacher_logprobs, prompt_lens, sampling_logprobs = combine_opd_prompt_groups(groups)
     return build_opd_server_datums(
@@ -177,7 +175,7 @@ def _pad_or_trim(values: Sequence[float], length: int) -> list[float]:
     return result
 
 
-def _loss_mask_for_datum(datum: tinker.Datum, length: int) -> list[float]:
+def _loss_mask_for_datum(datum: sdk.Datum, length: int) -> list[float]:
     mask = datum.loss_fn_inputs.get("loss_mask")
     if mask is None:
         return [1.0] * length
@@ -209,13 +207,13 @@ def _require_active_logprobs(
 
 
 def build_opd_server_datums(
-    data: Sequence[tinker.Datum],
+    data: Sequence[sdk.Datum],
     teacher_logprobs: Sequence[Sequence[float]],
     sampling_logprobs: Sequence[Sequence[float]],
     prompt_lens: Sequence[int],
     *,
     loss_scale: float = 1.0,
-) -> tuple[list[tinker.Datum], dict[str, float]]:
+) -> tuple[list[sdk.Datum], dict[str, float]]:
     """Build datums for Tinker's server-side ``importance_sampling`` loss.
 
     Args:
@@ -237,7 +235,7 @@ def build_opd_server_datums(
     sampling_logprobs = _require_lengths_match("sampling_logprobs", sampling_logprobs, n)
     prompt_lens = _require_lengths_match("prompt_lens", prompt_lens, n)
 
-    server_datums: list[tinker.Datum] = []
+    server_datums: list[sdk.Datum] = []
     active_tokens = 0
     sampled_reverse_kl_sum = 0.0
     opd_advantage_sum = 0.0
@@ -258,9 +256,7 @@ def build_opd_server_datums(
         raw_teacher_lp = [float(v) for v in teacher_logprobs[idx]]
         raw_sampling_lp = [float(v) for v in sampling_logprobs[idx]]
         loss_mask = _loss_mask_for_datum(datum, target_len)
-        active_positions = [
-            pos for pos in range(response_start, target_len) if loss_mask[pos] > 0.0
-        ]
+        active_positions = [pos for pos in range(response_start, target_len) if loss_mask[pos] > 0.0]
         _require_active_logprobs(
             "teacher_logprobs",
             raw_teacher_lp,
@@ -291,20 +287,20 @@ def build_opd_server_datums(
             sampling_nll_sum += -sampling_lp[pos] * loss_mask[pos]
 
         server_datums.append(
-            tinker.Datum(
+            sdk.Datum(
                 model_input=datum.model_input,
                 loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(
+                    "target_tokens": sdk.TensorData(
                         data=target_tokens,
                         dtype="int64",
                         shape=[target_len],
                     ),
-                    "logprobs": tinker.TensorData(
+                    "logprobs": sdk.TensorData(
                         data=sampling_lp,
                         dtype="float32",
                         shape=[target_len],
                     ),
-                    "advantages": tinker.TensorData(
+                    "advantages": sdk.TensorData(
                         data=advantages,
                         dtype="float32",
                         shape=[target_len],

@@ -5,16 +5,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Protocol
 
+import training.renderer  # noqa: F401 - register cookbook renderer extensions
 from training.renderer import Renderer, get_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer.base import (
     Message,
     TextPart,
     ThinkingPart,
     ToolCall,
     ToolSpec,
 )
-
-import training.renderer  # noqa: F401 - register cookbook renderer extensions
 from training.renderer.reasoning_fields import ORIGINAL_REASONING_CONTENT
 
 
@@ -48,7 +47,7 @@ class TurnRenderer(Protocol):
 
 
 class CookbookTurnRenderer:
-    """Adapt a tinker-cookbook renderer to OpenAI requests and responses."""
+    """Adapt a native cookbook renderer to OpenAI requests and responses."""
 
     def __init__(self, renderer: Renderer) -> None:
         self._renderer = renderer
@@ -88,9 +87,7 @@ class CookbookTurnRenderer:
     def parse_completion(self, tokens: Sequence[int]) -> dict[str, Any]:
         parsed, termination = self._renderer.parse_response(list(tokens))
         if not getattr(termination, "is_clean", True) and self._stop_tokens:
-            retried, retried_termination = self._renderer.parse_response(
-                [*tokens, self._stop_tokens[0]]
-            )
+            retried, retried_termination = self._renderer.parse_response([*tokens, self._stop_tokens[0]])
             if getattr(retried_termination, "is_clean", False):
                 parsed = retried
         return self._renderer.to_openai_message(parsed)
@@ -110,8 +107,7 @@ def _to_tool_specs(
             ToolSpec(
                 name=str(function.get("name", "")),
                 description=str(function.get("description", "") or ""),
-                parameters=function.get("parameters")
-                or {"type": "object", "properties": {}},
+                parameters=function.get("parameters") or {"type": "object", "properties": {}},
             )
         )
     return specs

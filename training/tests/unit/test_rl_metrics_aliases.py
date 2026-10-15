@@ -5,9 +5,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-import tinker
-from tinker.lib.chunked_fwdbwd_helpers import combine_fwd_bwd_output_results
-
+from fireworks.training import sdk
+from fireworks.training.sdk._core.lib.chunked_fwdbwd_helpers import (
+    combine_fwd_bwd_output_results,
+)
 from training.utils.rl.losses import PromptGroup
 from training.utils.rl.metrics import async_step_perf_metrics, compute_step_metrics
 
@@ -417,7 +418,7 @@ class TestFwdBwdResultAveraging:
 
     def test_k1_preserves_tinker_reduced_runtime_dp_sharding_evidence(self):
         server_groups = [
-            tinker.ForwardBackwardOutput(
+            sdk.ForwardBackwardOutput(
                 loss_fn_output_type="cross_entropy",
                 loss_fn_outputs=[],
                 metrics={
@@ -520,9 +521,7 @@ class TestTitoHarnessTimingMetrics:
         assert metrics["tito/harness/wall_seconds_sum"] == pytest.approx(40.0)
         assert metrics["tito/model/request_wall_seconds_sum"] == pytest.approx(80.0)
         assert metrics["tito/model/sampler_wall_seconds_sum"] == pytest.approx(60.0)
-        assert metrics["tito/harness/environment_setup_seconds_sum"] == pytest.approx(
-            20.0
-        )
+        assert metrics["tito/harness/environment_setup_seconds_sum"] == pytest.approx(20.0)
         # 40 harness seconds in a 120-second harness+model window.
         assert metrics["tito/harness/wait_fraction"] == pytest.approx(40.0 / 120.0)
 
@@ -536,9 +535,7 @@ class TestTitoHarnessTimingMetrics:
         assert metrics["tito/turn/wait_for_harness_seconds_min"] == pytest.approx(5.0)
         assert metrics["tito/turn/wait_for_harness_seconds_max"] == pytest.approx(15.0)
         assert metrics["tito/calls/sampling_seconds_mean"] == pytest.approx(15.0)
-        assert metrics["tito/trial/environment_setup_seconds_mean"] == pytest.approx(
-            10.0
-        )
+        assert metrics["tito/trial/environment_setup_seconds_mean"] == pytest.approx(10.0)
 
     def test_wait_fraction_omitted_without_model_window(self):
         from training.utils.rl.metrics import publish_tito_sidecar_metrics

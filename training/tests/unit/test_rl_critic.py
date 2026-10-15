@@ -5,9 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-import tinker
 import torch
-
+from fireworks.training import sdk
 from training.utils.rl.critic import (
     CriticBatch,
     advantage_metrics,
@@ -22,21 +21,17 @@ from training.utils.rl.critic import (
 from training.utils.rl.losses import PromptGroup, combine_prompt_groups
 
 
-def _datum(tokens: list[int], weights: list[float]) -> tinker.Datum:
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints(tokens),
+def _datum(tokens: list[int], weights: list[float]) -> sdk.Datum:
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints(tokens),
         loss_fn_inputs={
-            "target_tokens": tinker.TensorData(
-                data=tokens, dtype="int64", shape=[len(tokens)]
-            ),
-            "weights": tinker.TensorData(
-                data=weights, dtype="float32", shape=[len(weights)]
-            ),
+            "target_tokens": sdk.TensorData(data=tokens, dtype="int64", shape=[len(tokens)]),
+            "weights": sdk.TensorData(data=weights, dtype="float32", shape=[len(weights)]),
         },
     )
 
 
-def _group(data: list[tinker.Datum], rewards: list[float]) -> PromptGroup:
+def _group(data: list[sdk.Datum], rewards: list[float]) -> PromptGroup:
     return PromptGroup(
         data=data,
         advantages=list(rewards),
@@ -53,9 +48,7 @@ def test_critic_batch_reuses_full_sequence_without_targets() -> None:
     assert batch.data[0].model_input is policy.model_input
     assert batch.data[0].loss_fn_inputs == {}
     assert batch.terminal_rewards == [1.0]
-    assert torch.equal(
-        batch.action_masks[0], torch.tensor([False, False, True, True, True])
-    )
+    assert torch.equal(batch.action_masks[0], torch.tensor([False, False, True, True, True]))
 
 
 def test_critic_batch_requires_terminal_contiguous_response() -> None:
@@ -71,9 +64,7 @@ def test_critic_batch_requires_one_reward_per_datum() -> None:
 
 
 def test_projection_values_decode_scalar_head() -> None:
-    assert torch.equal(
-        projection_values(torch.tensor([[1.5], [-2.0]])), torch.tensor([1.5, -2.0])
-    )
+    assert torch.equal(projection_values(torch.tensor([[1.5], [-2.0]])), torch.tensor([1.5, -2.0]))
     with pytest.raises(ValueError, match=r"expected \[tokens, 1\]"):
         projection_values(torch.zeros(3, 2))
 
@@ -102,8 +93,8 @@ def test_token_gae_accepts_one_lambda_per_response() -> None:
 
 def _batch(rewards: list[float], masks: list[torch.Tensor]) -> CriticBatch:
     data = [
-        tinker.Datum(
-            model_input=tinker.ModelInput.from_ints(list(range(1, len(mask) + 1))),
+        sdk.Datum(
+            model_input=sdk.ModelInput.from_ints(list(range(1, len(mask) + 1))),
             loss_fn_inputs={},
         )
         for mask in masks
@@ -197,7 +188,7 @@ class _Critic:
         return SimpleNamespace(
             loss_fn_outputs=[
                 {
-                    "projection": tinker.TensorData(
+                    "projection": sdk.TensorData(
                         data=row.flatten().tolist(),
                         dtype="float32",
                         shape=list(row.shape),
@@ -219,7 +210,7 @@ def test_train_critic_rereads_values_with_frozen_targets() -> None:
         gamma=1.0,
         critic_lambda=1.0,
         value_clip=0.2,
-        adam_params=tinker.AdamParams(learning_rate=1e-6),
+        adam_params=sdk.AdamParams(learning_rate=1e-6),
     )
     values = predict_values(critic, batch)
 

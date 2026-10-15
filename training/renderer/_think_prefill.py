@@ -25,9 +25,10 @@ the final loss even when an input trajectory contains explicit reasoning.
 
 from __future__ import annotations
 
-import tinker
 import torch
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, RenderContext, RenderedMessage
+from fireworks.training import sdk
+
+from training.renderer.base import Message, RenderContext, RenderedMessage
 
 _THINK_OPEN = "<think>"
 _THINK_OPEN_PREFILL = f"{_THINK_OPEN}\n"
@@ -48,10 +49,8 @@ class DisableThinkingWeightsMixin:
         messages: list[Message],
         *args: object,
         **kwargs: object,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
-        model_input, weights = super().build_supervised_example(
-            messages, *args, **kwargs
-        )
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
+        model_input, weights = super().build_supervised_example(messages, *args, **kwargs)
         token_ids = list(model_input.to_ints())
         masked = weights.clone()
         for marker in (_THINK_OPEN, _THINK_CLOSE):
@@ -81,25 +80,23 @@ class ThinkPrefillWeightsMixin:
         if len(close_tokens) == 1 and close_tokens[0] in header_tokens:
             split = header_tokens.index(close_tokens[0])
             rendered = RenderedMessage(
-                header=tinker.EncodedTextChunk(tokens=header_tokens[:split]),
+                header=sdk.EncodedTextChunk(tokens=header_tokens[:split]),
                 output=[
-                    tinker.EncodedTextChunk(tokens=header_tokens[split:]),
+                    sdk.EncodedTextChunk(tokens=header_tokens[split:]),
                     *rendered.output,
                 ],
                 stop_overlap=rendered.stop_overlap,
             )
             header_tokens = header_tokens[:split]
 
-        prefill = self.tokenizer.encode(
-            _THINK_OPEN_PREFILL, add_special_tokens=False
-        )
-        if rendered.output and isinstance(rendered.output[0], tinker.EncodedTextChunk):
+        prefill = self.tokenizer.encode(_THINK_OPEN_PREFILL, add_special_tokens=False)
+        if rendered.output and isinstance(rendered.output[0], sdk.EncodedTextChunk):
             output_tokens = list(rendered.output[0].tokens)
             if output_tokens[: len(prefill)] == prefill:
                 rendered = RenderedMessage(
-                    header=tinker.EncodedTextChunk(tokens=header_tokens + prefill),
+                    header=sdk.EncodedTextChunk(tokens=header_tokens + prefill),
                     output=[
-                        tinker.EncodedTextChunk(tokens=output_tokens[len(prefill) :]),
+                        sdk.EncodedTextChunk(tokens=output_tokens[len(prefill) :]),
                         *rendered.output[1:],
                     ],
                     stop_overlap=rendered.stop_overlap,

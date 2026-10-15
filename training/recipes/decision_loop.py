@@ -21,8 +21,8 @@ from collections import deque
 from contextlib import ExitStack
 from itertools import islice
 
-import tinker
 import torch
+from fireworks.training import sdk
 from fireworks.training.sdk.training_spec import compute_lr, normalize_lr_scheduler_spec
 from training.recipes import sft_loop
 from training.utils import (
@@ -94,7 +94,7 @@ def calibrated_checkpoint_name(step: int) -> str:
     return name
 
 
-def _render_pairs(row: dict) -> list[tuple[str, tinker.Datum]] | DatasetError:
+def _render_pairs(row: dict) -> list[tuple[str, sdk.Datum]] | DatasetError:
     """One row's ``(question type, K-way datum)`` pairs, rendered in the sft_loop render worker."""
     if not is_decision_row(row):
         return dataset_error_for_rendered_row(
@@ -125,14 +125,14 @@ def _render_pairs(row: dict) -> list[tuple[str, tinker.Datum]] | DatasetError:
     return pairs
 
 
-def render_train_row(row: dict) -> list[tinker.Datum] | DatasetError | None:
+def render_train_row(row: dict) -> list[sdk.Datum] | DatasetError | None:
     pairs = _render_pairs(row)
     if isinstance(pairs, DatasetError):
         return pairs
     return [d for _, d in pairs] or None
 
 
-def render_eval_row(row: dict) -> list[tuple[str, tinker.Datum]] | DatasetError | None:
+def render_eval_row(row: dict) -> list[tuple[str, sdk.Datum]] | DatasetError | None:
     return _render_pairs(row) or None
 
 
@@ -217,7 +217,7 @@ def prepare_datasets(cfg: Config):
     return training_ds, [t for t, _ in pairs], [d for _, d in pairs]
 
 
-def evaluate(client, datums: list[tinker.Datum], step: int, runner: RunnerIO) -> None:
+def evaluate(client, datums: list[sdk.Datum], step: int, runner: RunnerIO) -> None:
     rows = option_logprobs(client, datums)
     labels = [gold_option_index(d) for d in datums]
     loss = mean_nll(rows, labels)
@@ -387,7 +387,7 @@ def main(config: Config) -> dict:
                     fb = client.submit_forward_backward(
                         batch, "cross_entropy", loss_fn_config=dict(DECISION_LOSS_FN_CONFIG)
                     )
-                    opt = client.submit_optim_step(tinker.AdamParams(learning_rate=lr, **adam))
+                    opt = client.submit_optim_step(sdk.AdamParams(learning_rate=lr, **adam))
                     in_flight.append((step, tokens, len(batch), cursor.value, fb, opt))
                     checkpoint_step = any(
                         i > 0 and step % i == 0 for i in (cfg.dcp_save_interval, cfg.sampler_save_interval)

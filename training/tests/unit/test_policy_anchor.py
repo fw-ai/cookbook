@@ -5,20 +5,19 @@ from concurrent.futures import Future
 from types import SimpleNamespace
 
 import pytest
-import tinker
 import torch
-
+from fireworks.training import sdk
 from training.utils.rl.algorithm import grpo, reinforce
 from training.utils.rl.anchor import anchor_drift_metrics, recompute_anchor
 from training.utils.rl.losses import PolicyBatch, build_policy_datums
 
 
 def datum():
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints([1, 2]),
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints([1, 2]),
         loss_fn_inputs={
-            "target_tokens": tinker.TensorData(data=[2, 3], dtype="int64", shape=[2]),
-            "weights": tinker.TensorData(data=[0, 1], dtype="float32", shape=[2]),
+            "target_tokens": sdk.TensorData(data=[2, 3], dtype="int64", shape=[2]),
+            "weights": sdk.TensorData(data=[0, 1], dtype="float32", shape=[2]),
         },
     )
 
@@ -33,12 +32,8 @@ def batch(rollout, anchor=None, advantage=1.0):
     )
 
 
-@pytest.mark.parametrize(
-    "anchor,expected_loss,expected_grad", [(0.2, -1.1, -1.1), (0.1, -1.2, 0)]
-)
-def test_anchor_controls_clipping_without_preweighting_advantages(
-    anchor, expected_loss, expected_grad
-):
+@pytest.mark.parametrize("anchor,expected_loss,expected_grad", [(0.2, -1.1, -1.1), (0.1, -1.2, 0)])
+def test_anchor_controls_clipping_without_preweighting_advantages(anchor, expected_loss, expected_grad):
     pi = torch.tensor([0.0, math.log(0.22)], requires_grad=True)
     b = batch([None, math.log(0.1)], [None, math.log(anchor)])
     loss, _ = grpo.make_loss_fn(b, grpo.GRPOConfig())(b.data, [pi])
@@ -68,9 +63,7 @@ def test_builtin_anchor_changes_denominator_but_preserves_mask_and_raw_advantage
 @pytest.mark.parametrize("future", [False, True])
 def test_snapshot_is_reusable_for_both_sdk_client_interfaces(future):
     calls = []
-    result = SimpleNamespace(
-        loss_fn_outputs=[{"logprobs": SimpleNamespace(data=[-1.0, -2.0])}]
-    )
+    result = SimpleNamespace(loss_fn_outputs=[{"logprobs": SimpleNamespace(data=[-1.0, -2.0])}])
 
     def forward(*args, **kwargs):
         calls.append((args, kwargs))
@@ -113,7 +106,5 @@ def test_misaligned_snapshot_fails_before_training(outputs):
 def test_anchor_drift_metrics_compare_the_anchor_with_rollout_logprobs():
     metrics = anchor_drift_metrics(batch([0.0, math.log(0.1)], [0.0, math.log(0.2)]))
     diff = math.log(2.0)
-    assert metrics == pytest.approx(
-        {"anchor_k1": diff, "anchor_k3": math.exp(diff) - diff - 1.0}
-    )
+    assert metrics == pytest.approx({"anchor_k1": diff, "anchor_k3": math.exp(diff) - diff - 1.0})
     assert anchor_drift_metrics(batch([0.0, math.log(0.1)])) == {"anchor_k1": 0.0, "anchor_k3": 0.0}

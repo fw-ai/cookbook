@@ -37,12 +37,11 @@ from functools import cache
 from typing import Any
 
 import pytest
-import tinker
-import transformers
-
 import training.renderer  # noqa: F401  — registers the cookbook renderers
+import transformers
+from fireworks.training import sdk
 from training.renderer import get_registered_renderer_names, get_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
+from training.renderer.base import TrainOnWhat
 from training.renderer.deepseek_v4 import _merge_tool_messages
 from training.renderer.message_weights import (
     _rendered_positions,
@@ -53,9 +52,7 @@ from training.tests.unit.renderer_matrix import RENDERER_MATRIX
 from training.utils.supervised import render_messages_to_datums
 
 # The QA matrix already binds most renderers to their canonical tokenizer.
-_MATRIX_TOKENIZERS = {
-    case.renderer: case.resolved_tokenizer_model() for case in RENDERER_MATRIX
-}
+_MATRIX_TOKENIZERS = {case.renderer: case.resolved_tokenizer_model() for case in RENDERER_MATRIX}
 
 # Renderers the QA matrix does not carry a row for yet. The invariant below
 # needs only a tokenizer, not the matrix's capability flags, so bind them here
@@ -126,9 +123,7 @@ _UNCOVERED_RENDERERS = {
 # Renderers that cannot render ANY multi-target multi-turn row, weighted or not.
 # Pinned by ``test_multi_turn_gap_is_weight_independent`` so a crash there is
 # never mistaken for weighted-row breakage.
-_NO_MULTI_TURGET_SPLIT_REASON = (
-    "reports has_extension_property=False but ships no build_supervised_examples"
-)
+_NO_MULTI_TURGET_SPLIT_REASON = "reports has_extension_property=False but ships no build_supervised_examples"
 _NO_MULTI_TARGET_SPLIT = {"minimax_m2": _NO_MULTI_TURGET_SPLIT_REASON}
 
 # Renderer families that synthesize a template message while rendering, with a
@@ -168,9 +163,7 @@ def _tokenizer_load_timeout(seconds: int = 30):
 def _load_tokenizer(model_id: str):
     try:
         with _tokenizer_load_timeout():
-            return transformers.AutoTokenizer.from_pretrained(
-                model_id, trust_remote_code=True
-            )
+            return transformers.AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     except _TokenizerLoadTimeout:
         return None
     except Exception:  # noqa: BLE001 — network / gated repo / config drift
@@ -185,10 +178,7 @@ def _resolve_renderer(name: str):
 
 
 def _without_weights(row: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {key: value for key, value in message.items() if key != "weight"}
-        for message in row
-    ]
+    return [{key: value for key, value in message.items() if key != "weight"} for message in row]
 
 
 def _render(renderer, row: list[dict[str, Any]]):
@@ -200,13 +190,7 @@ def _render(renderer, row: list[dict[str, Any]]):
 
 
 def _trained_text(tokenizer, datum) -> str:
-    return tokenizer.decode(
-        [
-            token
-            for token, weight in zip(datum.token_ids, datum.token_weights)
-            if weight > 0
-        ]
-    )
+    return tokenizer.decode([token for token, weight in zip(datum.token_ids, datum.token_weights) if weight > 0])
 
 
 def _trained_token_count(datum) -> int:
@@ -282,19 +266,16 @@ def test_a_weighted_row_renders_and_trains_its_answer(name: str, row_id: str):
     """
     row = _ROWS[row_id]
     if name in _NO_MULTI_TARGET_SPLIT and _is_multi_turn(row):
-        pytest.skip(
-            f"{name!r} {_NO_MULTI_TARGET_SPLIT[name]}; pinned by "
-            "test_multi_turn_gap_is_weight_independent"
-        )
+        pytest.skip(f"{name!r} {_NO_MULTI_TARGET_SPLIT[name]}; pinned by " "test_multi_turn_gap_is_weight_independent")
     tokenizer, renderer = _resolve_renderer(name)
 
     datums = _render(renderer, row)
 
     assert datums, f"{name!r}/{row_id}: expected at least one datum"
     trained = [_trained_text(tokenizer, datum) for datum in datums]
-    assert any("ANSWER" in slice_ or "A2" in slice_ for slice_ in trained), (
-        f"{name!r}/{row_id}: the row's final answer must be trained; got {trained!r}"
-    )
+    assert any(
+        "ANSWER" in slice_ or "A2" in slice_ for slice_ in trained
+    ), f"{name!r}/{row_id}: the row's final answer must be trained; got {trained!r}"
 
 
 @pytest.mark.parametrize("row_id", sorted(_ROWS))
@@ -311,10 +292,7 @@ def test_weights_only_remove_loss_from_the_terminal_turn(name: str, row_id: str)
     """
     row = _ROWS[row_id]
     if name in _NO_MULTI_TARGET_SPLIT and _is_multi_turn(row):
-        pytest.skip(
-            f"{name!r} {_NO_MULTI_TARGET_SPLIT[name]}; pinned by "
-            "test_multi_turn_gap_is_weight_independent"
-        )
+        pytest.skip(f"{name!r} {_NO_MULTI_TARGET_SPLIT[name]}; pinned by " "test_multi_turn_gap_is_weight_independent")
     tokenizer, renderer = _resolve_renderer(name)
 
     weighted = _render(renderer, row)
@@ -343,9 +321,7 @@ def test_weights_only_remove_loss_from_the_terminal_turn(name: str, row_id: str)
             "renderer-synthesized template context"
         )
 
-    masked_contents = [
-        message["content"] for message in row if message.get("weight") == 0
-    ]
+    masked_contents = [message["content"] for message in row if message.get("weight") == 0]
     if not masked_contents:
         # Flags that only restate the default must be a complete no-op, so the
         # preview a customer inspects matches the unweighted row byte for byte.
@@ -365,11 +341,7 @@ def test_weights_only_remove_loss_from_the_terminal_turn(name: str, row_id: str)
     # Renderers whose built-in modes already exclude it (Kimi treats
     # back-to-back assistants as separate turns) legitimately match.
     reference_trained = [_trained_text(tokenizer, datum) for datum in reference]
-    if any(
-        content in trained
-        for content in masked_contents
-        for trained in reference_trained
-    ):
+    if any(content in trained for content in masked_contents for trained in reference_trained):
         assert sum(_trained_token_count(datum) for datum in weighted) < sum(
             _trained_token_count(datum) for datum in reference
         ), f"{name!r}/{row_id}: masking must withhold loss the unweighted row applies"
@@ -392,13 +364,10 @@ def test_all_weights_one_renders_like_an_unweighted_row(name: str):
     weighted = _render(renderer, _MULTI_TURN_ALL_TRAINED)
     reference = _render(renderer, _without_weights(_MULTI_TURN_ALL_TRAINED))
 
-    assert len(weighted) == len(reference), (
-        f"{name!r}: weight=1 everywhere must not change the datum count"
-    )
+    assert len(weighted) == len(reference), f"{name!r}: weight=1 everywhere must not change the datum count"
     for index, (datum, reference_datum) in enumerate(zip(weighted, reference)):
         assert datum.token_ids == reference_datum.token_ids, (
-            f"{name!r} datum {index}: weights select loss, so they must not change "
-            "the rendered token sequence"
+            f"{name!r} datum {index}: weights select loss, so they must not change " "the rendered token sequence"
         )
         assert datum.token_weights == reference_datum.token_weights, (
             f"{name!r} datum {index}: weight=1 restates the default, so it must not "
@@ -418,16 +387,16 @@ def test_masked_answer_is_never_trained_by_any_datum(name: str):
     datums = _render(renderer, _MULTI_TURN_MASKED_MIDDLE)
 
     trained_slices = [_trained_text(tokenizer, datum) for datum in datums]
-    assert not [slice_ for slice_ in trained_slices if "RETRY" in slice_], (
-        f"{name!r}: the masked message must never be trained; got {trained_slices!r}"
-    )
-    assert any("ANSWER" in slice_ for slice_ in trained_slices), (
-        f"{name!r}: the trained answer must still be trained; got {trained_slices!r}"
-    )
+    assert not [
+        slice_ for slice_ in trained_slices if "RETRY" in slice_
+    ], f"{name!r}: the masked message must never be trained; got {trained_slices!r}"
+    assert any(
+        "ANSWER" in slice_ for slice_ in trained_slices
+    ), f"{name!r}: the trained answer must still be trained; got {trained_slices!r}"
     full_decodes = [tokenizer.decode(datum.token_ids) for datum in datums]
-    assert any("RETRY" in decoded for decoded in full_decodes), (
-        f"{name!r}: the masked message must remain in the prompt as history"
-    )
+    assert any(
+        "RETRY" in decoded for decoded in full_decodes
+    ), f"{name!r}: the masked message must remain in the prompt as history"
 
 
 @pytest.mark.parametrize(
@@ -435,9 +404,7 @@ def test_masked_answer_is_never_trained_by_any_datum(name: str):
     _SYNTHESIZED_CONTEXT_MARKERS,
     ids=[name for name, _ in _SYNTHESIZED_CONTEXT_MARKERS],
 )
-def test_synthesized_template_context_is_rendered_but_never_trained(
-    name: str, marker: str
-):
+def test_synthesized_template_context_is_rendered_but_never_trained(name: str, marker: str):
     """Named check for the renderers that synthesize a message mid-render.
 
     These families used to fail the render outright on any weighted row,
@@ -456,8 +423,7 @@ def test_synthesized_template_context_is_rendered_but_never_trained(
             "still be rendered into the prompt"
         )
         assert marker not in _trained_text(tokenizer, datum), (
-            f"{name!r} datum {index}: synthesized template context {marker!r} must "
-            "carry no loss"
+            f"{name!r} datum {index}: synthesized template context {marker!r} must " "carry no loss"
         )
 
 
@@ -544,16 +510,8 @@ def test_customer_qwen3_5_row_trains_each_answer_in_exactly_one_datum():
     assert len(weighted) == 3, f"expected one datum per user turn, got {len(weighted)}"
     trained = [_trained_text(tokenizer, datum) for datum in weighted]
 
-    assert (
-        "ANSWER_1" in trained[0]
-        and "REASON_1" in trained[0]
-        and "REASON_2" in trained[0]
-    )
-    assert (
-        "ANSWER_2" in trained[1]
-        and "REASON_3" in trained[1]
-        and "REASON_4" in trained[1]
-    )
+    assert "ANSWER_1" in trained[0] and "REASON_1" in trained[0] and "REASON_2" in trained[0]
+    assert "ANSWER_2" in trained[1] and "REASON_3" in trained[1] and "REASON_4" in trained[1]
     assert "ANSWER_3" in trained[2] and "REASON_6" in trained[2]
     assert "ANSWER_3_DRAFT" not in trained[2] and "REASON_5" not in trained[2]
     for index, answer in enumerate(["ANSWER_1", "ANSWER_2", "ANSWER_3"]):
@@ -561,8 +519,7 @@ def test_customer_qwen3_5_row_trains_each_answer_in_exactly_one_datum():
             if other_index == index:
                 continue
             assert other not in trained[index], (
-                f"datum {index} must train only {answer!r}; {other!r} also carries loss "
-                f"in {trained[index]!r}"
+                f"datum {index} must train only {answer!r}; {other!r} also carries loss " f"in {trained[index]!r}"
             )
 
     # Historical reasoning is stripped once a turn becomes history, which is why
@@ -615,10 +572,7 @@ def _render_mode_probe(renderer, messages, requested: TrainOnWhat):
 
 
 def _all_assistant_weights_one(row: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {**message, "weight": 1} if message["role"] == "assistant" else message
-        for message in row
-    ]
+    return [{**message, "weight": 1} if message["role"] == "assistant" else message for message in row]
 
 
 @pytest.mark.parametrize("requested", _ASSISTANT_TARGET_REQUESTS, ids=lambda m: m.value)
@@ -631,14 +585,10 @@ def test_all_weights_one_is_a_no_op_under_any_assistant_target_mode(
     count, not a single token, not a single weight."""
     tokenizer, renderer = _resolve_renderer("qwen3_5")
 
-    weighted = _render_mode_probe(
-        renderer, _all_assistant_weights_one(_MODE_PROBE_ROW), requested
-    )
+    weighted = _render_mode_probe(renderer, _all_assistant_weights_one(_MODE_PROBE_ROW), requested)
     reference = _render_mode_probe(renderer, _MODE_PROBE_ROW, requested)
 
-    assert len(weighted) == len(reference), (
-        f"{requested.value}: weight=1 everywhere must not change the datum count"
-    )
+    assert len(weighted) == len(reference), f"{requested.value}: weight=1 everywhere must not change the datum count"
     for index, (datum, reference_datum) in enumerate(zip(weighted, reference)):
         assert datum.token_ids == reference_datum.token_ids
         assert datum.token_weights == reference_datum.token_weights, (
@@ -657,9 +607,7 @@ def test_weights_never_widen_loss_under_a_whole_sequence_mode(requested: TrainOn
     mode does not assign."""
     _tokenizer, renderer = _resolve_renderer("qwen3_5")
 
-    weighted = _render_mode_probe(
-        renderer, _all_assistant_weights_one(_MODE_PROBE_ROW), requested
-    )
+    weighted = _render_mode_probe(renderer, _all_assistant_weights_one(_MODE_PROBE_ROW), requested)
     reference = _render_mode_probe(renderer, _MODE_PROBE_ROW, requested)
 
     assert len(weighted) == len(reference)
@@ -673,8 +621,7 @@ def test_weights_never_widen_loss_under_a_whole_sequence_mode(requested: TrainOn
             if weight > 0 and reference_weight == 0
         ]
         assert not leaked, (
-            f"{requested.value} datum {index}: positions {leaked[:8]} carry loss the "
-            "requested mode does not assign"
+            f"{requested.value} datum {index}: positions {leaked[:8]} carry loss the " "requested mode does not assign"
         )
 
 
@@ -751,12 +698,12 @@ def test_a_weighted_tool_result_inside_the_terminal_turn_is_not_trained(name: st
     )
 
     trained = [_trained_text(tokenizer, datum) for datum in datums]
-    assert not [slice_ for slice_ in trained if "TOOLRESULT" in slice_], (
-        f"{name!r}: a tool result is never a training target; got {trained!r}"
-    )
-    assert any("ANSWER" in slice_ for slice_ in trained), (
-        f"{name!r}: the terminal answer must still be trained; got {trained!r}"
-    )
+    assert not [
+        slice_ for slice_ in trained if "TOOLRESULT" in slice_
+    ], f"{name!r}: a tool result is never a training target; got {trained!r}"
+    assert any(
+        "ANSWER" in slice_ for slice_ in trained
+    ), f"{name!r}: the terminal answer must still be trained; got {trained!r}"
 
 
 @pytest.mark.parametrize("name", ["qwen3_5", "nemotron3", "mistral"])
@@ -792,40 +739,38 @@ def test_an_image_slot_is_identified_by_content_not_by_chunk_position():
     ``<think>`` — shifting every later index and making identical image slots
     look different.
     """
-    image = tinker.types.ImageAssetPointerChunk(
+    image = sdk.types.ImageAssetPointerChunk(
         location="gs://bucket/image.png",
         format="png",
         expected_tokens=4,
     )
-    same_image = tinker.types.ImageAssetPointerChunk(
+    same_image = sdk.types.ImageAssetPointerChunk(
         location="gs://bucket/image.png",
         format="png",
         expected_tokens=4,
     )
-    other_image = tinker.types.ImageAssetPointerChunk(
+    other_image = sdk.types.ImageAssetPointerChunk(
         location="gs://bucket/other.png",
         format="png",
         expected_tokens=4,
     )
 
     # One text chunk on the left, versus the same tokens split in two.
-    whole = tinker.ModelInput(
-        chunks=[tinker.types.EncodedTextChunk(tokens=[1, 2, 3]), image]
-    )
-    split = tinker.ModelInput(
+    whole = sdk.ModelInput(chunks=[sdk.types.EncodedTextChunk(tokens=[1, 2, 3]), image])
+    split = sdk.ModelInput(
         chunks=[
-            tinker.types.EncodedTextChunk(tokens=[1]),
-            tinker.types.EncodedTextChunk(tokens=[2, 3]),
+            sdk.types.EncodedTextChunk(tokens=[1]),
+            sdk.types.EncodedTextChunk(tokens=[2, 3]),
             same_image,
         ]
     )
 
-    assert _rendered_positions(whole) == _rendered_positions(split), (
-        "splitting a text chunk must not change how the image slot is identified"
-    )
-    assert stable_chunk_sentinel(image) != stable_chunk_sentinel(other_image), (
-        "a different image must still compare as different"
-    )
+    assert _rendered_positions(whole) == _rendered_positions(
+        split
+    ), "splitting a text chunk must not change how the image slot is identified"
+    assert stable_chunk_sentinel(image) != stable_chunk_sentinel(
+        other_image
+    ), "a different image must still compare as different"
 
 
 def test_mistral_tool_declarations_survive_a_second_render():
@@ -853,9 +798,7 @@ def test_mistral_tool_declarations_survive_a_second_render():
 
     assert len(datums) == 1
     decoded = tokenizer.decode(datums[0].token_ids)
-    assert "[AVAILABLE_TOOLS]" in decoded, (
-        "the tool declaration block must survive rendering the row twice"
-    )
+    assert "[AVAILABLE_TOOLS]" in decoded, "the tool declaration block must survive rendering the row twice"
     assert "[AVAILABLE_TOOLS]" not in _trained_text(tokenizer, datums[0])
 
 
@@ -880,9 +823,9 @@ def test_weights_with_a_user_and_system_mode_relocate_loss_to_the_assistants():
     )
 
     trained = [_trained_text(tokenizer, datum) for datum in weighted]
-    assert all("A" in slice_ for slice_ in trained), (
-        f"expected the flags to win over the requested mode; got {trained!r}"
-    )
+    assert all(
+        "A" in slice_ for slice_ in trained
+    ), f"expected the flags to win over the requested mode; got {trained!r}"
     # Still one target per datum, which is what the unroll exists to guarantee.
     assert "A1" not in trained[1], f"history must not be re-trained; got {trained!r}"
 
@@ -905,9 +848,7 @@ def test_a_row_with_no_weights_is_left_completely_alone():
     ]
 
     assert untrained_synthesized_context(messages) == messages
-    assert not any(
-        "trainable" in message for message in untrained_synthesized_context(messages)
-    )
+    assert not any("trainable" in message for message in untrained_synthesized_context(messages))
 
 
 def test_only_messages_without_a_flag_are_filled():
@@ -946,9 +887,9 @@ def test_deepseek_v4_tool_merge_preserves_per_message_weights():
             {"role": "tool", "content": "T1", "tool_call_id": "c1"},
         ]
     )
-    assert merged[0].get("trainable") is True, (
-        f"the rebuilt user message must keep its resolved flag; got {merged[0]!r}"
-    )
+    assert (
+        merged[0].get("trainable") is True
+    ), f"the rebuilt user message must keep its resolved flag; got {merged[0]!r}"
 
     # ``_preprocess`` finishes the job for the message the fold synthesized.
     resolved = untrained_synthesized_context(merged)

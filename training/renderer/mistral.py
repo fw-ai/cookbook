@@ -30,10 +30,11 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-import tinker
 import torch
+from fireworks.training import sdk
+
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer.base import (
     Message,
     ParseTermination,
     RenderContext,
@@ -46,9 +47,8 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     UnparsedToolCall,
     parse_response_for_stop_token,
 )
-from training.renderer.tokenizer import Tokenizer
-
 from training.renderer.message_weights import untrained_synthesized_context
+from training.renderer.tokenizer import Tokenizer
 
 _SYSTEM_PROMPT_OPEN = "[SYSTEM_PROMPT]"
 _SYSTEM_PROMPT_CLOSE = "[/SYSTEM_PROMPT]"
@@ -122,9 +122,7 @@ def _format_tool_calls(tool_calls: list[ToolCall]) -> str:
     parts: list[str] = []
     for tool_call in tool_calls:
         rendered_args = _normalize_tool_arguments(tool_call.function.arguments)
-        parts.append(
-            f"{_TOOL_CALLS}{tool_call.function.name}{_TOOL_ARGS}{rendered_args}"
-        )
+        parts.append(f"{_TOOL_CALLS}{tool_call.function.name}{_TOOL_ARGS}{rendered_args}")
     return "".join(parts)
 
 
@@ -178,9 +176,7 @@ class MistralRenderer(Renderer):
     def _eos_token_id(self) -> int:
         eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
         if eos_token_id is None:
-            raise RuntimeError(
-                "MistralRenderer requires the tokenizer to define an EOS token."
-            )
+            raise RuntimeError("MistralRenderer requires the tokenizer to define an EOS token.")
         return int(eos_token_id)
 
     def _detect_default_system_prompt(self) -> str:
@@ -314,16 +310,14 @@ class MistralRenderer(Renderer):
         # per message body (matching how supervised loss-mask code consumes the
         # rendered output).
         output_tokens = self._encode(body_text)
-        output_chunks: list[tinker.ModelInputChunk] = (
-            [tinker.types.EncodedTextChunk(tokens=output_tokens)]
-            if output_tokens
-            else []
+        output_chunks: list[sdk.ModelInputChunk] = (
+            [sdk.types.EncodedTextChunk(tokens=output_tokens)] if output_tokens else []
         )
 
-        header_chunk: tinker.EncodedTextChunk | None = None
+        header_chunk: sdk.EncodedTextChunk | None = None
         header_tokens = self._encode(header_text)
         if header_tokens:
-            header_chunk = tinker.types.EncodedTextChunk(tokens=header_tokens)
+            header_chunk = sdk.types.EncodedTextChunk(tokens=header_tokens)
 
         return RenderedMessage(header=header_chunk, output=output_chunks)
 
@@ -341,7 +335,7 @@ class MistralRenderer(Renderer):
         messages: list[Message],
         role: Role = "assistant",
         prefill: str | None = None,
-    ) -> tinker.ModelInput:
+    ) -> sdk.ModelInput:
         return super().build_generation_prompt(
             self._preprocess_messages(messages),
             role=role,
@@ -352,7 +346,7 @@ class MistralRenderer(Renderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         return super().build_supervised_example(
             self._preprocess_messages(messages),
             train_on_what=train_on_what,
@@ -408,9 +402,7 @@ class MistralRenderer(Renderer):
                 try:
                     parsed_args = json.loads(raw_args)
                     if not isinstance(parsed_args, dict):
-                        raise TypeError(
-                            f"Mistral tool args must decode to an object, got {type(parsed_args)!r}"
-                        )
+                        raise TypeError(f"Mistral tool args must decode to an object, got {type(parsed_args)!r}")
                     tool_calls.append(
                         ToolCall(
                             function=ToolCall.FunctionBody(
@@ -420,9 +412,7 @@ class MistralRenderer(Renderer):
                         )
                     )
                 except (json.JSONDecodeError, TypeError) as exc:
-                    unparsed.append(
-                        UnparsedToolCall(raw_text=match.group(0), error=str(exc))
-                    )
+                    unparsed.append(UnparsedToolCall(raw_text=match.group(0), error=str(exc)))
         else:
             visible_text = text
 
@@ -436,9 +426,7 @@ class MistralRenderer(Renderer):
     def to_openai_message(self, message: Message) -> dict[str, Any]:
         result: dict[str, Any] = {"role": message["role"]}
         content = message["content"]
-        result["content"] = (
-            content if isinstance(content, str) else _visible_text(content)
-        )
+        result["content"] = content if isinstance(content, str) else _visible_text(content)
         if "tool_calls" in message and message["tool_calls"]:
             result["tool_calls"] = [
                 {
@@ -446,9 +434,7 @@ class MistralRenderer(Renderer):
                     "id": getattr(tool_call, "id", None),
                     "function": {
                         "name": tool_call.function.name,
-                        "arguments": _normalize_tool_arguments(
-                            tool_call.function.arguments
-                        ),
+                        "arguments": _normalize_tool_arguments(tool_call.function.arguments),
                     },
                 }
                 for tool_call in message["tool_calls"]

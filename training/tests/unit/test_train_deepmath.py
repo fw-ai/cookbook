@@ -7,9 +7,8 @@ import time
 from types import SimpleNamespace
 
 import pytest
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk.sampling import SampledCompletion
-
 from training.examples.rl.deepmath import math_verify_service
 from training.examples.rl.deepmath import train_deepmath as module
 
@@ -67,9 +66,7 @@ def test_parse_args_rejects_removed_deployment_extra_values(monkeypatch):
 
 def test_extract_boxed_handles_nested_braces():
     assert module.extract_boxed(r"work \boxed{\frac{1}{x+1}} tail") == r"\frac{1}{x+1}"
-    assert module.extract_boxed(r"\boxed{\left(\frac{1}{2}\right)^{3}}") == (
-        r"\left(\frac{1}{2}\right)^{3}"
-    )
+    assert module.extract_boxed(r"\boxed{\left(\frac{1}{2}\right)^{3}}") == (r"\left(\frac{1}{2}\right)^{3}")
     assert module.extract_boxed(r"First \boxed{wrong} then \boxed{42}") == "42"
     assert module.extract_boxed("no boxed answer") is None
 
@@ -83,9 +80,7 @@ def test_extract_boxed_handles_nested_braces():
         (r"\boxed{42} and <answer>99</answer>", "42"),
     ],
 )
-def test_extract_answer_from_completion_supports_multiple_formats(
-    completion, expected
-):
+def test_extract_answer_from_completion_supports_multiple_formats(completion, expected):
     assert module.extract_answer_from_completion(completion) == expected
 
 
@@ -96,10 +91,7 @@ def test_deepmath_reward_supports_exact_and_numeric_fallback(monkeypatch):
 
     assert module.deepmath_reward(r"Result \boxed{2}", {"ground_truth": "2"}) == 1.0
     assert module.deepmath_reward(r"Result \boxed{2.0}", {"ground_truth": "2"}) == 1.0
-    assert (
-        module.deepmath_reward(r"\boxed{\frac{1}{2}}", {"ground_truth": r"\dfrac{1}{2}"})
-        == 1.0
-    )
+    assert module.deepmath_reward(r"\boxed{\frac{1}{2}}", {"ground_truth": r"\dfrac{1}{2}"}) == 1.0
     assert module.deepmath_reward(r"\boxed{43}", {"ground_truth": "42"}) == 0.0
     assert module.deepmath_reward("No answer here", {"ground_truth": "2"}) == 0.0
 
@@ -116,9 +108,7 @@ def test_math_verify_service_works_from_worker_threads():
     pytest.importorskip("math_verify")
     results: list[bool] = []
     thread = threading.Thread(
-        target=lambda: results.append(
-            math_verify_service.math_verify(r"\boxed{7}", r"\boxed{7}")
-        )
+        target=lambda: results.append(math_verify_service.math_verify(r"\boxed{7}", r"\boxed{7}"))
     )
     thread.start()
     thread.join(30.0)
@@ -128,9 +118,7 @@ def test_math_verify_service_works_from_worker_threads():
 
 def test_math_verify_service_kills_a_wedged_worker(tmp_path):
     slow_worker = tmp_path / "slow_worker.py"
-    slow_worker.write_text(
-        "import sys, time\nfor _line in sys.stdin:\n    time.sleep(3600)\n"
-    )
+    slow_worker.write_text("import sys, time\nfor _line in sys.stdin:\n    time.sleep(3600)\n")
     service = math_verify_service.MathVerifyService(worker_path=str(slow_worker))
 
     started = time.monotonic()
@@ -146,9 +134,7 @@ def test_rollout_grades_parsed_completion_with_deepmath_reward(monkeypatch):
     class Renderer:
         def build_generation_prompt(self, messages, **_kwargs):
             captured["messages"] = messages
-            return tinker.ModelInput(
-                chunks=[tinker.types.EncodedTextChunk(tokens=prompt_tokens)]
-            )
+            return sdk.ModelInput(chunks=[sdk.types.EncodedTextChunk(tokens=prompt_tokens)])
 
         def parse_response(self, tokens):
             return {"role": "assistant", "content": r"so \boxed{4}"}, True
@@ -170,9 +156,7 @@ def test_rollout_grades_parsed_completion_with_deepmath_reward(monkeypatch):
             ]
 
     renderer_names = []
-    monkeypatch.setattr(
-        module, "build_renderer", lambda *args, **_k: renderer_names.append(args[2]) or Renderer()
-    )
+    monkeypatch.setattr(module, "build_renderer", lambda *args, **_k: renderer_names.append(args[2]) or Renderer())
     monkeypatch.setattr(module, "math_verify", lambda _pred, _gt: False)
     setup = SimpleNamespace(
         tokenizer=object(),

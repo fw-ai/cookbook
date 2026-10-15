@@ -30,7 +30,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, Callable, Dict, List, Sequence, Tuple
 
-import tinker
+from fireworks.training import sdk
 
 from training.utils.rl.losses import PolicyBatch, PromptGroup
 
@@ -61,20 +61,17 @@ def score_answer_logprobs(
             raise ValueError("IGPO scoring needs a non-empty context and answer.")
         tokens = [*context, *answer]
         datums.append(
-            tinker.Datum(
-                model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+            sdk.Datum(
+                model_input=sdk.ModelInput.from_ints(tokens[:-1]),
                 loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(
-                        data=tokens[1:], dtype="int64", shape=[len(tokens) - 1]
-                    ),
+                    "target_tokens": sdk.TensorData(data=tokens[1:], dtype="int64", shape=[len(tokens) - 1]),
                 },
             )
         )
     result = client.forward(datums, "cross_entropy")
     if len(result.loss_fn_outputs) != len(datums):
         raise ValueError(
-            f"IGPO scoring returned {len(result.loss_fn_outputs)} outputs for "
-            f"{len(datums)} contexts."
+            f"IGPO scoring returned {len(result.loss_fn_outputs)} outputs for " f"{len(datums)} contexts."
         )
     scores = []
     for context, answer, output in zip(contexts, answers, result.loss_fn_outputs):
@@ -144,10 +141,7 @@ def compute_turn_advantages(
             flat_ig.append(reward)
             flat_outcome.append(outcome[t] if t < len(outcome) else 0.0)
     combined = [
-        ig + outcome
-        for ig, outcome in zip(
-            _z_normalize_group(flat_ig, eps), _z_normalize_group(flat_outcome, eps)
-        )
+        ig + outcome for ig, outcome in zip(_z_normalize_group(flat_ig, eps), _z_normalize_group(flat_outcome, eps))
     ]
 
     advantages: List[List[float]] = []
@@ -240,9 +234,7 @@ def _group_token_advantages(
     return token_advantages, metrics
 
 
-def token_advantages(
-    policy: Any, batch: PolicyBatch, *, gamma: float
-) -> Tuple[PolicyBatch, Dict[str, float]]:
+def token_advantages(policy: Any, batch: PolicyBatch, *, gamma: float) -> Tuple[PolicyBatch, Dict[str, float]]:
     """Return ``batch`` with IGPO ``token_advantages`` set, and ``igpo/*`` metrics.
 
     Each group of ``batch.groups`` holds one text datum per rollout run,

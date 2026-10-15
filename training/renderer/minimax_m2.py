@@ -15,10 +15,11 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-import tinker
 import torch
+from fireworks.training import sdk
+
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -30,14 +31,10 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     parse_response_for_stop_token,
     parse_think_blocks,
 )
+from training.renderer.message_weights import untrained_synthesized_context
 from training.renderer.tokenizer import Tokenizer
 
-from training.renderer.message_weights import untrained_synthesized_context
-
-_DEFAULT_SYSTEM_PROMPT = (
-    "You are MiniMax-M2, a helpful AI assistant built by MiniMax. "
-    "Knowledge cutoff: 2025-06."
-)
+_DEFAULT_SYSTEM_PROMPT = "You are MiniMax-M2, a helpful AI assistant built by MiniMax. " "Knowledge cutoff: 2025-06."
 _BOS_TEXT = "]~!b["
 _ROLE_PREFIX = "]~b]"
 _END_MESSAGE_TEXT = "[e~["
@@ -125,9 +122,7 @@ def _parse_parameter_value(value: str) -> Any:
 def _normalize_tool_arguments(raw_arguments: str) -> dict[str, Any]:
     parsed = json.loads(raw_arguments) if raw_arguments else {}
     if not isinstance(parsed, dict):
-        raise TypeError(
-            f"MiniMax tool arguments must be a JSON object, got {type(parsed)!r}"
-        )
+        raise TypeError(f"MiniMax tool arguments must be a JSON object, got {type(parsed)!r}")
     return parsed
 
 
@@ -135,9 +130,7 @@ def _format_tool_call(tool_call: ToolCall) -> str:
     arguments = _normalize_tool_arguments(tool_call.function.arguments)
     parts = [f'<invoke name="{tool_call.function.name}">\n']
     for key, value in arguments.items():
-        parts.append(
-            f'<parameter name="{key}">{_format_parameter_value(value)}</parameter>\n'
-        )
+        parts.append(f'<parameter name="{key}">{_format_parameter_value(value)}</parameter>\n')
     parts.append("</invoke>\n")
     return "".join(parts)
 
@@ -153,9 +146,7 @@ def _parse_tool_call_block(
 ) -> tuple[list[ToolCall], list[UnparsedToolCall]]:
     invoke_matches = list(_TOOL_INVOKE_RE.finditer(raw_block))
     if not invoke_matches:
-        return [], [
-            UnparsedToolCall(raw_text=raw_text, error="No <invoke> block found")
-        ]
+        return [], [UnparsedToolCall(raw_text=raw_text, error="No <invoke> block found")]
 
     tool_calls: list[ToolCall] = []
     unparsed_tool_calls: list[UnparsedToolCall] = []
@@ -242,9 +233,7 @@ class MiniMaxM2Renderer(Renderer):
         if eos_token_id is not None:
             return int(eos_token_id)
         tokens = self.tokenizer.encode(_END_MESSAGE_TEXT, add_special_tokens=False)
-        assert (
-            len(tokens) == 1
-        ), f"Expected single token for {_END_MESSAGE_TEXT!r}, got {tokens}"
+        assert len(tokens) == 1, f"Expected single token for {_END_MESSAGE_TEXT!r}, got {tokens}"
         return int(tokens[0])
 
     def _detect_default_system_prompt(self) -> str:
@@ -297,9 +286,7 @@ class MiniMaxM2Renderer(Renderer):
         return grouped
 
     def _preprocess_messages(self, messages: list[Message]) -> list[Message]:
-        return untrained_synthesized_context(
-            self._group_tool_messages(self._ensure_system_message(messages))
-        )
+        return untrained_synthesized_context(self._group_tool_messages(self._ensure_system_message(messages)))
 
     def _role_for_message(self, message: Message) -> str:
         if message["role"] == "assistant":
@@ -314,16 +301,12 @@ class MiniMaxM2Renderer(Renderer):
 
     def _render_assistant_message(self, message: Message, ctx: RenderContext) -> str:
         should_truncate = (
-            self.strip_thinking_from_history
-            and ctx.last_user_index >= 0
-            and ctx.idx < ctx.last_user_index
+            self.strip_thinking_from_history and ctx.last_user_index >= 0 and ctx.idx < ctx.last_user_index
         )
         if should_truncate:
             rendered = _truncate_assistant_history(message["content"])
         else:
-            reasoning, visible = _extract_assistant_reasoning_and_text(
-                message["content"]
-            )
+            reasoning, visible = _extract_assistant_reasoning_and_text(message["content"])
             rendered = visible
             if reasoning:
                 rendered = f"<think>\n{reasoning}\n</think>\n\n{visible}"
@@ -341,9 +324,7 @@ class MiniMaxM2Renderer(Renderer):
             return False
 
         should_truncate = (
-            self.strip_thinking_from_history
-            and ctx.last_user_index >= 0
-            and ctx.idx < ctx.last_user_index
+            self.strip_thinking_from_history and ctx.last_user_index >= 0 and ctx.idx < ctx.last_user_index
         )
         if should_truncate:
             visible = _truncate_assistant_history(message["content"])
@@ -363,11 +344,7 @@ class MiniMaxM2Renderer(Renderer):
             for idx, item in enumerate(content):
                 if isinstance(item, Mapping) and isinstance(item.get("output"), str):
                     rendered_item = item["output"]
-                elif (
-                    isinstance(item, Mapping)
-                    and item.get("type") == "text"
-                    and isinstance(item.get("text"), str)
-                ):
+                elif isinstance(item, Mapping) and item.get("type") == "text" and isinstance(item.get("text"), str):
                     rendered_item = item["text"]
                 else:
                     rendered_item = str(item)
@@ -377,14 +354,14 @@ class MiniMaxM2Renderer(Renderer):
         body += f"{_END_MESSAGE_TEXT}\n"
 
         header = (
-            tinker.types.EncodedTextChunk(
+            sdk.types.EncodedTextChunk(
                 tokens=self.tokenizer.encode(header_str, add_special_tokens=False),
             )
             if header_str
             else None
         )
-        output: list[tinker.ModelInputChunk] = [
-            tinker.types.EncodedTextChunk(
+        output: list[sdk.ModelInputChunk] = [
+            sdk.types.EncodedTextChunk(
                 tokens=self.tokenizer.encode(body, add_special_tokens=False),
             )
         ]
@@ -411,11 +388,11 @@ class MiniMaxM2Renderer(Renderer):
             output_content = _visible_text(message["content"])
 
         output_content += f"{_END_MESSAGE_TEXT}\n"
-        header = tinker.types.EncodedTextChunk(
+        header = sdk.types.EncodedTextChunk(
             tokens=self.tokenizer.encode(header_str, add_special_tokens=False),
         )
-        output: list[tinker.ModelInputChunk] = [
-            tinker.types.EncodedTextChunk(
+        output: list[sdk.ModelInputChunk] = [
+            sdk.types.EncodedTextChunk(
                 tokens=self.tokenizer.encode(output_content, add_special_tokens=False),
             )
         ]
@@ -434,7 +411,7 @@ class MiniMaxM2Renderer(Renderer):
         messages: list[Message],
         role: Role = "assistant",
         prefill: str | None = None,
-    ) -> tinker.ModelInput:
+    ) -> sdk.ModelInput:
         return super().build_generation_prompt(
             self._preprocess_messages(messages),
             role=role,
@@ -445,7 +422,7 @@ class MiniMaxM2Renderer(Renderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         return super().build_supervised_example(
             self._preprocess_messages(messages),
             train_on_what=train_on_what,
@@ -458,7 +435,7 @@ class MiniMaxM2Renderer(Renderer):
         start INSIDE the think block: they contain ``</think>`` but no opening
         ``<think>``. Without restoring the opener, ``parse_think_blocks`` can't
         split the block and the reasoning leaks into the graded content.
-        Mirrors ``training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5.Qwen3_5Renderer``.
+        Mirrors ``training.renderer.qwen3_5.Qwen3_5Renderer``.
         """
         think_prefix = self.tokenizer.encode("<think>\n", add_special_tokens=False)
         if response[: len(think_prefix)] == think_prefix:
@@ -478,13 +455,11 @@ class MiniMaxM2Renderer(Renderer):
             return assistant_message, False
 
         assert isinstance(assistant_message["content"], str)
-        rendered_content, tool_calls, unparsed_tool_calls = (
-            _extract_tool_calls_from_content(assistant_message["content"])
+        rendered_content, tool_calls, unparsed_tool_calls = _extract_tool_calls_from_content(
+            assistant_message["content"]
         )
         content_parts = parse_think_blocks(rendered_content)
-        assistant_message["content"] = (
-            content_parts if content_parts is not None else rendered_content
-        )
+        assistant_message["content"] = content_parts if content_parts is not None else rendered_content
         if tool_calls:
             assistant_message["tool_calls"] = tool_calls
         if unparsed_tool_calls:
@@ -519,9 +494,7 @@ class MiniMaxM2Renderer(Renderer):
                     "id": tool_call.id,
                     "function": {
                         "name": tool_call.function.name,
-                        "arguments": _normalize_tool_arguments(
-                            tool_call.function.arguments
-                        ),
+                        "arguments": _normalize_tool_arguments(tool_call.function.arguments),
                     },
                 }
                 for tool_call in message["tool_calls"]
@@ -536,9 +509,7 @@ class MiniMaxM2Renderer(Renderer):
         return result
 
 
-def _minimax_m2_factory(
-    tokenizer: Tokenizer, image_processor=None
-) -> MiniMaxM2Renderer:
+def _minimax_m2_factory(tokenizer: Tokenizer, image_processor=None) -> MiniMaxM2Renderer:
     return MiniMaxM2Renderer(tokenizer)
 
 

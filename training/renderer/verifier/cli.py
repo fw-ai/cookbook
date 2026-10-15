@@ -14,8 +14,7 @@ import os
 import sys
 from typing import Any
 
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
-
+from training.renderer.base import TrainOnWhat
 from training.renderer.verifier.utils.inspect import run_inspect
 from training.renderer.verifier.utils.probe import (
     DispatchError,
@@ -66,8 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--input",
         required=True,
-        help='Path to a JSON file with shape {"messages": [...], "tools": [...]}. '
-        '"tools" is optional.',
+        help='Path to a JSON file with shape {"messages": [...], "tools": [...]}. ' '"tools" is optional.',
     )
     p.add_argument(
         "--output",
@@ -140,9 +138,7 @@ def _load_input(path: str) -> dict[str, Any]:
 def _build_client(api_key: str | None, base_url: str | None):
     api_key = api_key or os.environ.get("FIREWORKS_API_KEY")
     if not api_key:
-        raise SystemExit(
-            "FIREWORKS_API_KEY not set. Pass --api-key or export FIREWORKS_API_KEY."
-        )
+        raise SystemExit("FIREWORKS_API_KEY not set. Pass --api-key or export FIREWORKS_API_KEY.")
     base_url = base_url or os.environ.get("FIREWORKS_BASE_URL")
 
     # Imported lazily so unit tests can run without the Fireworks SDK
@@ -202,9 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     train_on_what = TrainOnWhat(args.train_on_what)
 
     model, dispatch_mode = _resolve_dispatch(args, renderer_name=args.renderer)
-    logging.getLogger("training.renderer.verifier").info(
-        "dispatch=%s model=%s", dispatch_mode, model
-    )
+    logging.getLogger("training.renderer.verifier").info("dispatch=%s model=%s", dispatch_mode, model)
 
     tokenizer = _build_tokenizer(args.tokenizer_model)
     client = _build_client(args.api_key, args.base_url)

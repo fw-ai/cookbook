@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import logging
-from uuid import UUID
+import math
 from dataclasses import replace
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
-import tinker
-
+from fireworks.training import sdk
 from training.utils.rl.algorithm import grpo as objective
 from training.utils.rl.async_rl.batch import OptimizerBatch
 from training.utils.rl.losses import PromptGroup, combine_prompt_groups
@@ -30,11 +29,11 @@ from training.utils.rl.streaming import (
 def group(index=0, samples=1):
     return PromptGroup(
         data=[
-            tinker.Datum(
-                model_input=tinker.ModelInput.from_ints([1, 2]),
+            sdk.Datum(
+                model_input=sdk.ModelInput.from_ints([1, 2]),
                 loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(data=[2, 3], dtype="int64", shape=[2]),
-                    "weights": tinker.TensorData(data=[0.0, 1.0], dtype="float32", shape=[2]),
+                    "target_tokens": sdk.TensorData(data=[2, 3], dtype="int64", shape=[2]),
+                    "weights": sdk.TensorData(data=[0.0, 1.0], dtype="float32", shape=[2]),
                 },
             )
             for _ in range(samples)
@@ -50,7 +49,7 @@ def output(count, logprob=-0.2):
     return SimpleNamespace(
         metrics={"loss:sum": float(count)},
         loss_fn_outputs=[
-            {"logprobs": tinker.TensorData(data=[0.0, logprob], dtype="float32", shape=[2])} for _ in range(count)
+            {"logprobs": sdk.TensorData(data=[0.0, logprob], dtype="float32", shape=[2])} for _ in range(count)
         ],
     )
 

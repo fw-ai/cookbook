@@ -30,14 +30,14 @@ import os
 from functools import cache
 from typing import Any
 
-from training.renderer import get_renderer
-from training.renderer.tokenizer import get_tokenizer
 from transformers import AutoTokenizer
 
 # Importing the cookbook renderer package registers cookbook-local
 # renderer names (glm5, gemma4, minimax_m2, nemotron) under
-# ``training._vendor.tinker_cookbook_0_4_3.renderers.get_renderer``.
+# ``training.renderer._registry.get_renderer``.
 import training.renderer  # noqa: F401
+from training.renderer import get_renderer
+from training.renderer.tokenizer import get_tokenizer
 from training.utils.supervised import (
     build_tool_prefixed_messages,
     renderer_declares_tools,
@@ -59,13 +59,8 @@ def _load_tokenizer(
     """
     if needs_mistral_regex_fix(tokenizer_model):
         kwargs: dict[str, Any] = {
-            "token": os.environ.get("HF_TOKEN")
-            or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
-            "trust_remote_code": (
-                tokenizer_trust_remote_code
-                if tokenizer_trust_remote_code is not None
-                else True
-            ),
+            "token": os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
+            "trust_remote_code": (tokenizer_trust_remote_code if tokenizer_trust_remote_code is not None else True),
             "fix_mistral_regex": True,
         }
         if tokenizer_revision:
@@ -78,11 +73,7 @@ def _load_tokenizer(
             # Registered thinking-history renderers pass their reviewed
             # policy explicitly. Keep the historical verifier default for
             # unrelated pinned cases that predate the capability registry.
-            trust_remote_code=(
-                tokenizer_trust_remote_code
-                if tokenizer_trust_remote_code is not None
-                else True
-            ),
+            trust_remote_code=(tokenizer_trust_remote_code if tokenizer_trust_remote_code is not None else True),
         )
     return get_tokenizer(tokenizer_model)
 
@@ -123,9 +114,7 @@ def _first_divergence(a: list[int], b: list[int]) -> int | None:
     return None
 
 
-def _hf_messages_with_normalized_tool_args(
-    messages: list[dict], *, require_mapping: bool
-) -> list[dict]:
+def _hf_messages_with_normalized_tool_args(messages: list[dict], *, require_mapping: bool) -> list[dict]:
     """Return a reference copy with a template-compatible argument shape.
 
     OpenAI-compatible inputs may carry arguments as JSON strings. Current Gemma
@@ -145,9 +134,7 @@ def _hf_messages_with_normalized_tool_args(
             if "arguments" in function:
                 raw = function["arguments"]
                 parsed = json.loads(raw) if isinstance(raw, str) else raw
-                function["arguments"] = (
-                    parsed if require_mapping else json.dumps(parsed)
-                )
+                function["arguments"] = parsed if require_mapping else json.dumps(parsed)
             call["function"] = function
             new_calls.append(call)
         message = {**message, "tool_calls": new_calls}
@@ -155,9 +142,7 @@ def _hf_messages_with_normalized_tool_args(
     return out
 
 
-def _hf_messages_with_reasoning_parts(
-    messages: list[dict], *, renderer_name: str
-) -> list[dict]:
+def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: str) -> list[dict]:
     """Map normalized thinking parts to a tokenizer's native HF input shape."""
     supports_reasoning_parts = renderer_name in {
         "minimax_m3",
@@ -185,9 +170,7 @@ def _hf_messages_with_reasoning_parts(
             # leaving a ``thinking`` content part behind makes its generic
             # content loop look for a nonexistent ``text`` key.
             normalized["content"] = [
-                part
-                for part in content
-                if not (isinstance(part, dict) and part.get("type") == "thinking")
+                part for part in content if not (isinstance(part, dict) and part.get("type") == "thinking")
             ]
         out.append(normalized)
     return out
@@ -277,14 +260,10 @@ def compare_renderer_to_reference(
     # Assemble the renderer input through the SAME production path SFT uses
     # (build_tool_prefixed_messages), so the tool-declaration prefix is applied
     # exactly as training does — no harness-local reimplementation to drift from.
-    renderer_messages = build_tool_prefixed_messages(
-        messages, renderer=renderer, tools=tools
-    )
+    renderer_messages = build_tool_prefixed_messages(messages, renderer=renderer, tools=tools)
 
     if add_generation_prompt:
-        renderer_input = renderer.build_generation_prompt(
-            renderer_messages, role="assistant"
-        )
+        renderer_input = renderer.build_generation_prompt(renderer_messages, role="assistant")
     else:
         renderer_input, _weights = renderer.build_supervised_example(renderer_messages)
     renderer_tokens = [int(t) for t in renderer_input.to_ints()]

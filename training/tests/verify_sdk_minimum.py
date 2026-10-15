@@ -6,12 +6,10 @@ from __future__ import annotations
 import argparse
 import re
 import tomllib
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
-SDK_REQUIREMENT_RE = re.compile(
-    r"^fireworks-ai(?:\[[^]]+\])?(?P<specifiers>[^;]*)(?:;.*)?$"
-)
+SDK_REQUIREMENT_RE = re.compile(r"^fireworks-ai(?:\[[^]]+\])?(?P<specifiers>[^;]*)(?:;.*)?$")
 MINIMUM_RE = re.compile(r"(?:^|,)\s*>=\s*(?P<version>[^,\s]+)\s*(?=,|$)")
 
 
@@ -26,17 +24,11 @@ def declared_sdk_minimum(pyproject: Path) -> str:
             sdk_requirements.append(match.group("specifiers"))
 
     if len(sdk_requirements) != 1:
-        raise ValueError(
-            "project.dependencies must contain exactly one fireworks-ai requirement"
-        )
+        raise ValueError("project.dependencies must contain exactly one fireworks-ai requirement")
 
-    minimums = [
-        match.group("version") for match in MINIMUM_RE.finditer(sdk_requirements[0])
-    ]
+    minimums = [match.group("version") for match in MINIMUM_RE.finditer(sdk_requirements[0])]
     if len(minimums) != 1:
-        raise ValueError(
-            "the fireworks-ai requirement must contain exactly one explicit >= minimum"
-        )
+        raise ValueError("the fireworks-ai requirement must contain exactly one explicit >= minimum")
     return minimums[0]
 
 
@@ -55,16 +47,21 @@ def main() -> int:
         return 0
 
     try:
-        installed = version("fireworks-ai")
+        package = distribution("fireworks-ai")
+        installed = package.version
     except PackageNotFoundError:
         print("fireworks-ai is not installed")
         return 1
     if installed != minimum:
+        print(f"installed fireworks-ai {installed} does not equal declared minimum {minimum}")
+        return 1
+    marker = "fireworks/training/sdk/_core/__init__.py"
+    if marker not in {str(file) for file in package.files or ()}:
         print(
-            f"installed fireworks-ai {installed} does not equal declared minimum {minimum}"
+            "declared minimum SDK lacks the native training runtime; publish SDK first, then bump the cookbook floor and lock"
         )
         return 1
-    print(f"verified declared minimum fireworks-ai=={minimum}")
+    print(f"verified native declared minimum fireworks-ai=={minimum}")
     return 0
 
 

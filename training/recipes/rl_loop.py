@@ -34,7 +34,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
@@ -42,8 +42,6 @@ from fireworks.training.sdk.training_spec import (
     normalize_lr_scheduler_spec,
 )
 from training.renderer import get_text_content
-
-from training.utils.termination import close_in_thread, run_in_thread, with_signals
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
@@ -53,11 +51,11 @@ from training.utils import (
     WandBConfig,
     build_renderer,
     build_service_client,
-    make_weight_sync,
     load_deployment_tokenizer,
     load_jsonl_dataset,
     log_metrics,
     log_metrics_json,
+    make_weight_sync,
     phase_span,
     prepare_sampling_messages,
     read_api_extra_headers_env,
@@ -97,6 +95,7 @@ from training.utils.rl.rollout.setup import (
     rollout_context_names,
 )
 from training.utils.rl.sync_batch import collect_prompt_groups
+from training.utils.termination import close_in_thread, run_in_thread, with_signals
 from training.utils.timer import elapsed_timer, flush_timing
 
 logger = logging.getLogger(__name__)
@@ -459,7 +458,7 @@ async def main(
                 with elapsed_timer("optim_step"):
                     optim_result = await run_in_thread(
                         policy.optim_step,
-                        tinker.AdamParams(learning_rate=step_lr, **adam_kwargs),
+                        sdk.AdamParams(learning_rate=step_lr, **adam_kwargs),
                         grad_accumulation_normalization=objective.NORMALIZATION,
                         emit_grad_norm_metrics=True,
                     )

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 import torch
-import tinker
+from fireworks.training import sdk
 
 from training.utils.client import GradAccNormalization
 from training.utils.rl.common import SAFETY_CLAMP, policy_ratio_metrics, run_loss_loop
@@ -72,7 +72,7 @@ def loss_fn_config(config: GRPOConfig) -> Dict[str, float]:
     }
 
 
-def build_datums(batch: PolicyBatch, config: GRPOConfig) -> List[tinker.Datum]:
+def build_datums(batch: PolicyBatch, config: GRPOConfig) -> List[sdk.Datum]:
     """Datums for the built-in :data:`LOSS_FN`."""
     del config
     return build_policy_datums(batch)
@@ -111,9 +111,7 @@ def make_loss_fn(batch: PolicyBatch, config: GRPOConfig):
         # samples, not per-parameter gradient covariance.
         unclipped_selected = surr1 >= surr2
         clipped_has_gradient = (ratio >= 1.0 - eps_low) & (ratio <= 1.0 + eps_high)
-        ratio_with_gradient = torch.where(
-            unclipped_selected | clipped_has_gradient, ratio, torch.zeros_like(ratio)
-        )
+        ratio_with_gradient = torch.where(unclipped_selected | clipped_has_gradient, ratio, torch.zeros_like(ratio))
         pg_coefficient = (-ctx.adv * ratio_with_gradient * ctx.resp_mask)[active]
         pg_datum_coefficient = pg_coefficient.detach().float().mean()
         extra = {
@@ -132,9 +130,7 @@ def make_loss_fn(batch: PolicyBatch, config: GRPOConfig):
             extra["kl_term"] = (kl_penalty * ctx.resp_mask).sum().item()
         return per_token_loss * ctx.resp_mask, extra
 
-    def loss_fn(
-        data: List[tinker.Datum], logprobs_list: List[torch.Tensor]
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+    def loss_fn(data: List[sdk.Datum], logprobs_list: List[torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(batch, data, logprobs_list, "grpo", policy_fn)
         ns, nt = result.n_samples, result.num_tokens
         total_resp = int(result.extra_sums.get("resp_len", 0.0))
@@ -155,9 +151,7 @@ def make_loss_fn(batch: PolicyBatch, config: GRPOConfig):
             pg_sum = result.extra_sums.get("pg_datum_coefficient_sum", 0.0)
             pg_sq_sum = result.extra_sums.get("pg_datum_coefficient_sq_sum", 0.0)
             pg_mean = pg_sum / pg_count
-            pg_variance = (
-                max((pg_sq_sum - pg_sum * pg_mean) / (pg_count - 1), 0.0) if pg_count > 1 else 0.0
-            )
+            pg_variance = max((pg_sq_sum - pg_sum * pg_mean) / (pg_count - 1), 0.0) if pg_count > 1 else 0.0
             pg_estimator_variance = pg_variance / pg_count
             out["policy_gradient/coefficient_variance_proxy"] = pg_variance
             out["policy_gradient/estimator_variance_proxy"] = pg_estimator_variance

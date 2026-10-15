@@ -44,7 +44,7 @@ stays independent of the renderer registry and training runtime.
 | GRPO | `recipes/rl_loop.py` | Synchronous on-policy RL; trainer's built-in GRPO loss clipped against rollout logprobs. IGPO runs here via `prepare_batch_fn` |
 | Async GRPO | `recipes/async_rl_loop.py` | Same update with rollout/train overlap and bounded staleness |
 | Distillation / OPD | `recipes/distillation_loop.py` | On-policy distillation from a frozen teacher's token scores |
-| SDFT | `recipes/sdft_loop.py` | Top-K self-distillation on serverless |
+| SDFT | [Customer guide](docs/sdft.md) | Maintained in the external Fireworks Tinker-Cookbook fork |
 | DPO | `recipes/dpo_loop.py` | Preference optimization with cached reference logprobs |
 | ORPO | `recipes/orpo_loop.py` | Odds-ratio preference optimization; no reference model |
 | SFT | `recipes/sft_loop.py` | Response-only cross-entropy; `serverless=True` uses the shared pool |
@@ -85,7 +85,7 @@ Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each 
 ```bash
 git clone https://github.com/fw-ai/cookbook.git && cd cookbook/training
 uv venv --python 3.12 && source .venv/bin/activate
-uv pip install -e .                      # pulls fireworks-ai[training]>=1.2.22,<2
+uv pip install -e .                      # installs the SDK and recipe dependencies
 export FIREWORKS_API_KEY=...             # or put it in training/.env
 python -m training.examples.sft.train_sft --help
 ```
@@ -108,3 +108,9 @@ reservations and distillation teachers are covered by the
 uv pip install -e ".[dev]"
 pytest tests/
 ```
+
+
+### SDFT
+
+SDFT is maintained in the [Fireworks Tinker-Cookbook fork](https://github.com/fw-ai-external/tinker-cookbook).
+See the [customer guide](docs/sdft.md) for where to start.

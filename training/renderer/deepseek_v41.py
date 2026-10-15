@@ -10,11 +10,13 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import tinker
 import torch
+from fireworks.training import sdk
 from huggingface_hub import hf_hub_download
 from PIL import Image
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+
+from training.renderer import register_renderer
+from training.renderer.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -22,7 +24,6 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     TrainOnWhat,
     image_to_chunk,
 )
-from training.renderer import register_renderer
 from training.renderer.deepseek_v4 import (
     _RESPONSE_FORMAT_TEMPLATE,
     DeepseekV4Renderer,
@@ -39,19 +40,14 @@ from training.renderer.reasoning_fields import (
 from training.renderer.tokenizer import Tokenizer
 
 _SYSTEM_SP = "<｜System｜>"
-_REASONING_EFFORT = (
-    "Reasoning Effort: 75 "
-    "(range 1-100, the higher the value, the more thorough the reasoning)\n\n"
-)
+_REASONING_EFFORT = "Reasoning Effort: 75 " "(range 1-100, the higher the value, the more thorough the reasoning)\n\n"
 _THINKING_START = "_deepseek_v41_thinking_start"
 _IMAGE_PLACEHOLDER = "<｜deepseek_image｜>"
 
 
 def _without_image_placeholder(text: str) -> str:
     if _IMAGE_PLACEHOLDER in text:
-        raise ValueError(
-            "Raw DeepSeek V4.1 image placeholders are unsupported; use an image content part"
-        )
+        raise ValueError("Raw DeepSeek V4.1 image placeholders are unsupported; use an image content part")
     return text
 
 
@@ -75,9 +71,7 @@ class DeepseekV41ImageTokenCounter:
     def from_pretrained(cls, model_name: str) -> "DeepseekV41ImageTokenCounter":
         model_path = Path(model_name)
         config_path = (
-            model_path / "config.json"
-            if model_path.is_dir()
-            else Path(hf_hub_download(model_name, "config.json"))
+            model_path / "config.json" if model_path.is_dir() else Path(hf_hub_download(model_name, "config.json"))
         )
         vision = json.loads(config_path.read_text())["vision_config"]
         return cls(
@@ -148,14 +142,10 @@ def _assistant_reasoning_and_text(message: Mapping[str, Any]) -> tuple[str, str]
         explicit = (
             reasoning
             if has_reasoning and reasoning
-            else reasoning_content
-            if has_reasoning_content and reasoning_content
-            else ""
+            else reasoning_content if has_reasoning_content and reasoning_content else ""
         )
     extracted, visible = _extract_reasoning_and_text(message.get("content"))
-    return _without_image_placeholder(
-        explicit or extracted
-    ), _without_image_placeholder(visible)
+    return _without_image_placeholder(explicit or extracted), _without_image_placeholder(visible)
 
 
 def _user_blocks(content: Any) -> list[dict[str, Any]]:
@@ -205,8 +195,7 @@ class DeepseekV41Renderer(DeepseekV4Renderer):
             if message.get("role") == "system" and index > 0:
                 boundary = index
             elif message.get("role") == "user" and any(
-                block.get("type") in {"text", "image"}
-                for block in message.get("content_blocks", [])
+                block.get("type") in {"text", "image"} for block in message.get("content_blocks", [])
             ):
                 boundary = index
         return boundary
@@ -216,9 +205,7 @@ class DeepseekV41Renderer(DeepseekV4Renderer):
         message: Mapping[str, Any],
         index: int,
     ) -> bool:
-        return message.get("role") == "user" or (
-            message.get("role") == "system" and index > 0
-        )
+        return message.get("role") == "user" or (message.get("role") == "system" and index > 0)
 
     def _preprocess(self, messages: list[Message]) -> list[Message]:
         normalized: list[Message] = []
@@ -231,9 +218,7 @@ class DeepseekV41Renderer(DeepseekV4Renderer):
                     message["reasoning_content"] = reasoning
             normalized.append(message)
 
-        merged = _sort_tool_results_by_call_order(
-            _merge_tool_messages(normalized, user_blocks=_user_blocks)
-        )
+        merged = _sort_tool_results_by_call_order(_merge_tool_messages(normalized, user_blocks=_user_blocks))
         self._effective_strip = self.strip_thinking_from_history and not any(
             message.get("tools") for message in merged
         )
@@ -281,20 +266,16 @@ class DeepseekV41Renderer(DeepseekV4Renderer):
             if message.get("tools"):
                 body += "\n\n" + self._render_tools_section(list(message["tools"]))
             if message.get("response_format"):
-                body += "\n\n" + _RESPONSE_FORMAT_TEMPLATE.format(
-                    schema=_to_json(message["response_format"])
-                )
+                body += "\n\n" + _RESPONSE_FORMAT_TEMPLATE.format(schema=_to_json(message["response_format"]))
             return RenderedMessage(
-                header=tinker.types.EncodedTextChunk(tokens=self._encode(prefix)),
-                output=[tinker.types.EncodedTextChunk(tokens=self._encode(body))],
+                header=sdk.types.EncodedTextChunk(tokens=self._encode(prefix)),
+                output=[sdk.types.EncodedTextChunk(tokens=self._encode(body))],
             )
         if role == "user":
-            prefix = (
-                _SYSTEM_SP + _REASONING_EFFORT if ctx.idx == 0 else ""
-            ) + self._user_sp
+            prefix = (_SYSTEM_SP + _REASONING_EFFORT if ctx.idx == 0 else "") + self._user_sp
             # Encode each run between images as one string: BPE merges across
             # block separators (".\n\n", ">\n\n") must match the publisher prompt.
-            output: list[tinker.types.ModelInputChunk] = []
+            output: list[sdk.types.ModelInputChunk] = []
             pending = ""
             for index, block in enumerate(message.get("content_blocks", [])):
                 if index:
@@ -306,40 +287,28 @@ class DeepseekV41Renderer(DeepseekV4Renderer):
                     content = block.get("content", "")
                     if isinstance(content, list):
                         if any(part.get("type") != "text" for part in content):
-                            raise ValueError(
-                                "DeepSeek V4.1 tool-result images are unsupported"
-                            )
-                        content = "\n\n".join(
-                            str(part.get("text", "")) for part in content
-                        )
+                            raise ValueError("DeepSeek V4.1 tool-result images are unsupported")
+                        content = "\n\n".join(str(part.get("text", "")) for part in content)
                     text = f"<tool_result>{_without_image_placeholder(str(content))}</tool_result>"
                 elif kind == "image":
                     if self.image_processor is None:
-                        raise ValueError(
-                            "DeepSeek V4.1 image messages require an image processor"
-                        )
+                        raise ValueError("DeepSeek V4.1 image messages require an image processor")
                     image = block.get("image")
                     if isinstance(image, bytes):
                         image = Image.open(io.BytesIO(image))
                         image.load()
                     if pending:
-                        output.append(
-                            tinker.types.EncodedTextChunk(tokens=self._encode(pending))
-                        )
+                        output.append(sdk.types.EncodedTextChunk(tokens=self._encode(pending)))
                         pending = ""
                     output.append(image_to_chunk(image, self.image_processor))
                     continue
                 else:
-                    raise ValueError(
-                        f"Unsupported DeepSeek V4.1 content block: {kind!r}"
-                    )
+                    raise ValueError(f"Unsupported DeepSeek V4.1 content block: {kind!r}")
                 pending += text
             if pending:
-                output.append(
-                    tinker.types.EncodedTextChunk(tokens=self._encode(pending))
-                )
+                output.append(sdk.types.EncodedTextChunk(tokens=self._encode(pending)))
             return RenderedMessage(
-                header=tinker.types.EncodedTextChunk(tokens=self._encode(prefix)),
+                header=sdk.types.EncodedTextChunk(tokens=self._encode(prefix)),
                 output=output,
             )
         return super().render_message(message, ctx)
@@ -348,17 +317,12 @@ class DeepseekV41Renderer(DeepseekV4Renderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         prepared = self._preprocess(messages)
-        has_mid_system = any(
-            message.get("role") == "system" and index > 0
-            for index, message in enumerate(prepared)
-        )
+        has_mid_system = any(message.get("role") == "system" and index > 0 for index, message in enumerate(prepared))
         has_user = any(message.get("role") == "user" for message in prepared)
         if train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN and (
-            has_mid_system
-            or not has_user
-            or any(message.get("tools") for message in prepared)
+            has_mid_system or not has_user or any(message.get("tools") for message in prepared)
         ):
             model_input, weights = self._build_tool_turn_example(prepared)
         else:
@@ -369,7 +333,7 @@ class DeepseekV41Renderer(DeepseekV4Renderer):
             )
         offset = 0
         for chunk in model_input.chunks:
-            if isinstance(chunk, tinker.types.ImageChunk):
+            if isinstance(chunk, sdk.types.ImageChunk):
                 weights[offset : offset + chunk.length] = 0
             offset += chunk.length
         return model_input, weights

@@ -53,7 +53,13 @@ PROMOTION_SOURCE = "https://docs.fireworks.ai/fine-tuning/models"
 LORA_ALPHA = 32
 LORA_TARGETS = {"train_mlp": True, "train_attn": True, "train_unembed": True}
 DEFAULT_DATASET = "onboarding-prompt-router"
-TERMINAL = {"JOB_STATE_COMPLETED", "JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED", "JOB_STATE_EARLY_STOPPED"}
+TERMINAL = {
+    "JOB_STATE_COMPLETED",
+    "JOB_STATE_FAILED",
+    "JOB_STATE_CANCELLED",
+    "JOB_STATE_EXPIRED",
+    "JOB_STATE_EARLY_STOPPED",
+}
 
 
 def _load_dotenv() -> None:
@@ -151,29 +157,51 @@ def cmd_plan(args: argparse.Namespace) -> int:
             {
                 "evaluation": "eval_auto_carveout: the platform holds out a slice and reports eval loss; "
                 "the slice size is chosen by the platform and not reported by the API",
-                "parameters": {"lora_rank": args.lora_rank, "epochs": args.epochs, "learning_rate": args.learning_rate,
-                               "max_context_length": args.max_context_length},
+                "parameters": {
+                    "lora_rank": args.lora_rank,
+                    "epochs": args.epochs,
+                    "learning_rate": args.learning_rate,
+                    "max_context_length": args.max_context_length,
+                },
                 "resources": _names(account, args.run_id),
             }
         )
     else:
         plan.update(
             {
-                "dataset": {"file": args.file or "required: pass --file <chat.jsonl>",
-                            "holdout_rows": args.n_eval, "train_rows": args.n_train or "all remaining rows"},
+                "dataset": {
+                    "file": args.file or "required: pass --file <chat.jsonl>",
+                    "holdout_rows": args.n_eval,
+                    "train_rows": args.n_train or "all remaining rows",
+                },
                 "evaluation": "exact match (and per-key accuracy for JSON answers), base vs tuned, same holdout, "
-                              "in-session sampling",
-                "parameters": {"lora_rank": args.lora_rank, "epochs": args.epochs, "batch_size": args.batch_size,
-                               "learning_rate": args.learning_rate, "max_seq_len": args.max_seq_len,
-                               "max_eval_tokens": args.max_eval_tokens, "seed": args.seed,
-                               "lora_alpha": LORA_ALPHA, "lora_targets": LORA_TARGETS,
-                               "train_on": "last_assistant_turn", "loss": "cross_entropy",
-                               "optimizer": {"beta1": 0.9, "beta2": 0.999, "eps": 1e-8,
-                                             "weight_decay": 0.0, "grad_clip_norm": 1.0},
-                               "emit_grad_norm_metrics": True},
-                "resources": {"promoted_model": None if args.no_promote else _names(account, args.run_id)["serverless_model"],
-                              "note": "the tuned sampler checkpoint is promoted to a LoRA model before the session "
-                                      "closes; session checkpoints are unreachable after the session ends"},
+                "in-session sampling",
+                "parameters": {
+                    "lora_rank": args.lora_rank,
+                    "epochs": args.epochs,
+                    "batch_size": args.batch_size,
+                    "learning_rate": args.learning_rate,
+                    "max_seq_len": args.max_seq_len,
+                    "max_eval_tokens": args.max_eval_tokens,
+                    "seed": args.seed,
+                    "lora_alpha": LORA_ALPHA,
+                    "lora_targets": LORA_TARGETS,
+                    "train_on": "last_assistant_turn",
+                    "loss": "cross_entropy",
+                    "optimizer": {
+                        "beta1": 0.9,
+                        "beta2": 0.999,
+                        "eps": 1e-8,
+                        "weight_decay": 0.0,
+                        "grad_clip_norm": 1.0,
+                    },
+                    "emit_grad_norm_metrics": True,
+                },
+                "resources": {
+                    "promoted_model": None if args.no_promote else _names(account, args.run_id)["serverless_model"],
+                    "note": "the tuned sampler checkpoint is promoted to a LoRA model before the session "
+                    "closes; session checkpoints are unreachable after the session ends",
+                },
             }
         )
     plan["cost"] = {
@@ -195,18 +223,33 @@ def cmd_launch_managed(args: argparse.Namespace) -> int:
     except Exception:  # noqa: BLE001 - not found is the expected case
         existing = None
     if existing is not None:
-        wanted = {"base_model": BASE_MODEL, "dataset": f"accounts/{account}/datasets/{args.dataset}",
-                  "output_model": names["output_model"], "epochs": args.epochs, "lora_rank": args.lora_rank,
-                  "learning_rate": args.learning_rate, "max_context_length": args.max_context_length}
+        wanted = {
+            "base_model": BASE_MODEL,
+            "dataset": f"accounts/{account}/datasets/{args.dataset}",
+            "output_model": names["output_model"],
+            "epochs": args.epochs,
+            "lora_rank": args.lora_rank,
+            "learning_rate": args.learning_rate,
+            "max_context_length": args.max_context_length,
+        }
+
         def same(have, want) -> bool:
             if isinstance(want, float) and isinstance(have, (int, float)):
                 return abs(have - want) <= 1e-9 + 1e-6 * abs(want)
             return have == want
 
-        mismatched = {k: {"existing": getattr(existing, k, None), "requested": v}
-                      for k, v in wanted.items() if not same(getattr(existing, k, None), v)}
-        print(json.dumps({"reused": not mismatched, "job": existing.name, "state": existing.state,
-                          "mismatched": mismatched}, indent=2, default=str))
+        mismatched = {
+            k: {"existing": getattr(existing, k, None), "requested": v}
+            for k, v in wanted.items()
+            if not same(getattr(existing, k, None), v)
+        }
+        print(
+            json.dumps(
+                {"reused": not mismatched, "job": existing.name, "state": existing.state, "mismatched": mismatched},
+                indent=2,
+                default=str,
+            )
+        )
         if mismatched:
             print("This run ID belongs to a job with different settings; pass a new --run-id.", file=sys.stderr)
         return 0 if not mismatched else 1
@@ -222,8 +265,12 @@ def cmd_launch_managed(args: argparse.Namespace) -> int:
         max_context_length=args.max_context_length,
         eval_auto_carveout=True,
     )
-    print(json.dumps({"created": job.name, "state": job.state, "output_model": names["output_model"],
-                      "run_id": args.run_id}, indent=2))
+    print(
+        json.dumps(
+            {"created": job.name, "state": job.state, "output_model": names["output_model"], "run_id": args.run_id},
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -269,8 +316,7 @@ def _render_summary(signed_url: str | None, rows: int = 3) -> dict:
     def span(values: list[int]) -> list[int]:
         return [min(values), max(values)]
 
-    trained = [sum(1 for w in (s.get("training_loss_weights") or s.get("token_weights") or []) if w)
-               for s in samples]
+    trained = [sum(1 for w in (s.get("training_loss_weights") or s.get("token_weights") or []) if w) for s in samples]
     return {
         "samples": len(samples),
         "renderer": first.get("renderer"),
@@ -311,10 +357,17 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 print(json.dumps({"render_samples": summary}, indent=2), flush=True)
                 rendered = True
         if job.state in TERMINAL:
-            report = {"job": job.name, "state": job.state, "output_model": job.output_model,
-                      "eval_split": (f"dataset {job.evaluation_dataset}" if job.evaluation_dataset else
-                                     "auto carve-out; size chosen by the platform, not reported by the API"),
-                      "metrics": _metrics_summary(job.metrics_file_signed_url)}
+            report = {
+                "job": job.name,
+                "state": job.state,
+                "output_model": job.output_model,
+                "eval_split": (
+                    f"dataset {job.evaluation_dataset}"
+                    if job.evaluation_dataset
+                    else "auto carve-out; size chosen by the platform, not reported by the API"
+                ),
+                "metrics": _metrics_summary(job.metrics_file_signed_url),
+            }
             if job.status and getattr(job.status, "message", None):
                 report["message"] = job.status.message
             print(json.dumps(report, indent=2))
@@ -363,11 +416,14 @@ def cmd_upload(args: argparse.Namespace) -> int:
     except Exception:  # noqa: BLE001 - not found is the expected case
         ds = None
     if ds is not None and ds.state == "READY":
-        sys.exit(f"Dataset {ds.name} already exists with {ds.example_count} rows; "
-                 "upload to a new --dataset ID instead of reusing it.")
+        sys.exit(
+            f"Dataset {ds.name} already exists with {ds.example_count} rows; "
+            "upload to a new --dataset ID instead of reusing it."
+        )
     if ds is None:
-        ds = client.datasets.create(dataset_id=args.dataset,
-                                    dataset={"displayName": args.dataset, "exampleCount": str(rows), "format": "CHAT"})
+        ds = client.datasets.create(
+            dataset_id=args.dataset, dataset={"displayName": args.dataset, "exampleCount": str(rows), "format": "CHAT"}
+        )
     if ds.state != "READY":
         with path.open("rb") as f:
             client.datasets.upload(args.dataset, file=f)
@@ -498,11 +554,13 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
     if not promotion_active() and not args.allow_paid:
         sys.exit("The Muse Glimmer promotion has ended. Re-run with --allow-paid after approving the live rate.")
     _, account = _connect()
-    import tinker
+    from fireworks.training import sdk
     from fireworks.training.sdk import FiretitanServiceClient
-
     from training.renderer import TrainOnWhat, get_text_content
-    from training.utils.serverless import enable_serverless_supervised_409_retry, serverless_base_url
+    from training.utils.serverless import (
+        enable_serverless_supervised_409_retry,
+        serverless_base_url,
+    )
 
     run_dir, train_ex, eval_ex, tokenizer, renderer, _ = _prepare(args)
     messages = _messages
@@ -517,20 +575,25 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
             return "oversized"
         if len(tokens) < 2 or not any(x > 0 for x in w[1:]):
             return None
-        return tinker.Datum(
-            model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+        return sdk.Datum(
+            model_input=sdk.ModelInput.from_ints(tokens[:-1]),
             loss_fn_inputs={"target_tokens": tokens[1:], "weights": w[1:]},
         )
 
     rendered = [datum(ex) for ex in train_ex]
     oversized = [i for i, d in enumerate(rendered) if d == "oversized"]
     if oversized:
-        sys.exit(f"{len(oversized)} train rows exceed --max-seq-len {args.max_seq_len} (row indices "
-                 f"{oversized[:20]}); raise --max-seq-len or remove them before launch.")
+        sys.exit(
+            f"{len(oversized)} train rows exceed --max-seq-len {args.max_seq_len} (row indices "
+            f"{oversized[:20]}); raise --max-seq-len or remove them before launch."
+        )
     datums = [d for d in rendered if d is not None]
     sample = renderer.build_generation_prompt(messages(train_ex[0], False))
-    print(f"rendered {len(datums)}/{len(train_ex)} train rows; holdout {len(eval_ex)} rows; "
-          f"example prompt tokens={len(sample.to_ints())}", flush=True)
+    print(
+        f"rendered {len(datums)}/{len(train_ex)} train rows; holdout {len(eval_ex)} rows; "
+        f"example prompt tokens={len(sample.to_ints())}",
+        flush=True,
+    )
 
     service = FiretitanServiceClient(
         api_key=os.environ["FIREWORKS_API_KEY"],
@@ -539,12 +602,16 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
     enable_serverless_supervised_409_retry(service)
     log = (run_dir / "metrics.jsonl").open("a")
     try:
-        training_client = service.create_lora_training_client(base_model=BASE_MODEL, rank=args.lora_rank,
-                                                              alpha=LORA_ALPHA, **LORA_TARGETS)
-        print(f"session={getattr(service, 'training_session_id', None)} run={getattr(training_client, 'run_id', None)}",
-              flush=True)
-        params = tinker.SamplingParams(max_tokens=args.max_eval_tokens, temperature=0.0,
-                                       stop=renderer.get_stop_sequences())
+        training_client = service.create_lora_training_client(
+            base_model=BASE_MODEL, rank=args.lora_rank, alpha=LORA_ALPHA, **LORA_TARGETS
+        )
+        print(
+            f"session={getattr(service, 'training_session_id', None)} run={getattr(training_client, 'run_id', None)}",
+            flush=True,
+        )
+        params = sdk.SamplingParams(
+            max_tokens=args.max_eval_tokens, temperature=0.0, stop=renderer.get_stop_sequences()
+        )
 
         per_example: dict[str, list[bool]] = {}
 
@@ -576,8 +643,19 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
                     ok, fields = _score(text, gold)
                     exact += ok
                     correct.append(ok)
-                    preds.write(json.dumps({"index": i, "gold": gold[:2000], "exact": ok, "fields": fields,
-                                            "truncated": truncated, "answer_text": text[:2000]}) + "\n")
+                    preds.write(
+                        json.dumps(
+                            {
+                                "index": i,
+                                "gold": gold[:2000],
+                                "exact": ok,
+                                "fields": fields,
+                                "truncated": truncated,
+                                "answer_text": text[:2000],
+                            }
+                        )
+                        + "\n"
+                    )
                     for f, hit in fields.items():
                         seen[f] = seen.get(f, 0) + 1
                         hits[f] = hits.get(f, 0) + hit
@@ -588,16 +666,22 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
                     close()
             per_example[label] = correct
             n = len(eval_ex)
-            result = {"label": label, "exact_match": exact / n, "unterminated": hit_limit,
-                      "prompt_tokens": prompt_tokens, "sampled_tokens": sampled_tokens,
-                      "field_accuracy": {f: hits[f] / seen[f] for f in seen}}
+            result = {
+                "label": label,
+                "exact_match": exact / n,
+                "unterminated": hit_limit,
+                "prompt_tokens": prompt_tokens,
+                "sampled_tokens": sampled_tokens,
+                "field_accuracy": {f: hits[f] / seen[f] for f in seen},
+            }
             log.write(json.dumps({"eval": result}) + "\n")
             print(json.dumps(result), flush=True)
             return result
 
         base = evaluate("base")
-        adam = tinker.AdamParams(learning_rate=args.learning_rate, beta1=0.9, beta2=0.999, eps=1e-8,
-                                 weight_decay=0.0, grad_clip_norm=1.0)
+        adam = sdk.AdamParams(
+            learning_rate=args.learning_rate, beta1=0.9, beta2=0.999, eps=1e-8, weight_decay=0.0, grad_clip_norm=1.0
+        )
         rng = random.Random(args.seed)
         step = 0
         for epoch in range(args.epochs):
@@ -617,25 +701,41 @@ def cmd_launch_serverless(args: argparse.Namespace) -> int:
                 print(json.dumps(row), flush=True)
         tuned = evaluate("tuned")
         promoted = None if args.no_promote else _promote_tuned(service, account, args.run_id)
-        summary = {"steps": step, "base": base, "tuned": tuned, "promoted_model": promoted,
-                   "exact_match_delta": round(tuned["exact_match"] - base["exact_match"], 4),
-                   "paired": _mcnemar(per_example["base"], per_example["tuned"]),
-                   "session": getattr(service, "training_session_id", None), "log": str(run_dir)}
+        summary = {
+            "steps": step,
+            "base": base,
+            "tuned": tuned,
+            "promoted_model": promoted,
+            "exact_match_delta": round(tuned["exact_match"] - base["exact_match"], 4),
+            "paired": _mcnemar(per_example["base"], per_example["tuned"]),
+            "session": getattr(service, "training_session_id", None),
+            "log": str(run_dir),
+        }
         prompt_tokens = base["prompt_tokens"] + tuned["prompt_tokens"]
         sampled_tokens = base["sampled_tokens"] + tuned["sampled_tokens"]
-        summary["cost"] = {"training": "$0 (promotional)" if promotion_active() else "paid at the live rate",
-                           "evaluation_sampling": {"prompt_tokens": prompt_tokens, "sampled_tokens": sampled_tokens,
-                                                   "note": "billed separately from training at published "
-                                                           "per-token rates"}}
+        summary["cost"] = {
+            "training": "$0 (promotional)" if promotion_active() else "paid at the live rate",
+            "evaluation_sampling": {
+                "prompt_tokens": prompt_tokens,
+                "sampled_tokens": sampled_tokens,
+                "note": "billed separately from training at published " "per-token rates",
+            },
+        }
         (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary, indent=2))
-        print(f"cost: training {summary['cost']['training']}; evaluation sampling used {prompt_tokens} prompt + "
-              f"{sampled_tokens} sampled tokens, billed separately at published per-token rates", flush=True)
+        print(
+            f"cost: training {summary['cost']['training']}; evaluation sampling used {prompt_tokens} prompt + "
+            f"{sampled_tokens} sampled tokens, billed separately at published per-token rates",
+            flush=True,
+        )
     finally:
         log.close()
         service.close()
-        print("Serverless session closed; no deployment was created. Its training slot frees when the "
-              "session expires, so a new run started right away may wait or get a 429.", flush=True)
+        print(
+            "Serverless session closed; no deployment was created. Its training slot frees when the "
+            "session expires, so a new run started right away may wait or get a 429.",
+            flush=True,
+        )
     return 0
 
 
@@ -643,10 +743,15 @@ def _promote_tuned(service, account: str, run_id: str) -> str | None:
     """Promote the tuned sampler checkpoint to a LoRA model before the session (and its checkpoints) go away."""
     from fireworks.training.sdk import FireworksClient
 
-    fw = FireworksClient(api_key=os.environ["FIREWORKS_API_KEY"],
-                         base_url=os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai"))
-    rows = [r for r in fw.list_training_session_checkpoints(service.training_session_name)
-            if r.get("promotable") and "starter-tuned" in (r.get("checkpointName") or r.get("name") or "")]
+    fw = FireworksClient(
+        api_key=os.environ["FIREWORKS_API_KEY"],
+        base_url=os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai"),
+    )
+    rows = [
+        r
+        for r in fw.list_training_session_checkpoints(service.training_session_name)
+        if r.get("promotable") and "starter-tuned" in (r.get("checkpointName") or r.get("name") or "")
+    ]
     if not rows:
         print("no promotable tuned checkpoint found; the adapter stays session-only", flush=True)
         return None
@@ -664,12 +769,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     for name in ("plan", "prepare", "upload", "launch", "watch", "cleanup"):
         s = sub.add_parser(name)
         s.add_argument("--surface", choices=("managed", "serverless"), default="managed")
-        s.add_argument("--run-id", default=None,
-                       help="Names the job, models, and log dir. plan/prepare/launch generate a fresh one when omitted; "
-                            "never reuse the ID of a deleted job.")
+        s.add_argument(
+            "--run-id",
+            default=None,
+            help="Names the job, models, and log dir. plan/prepare/launch generate a fresh one when omitted; "
+            "never reuse the ID of a deleted job.",
+        )
         s.add_argument("--dataset", default=DEFAULT_DATASET, help="Account-relative dataset ID (managed).")
-        s.add_argument("--file", default=None,
-                       help="Local chat JSONL: uploaded as --dataset by upload; trained on by the serverless path.")
+        s.add_argument(
+            "--file",
+            default=None,
+            help="Local chat JSONL: uploaded as --dataset by upload; trained on by the serverless path.",
+        )
         s.add_argument("--lora-rank", type=int, default=8)
         s.add_argument("--epochs", type=int, default=1)
         s.add_argument("--learning-rate", type=float, default=1e-4)
@@ -682,8 +793,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         s.add_argument("--seed", type=int, default=0)
         s.add_argument("--log-path", default=None)
         s.add_argument("--allow-paid", action="store_true", help="Launch after the promotion ends.")
-        s.add_argument("--no-promote", action="store_true",
-                       help="Serverless: keep the tuned adapter session-only instead of promoting it to a model.")
+        s.add_argument(
+            "--no-promote",
+            action="store_true",
+            help="Serverless: keep the tuned adapter session-only instead of promoting it to a model.",
+        )
         s.add_argument("--job-id", default=None, help="Watch an existing managed job.")
         s.add_argument("--interval", type=int, default=60)
         s.add_argument("--no-progress-minutes", type=int, default=30)

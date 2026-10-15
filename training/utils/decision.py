@@ -29,9 +29,9 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
-import tinker
+from fireworks.training import sdk
 
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import Message, Renderer
+from training.renderer.base import Message, Renderer
 from training.utils.runner import DatasetError
 from training.utils.supervised import build_datum_from_tokens_and_weights
 
@@ -203,7 +203,7 @@ def decision_datums(
     renderer: Renderer,
     renderer_name: str,
     max_seq_len: int | None = None,
-) -> list[tuple[QuestionType, tinker.Datum]]:
+) -> list[tuple[QuestionType, sdk.Datum]]:
     """One ``(question type, K-way datum)`` per labeled question, in sorted question-id order.
 
     Questions longer than ``max_seq_len`` (prompt plus code) are dropped.
@@ -219,7 +219,7 @@ def decision_datums(
     tokenizer = renderer.tokenizer
     state_tokens, tail = render_state_head_and_tail(renderer, render_state(row["state"]), renderer_name=renderer_name)
     code_ids: dict[str, int] = {}
-    out: list[tuple[QuestionType, tinker.Datum]] = []
+    out: list[tuple[QuestionType, sdk.Datum]] = []
     for question_id in sorted(questions):
         question = questions[question_id]
         if not isinstance(question, Mapping):
@@ -246,52 +246,52 @@ def decision_datums(
     return out
 
 
-def kway_datum(prompt_tokens: Sequence[int], option_token_ids: Sequence[int], gold: int) -> tinker.Datum:
+def kway_datum(prompt_tokens: Sequence[int], option_token_ids: Sequence[int], gold: int) -> sdk.Datum:
     """Cross-entropy datum on the gold option code, with the K options on the answer row."""
     datum = build_datum_from_tokens_and_weights(
         [*prompt_tokens, option_token_ids[gold]], [0.0] * len(prompt_tokens) + [1.0]
     ).datum
     rows, k = len(prompt_tokens), len(option_token_ids)
     candidates = [CANDIDATE_TOKENS_PAD] * ((rows - 1) * k) + list(option_token_ids)
-    return tinker.Datum(
+    return sdk.Datum(
         model_input=datum.model_input,
         loss_fn_inputs={
             **datum.loss_fn_inputs,
-            CANDIDATE_TOKENS_KEY: tinker.TensorData(data=candidates, dtype="int64", shape=[rows, k]),
+            CANDIDATE_TOKENS_KEY: sdk.TensorData(data=candidates, dtype="int64", shape=[rows, k]),
         },
     )
 
 
-def option_token_ids(datum: tinker.Datum) -> list[int]:
+def option_token_ids(datum: sdk.Datum) -> list[int]:
     """The K option ids on a K-way datum's answer row."""
     candidates = datum.loss_fn_inputs[CANDIDATE_TOKENS_KEY]
     return [int(token) for token in candidates.data[-candidates.shape[1] :]]
 
 
-def gold_option_index(datum: tinker.Datum) -> int:
+def gold_option_index(datum: sdk.Datum) -> int:
     """Index of a K-way datum's target among its options."""
     return option_token_ids(datum).index(int(datum.loss_fn_inputs["target_tokens"].data[-1]))
 
 
-def option_logprob_datum(datum: tinker.Datum) -> tinker.Datum:
+def option_logprob_datum(datum: sdk.Datum) -> sdk.Datum:
     """Forward datum whose ``[N, K]`` targets read every option's logprob at the answer (last) row.
 
     They share one normalizer, so their K-way softmax is the one serving applies.
     """
     options = option_token_ids(datum)
     rows, k = datum.model_input.length, len(options)
-    return tinker.Datum(
+    return sdk.Datum(
         model_input=datum.model_input,
         loss_fn_inputs={
-            "target_tokens": tinker.TensorData(data=options * rows, dtype="int64", shape=[rows, k]),
-            "weights": tinker.TensorData(data=[0.0] * (rows * k), dtype="float32", shape=[rows, k]),
+            "target_tokens": sdk.TensorData(data=options * rows, dtype="int64", shape=[rows, k]),
+            "weights": sdk.TensorData(data=[0.0] * (rows * k), dtype="float32", shape=[rows, k]),
         },
     )
 
 
 def option_logprobs(
     training_client: Any,
-    datums: Sequence[tinker.Datum],
+    datums: Sequence[sdk.Datum],
     *,
     chunk: int = 64,
 ) -> list[list[float]]:

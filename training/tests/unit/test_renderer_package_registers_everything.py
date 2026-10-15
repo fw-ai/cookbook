@@ -1,6 +1,6 @@
 """``import training.renderer`` must register every renderer in the package.
 
-Callers reach these renderers through ``training._vendor.tinker_cookbook_0_4_3.renderers.get_renderer``,
+Callers reach these renderers through ``training.renderer._registry.get_renderer``,
 whose registry is populated by ``register_renderer`` running at module import.
 Nothing else triggers it: putting the cookbook on ``sys.path``, or pip-installing
 it, registers nothing. So a renderer module the package ``__init__`` forgets to
@@ -39,9 +39,7 @@ def _modules_that_register() -> set[str]:
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            name = (
-                func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
-            )
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
             if name == "register_renderer":
                 registering.add(path.stem)
                 break
@@ -52,9 +50,7 @@ def _modules_imported_by_init() -> set[str]:
     tree = ast.parse((RENDERER_DIR / "__init__.py").read_text())
     imported = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
-            "training.renderer"
-        ):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("training.renderer"):
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.Import):
             for alias in node.names:

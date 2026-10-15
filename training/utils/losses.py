@@ -6,11 +6,11 @@ RL losses (GRPO, DAPO, GSPO) live in ``utils.rl``.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Tuple, Callable
+from typing import Callable, Dict, List, Tuple
 
 import torch
-import tinker
 import torch.nn.functional as F
+from fireworks.training import sdk
 
 
 def perplexity_from_nll(nll: float | torch.Tensor) -> float:
@@ -39,9 +39,7 @@ def _validate_microbatch_sizes(
     if any(size <= 0 for size in microbatch_sizes):
         raise ValueError(f"microbatch_sizes must be positive, got {microbatch_sizes}")
     if sum(microbatch_sizes) != total_items:
-        raise ValueError(
-            f"microbatch_sizes must sum to {total_items}, got {sum(microbatch_sizes)}"
-        )
+        raise ValueError(f"microbatch_sizes must sum to {total_items}, got {sum(microbatch_sizes)}")
     return microbatch_sizes
 
 
@@ -63,7 +61,7 @@ def _log1mexp(x: torch.Tensor) -> torch.Tensor:
 def make_orpo_loss_fn(
     response_start: int,
     orpo_lambda: float = 1.0,
-) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
+) -> Callable[[List[sdk.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Single-pair ORPO loss wrapper over the batched implementation."""
     return make_batch_orpo_loss_fn([response_start], orpo_lambda=orpo_lambda)
 
@@ -71,7 +69,7 @@ def make_orpo_loss_fn(
 def make_batch_orpo_loss_fn(
     response_starts: List[int],
     orpo_lambda: float = 1.0,
-) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
+) -> Callable[[List[sdk.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Batched ORPO loss over multiple preference pairs.
 
     Expects ``2 * N`` datums arranged as
@@ -86,12 +84,12 @@ def make_batch_orpo_loss_fn(
         raise ValueError("ORPO batching requires at least one pair.")
 
     def loss_fn(
-        data: List[tinker.Datum],
+        data: List[sdk.Datum],
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        assert len(logprobs_list) == 2 * n_pairs, (
-            f"Expected {2 * n_pairs} logprobs (2 per pair), got {len(logprobs_list)}"
-        )
+        assert (
+            len(logprobs_list) == 2 * n_pairs
+        ), f"Expected {2 * n_pairs} logprobs (2 per pair), got {len(logprobs_list)}"
 
         total_loss = _zero_loss(logprobs_list)
         total_orpo_loss = 0.0
@@ -157,7 +155,7 @@ def make_batch_dpo_loss_fn(
     response_starts: List[int],
     beta: float,
     microbatch_sizes: List[int] | None = None,
-) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
+) -> Callable[[List[sdk.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Batched DPO loss over multiple preference pairs.
 
     Expects ``2 * N`` datums arranged as
@@ -180,12 +178,12 @@ def make_batch_dpo_loss_fn(
     ref_rejected_ts = [torch.tensor(r, dtype=torch.float32) for r in ref_rejected_list]
 
     def loss_fn(
-        data: List[tinker.Datum],
+        data: List[sdk.Datum],
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        assert len(logprobs_list) == 2 * n_pairs, (
-            f"Expected {2 * n_pairs} logprobs (2 per pair), got {len(logprobs_list)}"
-        )
+        assert (
+            len(logprobs_list) == 2 * n_pairs
+        ), f"Expected {2 * n_pairs} logprobs (2 per pair), got {len(logprobs_list)}"
 
         pair_losses: list[torch.Tensor] = []
         pair_margins: list[float] = []
@@ -277,12 +275,12 @@ def make_batch_dpo_loss_fn(
 def make_sft_loss_fn(
     response_start: int,
     target_tokens: List[int],
-) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
+) -> Callable[[List[sdk.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Cross-entropy loss over response tokens only (single-sample)."""
     targets = torch.tensor(target_tokens, dtype=torch.long)
 
     def loss_fn(
-        data: List[tinker.Datum],
+        data: List[sdk.Datum],
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         lp = logprobs_list[0]
@@ -303,7 +301,7 @@ def make_sft_loss_fn(
 
 def make_batch_sft_loss_fn(
     prompt_token_counts: List[int],
-) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
+) -> Callable[[List[sdk.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Cross-entropy loss over response tokens for a *batch* of samples.
 
     Each sample may have a different prompt length. The loss is averaged across
@@ -316,7 +314,7 @@ def make_batch_sft_loss_fn(
     """
 
     def loss_fn(
-        data: List[tinker.Datum],
+        data: List[sdk.Datum],
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         assert len(data) == len(logprobs_list)
@@ -360,7 +358,7 @@ def make_batch_sft_loss_fn(
 
 def make_batch_weighted_sft_loss_fn(
     microbatch_sizes: List[int] | None = None,
-) -> Callable[[List[tinker.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
+) -> Callable[[List[sdk.Datum], List[torch.Tensor]], Tuple[torch.Tensor, Dict[str, float]]]:
     """Cross-entropy loss over per-token supervised weights stored on each datum.
 
     This is the renderer-safe path for multi-turn SFT. Each datum must include
@@ -368,7 +366,7 @@ def make_batch_weighted_sft_loss_fn(
     """
 
     def loss_fn(
-        data: List[tinker.Datum],
+        data: List[sdk.Datum],
         logprobs_list: List[torch.Tensor],
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         assert len(data) == len(logprobs_list)
@@ -376,7 +374,7 @@ def make_batch_weighted_sft_loss_fn(
         microbatch_sizes_local = _validate_microbatch_sizes(len(data), microbatch_sizes)
 
         def _compute_sample_nll(
-            datum: tinker.Datum,
+            datum: sdk.Datum,
             logprobs: torch.Tensor,
         ) -> tuple[torch.Tensor | None, float]:
             weights_td = datum.loss_fn_inputs.get("weights")
@@ -385,9 +383,7 @@ def make_batch_weighted_sft_loss_fn(
 
             weights = weights_td.to_torch().to(device=logprobs.device, dtype=logprobs.dtype)
             if len(weights) != len(logprobs):
-                raise ValueError(
-                    f"weights/logprobs length mismatch: {len(weights)} != {len(logprobs)}"
-                )
+                raise ValueError(f"weights/logprobs length mismatch: {len(weights)} != {len(logprobs)}")
 
             sample_weight = float(weights.sum().item())
             if sample_weight <= 0:

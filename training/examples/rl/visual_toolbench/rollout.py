@@ -26,7 +26,7 @@ import base64
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
-import tinker
+from fireworks.training import sdk
 from fireworks.training.sdk.routing import routing_has_gaps
 
 from training.examples.rl.visual_toolbench.image_tools import (
@@ -61,7 +61,7 @@ def _resolve_image_pad_id(tokenizer: Any, renderer: Any | None = None) -> int:
 
 
 def flatten_multimodal_model_input(
-    model_input: tinker.ModelInput,
+    model_input: sdk.ModelInput,
     image_pad_id: int,
 ) -> Tuple[List[int], List[int], List[str]]:
     """Flatten a renderer ``ModelInput`` for token-in vision completions.
@@ -76,25 +76,23 @@ def flatten_multimodal_model_input(
     text_ids: List[int] = []
     images: List[str] = []
     for chunk in model_input.chunks:
-        if isinstance(chunk, tinker.types.EncodedTextChunk):
+        if isinstance(chunk, sdk.types.EncodedTextChunk):
             prompt_ids.extend(int(t) for t in chunk.tokens)
             text_ids.extend(int(t) for t in chunk.tokens)
-        elif isinstance(chunk, tinker.types.ImageChunk):
+        elif isinstance(chunk, sdk.types.ImageChunk):
             prompt_ids.append(image_pad_id)
             encoded = base64.b64encode(chunk.data).decode("ascii")
             images.append(f"data:image/{chunk.format};base64,{encoded}")
-        elif isinstance(chunk, tinker.types.ImageAssetPointerChunk):
+        elif isinstance(chunk, sdk.types.ImageAssetPointerChunk):
             prompt_ids.append(image_pad_id)
             images.append(str(chunk.location))
         else:
-            raise ValueError(
-                f"Unsupported ModelInput chunk for visual rollout: {type(chunk).__name__}"
-            )
+            raise ValueError(f"Unsupported ModelInput chunk for visual rollout: {type(chunk).__name__}")
     return prompt_ids, text_ids, images
 
 
 def assert_sampler_prompt_matches_model_input(
-    model_input: tinker.ModelInput,
+    model_input: sdk.ModelInput,
     sampler_full_tokens: List[int],
     prompt_len: int,
 ) -> None:
@@ -112,18 +110,12 @@ def assert_sampler_prompt_matches_model_input(
     sampler_prompt = sampler_full_tokens[:prompt_len]
     offset = 0
     for chunk_index, chunk in enumerate(model_input.chunks):
-        if isinstance(chunk, tinker.types.EncodedTextChunk):
+        if isinstance(chunk, sdk.types.EncodedTextChunk):
             expected = [int(token) for token in chunk.tokens]
             actual = sampler_prompt[offset : offset + len(expected)]
             if actual != expected:
                 mismatch = next(
-                    (
-                        index
-                        for index, (want, got) in enumerate(
-                            zip(expected, actual, strict=False)
-                        )
-                        if want != got
-                    ),
+                    (index for index, (want, got) in enumerate(zip(expected, actual, strict=False)) if want != got),
                     min(len(expected), len(actual)),
                 )
                 want = expected[mismatch] if mismatch < len(expected) else None
@@ -136,19 +128,17 @@ def assert_sampler_prompt_matches_model_input(
             offset += len(expected)
         elif isinstance(
             chunk,
-            (tinker.types.ImageChunk, tinker.types.ImageAssetPointerChunk),
+            (sdk.types.ImageChunk, sdk.types.ImageAssetPointerChunk),
         ):
             expected_tokens = getattr(chunk, "expected_tokens", None)
             if expected_tokens is None:
                 raise RuntimeError(
-                    "Renderer image chunk has no expected_tokens; cannot verify "
-                    "sampler/trainer prompt alignment."
+                    "Renderer image chunk has no expected_tokens; cannot verify " "sampler/trainer prompt alignment."
                 )
             offset += int(expected_tokens)
         else:
             raise RuntimeError(
-                "Unsupported trainer prompt chunk while checking sampler parity: "
-                f"{type(chunk).__name__}"
+                "Unsupported trainer prompt chunk while checking sampler parity: " f"{type(chunk).__name__}"
             )
 
     if offset != prompt_len:
@@ -167,17 +157,13 @@ def _message_text(message: Dict[str, Any]) -> str:
         return content
     if isinstance(content, list):
         return "".join(
-            str(part.get("text", ""))
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
+            str(part.get("text", "")) for part in content if isinstance(part, dict) and part.get("type") == "text"
         )
     return ""
 
 
 def _build_user_message(row: Dict[str, Any]) -> Dict[str, Any]:
-    parts: List[Dict[str, Any]] = [
-        {"type": "image", "image": str(url)} for url in row.get("images") or []
-    ]
+    parts: List[Dict[str, Any]] = [{"type": "image", "image": str(url)} for url in row.get("images") or []]
     parts.append({"type": "text", "text": str(row.get("prompt", ""))})
     return {"role": "user", "content": parts}
 
@@ -202,9 +188,7 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
     # Held-out evaluation samples with the benchmark's settings and needs no
     # Router Replay.
     eval_sample_kwargs = {
-        key: value
-        for key, value in train_sample_kwargs.items()
-        if key not in ("include_routing_matrix", "echo")
+        key: value for key, value in train_sample_kwargs.items() if key not in ("include_routing_matrix", "echo")
     }
     eval_sample_kwargs.update(task.eval_sample_kwargs())
 
@@ -219,10 +203,7 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
 
     stop_ids = renderer.get_stop_sequences()
     stop_strings = [
-        tokenizer.decode([s], skip_special_tokens=False)
-        if isinstance(s, int)
-        else str(s)
-        for s in stop_ids
+        tokenizer.decode([s], skip_special_tokens=False) if isinstance(s, int) else str(s) for s in stop_ids
     ]
 
     def _turns_from_prompt(sample_prompt: dict) -> List[Dict[str, Any]]:
@@ -244,14 +225,10 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
             }
         ]
 
-    async def rollout_fn(
-        sample_prompt: dict, *, evaluation: bool = False
-    ) -> RolloutRun | None:
+    async def rollout_fn(sample_prompt: dict, *, evaluation: bool = False) -> RolloutRun | None:
         sample_kwargs = eval_sample_kwargs if evaluation else train_sample_kwargs
         router_replay_requested = bool(sample_kwargs.get("include_routing_matrix"))
-        router_replay_completion_only = router_replay_requested and not bool(
-            sample_kwargs.get("echo", False)
-        )
+        router_replay_completion_only = router_replay_requested and not bool(sample_kwargs.get("echo", False))
         turns = _turns_from_prompt(sample_prompt)
         if not any(t.get("rubrics") for t in turns):
             return None
@@ -266,9 +243,7 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
         # user turns, prior answers, and tool responses always land in the
         # loss-masked prefix and only the current response is trained.
         messages: List[Dict[str, Any]] = list(
-            renderer.create_conversation_prefix_with_tools(
-                list(TOOL_SPECS), task.system_prompt
-            )
+            renderer.create_conversation_prefix_with_tools(list(TOOL_SPECS), task.system_prompt)
         )
         workspace_images: List[str] = []
 
@@ -302,9 +277,7 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
                     image_pad_id,
                 )
                 if images != flattened_images:
-                    raise RuntimeError(
-                        "Renderer sampling images differ from trainer ModelInput images."
-                    )
+                    raise RuntimeError("Renderer sampling images differ from trainer ModelInput images.")
                 estimated_prompt_tokens = len(prompt_ids) + len(images) * 1500
                 if estimated_prompt_tokens > task.max_prompt_tokens:
                     # Context budget exhausted (rough expanded-vision estimate);
@@ -372,30 +345,20 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
                 if router_replay_requested:
                     if not routing_matrices:
                         raise RuntimeError(
-                            "Router Replay was requested but the sampler returned no "
-                            "routing_matrices."
+                            "Router Replay was requested but the sampler returned no " "routing_matrices."
                         )
                     expected_routes = (
-                        len(out_tokens)
-                        if router_replay_completion_only
-                        else prompt_len + len(out_tokens) - 1
+                        len(out_tokens) if router_replay_completion_only else prompt_len + len(out_tokens) - 1
                     )
                     if len(routing_matrices) != expected_routes:
-                        mode = (
-                            "completion-only"
-                            if router_replay_completion_only
-                            else "full-sequence"
-                        )
+                        mode = "completion-only" if router_replay_completion_only else "full-sequence"
                         raise RuntimeError(
                             f"{mode} Router Replay returned misaligned routing "
                             f"matrices ({len(routing_matrices)} routes; expected "
                             f"{expected_routes})."
                         )
                     if routing_has_gaps(routing_matrices):
-                        raise RuntimeError(
-                            "Router Replay returned empty routing matrices for "
-                            "replayed positions."
-                        )
+                        raise RuntimeError("Router Replay returned empty routing matrices for " "replayed positions.")
 
                 finish_reason = str(getattr(completion, "finish_reason", "stop"))
                 if task.filter_truncated_rollouts and finish_reason.lower() == "length":
@@ -430,17 +393,13 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
                     if len(workspace_images) >= task.max_workspace_images:
                         new_image, result_text = (
                             None,
-                            (
-                                "Error: image workspace is full; answer with what you have."
-                            ),
+                            ("Error: image workspace is full; answer with what you have."),
                         )
                     else:
                         new_image, result_text = execute_tool_call(
                             name, arguments, workspace_images, max_dim=task.tool_image_dim
                         )
-                    content: List[Dict[str, Any]] = [
-                        {"type": "text", "text": result_text}
-                    ]
+                    content: List[Dict[str, Any]] = [{"type": "text", "text": result_text}]
                     if new_image is not None:
                         workspace_images.append(new_image)
                         # Kimi K3 accepts image parts only in user messages.
@@ -506,26 +465,19 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
         # segment (GRPO compares whole trajectories via one scalar per sample).
         reward = sum(per_turn_rewards) / len(per_turn_rewards)
         official_score = sum(per_turn_official_scores) / len(per_turn_official_scores)
-        critical_fraction = sum(per_turn_critical_fractions) / len(
-            per_turn_critical_fractions
-        )
+        critical_fraction = sum(per_turn_critical_fractions) / len(per_turn_critical_fractions)
 
         rollout_samples = [
             RolloutSample(
                 tokens=seg["text_prefix_ids"] + seg["out_tokens"],
-                logprobs=(
-                    [0.0] * len(seg["text_prefix_ids"]) + seg["sampling_logprobs"]
-                ),
-                loss_mask=[0] * len(seg["text_prefix_ids"])
-                + [1] * len(seg["out_tokens"]),
+                logprobs=([0.0] * len(seg["text_prefix_ids"]) + seg["sampling_logprobs"]),
+                loss_mask=[0] * len(seg["text_prefix_ids"]) + [1] * len(seg["out_tokens"]),
                 reward=float(reward),
                 finish_reason=seg["finish_reason"],
                 text=last_answer,
                 prompt_model_input=seg["model_input"],
                 routing_matrices=seg["routing_matrices"],
-                raw_logprobs=(
-                    [0.0] * len(seg["text_prefix_ids"]) + seg["raw_logprobs"]
-                ),
+                raw_logprobs=([0.0] * len(seg["text_prefix_ids"]) + seg["raw_logprobs"]),
             )
             for seg in segments
         ]

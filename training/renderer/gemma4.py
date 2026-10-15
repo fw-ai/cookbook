@@ -109,9 +109,10 @@ import threading
 from collections.abc import Callable, Mapping
 from typing import Any
 
-import tinker
+from fireworks.training import sdk
+
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -121,9 +122,8 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     ThinkingPart,
     ToolSpec,
 )
-from training.renderer.tokenizer import Tokenizer
-
 from training.renderer.message_weights import untrained_synthesized_context
+from training.renderer.tokenizer import Tokenizer
 
 _BOS_TOKEN = "<bos>"
 _TURN_OPEN = "<|turn>"
@@ -158,15 +158,11 @@ _THINKING_BLOCK_RE = re.compile(
 
 # Open thought-channel fragment from jinja/training (no ``<channel|>`` close tag).
 _OPEN_THOUGHT_RE = re.compile(
-    re.escape(_CHANNEL_OPEN)
-    + re.escape(_THINKING_CHANNEL_PREFIX)
-    + r"(.*?)\n ",
+    re.escape(_CHANNEL_OPEN) + re.escape(_THINKING_CHANNEL_PREFIX) + r"(.*?)\n ",
     re.DOTALL,
 )
 _TOOL_CALL_RE = re.compile(
-    re.escape(_TOOL_CALL_OPEN)
-    + r"call:([^{]+)\{(.*?)\}"
-    + re.escape(_TOOL_CALL_CLOSE),
+    re.escape(_TOOL_CALL_OPEN) + r"call:([^{]+)\{(.*?)\}" + re.escape(_TOOL_CALL_CLOSE),
     re.DOTALL,
 )
 
@@ -349,15 +345,11 @@ def _format_property(key: str, value: dict) -> str:
     if type_upper == "OBJECT":
         inner_props = value.get("properties")
         if isinstance(inner_props, dict):
-            parts.append(
-                f"{comma()}properties:{{{_format_parameters(inner_props, value.get('required') or [])}}}"
-            )
+            parts.append(f"{comma()}properties:{{{_format_parameters(inner_props, value.get('required') or [])}}}")
         else:
             # OBJECT schema with properties inlined at the top level: recurse on
             # the value itself, filtering out the structural standard keys.
-            parts.append(
-                f"{comma()}properties:{{{_format_parameters(value, value.get('required') or [])}}}"
-            )
+            parts.append(f"{comma()}properties:{{{_format_parameters(value, value.get('required') or [])}}}")
         req = value.get("required")
         if req:
             reqs = ",".join(f"{_STRING_DELIM}{item}{_STRING_DELIM}" for item in req)
@@ -454,10 +446,7 @@ def _format_tool_call(tc: Any) -> str:
     if raw_args is None:
         raw_args = {}
     if not isinstance(raw_args, Mapping):
-        raise TypeError(
-            "Gemma 4 tool-call arguments must decode to a JSON object, "
-            f"got {type(raw_args)!r}"
-        )
+        raise TypeError("Gemma 4 tool-call arguments must decode to a JSON object, " f"got {type(raw_args)!r}")
 
     out = [f"{_TOOL_CALL_OPEN}call:{fn_name}{{"]
     items = []
@@ -521,9 +510,7 @@ def _get_reasoning_text(message: Message) -> str | None:
     reasoning_content = message.get("reasoning_content")
     if reasoning_content is not None:
         if not isinstance(reasoning_content, str):
-            raise TypeError(
-                f"Unsupported reasoning_content value type: {type(reasoning_content)!r}"
-            )
+            raise TypeError(f"Unsupported reasoning_content value type: {type(reasoning_content)!r}")
         if reasoning_content:
             return reasoning_content
     thinking = message.get("thinking")
@@ -598,9 +585,7 @@ def _tool_response_payload(tool_message: Message) -> Any:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(
-            part.get("text", "") for part in content if part.get("type") == "text"
-        )
+        return "".join(part.get("text", "") for part in content if part.get("type") == "text")
     return content
 
 
@@ -646,11 +631,7 @@ def _fold_tool_messages(messages: list[Message]) -> list[Message]:
         if msg.get("role") == "tool":
             i += 1  # orphaned tool result — dropped, matching the template
             continue
-        if (
-            msg.get("role") == "assistant"
-            and msg.get("tool_calls")
-            and not msg.get("tool_responses")
-        ):
+        if msg.get("role") == "assistant" and msg.get("tool_calls") and not msg.get("tool_responses"):
             responses: list[dict] = []
             j = i + 1
             while j < n and messages[j].get("role") == "tool":
@@ -751,9 +732,7 @@ class Gemma4Renderer(Renderer):
     # System-block / preprocessing
     # ------------------------------------------------------------------
 
-    def create_conversation_prefix_with_tools(
-        self, tools: list[ToolSpec], system_prompt: str = ""
-    ) -> list[Message]:
+    def create_conversation_prefix_with_tools(self, tools: list[ToolSpec], system_prompt: str = "") -> list[Message]:
         """Return a synthetic system message bundling ``system_prompt`` and the
         serialized tool block.
 
@@ -807,9 +786,7 @@ class Gemma4Renderer(Renderer):
             if result and result[0]["role"] in ("system", "developer"):
                 result[0] = {**result[0], _THINK_PREFIX_KEY: True}
             else:
-                result.insert(
-                    0, {"role": "system", "content": "", _THINK_PREFIX_KEY: True}
-                )
+                result.insert(0, {"role": "system", "content": "", _THINK_PREFIX_KEY: True})
         return untrained_synthesized_context(result)
 
     def _with_render_messages(self, messages: list[Message], fn: Callable[[], Any]) -> Any:
@@ -824,27 +801,23 @@ class Gemma4Renderer(Renderer):
 
     def build_generation_prompt(
         self, messages: list[Message], role: Role = "assistant", prefill: str | None = None
-    ) -> tinker.ModelInput:
+    ) -> sdk.ModelInput:
         processed = self._preprocess_messages(messages)
 
-        def _build() -> tinker.ModelInput:
-            return Renderer.build_generation_prompt(
-                self, processed, role=role, prefill=prefill
-            )
+        def _build() -> sdk.ModelInput:
+            return Renderer.build_generation_prompt(self, processed, role=role, prefill=prefill)
 
         return self._with_render_messages(processed, _build)
 
     def build_supervised_example(self, messages, train_on_what=None):  # type: ignore[override]
-        from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
+        from training.renderer.base import TrainOnWhat
 
         if train_on_what is None:
             train_on_what = TrainOnWhat.LAST_ASSISTANT_MESSAGE
         processed = self._preprocess_messages(messages)
 
         def _build():
-            return Renderer.build_supervised_example(
-                self, processed, train_on_what=train_on_what
-            )
+            return Renderer.build_supervised_example(self, processed, train_on_what=train_on_what)
 
         return self._with_render_messages(processed, _build)
 
@@ -936,20 +909,14 @@ class Gemma4Renderer(Renderer):
             body_parts.append(_TOOL_RESPONSE_OPEN)
         elif continues_into_next:
             pass
-        elif not (
-            has_tool_responses and not has_content and next_non_tool_role is None
-        ):
+        elif not (has_tool_responses and not has_content and next_non_tool_role is None):
             body_parts.append(f"{_TURN_CLOSE}\n")
         body_str = "".join(body_parts)
 
-        header_tokens = (
-            self.tokenizer.encode(header_str, add_special_tokens=False) if header_str else []
-        )
-        header = (
-            tinker.types.EncodedTextChunk(tokens=header_tokens) if header_tokens else None
-        )
-        output: list[tinker.ModelInputChunk] = [
-            tinker.types.EncodedTextChunk(
+        header_tokens = self.tokenizer.encode(header_str, add_special_tokens=False) if header_str else []
+        header = sdk.types.EncodedTextChunk(tokens=header_tokens) if header_tokens else None
+        output: list[sdk.ModelInputChunk] = [
+            sdk.types.EncodedTextChunk(
                 tokens=self.tokenizer.encode(body_str, add_special_tokens=False),
             ),
         ]
@@ -960,9 +927,7 @@ class Gemma4Renderer(Renderer):
         # the previous message emitted a tool call or a tool-response envelope
         # (``prev_message_type in ('tool_call', 'tool_response')``), leaving the
         # model to continue inside the same open turn.
-        if ctx.prev_message is not None and self._suppresses_generation_prompt(
-            ctx.prev_message
-        ):
+        if ctx.prev_message is not None and self._suppresses_generation_prompt(ctx.prev_message):
             if self.enable_thinking and ctx.prev_message.get("tool_responses"):
                 return self.tokenizer.encode(
                     f"{_CHANNEL_OPEN}{_THINKING_CHANNEL_PREFIX}",
@@ -1024,10 +989,9 @@ class Gemma4Renderer(Renderer):
         # Pull out tool calls first so they don't pollute the text path.
         tool_calls_raw: list[dict] = []
         if _TOOL_CALL_OPEN in text:
+
             def _capture(m: re.Match) -> str:
-                tool_calls_raw.append(
-                    {"name": m.group(1), "arguments": m.group(2)}
-                )
+                tool_calls_raw.append({"name": m.group(1), "arguments": m.group(2)})
                 return ""
 
             text = _TOOL_CALL_RE.sub(_capture, text)

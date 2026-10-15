@@ -7,10 +7,10 @@ from math import exp
 from types import SimpleNamespace
 
 import pytest
-import tinker
-
 import training.recipes.distillation_loop as distillation_loop
-from training.recipes.distillation_loop import Config, main as run_opd_main
+from fireworks.training import sdk
+from training.recipes.distillation_loop import Config
+from training.recipes.distillation_loop import main as run_opd_main
 from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DeployConfig,
@@ -26,11 +26,11 @@ from training.utils.distillation import (
 from training.utils.distillation.eval import (
     EvalContext,
     evaluate_teacher_trace_logprob_gap,
-    extract_final_answer,
     expected_final_answer,
+    extract_final_answer,
     normalize_final_answer,
-    validate_privileged_opd_dataset,
     validate_opd_trace_result,
+    validate_privileged_opd_dataset,
 )
 from training.utils.distillation.sampling import (
     _extract_scored_token_logprobs,
@@ -119,26 +119,26 @@ def _datum(
     *,
     tokens: list[int] | None = None,
     loss_mask: list[float] | None = None,
-) -> tinker.Datum:
+) -> sdk.Datum:
     if tokens is None:
         tokens = [10, 11, 12, 13, 14]
     target_tokens = tokens[1:]
     inputs = {
-        "target_tokens": tinker.TensorData(
+        "target_tokens": sdk.TensorData(
             data=target_tokens,
             dtype="int64",
             shape=[len(target_tokens)],
         ),
     }
     if loss_mask is not None:
-        inputs["loss_mask"] = tinker.TensorData(
+        inputs["loss_mask"] = sdk.TensorData(
             data=loss_mask,
             dtype="float32",
             shape=[len(loss_mask)],
         )
 
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints(tokens[:-1]),
         loss_fn_inputs=inputs,
     )
 
@@ -263,9 +263,7 @@ def test_opd_datums_make_server_loss_equal_sampled_reverse_kl_at_rollout_policy(
     loss = _server_importance_sampling_loss(old_lp, old_lp, advantages)
 
     active_positions = [1, 2, 3]
-    expected_sampled_reverse_kl = sum(
-        sampling_lp[0][pos] - teacher_lp[0][pos] for pos in active_positions
-    )
+    expected_sampled_reverse_kl = sum(sampling_lp[0][pos] - teacher_lp[0][pos] for pos in active_positions)
     assert loss == pytest.approx(expected_sampled_reverse_kl)
 
     pos = 1
@@ -291,9 +289,7 @@ def test_build_opd_server_datums_folds_loss_mask_into_advantages() -> None:
         prompt_lens=[2],
     )
 
-    assert server_datums[0].loss_fn_inputs["advantages"].data == pytest.approx(
-        [0.0, 0.4, 0.0, 0.4]
-    )
+    assert server_datums[0].loss_fn_inputs["advantages"].data == pytest.approx([0.0, 0.4, 0.0, 0.4])
     assert metrics["opd_active_tokens"] == pytest.approx(2.0)
 
 
@@ -532,9 +528,7 @@ class _FakeTeacherService:
         self.deployment_calls: list[dict] = []
 
     def create_deployment_sampler_for_model(self, model: str, *, tokenizer, inference_url=None):
-        self.direct_calls.append(
-            {"model": model, "tokenizer": tokenizer, "inference_url": inference_url}
-        )
+        self.direct_calls.append({"model": model, "tokenizer": tokenizer, "inference_url": inference_url})
         return SimpleNamespace(model=model)
 
     def create_inference_deployment_sampler(self, config, *, timeout_s, cleanup_on_close, tokenizer):
@@ -620,10 +614,7 @@ def test_create_teacher_sampler_keeps_teacher_deployment_without_cleanup() -> No
 
 
 def test_default_teacher_deployment_id_is_stable_and_safe() -> None:
-    assert (
-        default_teacher_deployment_id("accounts/fireworks/models/Qwen_3.5_9B")
-        == "distillation-teacher-qwen-3-5-9b"
-    )
+    assert default_teacher_deployment_id("accounts/fireworks/models/Qwen_3.5_9B") == "distillation-teacher-qwen-3-5-9b"
 
 
 def test_qwen_opd_config_can_be_full_param_and_privileged() -> None:
@@ -638,9 +629,7 @@ def test_qwen_opd_config_can_be_full_param_and_privileged() -> None:
 
 
 def test_qwen_opd_config_lets_pinned_shape_own_context_length() -> None:
-    cfg = _build_qwen_opd_config(
-        training_shape_id="accounts/fireworks/trainingShapes/qwen3p5-9b-256k"
-    )
+    cfg = _build_qwen_opd_config(training_shape_id="accounts/fireworks/trainingShapes/qwen3p5-9b-256k")
 
     assert cfg.trainer.training_shape_id == "accounts/fireworks/trainingShapes/qwen3p5-9b-256k"
     assert cfg.max_seq_len is None
@@ -678,9 +667,7 @@ def test_main_samples_scores_trains_and_hotloads_each_step(monkeypatch) -> None:
             return []
 
         async def sample_with_tokens(self, messages, *, n, **_kwargs):
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True
-            )
+            prompt = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
             events.append(f"sample:{messages[-1]['content']}")
             return [
                 _student_sample(prompt + [40, 41], prompt_len=len(prompt), sampling_logprobs=[-0.4, -0.5])
@@ -758,9 +745,7 @@ def test_main_samples_scores_trains_and_hotloads_each_step(monkeypatch) -> None:
         SimpleNamespace(from_training_client=lambda client, **_kwargs: client),
     )
     monkeypatch.setattr(distillation_loop, "TrainingCheckpoints", _Checkpoints)
-    monkeypatch.setattr(
-        distillation_loop, "log_metrics", lambda metrics, *, step: logged.append(dict(metrics))
-    )
+    monkeypatch.setattr(distillation_loop, "log_metrics", lambda metrics, *, step: logged.append(dict(metrics)))
 
     cfg = _build_qwen_opd_config()
     cfg.epochs = 1
@@ -814,10 +799,7 @@ def test_validate_privileged_opd_dataset_rejects_bad_teacher_prompt() -> None:
             "teacher_messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "Use the privileged worked solution. "
-                        "End with exactly one line: Final: <answer>."
-                    ),
+                    "content": ("Use the privileged worked solution. " "End with exactly one line: Final: <answer>."),
                 },
                 {"role": "user", "content": "Privileged worked solution: case A is 5."},
             ],
@@ -899,11 +881,9 @@ def test_opd_trace_result_validation_requires_opd_signal(tmp_path) -> None:
     metrics_file.write_text(
         "\n".join(
             [
-                '{"step":0,"eval/opd_trace_teacher_nll":0.1,'
-                '"eval/opd_trace_student_minus_teacher_nll":1.0}',
+                '{"step":0,"eval/opd_trace_teacher_nll":0.1,' '"eval/opd_trace_student_minus_teacher_nll":1.0}',
                 '{"step":1,"train/opd_active_tokens":4,"train/opd_abs_advantage":0.25}',
-                '{"step":1,"eval/opd_trace_teacher_nll":0.1,'
-                '"eval/opd_trace_student_minus_teacher_nll":0.5}',
+                '{"step":1,"eval/opd_trace_teacher_nll":0.1,' '"eval/opd_trace_student_minus_teacher_nll":0.5}',
             ]
         )
         + "\n",
@@ -927,11 +907,9 @@ def test_opd_trace_result_validation_requires_opd_signal(tmp_path) -> None:
     metrics_file.write_text(
         "\n".join(
             [
-                '{"step":0,"eval/opd_trace_teacher_nll":0.1,'
-                '"eval/opd_trace_student_minus_teacher_nll":1.0}',
+                '{"step":0,"eval/opd_trace_teacher_nll":0.1,' '"eval/opd_trace_student_minus_teacher_nll":1.0}',
                 '{"step":1,"train/opd_active_tokens":4,"train/opd_abs_advantage":0.0}',
-                '{"step":1,"eval/opd_trace_teacher_nll":0.1,'
-                '"eval/opd_trace_student_minus_teacher_nll":0.5}',
+                '{"step":1,"eval/opd_trace_teacher_nll":0.1,' '"eval/opd_trace_student_minus_teacher_nll":0.5}',
             ]
         )
         + "\n",
@@ -960,11 +938,9 @@ def test_opd_trace_result_validation_requires_trace_logprob_eval(tmp_path) -> No
     metrics_file.write_text(
         "\n".join(
             [
-                '{"step":0,"eval/opd_trace_teacher_nll":0.1,'
-                '"eval/opd_trace_student_minus_teacher_nll":1.0}',
+                '{"step":0,"eval/opd_trace_teacher_nll":0.1,' '"eval/opd_trace_student_minus_teacher_nll":1.0}',
                 '{"step":1,"train/opd_active_tokens":4,"train/opd_abs_advantage":0.25}',
-                '{"step":1,"eval/opd_trace_teacher_nll":0.1,'
-                '"eval/opd_trace_student_minus_teacher_nll":0.5}',
+                '{"step":1,"eval/opd_trace_teacher_nll":0.1,' '"eval/opd_trace_student_minus_teacher_nll":0.5}',
             ]
         )
         + "\n",
@@ -993,8 +969,7 @@ def test_opd_trace_result_validation_requires_gap_improvement(tmp_path) -> None:
         for step in range(1, 9)
     ]
     eval_records = [
-        f'{{"step":{step},"eval/opd_trace_teacher_nll":0.1,'
-        f'"eval/opd_trace_student_minus_teacher_nll":1.0}}'
+        f'{{"step":{step},"eval/opd_trace_teacher_nll":0.1,' f'"eval/opd_trace_student_minus_teacher_nll":1.0}}'
         for step in range(0, 9)
     ]
     metrics_file.write_text(
@@ -1049,16 +1024,13 @@ class _LogprobSampler:
 def _sample_response(*sequences: tuple[list[int], list[float] | None]) -> SimpleNamespace:
     return SimpleNamespace(
         sequences=[
-            SimpleNamespace(tokens=tokens, logprobs=logprobs, stop_reason="stop")
-            for tokens, logprobs in sequences
+            SimpleNamespace(tokens=tokens, logprobs=logprobs, stop_reason="stop") for tokens, logprobs in sequences
         ]
     )
 
 
 def test_completions_from_sample_response_prepends_the_student_prompt() -> None:
-    completions = completions_from_sample_response(
-        [10, 11], _sample_response(([40, 41], [-0.4, -0.5]), ([42], None))
-    )
+    completions = completions_from_sample_response([10, 11], _sample_response(([40, 41], [-0.4, -0.5]), ([42], None)))
 
     assert [c.full_tokens for c in completions] == [[10, 11, 40, 41], [10, 11, 42]]
     assert [c.prompt_len for c in completions] == [2, 2]
@@ -1070,9 +1042,7 @@ def test_completions_from_sample_response_prepends_the_student_prompt() -> None:
 
 def test_score_teacher_logprobs_with_sampling_client_slices_response() -> None:
     teacher = _LogprobSampler(logprob=-0.2)
-    sampled = completions_from_sample_response(
-        [10, 11], _sample_response(([40, 41], [-0.4, -0.5]), ([], []))
-    )
+    sampled = completions_from_sample_response([10, 11], _sample_response(([40, 41], [-0.4, -0.5]), ([], [])))
 
     scores = score_teacher_logprobs_with_sampling_client(teacher, [900, 901, 902], sampled, timeout=5)
 
@@ -1138,7 +1108,7 @@ def test_serverless_k3_example_distills_from_step0_teacher(monkeypatch, tmp_path
         def build_generation_prompt(self, messages):
             # System turn -> [900], each user turn -> [10, 11].
             tokens = [900 if m["role"] == "system" else 10 for m in messages] + [11]
-            return tinker.ModelInput.from_ints(tokens)
+            return sdk.ModelInput.from_ints(tokens)
 
         def get_stop_sequences(self):
             return []

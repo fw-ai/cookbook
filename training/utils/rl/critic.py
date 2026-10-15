@@ -14,8 +14,8 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple
 
-import tinker
 import torch
+from fireworks.training import sdk
 
 from training.utils.rl.losses import PolicyBatch
 from training.utils.timer import elapsed_timer
@@ -28,7 +28,7 @@ CRITIC_PROJECTION_HEAD_DIM = 1
 class CriticBatch:
     """Critic inputs for one rollout batch, aligned by response."""
 
-    data: List[tinker.Datum]
+    data: List[sdk.Datum]
     """Policy model inputs without language-model targets."""
     terminal_rewards: List[float]
     action_masks: List[torch.Tensor]
@@ -52,7 +52,7 @@ def critic_batch(batch: PolicyBatch) -> CriticBatch:
             )
         rewards.extend(float(reward) for reward in group.rewards)
 
-    data: List[tinker.Datum] = []
+    data: List[sdk.Datum] = []
     masks: List[torch.Tensor] = []
     for index, datum in enumerate(batch.data):
         weights = datum.loss_fn_inputs.get("weights")
@@ -62,8 +62,7 @@ def critic_batch(batch: PolicyBatch) -> CriticBatch:
         num_targets = len(datum.loss_fn_inputs["target_tokens"].data)
         if mask.numel() != num_targets:
             raise ValueError(
-                f"Datum {index} has {mask.numel()} response weights for "
-                f"{num_targets} target positions."
+                f"Datum {index} has {mask.numel()} response weights for " f"{num_targets} target positions."
             )
         active = mask.nonzero(as_tuple=False).flatten().tolist()
         if not active:
@@ -74,7 +73,7 @@ def critic_batch(batch: PolicyBatch) -> CriticBatch:
                 f"datum {index} has gaps or masked trailing tokens."
             )
         masks.append(mask)
-        data.append(tinker.Datum(model_input=datum.model_input, loss_fn_inputs={}))
+        data.append(sdk.Datum(model_input=datum.model_input, loss_fn_inputs={}))
     return CriticBatch(data=data, terminal_rewards=rewards, action_masks=masks)
 
 
@@ -111,9 +110,7 @@ def token_gae(
         raise ValueError("Rewards, values, action masks and lambdas must align by response.")
     advantages: List[torch.Tensor] = []
     returns: List[torch.Tensor] = []
-    for reward, value, mask, response_lambda in zip(
-        terminal_rewards, values, action_masks, lambdas
-    ):
+    for reward, value, mask, response_lambda in zip(terminal_rewards, values, action_masks, lambdas):
         positions = mask.nonzero(as_tuple=False).flatten().tolist()
         if not positions:
             raise ValueError("Every response needs at least one action token.")
@@ -161,16 +158,11 @@ def make_value_loss_fn(
             value = projection_values(projection)
             if value.numel() != mask.numel():
                 raise ValueError(
-                    f"Critic returned {value.numel()} token rows for a "
-                    f"{mask.numel()}-position response."
+                    f"Critic returned {value.numel()} token rows for a " f"{mask.numel()}-position response."
                 )
             predicted.append(value)
-        anchors = [
-            value.detach() for value in (predicted if old_values is None else old_values)
-        ]
-        if len(anchors) != len(predicted) or any(
-            old.shape != new.shape for old, new in zip(anchors, predicted)
-        ):
+        anchors = [value.detach() for value in (predicted if old_values is None else old_values)]
+        if len(anchors) != len(predicted) or any(old.shape != new.shape for old, new in zip(anchors, predicted)):
             raise ValueError("Old values must align with critic predictions.")
         _, returns = token_gae(
             batch.terminal_rewards,
@@ -210,8 +202,7 @@ def predict_values(critic: Any, batch: CriticBatch) -> List[torch.Tensor]:
     result = critic.forward_projection(batch.data)
     if len(result.loss_fn_outputs) != len(batch.data):
         raise ValueError(
-            f"Critic returned {len(result.loss_fn_outputs)} projections for "
-            f"{len(batch.data)} datums."
+            f"Critic returned {len(result.loss_fn_outputs)} projections for " f"{len(batch.data)} datums."
         )
     values = []
     for output, mask in zip(result.loss_fn_outputs, batch.action_masks):
@@ -223,10 +214,7 @@ def predict_values(critic: Any, batch: CriticBatch) -> List[torch.Tensor]:
             projection = projection.reshape(tensor_data.shape)
         value = projection_values(projection)
         if value.numel() != mask.numel():
-            raise ValueError(
-                f"Critic returned {value.numel()} token rows for a "
-                f"{mask.numel()}-position response."
-            )
+            raise ValueError(f"Critic returned {value.numel()} token rows for a " f"{mask.numel()}-position response.")
         values.append(value)
     return values
 
@@ -247,7 +235,7 @@ def train_critic(
     gamma: float,
     critic_lambda: float,
     value_clip: float,
-    adam_params: tinker.AdamParams,
+    adam_params: sdk.AdamParams,
 ) -> CriticUpdate:
     """Run ``updates`` clipped value updates on one rollout batch.
 
@@ -270,9 +258,7 @@ def train_critic(
             old_values=old_values,
         )
         with elapsed_timer("critic_fwd_bwd"):
-            fwd_bwd_results.append(
-                critic.forward_backward_custom(batch.data, loss_fn, output="projection")
-            )
+            fwd_bwd_results.append(critic.forward_backward_custom(batch.data, loss_fn, output="projection"))
         with elapsed_timer("critic_optim_step"):
             optim_result = critic.optim_step(adam_params)
         old_values = capture["old_values"]

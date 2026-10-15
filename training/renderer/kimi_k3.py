@@ -31,16 +31,16 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-import tinker
 import torch
+from fireworks.training import sdk
 from PIL import Image
-from training.renderer import RendererError
-from training.renderer.image_processing import ImageProcessor
+
 from training.renderer import (
     Message,
     ParseTermination,
     RenderContext,
     Renderer,
+    RendererError,
     StreamingMessageHeader,
     StreamingTextDelta,
     StreamingThinkingDelta,
@@ -48,13 +48,13 @@ from training.renderer import (
     TrainOnWhat,
     register_renderer,
 )
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderedMessage, ToolSpec
-from training.renderer.tokenizer import Tokenizer
-
+from training.renderer.base import RenderedMessage, ToolSpec
+from training.renderer.image_processing import ImageProcessor
 from training.renderer.reasoning_fields import (
     original_reasoning,
     original_reasoning_content,
 )
+from training.renderer.tokenizer import Tokenizer
 
 STOP_SEQUENCE = "<|close|>message<|sep|>"
 IMAGE_PLACEHOLDER = "<|kimi_image_placeholder|>"
@@ -72,10 +72,7 @@ _DATA_URL = re.compile(
 
 def _deep_sort(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(key): _deep_sort(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
-        }
+        return {str(key): _deep_sort(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
     if isinstance(value, (list, tuple)):
         return [_deep_sort(item) for item in value]
     return value
@@ -142,9 +139,7 @@ class KimiK3RenderOptions:
                     else thinking.get("effort", thinking.get("reasoning_effort"))
                 )
             else:
-                raise ValueError(
-                    f"Unsupported Kimi K3 thinking type: {thinking_type!r}"
-                )
+                raise ValueError(f"Unsupported Kimi K3 thinking type: {thinking_type!r}")
         elif thinking is False:
             reasoning_value = False
         else:
@@ -221,7 +216,7 @@ class KimiK3RenderTrace:
     token_in_ids: tuple[int, ...]
     materialized_one_pad_ids: tuple[int, ...]
     expanded_token_ids: tuple[int, ...]
-    model_input: tinker.ModelInput
+    model_input: sdk.ModelInput
     processed_media: tuple[_KimiK3ProcessedMedia, ...]
     segment_labels: tuple[str, ...]
 
@@ -259,8 +254,7 @@ def _decode_image_payload(payload: Any) -> tuple[bytes, str]:
                 "jpeg" if match.group("format") in {"jpg", "jpeg"} else "png",
             )
         raise ValueError(
-            "Kimi K3 images must be inline bytes/data URLs; remote URLs must "
-            "be materialized before rendering"
+            "Kimi K3 images must be inline bytes/data URLs; remote URLs must " "be materialized before rendering"
         )
     raise TypeError(f"Unsupported Kimi K3 image payload: {type(payload).__name__}")
 
@@ -331,19 +325,13 @@ def _native_message(message: Mapping[str, Any]) -> dict[str, Any]:
             part_type = part.get("type")
             if part_type == "thinking":
                 if role != "assistant":
-                    raise ValueError(
-                        "Kimi K3 thinking content is supported only in assistant messages"
-                    )
+                    raise ValueError("Kimi K3 thinking content is supported only in assistant messages")
                 reasoning_parts.append(str(part.get("thinking", "")))
             elif part_type == "text":
-                visible_parts.append(
-                    {"type": "text", "text": str(part.get("text", ""))}
-                )
+                visible_parts.append({"type": "text", "text": str(part.get("text", ""))})
             elif part_type in {"image", "image_url"}:
                 if role not in {"user", "tool"}:
-                    raise ValueError(
-                        "Kimi K3 structured images are supported only in user or tool messages"
-                    )
+                    raise ValueError("Kimi K3 structured images are supported only in user or tool messages")
                 payload = part.get(part_type)
                 if payload is None:
                     payload = part.get("image")
@@ -360,9 +348,7 @@ def _native_message(message: Mapping[str, Any]) -> dict[str, Any]:
         selected_reasoning = (
             reasoning_content
             if has_reasoning_content and reasoning_content
-            else reasoning
-            if has_reasoning and reasoning
-            else "".join(reasoning_parts)
+            else reasoning if has_reasoning and reasoning else "".join(reasoning_parts)
         )
         if selected_reasoning:
             native["reasoning_content"] = selected_reasoning
@@ -377,9 +363,7 @@ def _normalize_tools(tools: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any]
     normalized: list[dict[str, Any]] = []
     for tool in tools:
         copied = copy.deepcopy(dict(tool))
-        if copied.get("type") == "function" and isinstance(
-            copied.get("function"), Mapping
-        ):
+        if copied.get("type") == "function" and isinstance(copied.get("function"), Mapping):
             normalized.append(copied)
         else:
             normalized.append({"type": "function", "function": copied})
@@ -388,8 +372,7 @@ def _normalize_tools(tools: Iterable[Mapping[str, Any]]) -> tuple[dict[str, Any]
 
 def _segments_equal(left: Sequence[Any], right: Sequence[Any]) -> bool:
     return len(left) == len(right) and all(
-        a.text == b.text and bool(a.allow_special) == bool(b.allow_special)
-        for a, b in zip(left, right, strict=True)
+        a.text == b.text and bool(a.allow_special) == bool(b.allow_special) for a, b in zip(left, right, strict=True)
     )
 
 
@@ -526,11 +509,7 @@ def _parse_response(tokenizer: Any, response: Iterable[int]) -> _ParsedResponse:
     stop = _tokenize_control(tokenizer, f"{_CLOSE}message{_SEP}")
     stop_count = _count_subsequence(tokens, stop)
     stop_at = _find_subsequence(tokens, stop)
-    termination = (
-        ParseTermination.STOP_SEQUENCE
-        if stop_count == 1
-        else ParseTermination.MALFORMED
-    )
+    termination = ParseTermination.STOP_SEQUENCE if stop_count == 1 else ParseTermination.MALFORMED
     body = tokens[:stop_at] if stop_at >= 0 else tokens
 
     close_think_open_response = _tokenize_control(
@@ -614,9 +593,7 @@ class KimiK3Renderer(Renderer):
         tokenizer_module = __import__(type(tokenizer).__module__, fromlist=["*"])
         build_segments = getattr(tokenizer_module, "build_chat_segments", None)
         if not callable(build_segments):
-            raise TypeError(
-                "Kimi K3 tokenizer must expose encoding_k3.build_chat_segments"
-            )
+            raise TypeError("Kimi K3 tokenizer must expose encoding_k3.build_chat_segments")
         self._build_chat_segments = build_segments
         encoding_module = __import__(build_segments.__module__, fromlist=["*"])
         normalize_results = getattr(
@@ -625,9 +602,7 @@ class KimiK3Renderer(Renderer):
             None,
         )
         if not callable(normalize_results):
-            raise TypeError(
-                "Kimi K3 tokenizer must expose normalize_xtml_tool_result_messages"
-            )
+            raise TypeError("Kimi K3 tokenizer must expose normalize_xtml_tool_result_messages")
         self._normalize_tool_results = normalize_results
 
         media_pad_ids = list(
@@ -637,9 +612,7 @@ class KimiK3Renderer(Renderer):
             )
         )
         if len(media_pad_ids) != 1:
-            raise ValueError(
-                "Kimi K3 tokenizer must encode <|media_pad|> as one special token"
-            )
+            raise ValueError("Kimi K3 tokenizer must encode <|media_pad|> as one special token")
         self.image_placeholder_token_id = int(media_pad_ids[0])
 
         if image_processor is not None and hasattr(
@@ -744,10 +717,7 @@ class KimiK3Renderer(Renderer):
             native_messages.append(_native_message(message))
 
         if tools and marker_tools:
-            raise ValueError(
-                "Kimi K3 tools were supplied in both the conversation envelope "
-                "and the tool prefix"
-            )
+            raise ValueError("Kimi K3 tools were supplied in both the conversation envelope " "and the tool prefix")
         return _KimiK3Request(
             messages=tuple(native_messages),
             tools=tools or marker_tools,
@@ -775,9 +745,7 @@ class KimiK3Renderer(Renderer):
                 elif part_type == "text":
                     parts.append({"type": "text", "text": str(part.get("text", ""))})
                 else:
-                    raise ValueError(
-                        f"Unsupported normalized Kimi K3 content part: {part_type!r}"
-                    )
+                    raise ValueError(f"Unsupported normalized Kimi K3 content part: {part_type!r}")
             message["content"] = parts
             normalized.append(message)
         return normalized, media
@@ -787,16 +755,12 @@ class KimiK3Renderer(Renderer):
         media: Sequence[_KimiK3Media],
     ) -> list[_KimiK3ProcessedMedia]:
         if media and self.image_processor is None:
-            raise ValueError(
-                "Kimi K3 image messages require the release image processor"
-            )
+            raise ValueError("Kimi K3 image messages require the release image processor")
         processed: list[_KimiK3ProcessedMedia] = []
         for item in media:
             image_item = {"type": "image", "image": item.open()}
             expected = int(self.image_processor.media_tokens_calculator(image_item))
-            prompt = str(
-                self.image_processor.make_image_prompt(item.width, item.height)
-            )
+            prompt = str(self.image_processor.make_image_prompt(item.width, item.height))
             batch = self.image_processor.preprocess(
                 [image_item],
                 return_tensors="pt",
@@ -805,9 +769,7 @@ class KimiK3Renderer(Renderer):
             merge = int(self.image_processor.media_proc_cfg["merge_kernel_size"])
             calculated = grid[0] * (grid[1] // merge) * (grid[2] // merge)
             if expected != calculated:
-                raise ValueError(
-                    f"Kimi K3 image token invariant failed: {expected} != {calculated}"
-                )
+                raise ValueError(f"Kimi K3 image token invariant failed: {expected} != {calculated}")
             processed.append(
                 _KimiK3ProcessedMedia(
                     media=item,
@@ -840,9 +802,7 @@ class KimiK3Renderer(Renderer):
         include_request_tail: bool,
         image_prompts: list[str] | None,
     ) -> list[Any]:
-        kwargs = request.options.native_kwargs(
-            include_request_tail=include_request_tail
-        )
+        kwargs = request.options.native_kwargs(include_request_tail=include_request_tail)
         thinking = kwargs.pop("thinking")
         return list(
             self._build_chat_segments(
@@ -868,9 +828,7 @@ class KimiK3Renderer(Renderer):
         for segment in segments:
             if bool(segment.allow_special) and segment.text == IMAGE_PLACEHOLDER:
                 if media_index >= len(processed):
-                    raise ValueError(
-                        "More Kimi K3 image placeholders than image inputs"
-                    )
+                    raise ValueError("More Kimi K3 image placeholders than image inputs")
                 materialized.append(
                     type(segment)(
                         processed[media_index].image_prompt,
@@ -898,8 +856,8 @@ class KimiK3Renderer(Renderer):
         labels: Sequence[str] | None = None,
         *,
         all_tokens: bool = False,
-    ) -> tuple[tinker.ModelInput, list[int], list[int], list[float]]:
-        chunks: list[tinker.types.ModelInputChunk] = []
+    ) -> tuple[sdk.ModelInput, list[int], list[int], list[float]]:
+        chunks: list[sdk.types.ModelInputChunk] = []
         expanded: list[int] = []
         one_pad: list[int] = []
         weights: list[float] = []
@@ -918,7 +876,7 @@ class KimiK3Renderer(Renderer):
                     )
                 )
                 if tokens:
-                    chunks.append(tinker.types.EncodedTextChunk(tokens=tokens))
+                    chunks.append(sdk.types.EncodedTextChunk(tokens=tokens))
                     expanded.extend(tokens)
                     one_pad.extend(tokens)
                     weights.extend([base_weight] * len(tokens))
@@ -941,15 +899,15 @@ class KimiK3Renderer(Renderer):
                     allow_special_tokens=True,
                 )
             )
-            chunks.append(tinker.types.EncodedTextChunk(tokens=prefix_tokens))
+            chunks.append(sdk.types.EncodedTextChunk(tokens=prefix_tokens))
             chunks.append(
-                tinker.types.ImageChunk(
+                sdk.types.ImageChunk(
                     data=item.media.data,
                     format=item.media.format,
                     expected_tokens=item.expected_tokens,
                 )
             )
-            chunks.append(tinker.types.EncodedTextChunk(tokens=suffix_tokens))
+            chunks.append(sdk.types.EncodedTextChunk(tokens=suffix_tokens))
             expanded.extend(prefix_tokens)
             expanded.extend([self.image_placeholder_token_id] * item.expected_tokens)
             expanded.extend(suffix_tokens)
@@ -963,7 +921,7 @@ class KimiK3Renderer(Renderer):
 
         if media_index != len(processed):
             raise ValueError("Fewer Kimi K3 image placeholders than image inputs")
-        return tinker.ModelInput(chunks=chunks), expanded, one_pad, weights
+        return sdk.ModelInput(chunks=chunks), expanded, one_pad, weights
 
     def _token_in_ids(self, segments: Sequence[Any]) -> list[int]:
         tokens: list[int] = []
@@ -1000,9 +958,7 @@ class KimiK3Renderer(Renderer):
             processed,
         )
         if one_pad != materialized_ids:
-            raise ValueError(
-                "Kimi K3 image chunks disagree with the release image prompt"
-            )
+            raise ValueError("Kimi K3 image chunks disagree with the release image prompt")
         return KimiK3RenderTrace(
             symbolic_token_ids=tuple(self._encode_segments(symbolic)),
             token_in_ids=tuple(self._token_in_ids(symbolic)),
@@ -1018,7 +974,7 @@ class KimiK3Renderer(Renderer):
         messages: list[Message],
         role: str = "assistant",
         prefill: str | None = None,
-    ) -> tinker.ModelInput:
+    ) -> sdk.ModelInput:
         if role != "assistant":
             raise ValueError("Kimi K3 can generate only assistant messages")
         model_input = self.render_trace(
@@ -1027,7 +983,7 @@ class KimiK3Renderer(Renderer):
         ).model_input
         if prefill:
             model_input = model_input.append(
-                tinker.types.EncodedTextChunk(
+                sdk.types.EncodedTextChunk(
                     tokens=self.tokenizer._encode_text_piece(
                         prefill,
                         allow_special_tokens=False,
@@ -1050,11 +1006,7 @@ class KimiK3Renderer(Renderer):
             return float(index == len(messages) - 1 and role == "assistant")
         if train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN:
             last_user = max(
-                (
-                    i
-                    for i, candidate in enumerate(messages)
-                    if candidate.get("role") == "user"
-                ),
+                (i for i, candidate in enumerate(messages) if candidate.get("role") == "user"),
                 default=-1,
             )
             return float(role == "assistant" and index > last_user)
@@ -1066,9 +1018,7 @@ class KimiK3Renderer(Renderer):
             return float(role in {"user", "system"})
         if train_on_what == TrainOnWhat.CUSTOMIZED:
             if "trainable" not in message:
-                raise ValueError(
-                    "CUSTOMIZED Kimi K3 rows require trainable on every message"
-                )
+                raise ValueError("CUSTOMIZED Kimi K3 rows require trainable on every message")
             return float(message["trainable"])
         raise RendererError(f"Unknown train_on_what: {train_on_what}")
 
@@ -1091,11 +1041,7 @@ class KimiK3Renderer(Renderer):
                     output_start = index + 1
                     break
         output_end = len(delta)
-        if (
-            delta
-            and bool(delta[-1].allow_special)
-            and delta[-1].text == "<|end_of_msg|>"
-        ):
+        if delta and bool(delta[-1].allow_special) and delta[-1].text == "<|end_of_msg|>":
             output_end -= 1
         for index in range(output_start, output_end):
             labels[index] = "all" if all_tokens else f"output:{output_weight}"
@@ -1128,10 +1074,7 @@ class KimiK3Renderer(Renderer):
                 image_prompts=None,
             )
             if not _segments_equal(current[: len(previous)], previous):
-                raise ValueError(
-                    "Kimi K3 progressive rendering stopped being a prefix at "
-                    f"message {index}"
-                )
+                raise ValueError("Kimi K3 progressive rendering stopped being a prefix at " f"message {index}")
             delta = current[len(previous) :]
             weight = self._message_weight(
                 message,
@@ -1158,23 +1101,19 @@ class KimiK3Renderer(Renderer):
             image_prompts=None,
         )
         if not _segments_equal(authoritative[: len(previous)], previous):
-            raise ValueError(
-                "Kimi K3 request controls do not extend the conversation prefix"
-            )
+            raise ValueError("Kimi K3 request controls do not extend the conversation prefix")
         tail = authoritative[len(previous) :]
         segments.extend(tail)
         labels.extend(["all" if all_tokens else "prompt"] * len(tail))
         if not _segments_equal(segments, authoritative):
-            raise ValueError(
-                "Kimi K3 supervised trace differs from the release rendering"
-            )
+            raise ValueError("Kimi K3 supervised trace differs from the release rendering")
         return segments, labels
 
     def build_supervised_example(
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         request, processed = self._normalized_request(messages)
         segments, labels = self._supervised_segments_and_labels(
             request,
@@ -1189,9 +1128,7 @@ class KimiK3Renderer(Renderer):
         materialized = self._replace_image_segments(segments, processed)
         materialized_ids = self._encode_segments(materialized)
         if one_pad != materialized_ids:
-            raise ValueError(
-                "Kimi K3 image chunks disagree with the release image prompt"
-            )
+            raise ValueError("Kimi K3 image chunks disagree with the release image prompt")
         if len(expanded) != len(weights) or model_input.length != len(weights):
             raise ValueError("Kimi K3 supervised token/weight length mismatch")
         return model_input, torch.tensor(weights, dtype=torch.float32)
@@ -1200,7 +1137,7 @@ class KimiK3Renderer(Renderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_TURN,
-    ) -> list[tuple[tinker.ModelInput, torch.Tensor]]:
+    ) -> list[tuple[sdk.ModelInput, torch.Tensor]]:
         return [
             self.build_supervised_example(
                 messages,

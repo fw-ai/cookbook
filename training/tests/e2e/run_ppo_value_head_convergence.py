@@ -13,8 +13,7 @@ import math
 import os
 from pathlib import Path
 
-import tinker
-
+from fireworks.training import sdk
 from training.recipes.experiment.ppo_value_head_loop import (
     QWEN3_4B,
     QWEN3_4B_LORA_SHAPE,
@@ -37,12 +36,8 @@ def run() -> dict[str, object]:
     os.environ["COOKBOOK_METRICS_FILE"] = str(metrics_path)
 
     base_model = os.environ.get("FIREWORKS_E2E_MODEL", QWEN3_4B)
-    training_shape = os.environ.get(
-        "FIREWORKS_E2E_LORA_TRAINING_SHAPE", QWEN3_4B_LORA_SHAPE
-    )
-    tokenizer_model = os.environ.get(
-        "FIREWORKS_E2E_TOKENIZER_MODEL", QWEN3_4B_TOKENIZER
-    )
+    training_shape = os.environ.get("FIREWORKS_E2E_LORA_TRAINING_SHAPE", QWEN3_4B_LORA_SHAPE)
+    tokenizer_model = os.environ.get("FIREWORKS_E2E_TOKENIZER_MODEL", QWEN3_4B_TOKENIZER)
     trainer = dict(
         training_shape_id=training_shape,
         use_reservation=False,
@@ -56,8 +51,7 @@ def run() -> dict[str, object]:
                 {
                     "role": "system",
                     "content": (
-                        "Solve the arithmetic problem. End with exactly one integer "
-                        "inside <answer> and </answer>."
+                        "Solve the arithmetic problem. End with exactly one integer " "inside <answer> and </answer>."
                     ),
                 },
                 {"role": "user", "content": "What is 2 + 2?"},
@@ -73,15 +67,15 @@ def run() -> dict[str, object]:
     ) -> PromptGroup:
         del cursor_index
         tokens = [1, 2, 3, 4]
-        datum = tinker.Datum(
-            model_input=tinker.ModelInput.from_ints(tokens),
+        datum = sdk.Datum(
+            model_input=sdk.ModelInput.from_ints(tokens),
             loss_fn_inputs={
-                "target_tokens": tinker.TensorData(
+                "target_tokens": sdk.TensorData(
                     data=tokens,
                     dtype="int64",
                     shape=[len(tokens)],
                 ),
-                "weights": tinker.TensorData(
+                "weights": sdk.TensorData(
                     data=[0.0, 0.0, 1.0, 1.0],
                     dtype="float32",
                     shape=[len(tokens)],
@@ -139,16 +133,8 @@ def run() -> dict[str, object]:
     )
 
     records = _metric_records(metrics_path)
-    losses = [
-        float(record["train/critic-value_loss"])
-        for record in records
-        if "train/critic-value_loss" in record
-    ]
-    rewards = [
-        float(record["rollout/filtered_reward"])
-        for record in records
-        if "rollout/filtered_reward" in record
-    ]
+    losses = [float(record["train/critic-value_loss"]) for record in records if "train/critic-value_loss" in record]
+    rewards = [float(record["rollout/filtered_reward"]) for record in records if "rollout/filtered_reward" in record]
     if result["actor_steps"] != 6 or result["critic_steps"] != 6:
         raise AssertionError(f"expected six actor and critic steps, got {result}")
     if len(losses) != 6 or not all(math.isfinite(value) for value in losses):

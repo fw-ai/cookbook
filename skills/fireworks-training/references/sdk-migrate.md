@@ -13,6 +13,26 @@ service client and then use Tinker-shaped `service.create_*` calls. Recipe `Conf
 
 ## When to use this
 
+The SDK and cookbook use Fireworks-owned types and runtime. Neither requires
+Tinker or Tinker-Cookbook, including the optional SDFT integration. Use
+`from fireworks.training import sdk` or `fireworks.training.sdk.types` for
+data types, optimizer parameters and futures. SDFT's local helper sources carry
+their original license and provenance; the `sdft` extra installs only their
+ordinary dataset/rollout/logging dependencies.
+
+Outputs and exceptions have Fireworks class identity. Catch
+`fireworks.training.sdk.TrainingError` / SDK API errors in Fireworks flows;
+Tinker-only handlers do not catch them. Private connection-pool enums must
+come from the owned holder's runtime. Cookbook cleanup and SDFT metadata
+fallbacks use that runtime directly. No external patch kit or foreign-object
+adapter is provided; construct native SDK inputs.
+
+For recipe-specific gaps, checkpoint naming, backward logprobs and the distinct
+dedicated/serverless publication flows, consult the SDK's
+[Tinker Cookbook compatibility guide](https://github.com/fw-ai-external/python-sdk/blob/main/src/fireworks/training/sdk/TINKER_COMPATIBILITY.md).
+An extra metrics forward is an explicit recipe choice with GPU cost; the SDK
+does not silently add one to emulate missing backward logprobs.
+
 - A script imports `InfraConfig`, `setup_infra`, `ResourceCleanup`,
   `make_reference_client`, or `create_base_reference`.
 - A recipe `Config(...)` passes `infra=` or `weight_sync=`.

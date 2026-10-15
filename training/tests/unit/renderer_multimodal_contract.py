@@ -5,9 +5,8 @@ from __future__ import annotations
 import base64
 
 import pytest
-import tinker
+from fireworks.training import sdk
 from PIL import Image
-
 from training.renderer import TrainOnWhat
 from training.tests.unit.renderer_contract import _split_by_weights
 from training.utils.rl.rollout.renderer import (
@@ -24,11 +23,7 @@ def _expanded_tokens(model_input):
     return [
         token
         for chunk in model_input.chunks
-        for token in (
-            chunk.tokens
-            if isinstance(chunk, tinker.types.EncodedTextChunk)
-            else [0] * chunk.length
-        )
+        for token in (chunk.tokens if isinstance(chunk, sdk.types.EncodedTextChunk) else [0] * chunk.length)
     ]
 
 
@@ -88,23 +83,13 @@ class MultimodalRendererContractTests:
             {
                 "role": role,
                 "content": content,
-                **(
-                    {"name": "inspect", "tool_call_id": "inspect-1"}
-                    if role == "tool"
-                    else {}
-                ),
+                **({"name": "inspect", "tool_call_id": "inspect-1"} if role == "tool" else {}),
             }
         )
         normalized = normalize_messages(messages)
         prompt = renderer.build_generation_prompt(normalized)
-        image_chunks = [
-            chunk
-            for chunk in prompt.chunks
-            if isinstance(chunk, tinker.types.ImageChunk)
-        ]
-        assert [chunk.expected_tokens for chunk in image_chunks] == [
-            count for _, count in fixtures
-        ]
+        image_chunks = [chunk for chunk in prompt.chunks if isinstance(chunk, sdk.types.ImageChunk)]
+        assert [chunk.expected_tokens for chunk in image_chunks] == [count for _, count in fixtures]
 
         request_tokens, images = build_multimodal_completions_prompt_token_ids(
             normalized,
@@ -117,23 +102,16 @@ class MultimodalRendererContractTests:
         assert renderer.image_placeholder_token_id == native_image_id
         assert request_tokens.count(native_image_id) == len(fixtures) == len(images)
         assert images == [
-            f"data:image/{chunk.format};base64,{base64.b64encode(chunk.data).decode()}"
-            for chunk in image_chunks
+            f"data:image/{chunk.format};base64,{base64.b64encode(chunk.data).decode()}" for chunk in image_chunks
         ]
         expected_request = [
             token
             for chunk in prompt.chunks
-            for token in (
-                chunk.tokens
-                if isinstance(chunk, tinker.types.EncodedTextChunk)
-                else [native_image_id]
-            )
+            for token in (chunk.tokens if isinstance(chunk, sdk.types.EncodedTextChunk) else [native_image_id])
         ]
         assert request_tokens == expected_request
 
-        full_messages = normalized + [
-            {"role": "assistant", "content": "These are two colored panels."}
-        ]
+        full_messages = normalized + [{"role": "assistant", "content": "These are two colored panels."}]
         full_input, full_weights = renderer.build_supervised_example(full_messages)
         expanded = _expanded_tokens(full_input)
         weights = [float(weight) for weight in full_weights.tolist()]
@@ -145,10 +123,7 @@ class MultimodalRendererContractTests:
             # identical suffix already present in the generation prompt.
             trainable_suffix_length = prompt.length - len(observation)
             assert trainable_suffix_length > 0
-            assert (
-                completion[:trainable_suffix_length]
-                == prompt_tokens[-trainable_suffix_length:]
-            )
+            assert completion[:trainable_suffix_length] == prompt_tokens[-trainable_suffix_length:]
             rollout_completion = completion[trainable_suffix_length:]
         else:
             assert observation == prompt_tokens
@@ -158,8 +133,7 @@ class MultimodalRendererContractTests:
         # Both hosted SFT and token-in RL must preserve images and use the
         # same expanded N-1 target/mask coordinates after the next-token shift.
         sft = render_messages_to_datum(
-            messages
-            + [{"role": "assistant", "content": "These are two colored panels."}],
+            messages + [{"role": "assistant", "content": "These are two colored panels."}],
             renderer=renderer,
             train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE,
         ).datum
@@ -168,9 +142,7 @@ class MultimodalRendererContractTests:
             assert list(datum.loss_fn_inputs["target_tokens"].data) == expanded[1:]
             assert datum.model_input.length == len(expanded) - 1
             assert [
-                chunk
-                for chunk in datum.model_input.chunks
-                if isinstance(chunk, tinker.types.ImageChunk)
+                chunk for chunk in datum.model_input.chunks if isinstance(chunk, sdk.types.ImageChunk)
             ] == image_chunks
         assert list(sft.loss_fn_inputs["weights"].data) == weights[1:]
         policy_weights = [0.0] * prompt.length + [1.0] * len(rollout_completion)
@@ -184,24 +156,18 @@ class MultimodalRendererContractTests:
             train_on_what=TrainOnWhat.ALL_ASSISTANT_MESSAGES,
         )
         all_sft = render_messages_to_datum(
-            messages
-            + [{"role": "assistant", "content": "These are two colored panels."}],
+            messages + [{"role": "assistant", "content": "These are two colored panels."}],
             renderer=renderer,
         ).datum
         assert _expanded_tokens(all_input) == expanded
         all_weights = [float(weight) for weight in all_weights.tolist()]
         assert list(all_sft.loss_fn_inputs["target_tokens"].data) == expanded[1:]
         assert list(all_sft.loss_fn_inputs["weights"].data) == all_weights[1:]
-        assert all(
-            all_weight >= last_weight
-            for all_weight, last_weight in zip(all_weights, weights)
-        )
+        assert all(all_weight >= last_weight for all_weight, last_weight in zip(all_weights, weights))
         if role == "tool":
             assert sum(all_weights) > sum(weights)
         cursor = 0
         for chunk in all_input.chunks:
-            if isinstance(chunk, tinker.types.ImageChunk):
-                assert (
-                    all_weights[cursor : cursor + chunk.length] == [0.0] * chunk.length
-                )
+            if isinstance(chunk, sdk.types.ImageChunk):
+                assert all_weights[cursor : cursor + chunk.length] == [0.0] * chunk.length
             cursor += chunk.length

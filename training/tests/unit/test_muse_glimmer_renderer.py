@@ -5,31 +5,30 @@ from __future__ import annotations
 import json
 
 import pytest
-import tinker
+from fireworks.training import sdk
+from fireworks.training.sdk._core._compat import model_dump
+from fireworks.training.sdk._core.lib._pydantic_conv import to_pydantic_request
 from jinja2.exceptions import TemplateError
-from tinker._compat import model_dump
-from tinker.lib._pydantic_conv import to_pydantic_request
 from training.renderer import RendererError
-
 from training.renderer.muse_glimmer import (
     _TOOL_ARGUMENT_ERROR,
-    MuseGlimmerOptions,
     MuseGlimmerImageTokenCounter,
+    MuseGlimmerOptions,
     MuseGlimmerRenderer,
     _content,
     _factory,
     _render_atem,
     _render_tool_defs,
 )
-from training.utils.supervised import (
-    normalize_messages,
-    render_messages_to_datum,
-    resolve_renderer_name,
-)
-from training.utils.supervised import build_tool_prefixed_messages
 from training.utils.rl.agent.openai import CookbookTurnRenderer
 from training.utils.rl.rollout.renderer import (
     build_multimodal_completions_prompt_token_ids,
+)
+from training.utils.supervised import (
+    build_tool_prefixed_messages,
+    normalize_messages,
+    render_messages_to_datum,
+    resolve_renderer_name,
 )
 
 
@@ -228,11 +227,7 @@ def test_image_content_materializes_processor_boundaries_and_chunk() -> None:
         ]
     )
 
-    image_chunks = [
-        chunk
-        for chunk in model_input.chunks
-        if isinstance(chunk, tinker.types.ImageChunk)
-    ]
+    image_chunks = [chunk for chunk in model_input.chunks if isinstance(chunk, sdk.types.ImageChunk)]
     assert len(image_chunks) == 1
     assert image_chunks[0].expected_tokens == 4
     assert image_chunks[0].format == "jpeg"
@@ -240,7 +235,7 @@ def test_image_content_materializes_processor_boundaries_and_chunk() -> None:
     rendered_text = "".join(
         renderer.tokenizer.decode(chunk.tokens)
         for chunk in model_input.chunks
-        if isinstance(chunk, tinker.types.EncodedTextChunk)
+        if isinstance(chunk, sdk.types.EncodedTextChunk)
     )
     assert "before<|image_start|><|image_end|>after<|eot|>" in rendered_text
     assert "<|patch|>" not in rendered_text
@@ -298,16 +293,12 @@ def test_sft_and_tinker_wire_preserve_muse_image_chunk() -> None:
         {"role": "assistant", "content": "four"},
     ]
     rendered = render_messages_to_datum(messages, renderer=renderer)
-    image_chunks = [
-        chunk
-        for chunk in rendered.datum.model_input.chunks
-        if isinstance(chunk, tinker.types.ImageChunk)
-    ]
+    image_chunks = [chunk for chunk in rendered.datum.model_input.chunks if isinstance(chunk, sdk.types.ImageChunk)]
     assert len(image_chunks) == 1
     assert image_chunks[0].expected_tokens == 4
 
-    wire_request = tinker.types.ForwardBackwardRequest(
-        forward_backward_input=tinker.types.ForwardBackwardInput(
+    wire_request = sdk.types.ForwardBackwardRequest(
+        forward_backward_input=sdk.types.ForwardBackwardInput(
             data=[rendered.datum],
             loss_fn="cross_entropy",
             loss_fn_config=None,
@@ -321,9 +312,7 @@ def test_sft_and_tinker_wire_preserve_muse_image_chunk() -> None:
         exclude_none=True,
         mode="json",
     )
-    wire_chunks = wire_payload["forward_backward_input"]["data"][0]["model_input"][
-        "chunks"
-    ]
+    wire_chunks = wire_payload["forward_backward_input"]["data"][0]["model_input"]["chunks"]
     wire_images = [chunk for chunk in wire_chunks if chunk["type"] == "image"]
     assert len(wire_images) == 1
     assert wire_images[0]["expected_tokens"] == 4

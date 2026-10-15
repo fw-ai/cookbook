@@ -17,11 +17,9 @@ import training
 CHECKOUT_PACKAGE = Path(__file__).resolve().parents[1]
 INSTALLED_PACKAGE = Path(training.__file__).resolve().parent
 
-# These modules intentionally require optional dependency groups (``eval``,
-# ``sdft``) that are not installed by the base ``pip install .`` smoke.
+# These modules require the optional eval dependencies, absent from a base install.
 OPTIONAL_MODULES = {
     "training.utils.rl.rollout.eval_protocol",
-    "training.recipes.sdft_loop",
 }
 
 

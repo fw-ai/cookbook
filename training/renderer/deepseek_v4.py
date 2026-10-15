@@ -71,10 +71,12 @@ import re
 from collections.abc import Mapping
 from typing import Any, Callable, Literal
 
-import tinker
 import torch
+from fireworks.training import sdk
+
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.base import (
     Message,
     RenderContext,
     RenderedMessage,
@@ -87,10 +89,8 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     TrainOnWhat,
     UnparsedToolCall,
 )
-from training.renderer.tokenizer import Tokenizer
-
-from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.message_weights import untrained_synthesized_context
+from training.renderer.tokenizer import Tokenizer
 
 # ── Special tokens (must match encoding_dsv4.py exactly) ────────────────────
 # NOTE: ``｜`` is U+FF5C FULLWIDTH VERTICAL LINE (not ASCII ``|``).
@@ -133,8 +133,7 @@ You MUST strictly follow the above defined tool name and parameter schemas to in
 """
 
 _RESPONSE_FORMAT_TEMPLATE = (
-    "## Response Format:\n\n"
-    "You MUST strictly adhere to the following schema to reply:\n{schema}"
+    "## Response Format:\n\n" "You MUST strictly adhere to the following schema to reply:\n{schema}"
 )
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -161,10 +160,7 @@ def _visible_text(content: Any) -> str:
                 out.append(item)
                 continue
             if not isinstance(item, Mapping):
-                raise TypeError(
-                    "DeepSeek V4 content parts must be JSON objects or strings; "
-                    f"got {item!r}"
-                )
+                raise TypeError("DeepSeek V4 content parts must be JSON objects or strings; " f"got {item!r}")
             if item.get("type") == "text":
                 if not isinstance(item.get("text"), str):
                     raise TypeError(
@@ -180,10 +176,7 @@ def _visible_text(content: Any) -> str:
                     )
                 continue
             else:
-                raise TypeError(
-                    "DeepSeek V4 can only render text and thinking content parts; "
-                    f"got {item!r}"
-                )
+                raise TypeError("DeepSeek V4 can only render text and thinking content parts; " f"got {item!r}")
         return "".join(out)
     raise TypeError(
         "DeepSeek V4 message content must be a string or a list of text/thinking parts; "
@@ -205,10 +198,7 @@ def _extract_reasoning_and_text(content: Any) -> tuple[str, str]:
         text_parts: list[str] = []
         for part in content:
             if not isinstance(part, Mapping):
-                raise TypeError(
-                    "DeepSeek V4 assistant content parts must be JSON objects; "
-                    f"got {part!r}"
-                )
+                raise TypeError("DeepSeek V4 assistant content parts must be JSON objects; " f"got {part!r}")
             if part.get("type") == "thinking":
                 if not isinstance(part.get("thinking"), str):
                     raise TypeError(
@@ -225,8 +215,7 @@ def _extract_reasoning_and_text(content: Any) -> tuple[str, str]:
                 text_parts.append(part["text"])
             else:
                 raise TypeError(
-                    "DeepSeek V4 can only render text and thinking assistant content parts; "
-                    f"got {part!r}"
+                    "DeepSeek V4 can only render text and thinking assistant content parts; " f"got {part!r}"
                 )
         return "".join(reasoning_parts), "".join(text_parts)
     raise TypeError(
@@ -354,11 +343,7 @@ def _merge_tool_messages(
                 "tool_use_id": msg.get("tool_call_id", ""),
                 "content": msg.get("content", ""),
             }
-            if (
-                merged
-                and merged[-1].get("role") == "user"
-                and "content_blocks" in merged[-1]
-            ):
+            if merged and merged[-1].get("role") == "user" and "content_blocks" in merged[-1]:
                 merged[-1]["content_blocks"].append(tool_block)
             else:
                 merged.append({"role": "user", "content_blocks": [tool_block]})
@@ -418,9 +403,7 @@ def _sort_tool_results_by_call_order(messages: list[Message]) -> list[Message]:
             continue
 
         if role == "user" and msg.get("content_blocks"):
-            tool_blocks = [
-                b for b in msg["content_blocks"] if b.get("type") == "tool_result"
-            ]
+            tool_blocks = [b for b in msg["content_blocks"] if b.get("type") == "tool_result"]
             if len(tool_blocks) > 1 and last_order:
                 sorted_blocks = sorted(
                     tool_blocks,
@@ -460,9 +443,7 @@ def _drop_thinking_from_history(messages: list[Message]) -> list[Message]:
             content = stripped.get("content")
             if isinstance(content, list):
                 stripped["content"] = [
-                    p
-                    for p in content
-                    if not (isinstance(p, Mapping) and p.get("type") == "thinking")
+                    p for p in content if not (isinstance(p, Mapping) and p.get("type") == "thinking")
                 ]
             elif isinstance(content, str) and "</think>" in content:
                 stripped["content"] = content.split("</think>", 1)[-1].lstrip("\n")
@@ -536,10 +517,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
                 idx
                 for idx, message in enumerate(messages)
                 if message.get("role") == "user"
-                and any(
-                    block.get("type") == "text"
-                    for block in message.get("content_blocks", [])
-                )
+                and any(block.get("type") == "text" for block in message.get("content_blocks", []))
             ),
             default=-1,
         )
@@ -551,9 +529,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
     ) -> bool:
         del message
         is_terminal = ctx.last_user_index < 0 or ctx.idx > ctx.last_user_index
-        return self.thinking_mode == "thinking" and (
-            not self._effective_strip or is_terminal
-        )
+        return self.thinking_mode == "thinking" and (not self._effective_strip or is_terminal)
 
     def _assistant_emits_header(self, message: Message, ctx: RenderContext) -> bool:
         del message, ctx
@@ -579,7 +555,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         messages: list[Message],
         role: Role = "assistant",
         prefill: str | None = None,
-    ) -> tinker.ModelInput:
+    ) -> sdk.ModelInput:
         return super().build_generation_prompt(
             self._preprocess(messages),
             role=role,
@@ -590,7 +566,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         merged = self._preprocess(messages)
         if train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN and _has_any_tools(merged):
             return self._build_tool_turn_example(merged)
@@ -599,7 +575,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
     def _build_tool_turn_example(
         self,
         merged: list[Message],
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         """LAST_ASSISTANT_TURN weights for a tool-calling trajectory.
 
         Tool results become synthetic user messages during preprocessing, so
@@ -615,11 +591,9 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         )
         last_real_user_idx = self._last_assistant_turn_boundary(merged)
 
-        chunks_weights: list[tuple[tinker.types.ModelInputChunk, int]] = []
+        chunks_weights: list[tuple[sdk.types.ModelInputChunk, int]] = []
         if self._bos_tokens:
-            chunks_weights.append(
-                (tinker.types.EncodedTextChunk(tokens=self._bos_tokens), 0)
-            )
+            chunks_weights.append((sdk.types.EncodedTextChunk(tokens=self._bos_tokens), 0))
         for idx, message in enumerate(merged):
             ctx = RenderContext(
                 idx=idx,
@@ -631,14 +605,10 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
             if rendered.header:
                 chunks_weights.append((rendered.header, 0))
             weight = int(message["role"] == "assistant" and idx > last_real_user_idx)
-            chunks_weights += [
-                (output, weight) for output in rendered.output if output
-            ]
+            chunks_weights += [(output, weight) for output in rendered.output if output]
 
-        weights = torch.tensor(
-            [w for chunk, w in chunks_weights for _ in range(chunk.length)]
-        )
-        model_input = tinker.ModelInput(chunks=[chunk for chunk, _ in chunks_weights])
+        weights = torch.tensor([w for chunk, w in chunks_weights for _ in range(chunk.length)])
+        model_input = sdk.ModelInput(chunks=[chunk for chunk, _ in chunks_weights])
         return model_input, weights
 
     def build_supervised_examples(
@@ -829,9 +799,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         merged = _merge_tool_messages(messages)
         merged = _sort_tool_results_by_call_order(merged)
         # Encoder rule: any message with `tools` defined disables drop_thinking.
-        self._effective_strip = self.strip_thinking_from_history and not _has_any_tools(
-            merged
-        )
+        self._effective_strip = self.strip_thinking_from_history and not _has_any_tools(merged)
         if self.thinking_mode == "thinking" and self._effective_strip:
             merged = _drop_thinking_from_history(merged)
         return untrained_synthesized_context(merged)
@@ -844,8 +812,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         token_ids = self.tokenizer.encode(token_str, add_special_tokens=False)
         if len(token_ids) != 1:
             raise RuntimeError(
-                f"DeepseekV4Renderer expected {token_str!r} to encode as one "
-                f"token, got {token_ids}."
+                f"DeepseekV4Renderer expected {token_str!r} to encode as one " f"token, got {token_ids}."
             )
         return int(token_ids[0])
 
@@ -880,18 +847,16 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         if tools:
             body += "\n\n" + self._render_tools_section(list(tools))
         if response_format:
-            body += "\n\n" + _RESPONSE_FORMAT_TEMPLATE.format(
-                schema=_to_json(response_format)
-            )
-        header = tinker.types.EncodedTextChunk(tokens=[])
-        output = [tinker.types.EncodedTextChunk(tokens=self._encode(body))]
+            body += "\n\n" + _RESPONSE_FORMAT_TEMPLATE.format(schema=_to_json(response_format))
+        header = sdk.types.EncodedTextChunk(tokens=[])
+        output = [sdk.types.EncodedTextChunk(tokens=self._encode(body))]
         return RenderedMessage(header=header, output=output)
 
     def _render_user(self, message: Message) -> RenderedMessage:
         # Header is the role tag; output is the content blocks (or raw content).
-        header = tinker.types.EncodedTextChunk(tokens=self._encode(_USER_SP))
+        header = sdk.types.EncodedTextChunk(tokens=self._encode(_USER_SP))
         body = self._render_user_body(message)
-        output = [tinker.types.EncodedTextChunk(tokens=self._encode(body))]
+        output = [sdk.types.EncodedTextChunk(tokens=self._encode(body))]
         return RenderedMessage(header=header, output=output)
 
     def _render_user_body(self, message: Message) -> str:
@@ -912,11 +877,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
                         if isinstance(sub, Mapping) and sub.get("type") == "text":
                             inner.append(sub.get("text", "") or "")
                         else:
-                            kind = (
-                                sub.get("type")
-                                if isinstance(sub, Mapping)
-                                else type(sub).__name__
-                            )
+                            kind = sub.get("type") if isinstance(sub, Mapping) else type(sub).__name__
                             inner.append(f"[Unsupported {kind}]")
                     tool_content = "\n\n".join(inner)
                 parts.append(f"<tool_result>{tool_content}</tool_result>")
@@ -929,11 +890,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
         # here as the assistant's own header so masking lines up.
         if not self._assistant_emits_header(message, ctx):
             return ""
-        return _ASSISTANT_SP + (
-            _THINK_OPEN
-            if self._assistant_starts_thinking(message, ctx)
-            else _THINK_CLOSE
-        )
+        return _ASSISTANT_SP + (_THINK_OPEN if self._assistant_starts_thinking(message, ctx) else _THINK_CLOSE)
 
     def _render_assistant(
         self,
@@ -967,8 +924,8 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
 
         body += _EOS_TEXT
 
-        header = tinker.types.EncodedTextChunk(tokens=self._encode(header_str))
-        output = [tinker.types.EncodedTextChunk(tokens=self._encode(body))]
+        header = sdk.types.EncodedTextChunk(tokens=self._encode(header_str))
+        output = [sdk.types.EncodedTextChunk(tokens=self._encode(body))]
         return RenderedMessage(header=header, output=output)
 
     def _get_generation_suffix(self, role: Role, ctx: RenderContext) -> list[int]:
@@ -977,9 +934,7 @@ class DeepseekV4Renderer(DisaggregateMultiTurnMixin, Renderer):
             # A generation prompt always targets the *terminal* assistant slot,
             # so the boundary always uses the thinking-start branch in
             # thinking mode and the thinking-end branch in chat mode.
-            suffix = _ASSISTANT_SP + (
-                _THINK_OPEN if self.thinking_mode == "thinking" else _THINK_CLOSE
-            )
+            suffix = _ASSISTANT_SP + (_THINK_OPEN if self.thinking_mode == "thinking" else _THINK_CLOSE)
             return self._encode(suffix)
         if role == "user":
             return self._encode(_USER_SP)

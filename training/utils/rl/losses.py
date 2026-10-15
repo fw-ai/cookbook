@@ -7,11 +7,11 @@ server-side policy loss (advantages, the batch anchor and a response mask).
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import List
-from dataclasses import field, dataclass
 
-import tinker
 import torch
+from fireworks.training import sdk
 from fireworks.training.sdk.routing import RoutingReferences
 
 from training.utils.rl.common import (
@@ -25,7 +25,7 @@ from training.utils.rl.common import (
 class PromptGroup:
     """Processed data from one prompt's rollout, ready for training."""
 
-    data: List[tinker.Datum]
+    data: List[sdk.Datum]
     advantages: List[float]
     prompt_len: int
     rewards: List[float]
@@ -88,7 +88,7 @@ class PolicyBatch:
     metric reads this one field.
     """
 
-    data: List[tinker.Datum]
+    data: List[sdk.Datum]
     advantages: List[float]
     prompt_lens: List[int]
     rollout_logprobs: List[List[float]]
@@ -113,7 +113,7 @@ class PolicyBatch:
 
 def combine_prompt_groups(groups: List[PromptGroup]) -> PolicyBatch:
     """Flatten prompt groups into one :class:`PolicyBatch`."""
-    data: List[tinker.Datum] = []
+    data: List[sdk.Datum] = []
     advantages: List[float] = []
     prompt_lens: List[int] = []
     rollout: List[List[float]] = []
@@ -144,7 +144,7 @@ def combine_prompt_groups(groups: List[PromptGroup]) -> PolicyBatch:
     )
 
 
-def build_policy_datums(batch: PolicyBatch) -> List[tinker.Datum]:
+def build_policy_datums(batch: PolicyBatch) -> List[sdk.Datum]:
     """Datums for a server-side policy loss over ``batch``.
 
     Each datum carries ``target_tokens``, the batch anchor as ``logprobs``,
@@ -166,7 +166,7 @@ def build_policy_datums(batch: PolicyBatch) -> List[tinker.Datum]:
         details = ", ".join(f"{name}={size}" for name, size in mismatched.items())
         raise ValueError(f"Policy datums require {n} aligned rows; mismatched inputs: {details}.")
 
-    result: List[tinker.Datum] = []
+    result: List[sdk.Datum] = []
     for i, datum in enumerate(batch.data):
         prompt_len = batch.prompt_lens[i]
         target_tokens = list(datum.loss_fn_inputs["target_tokens"].data)
@@ -180,9 +180,7 @@ def build_policy_datums(batch: PolicyBatch) -> List[tinker.Datum]:
                 f"{i}: prompt_len={prompt_len}, target_tokens={n_tokens}."
             )
         resp_len = max(0, n_tokens - response_start)
-        loss_mask = _get_loss_mask(
-            datum, response_start, resp_len, dtype=torch.float32, device=torch.device("cpu")
-        )
+        loss_mask = _get_loss_mask(datum, response_start, resp_len, dtype=torch.float32, device=torch.device("cpu"))
         active = loss_mask > 0.5
 
         rollout_row = list(batch.rollout_logprobs[i])
@@ -223,25 +221,22 @@ def build_policy_datums(batch: PolicyBatch) -> List[tinker.Datum]:
         else:
             row = batch.token_advantages[i]
             if len(row) != n_tokens:
-                raise ValueError(
-                    f"token_advantages row {i} has {len(row)} values for {n_tokens} target tokens."
-                )
+                raise ValueError(f"token_advantages row {i} has {len(row)} values for {n_tokens} target tokens.")
             per_token_adv = [0.0] * response_start
             per_token_adv.extend(
-                float(value) if m > 0.5 else 0.0
-                for value, m in zip(row[response_start:], mask, strict=True)
+                float(value) if m > 0.5 else 0.0 for value, m in zip(row[response_start:], mask, strict=True)
             )
         response_mask = [0] * response_start
         response_mask.extend(int(m > 0.5) for m in mask)
 
         result.append(
-            tinker.Datum(
+            sdk.Datum(
                 model_input=datum.model_input,
                 loss_fn_inputs={
-                    "target_tokens": tinker.TensorData(data=target_tokens, dtype="int64", shape=[n_tokens]),
-                    "logprobs": tinker.TensorData(data=anchor, dtype="float32", shape=[n_tokens]),
-                    "advantages": tinker.TensorData(data=per_token_adv, dtype="float32", shape=[n_tokens]),
-                    "response_mask": tinker.TensorData(data=response_mask, dtype="int64", shape=[n_tokens]),
+                    "target_tokens": sdk.TensorData(data=target_tokens, dtype="int64", shape=[n_tokens]),
+                    "logprobs": sdk.TensorData(data=anchor, dtype="float32", shape=[n_tokens]),
+                    "advantages": sdk.TensorData(data=per_token_adv, dtype="float32", shape=[n_tokens]),
+                    "response_mask": sdk.TensorData(data=response_mask, dtype="int64", shape=[n_tokens]),
                 },
             )
         )

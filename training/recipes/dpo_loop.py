@@ -46,8 +46,8 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable
 
-import tinker
 import torch
+from fireworks.training import sdk
 from fireworks.training.sdk.training_spec import (
     LRSchedulerSpec,
     compute_lr,
@@ -55,22 +55,20 @@ from fireworks.training.sdk.training_spec import (
     normalize_lr_scheduler_spec,
 )
 from tqdm import tqdm
-
-from training.utils.termination import TerminatedBySignal
 from training.utils import (
     DEFAULT_ADAM,
+    NO_VALID_PREFERENCE_PAIRS_MESSAGE,
     AppendOnlyPickleLog,
     DatasetError,
     DeployConfig,
     GcsJsonlRenderDataset,
-    NO_VALID_PREFERENCE_PAIRS_MESSAGE,
-    TrainerConfig,
     JsonlRenderDataset,
     RawRowCursor,
     ReconnectableClient,
     RunnerConfig,
     RunnerIO,
     RunStatus,
+    TrainerConfig,
     WandBConfig,
     build_service_client,
     log_metrics_json,
@@ -88,13 +86,14 @@ from training.utils import (
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.resource_autosizing import select_render_worker_count
+from training.utils.runner import UserConfigError
+from training.utils.runner_state import write_completed, write_running_step
+from training.utils.serverless import setup_serverless_training
 from training.utils.streaming import (
     dataset_error_for_rendered_row,
     raise_rendered_dataset_errors,
 )
-from training.utils.serverless import setup_serverless_training
-from training.utils.runner import UserConfigError
-from training.utils.runner_state import write_completed, write_running_step
+from training.utils.termination import TerminatedBySignal
 from training.utils.timer import flush_timing, timer
 
 logger = logging.getLogger(__name__)
@@ -273,7 +272,8 @@ def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | DatasetError | 
         return None
     try:
         rendered = render_preference_pair(
-            pair["chosen"], pair["rejected"],
+            pair["chosen"],
+            pair["rejected"],
             renderer=_pair_worker_state["renderer"],
             tokenizer=_pair_worker_state["tokenizer"],
         )
@@ -282,10 +282,7 @@ def _render_pair_worker(row: dict[str, Any]) -> dict[str, Any] | DatasetError | 
     if rendered is None:
         return None
     max_seq_len = _pair_worker_state["max_seq_len"]
-    if (
-        len(rendered.chosen_tokens) > max_seq_len
-        or len(rendered.rejected_tokens) > max_seq_len
-    ):
+    if len(rendered.chosen_tokens) > max_seq_len or len(rendered.rejected_tokens) > max_seq_len:
         return None
     return {
         "chosen_tokens_len": len(rendered.chosen_tokens),
@@ -312,7 +309,7 @@ class SamplerReference:
         self._sampler = sampler
         self._timeout = timeout
 
-    def forward(self, datums: list[tinker.Datum], loss_fn: str) -> SimpleNamespace:
+    def forward(self, datums: list[sdk.Datum], loss_fn: str) -> SimpleNamespace:
         if loss_fn != "cross_entropy":
             raise ValueError("sampler reference supports only cross_entropy scoring")
         outputs = []
@@ -346,30 +343,30 @@ async def _ref_forward_batch(
     natively. Returned pairs preserve input order so multi-epoch ref-cache
     iteration keeps producer-order consistent with epoch 0.
     """
-    sub_batches = [pairs[i:i + ref_batch_size] for i in range(0, len(pairs), ref_batch_size)]
+    sub_batches = [pairs[i : i + ref_batch_size] for i in range(0, len(pairs), ref_batch_size)]
 
     async def _process_sub_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        datums: list[tinker.Datum] = []
+        datums: list[sdk.Datum] = []
         for pair_data in batch:
             datums.append(pair_data["chosen_datum"])
             datums.append(pair_data["rejected_datum"])
 
         async with semaphore:
-            fwd = await asyncio.to_thread(
-                lambda d=datums: reference.forward(d, "cross_entropy")
-            )
+            fwd = await asyncio.to_thread(lambda d=datums: reference.forward(d, "cross_entropy"))
 
         results: list[dict[str, Any]] = []
         for j, pair_data in enumerate(batch):
-            results.append({
-                "chosen_tokens_len": pair_data["chosen_tokens_len"],
-                "rejected_tokens_len": pair_data["rejected_tokens_len"],
-                "chosen_datum": pair_data["chosen_datum"],
-                "rejected_datum": pair_data["rejected_datum"],
-                "ref_chosen": array.array("f", fwd.loss_fn_outputs[2 * j]["logprobs"].data),
-                "ref_rejected": array.array("f", fwd.loss_fn_outputs[2 * j + 1]["logprobs"].data),
-                "response_start": pair_data["response_start"],
-            })
+            results.append(
+                {
+                    "chosen_tokens_len": pair_data["chosen_tokens_len"],
+                    "rejected_tokens_len": pair_data["rejected_tokens_len"],
+                    "chosen_datum": pair_data["chosen_datum"],
+                    "rejected_datum": pair_data["rejected_datum"],
+                    "ref_chosen": array.array("f", fwd.loss_fn_outputs[2 * j]["logprobs"].data),
+                    "ref_rejected": array.array("f", fwd.loss_fn_outputs[2 * j + 1]["logprobs"].data),
+                    "response_start": pair_data["response_start"],
+                }
+            )
         return results
 
     batch_results = await asyncio.gather(*[_process_sub_batch(b) for b in sub_batches])
@@ -390,7 +387,7 @@ def _forward_backward_pairs(
 
     Arranges datums as [chosen_0, rejected_0, chosen_1, rejected_1, ...].
     """
-    datums: list[tinker.Datum] = []
+    datums: list[sdk.Datum] = []
     ref_chosen_list: list[list[float]] = []
     ref_rejected_list: list[list[float]] = []
     response_starts: list[int] = []
@@ -403,7 +400,10 @@ def _forward_backward_pairs(
         response_starts.append(cached["response_start"])
 
     loss_fn = make_batch_dpo_loss_fn(
-        ref_chosen_list, ref_rejected_list, response_starts, beta,
+        ref_chosen_list,
+        ref_rejected_list,
+        response_starts,
+        beta,
     )
     return policy.forward_backward_custom(datums, loss_fn)
 
@@ -414,9 +414,7 @@ _DONE = object()
 def _normalize_dataset_loading_mode(mode: str) -> str:
     normalized = mode.strip().lower().replace("-", "_")
     if normalized not in SUPPORTED_DATASET_LOADING_MODES:
-        raise DatasetError(
-            f"Unsupported dataset_loading_mode {mode!r}; expected 'stage' or 'stream'."
-        )
+        raise DatasetError(f"Unsupported dataset_loading_mode {mode!r}; expected 'stage' or 'stream'.")
     return normalized
 
 
@@ -427,14 +425,9 @@ def _make_pair_dataset(
     if mode == DATASET_LOADING_MODE_STAGE:
         return JsonlRenderDataset(cfg.dataset, _render_pair_worker)
     if not cfg.dataset.startswith("gs://"):
-        raise DatasetError(
-            "dataset_loading_mode='stream' requires a gs:// dataset path; "
-            f"got {cfg.dataset!r}."
-        )
+        raise DatasetError("dataset_loading_mode='stream' requires a gs:// dataset path; " f"got {cfg.dataset!r}.")
     if cfg.group_by_length:
-        raise DatasetError(
-            "dataset_loading_mode='stream' does not support group_by_length yet."
-        )
+        raise DatasetError("dataset_loading_mode='stream' does not support group_by_length yet.")
     return GcsJsonlRenderDataset(cfg.dataset, _render_pair_worker)
 
 
@@ -443,7 +436,7 @@ async def _train_loop(
     ref_cache_log: AppendOnlyPickleLog | None,
     reference: ReconnectableClient | SamplerReference,
     policy: ReconnectableClient,
-    adam_params: tinker.AdamParams,
+    adam_params: sdk.AdamParams,
     cfg: Config,
     step_offset: int,
     *,
@@ -475,18 +468,12 @@ async def _train_loop(
     num_workers = (
         cfg.render_workers
         if cfg.render_workers is not None
-        else select_render_worker_count(
-            available_parallel_tasks=len(pair_dataset)
-        )
+        else select_render_worker_count(available_parallel_tasks=len(pair_dataset))
     )
     step = step_offset
     resume_consumed = cursor.value
     replay_steps_seen = 0
-    rough_pairs_per_epoch = (
-        min(len(pair_dataset), cfg.max_pairs)
-        if cfg.max_pairs is not None
-        else len(pair_dataset)
-    )
+    rough_pairs_per_epoch = min(len(pair_dataset), cfg.max_pairs) if cfg.max_pairs is not None else len(pair_dataset)
     total_steps = ((rough_pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     total_raw_rows = len(pair_dataset)
@@ -511,10 +498,7 @@ async def _train_loop(
     ) -> None:
         nonlocal step
         step_t0 = time.monotonic()
-        step_tokens = sum(
-            p["chosen_tokens_len"] + p["rejected_tokens_len"]
-            for p in step_pairs
-        )
+        step_tokens = sum(p["chosen_tokens_len"] + p["rejected_tokens_len"] for p in step_pairs)
         # Epoch 0: ref model processed these same sequences; epochs 1+ use cached ref logprobs.
         ref_tokens = step_tokens if epoch == 0 else 0
         total_tokens = step_tokens + ref_tokens
@@ -527,7 +511,7 @@ async def _train_loop(
             base_lr=cfg.learning_rate,
             total_steps=total_steps,
         )
-        step_adam_params = tinker.AdamParams(learning_rate=step_lr, **adam_kwargs)
+        step_adam_params = sdk.AdamParams(learning_rate=step_lr, **adam_kwargs)
         optim_result = policy.optim_step(step_adam_params)
         step += 1
 
@@ -537,10 +521,7 @@ async def _train_loop(
                 step_metrics[f"train/{k}"] = v
 
         dcp_due = cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0
-        sampler_due = (
-            cfg.sampler_save_interval > 0
-            and step % cfg.sampler_save_interval == 0
-        )
+        sampler_due = cfg.sampler_save_interval > 0 and step % cfg.sampler_save_interval == 0
         if dcp_due or sampler_due:
             with timer("checkpoint_save"):
                 logger.info(
@@ -553,9 +534,7 @@ async def _train_loop(
                     f"step-{step}",
                     resumable=dcp_due,
                     promotable=sampler_due,
-                    data_consumed=(
-                        cursor.value if data_consumed is None else data_consumed
-                    ),
+                    data_consumed=(cursor.value if data_consumed is None else data_consumed),
                 )
 
         step_elapsed = time.monotonic() - step_t0
@@ -567,27 +546,36 @@ async def _train_loop(
         avg_margin = fwd_metrics["margin"]
         avg_acc = fwd_metrics["accuracy"]
         logger.info(
-            "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%% | "
-            "policy=%d ref=%d tok | %.1f tok/s (%.1fs)",
-            step, total_steps, avg_loss, avg_margin, avg_acc * 100,
-            step_tokens, ref_tokens, tokens_per_sec, step_elapsed,
+            "Step %d/%d | Loss: %.4f | Margin: %+.4f | Acc: %.1f%% | " "policy=%d ref=%d tok | %.1f tok/s (%.1fs)",
+            step,
+            total_steps,
+            avg_loss,
+            avg_margin,
+            avg_acc * 100,
+            step_tokens,
+            ref_tokens,
+            tokens_per_sec,
+            step_elapsed,
         )
         current_lr = step_lr
-        log_metrics_json(step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc,
-                         tokens_per_sec=tokens_per_sec, lr=current_lr)
-        step_metrics.update({
-            "train/step": step,
-            "train/dpo_loss": avg_loss,
-            "train/loss": avg_loss,
-            "train/margin": avg_margin,
-            "train/accuracy": avg_acc,
-            "train/epoch": epoch + 1,
-            "train/tokens_per_sec": tokens_per_sec,
-            "train/step_time_sec": step_elapsed,
-            "train/step_tokens": step_tokens,
-            "train/ref_tokens": ref_tokens,
-            "train/total_tokens": total_tokens,
-        })
+        log_metrics_json(
+            step, dpo_loss=avg_loss, margin=avg_margin, accuracy=avg_acc, tokens_per_sec=tokens_per_sec, lr=current_lr
+        )
+        step_metrics.update(
+            {
+                "train/step": step,
+                "train/dpo_loss": avg_loss,
+                "train/loss": avg_loss,
+                "train/margin": avg_margin,
+                "train/accuracy": avg_acc,
+                "train/epoch": epoch + 1,
+                "train/tokens_per_sec": tokens_per_sec,
+                "train/step_time_sec": step_elapsed,
+                "train/step_tokens": step_tokens,
+                "train/ref_tokens": ref_tokens,
+                "train/total_tokens": total_tokens,
+            }
+        )
         step_metrics["train/lr"] = current_lr
         wandb_log(step_metrics, step)
         write_running_step(
@@ -607,9 +595,7 @@ async def _train_loop(
     # deterministic (so ref-cache replay + epoch-0 resume stay valid) but
     # length is de-correlated from training step instead of file order.
     group_by_length = cfg.group_by_length
-    loader_generator = (
-        torch.Generator().manual_seed(_DPO_LENGTH_GROUP_SEED) if group_by_length else None
-    )
+    loader_generator = torch.Generator().manual_seed(_DPO_LENGTH_GROUP_SEED) if group_by_length else None
     loader = make_render_dataloader(
         pair_dataset,
         batch_size=batch_size,
@@ -642,7 +628,10 @@ async def _train_loop(
                 await pipe.put((chunk, data_consumed))
                 return
             enriched = await _ref_forward_batch(
-                chunk, reference, sem, cfg.ref_cache_batch_size,
+                chunk,
+                reference,
+                sem,
+                cfg.ref_cache_batch_size,
             )
             pairs_per_epoch += len(enriched)
             if multi_epoch:
@@ -659,12 +648,8 @@ async def _train_loop(
             delta = min(batch_size, total_raw_rows - raw_rows_consumed)
             raw_rows_consumed += delta
             cursor.resume(max(resume_consumed, raw_rows_consumed))
-            if (
-                total_raw_rows > 0
-                and (
-                    batches_consumed % progress_interval == 0
-                    or raw_rows_consumed == total_raw_rows
-                )
+            if total_raw_rows > 0 and (
+                batches_consumed % progress_interval == 0 or raw_rows_consumed == total_raw_rows
             ):
                 runner.report_rendering_progress(
                     raw_rows_consumed,
@@ -745,7 +730,8 @@ async def _train_loop(
         n_cached = len(ref_cache_log)
         logger.info(
             "Ref cache built: %d pairs / %.1f GiB on disk",
-            n_cached, ref_cache_log.disk_size_bytes() / (1024 ** 3),
+            n_cached,
+            ref_cache_log.disk_size_bytes() / (1024**3),
         )
         for epoch in range(1, cfg.epochs):
             chunk: list[dict[str, Any]] = []
@@ -754,7 +740,9 @@ async def _train_loop(
                 if len(chunk) == batch_size:
                     data_consumed = epoch * total_raw_rows + chunk[-1]["_raw_data_consumed"]
                     replay_steps_seen += 1
-                    if data_consumed > resume_consumed and not (resume_consumed > 0 and replay_steps_seen <= step_offset):
+                    if data_consumed > resume_consumed and not (
+                        resume_consumed > 0 and replay_steps_seen <= step_offset
+                    ):
                         cursor.resume(max(cursor.value, data_consumed))
                         _run_train_step(epoch, chunk, data_consumed=data_consumed)
                         pbar.update(1)
@@ -788,12 +776,9 @@ def main(
     # Internal shape validation can request a resumable-only live handoff
     # without expanding the public cookbook/control-plane Config contract.
     final_checkpoint_promotable = getattr(cfg, "_save_final_checkpoint_promotable", True)
-    if cfg.output_model_id and not (
-        cfg.save_final_checkpoint and final_checkpoint_promotable
-    ):
+    if cfg.output_model_id and not (cfg.save_final_checkpoint and final_checkpoint_promotable):
         raise ValueError(
-            "output_model_id requires save_final_checkpoint=True and "
-            "save_final_checkpoint_promotable=True"
+            "output_model_id requires save_final_checkpoint=True and " "save_final_checkpoint_promotable=True"
         )
 
     def _signal_handler(signum, frame):
@@ -832,13 +817,16 @@ def main(
 
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     cfg.lr_scheduler = lr_scheduler
-    setup_wandb(cfg.wandb, {
-        "beta": cfg.beta,
-        "lr": cfg.learning_rate,
-        "lr_schedule": lr_scheduler.type,
-        "epochs": cfg.epochs,
-        "batch_size": cfg.batch_size,
-    })
+    setup_wandb(
+        cfg.wandb,
+        {
+            "beta": cfg.beta,
+            "lr": cfg.learning_rate,
+            "lr_schedule": lr_scheduler.type,
+            "epochs": cfg.epochs,
+            "batch_size": cfg.batch_size,
+        },
+    )
 
     # -- SDK-managed Tinker clients ----------------------------------------
 
@@ -866,9 +854,7 @@ def main(
             # so policy restoration cannot become the frozen reference.
             reference_path = runner.persisted_reference_checkpoint()
             if not reference_path and cfg.init_from_checkpoint:
-                raise UserConfigError(
-                    "serverless DPO resume requires the persisted frozen reference"
-                )
+                raise UserConfigError("serverless DPO resume requires the persisted frozen reference")
             if not reference_path:
                 reference_path = policy.save_weights_for_sampler("dpo-reference").path
             if not reference_path:
@@ -950,7 +936,7 @@ def main(
         wandb_log({"train/step": step_offset}, step_offset)
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["weight_decay"] = cfg.weight_decay
-        adam_params = tinker.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
+        adam_params = sdk.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
 
         # -- Stream-render dataset + (optional) ref cache ---------------------
         #
@@ -978,32 +964,23 @@ def main(
         num_workers = (
             cfg.render_workers
             if cfg.render_workers is not None
-            else select_render_worker_count(
-                available_parallel_tasks=len(pair_dataset)
-            )
+            else select_render_worker_count(available_parallel_tasks=len(pair_dataset))
         )
         cfg.render_workers = num_workers
 
         logger.info(
             "Streaming %d raw preference rows from %s (renderer=%s, workers=%d%s)",
-            len(pair_dataset), cfg.dataset,
+            len(pair_dataset),
+            cfg.dataset,
             resolved_renderer_name,
             num_workers,
-            (
-                f", max_pairs={cfg.max_pairs}"
-                if cfg.max_pairs is not None
-                else ""
-            ),
+            (f", max_pairs={cfg.max_pairs}" if cfg.max_pairs is not None else ""),
         )
 
         ref_cache_log: AppendOnlyPickleLog | None = None
         if cfg.epochs > 1:
-            ref_cache_dir = stack.enter_context(
-                tempfile.TemporaryDirectory(prefix="dpo_ref_")
-            )
-            ref_cache_log = stack.enter_context(
-                AppendOnlyPickleLog(os.path.join(ref_cache_dir, "ref_cache.pkl"))
-            )
+            ref_cache_dir = stack.enter_context(tempfile.TemporaryDirectory(prefix="dpo_ref_"))
+            ref_cache_log = stack.enter_context(AppendOnlyPickleLog(os.path.join(ref_cache_dir, "ref_cache.pkl")))
 
         def _on_ref_done() -> None:
             # Free the separate reference trainer (if any) as soon as all
@@ -1023,8 +1000,13 @@ def main(
         runner.start_training()
         step = asyncio.run(
             _train_loop(
-                pair_dataset, ref_cache_log,
-                reference, policy, adam_params, cfg, step_offset,
+                pair_dataset,
+                ref_cache_log,
+                reference,
+                policy,
+                adam_params,
+                cfg,
+                step_offset,
                 cursor=cursor,
                 ckpt=ckpt,
                 worker_init_fn=worker_init_fn,
@@ -1036,7 +1018,9 @@ def main(
 
         # -- Final checkpoint --------------------------------------------------
 
-        if cfg.save_final_checkpoint and (step > step_offset or (cfg.serverless and cfg.output_model_id and resume_info)):
+        if cfg.save_final_checkpoint and (
+            step > step_offset or (cfg.serverless and cfg.output_model_id and resume_info)
+        ):
             cp_name = f"step-{step}"
             ckpt.save(
                 cp_name,
@@ -1051,7 +1035,9 @@ def main(
                 else:
                     ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
-                    model_id=cfg.output_model_id, checkpoint=cp_name, job_id=policy_job_id,
+                    model_id=cfg.output_model_id,
+                    checkpoint=cp_name,
+                    job_id=policy_job_id,
                 )
 
         total_steps = step

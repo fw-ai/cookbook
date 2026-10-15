@@ -13,24 +13,23 @@ keeps a multi-turn conversation in one supervised datum.
 
 from __future__ import annotations
 
-from training.renderer.image_processing import ImageProcessor
 from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer._kimi_k26_base import (
+    KimiK26PreserveThinkingRenderer as _TinkerKimiK26PreserveThinkingRenderer,
+)
+from training.renderer.base import (
     Message,
     RenderContext,
     RenderedMessage,
     ToolSpec,
 )
-from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k25 import (
+from training.renderer.image_processing import ImageProcessor
+from training.renderer.kimi_k25 import (
     KimiK25Renderer as _TinkerKimiK25Renderer,
 )
-from training._vendor.tinker_cookbook_0_4_3.renderers.kimi_k26 import (
-    KimiK26PreserveThinkingRenderer as _TinkerKimiK26PreserveThinkingRenderer,
-)
-from training.renderer.tokenizer import Tokenizer
-
-from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.reasoning_fields import original_reasoning
+from training.renderer.tokenizer import Tokenizer
 
 
 class _NoImplicitSystemMessageMixin:
@@ -72,9 +71,7 @@ class _KimiReasoningFieldPrecedenceMixin:
             content = copied.get("content", "")
             if isinstance(content, list):
                 visible_parts = [
-                    part
-                    for part in content
-                    if not (isinstance(part, dict) and part.get("type") == "thinking")
+                    part for part in content if not (isinstance(part, dict) and part.get("type") == "thinking")
                 ]
             else:
                 visible_parts = [{"type": "text", "text": content}]

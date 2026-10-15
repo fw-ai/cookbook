@@ -60,3 +60,13 @@ the capability registry at it; leave the old name's implementation intact.
 Only Managed Training may mark ``renderer_name_is_resolved=true``. Direct
 cookbook renderer overrides leave it false so a simultaneously supplied
 semantic thinking-history mode is validated rather than silently ignored.
+
+## Source attribution
+
+The baseline renderer code was adapted from Thinking Machines Lab’s
+[Tinker-Cookbook](https://github.com/thinking-machines-lab/tinker-cookbook),
+from the 0.4.3 source snapshot (SHA256
+`15927af65c0e85f42161c4b4a03038ab5307981be16839b19003e075cb1826f5`),
+with Fireworks extensions maintained here. The Apache-2.0 [license](LICENSE)
+and source copyright notices are preserved. This package does not import or
+depend on Tinker-Cookbook.

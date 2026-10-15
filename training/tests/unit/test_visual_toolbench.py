@@ -9,8 +9,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-import tinker
-
+from fireworks.training import sdk
 from training.examples.rl.visual_toolbench import reward as vtb_reward
 from training.examples.rl.visual_toolbench import rollout as vtb_rollout
 from training.examples.rl.visual_toolbench import task as vtb_task
@@ -31,7 +30,6 @@ from training.utils.rl.rollout import RolloutRun, RolloutSample
 
 PIL = pytest.importorskip("PIL")
 from PIL import Image  # noqa: E402
-
 
 _RUBRICS = [
     {"id": "a", "description": "Mentions 6 rebars", "weight": 5, "critical": True},
@@ -59,8 +57,8 @@ def _data_url(width: int = 64, height: int = 48) -> str:
     return encode_data_url(Image.new("RGB", (width, height), (200, 30, 30)))
 
 
-def _image_chunk() -> tinker.types.ImageChunk:
-    return tinker.types.ImageChunk(
+def _image_chunk() -> sdk.types.ImageChunk:
+    return sdk.types.ImageChunk(
         data=base64.b64decode(_data_url().partition(",")[2]),
         format="jpeg",
         expected_tokens=4,
@@ -68,9 +66,7 @@ def _image_chunk() -> tinker.types.ImageChunk:
 
 
 def test_image_tools_cap_and_transform_images():
-    original = encode_data_url(
-        Image.new("RGB", (3000, 1500), (200, 30, 30)), max_dim=1024
-    )
+    original = encode_data_url(Image.new("RGB", (3000, 1500), (200, 30, 30)), max_dim=1024)
     assert max(decode_data_url(original).size) == 1024
 
     cropped, message = execute_tool_call(
@@ -182,7 +178,7 @@ class _Renderer:
 
     def build_generation_prompt(self, messages):
         self.generation_messages.append(copy.deepcopy(messages))
-        chunks = [tinker.types.EncodedTextChunk(tokens=[1, 2])]
+        chunks = [sdk.types.EncodedTextChunk(tokens=[1, 2])]
         for message in messages:
             content = message.get("content")
             if not isinstance(content, list):
@@ -190,8 +186,8 @@ class _Renderer:
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "image":
                     chunks.append(_image_chunk())
-        chunks.append(tinker.types.EncodedTextChunk(tokens=[3]))
-        return tinker.ModelInput(chunks=chunks)
+        chunks.append(sdk.types.EncodedTextChunk(tokens=[3]))
+        return sdk.ModelInput(chunks=chunks)
 
     def parse_response(self, _tokens):
         self.parse_calls += 1
@@ -277,9 +273,7 @@ def test_rollout_uses_session_sampler_and_trains_each_assistant_turn(monkeypatch
         completions_per_prompt=8,
         sampler=sampler,
     )
-    rollout_fn = make_rollout_fn(
-        setup, task=vtb_task.TaskConfig(max_turns=4, system_prompt="Zoom in first.")
-    )
+    rollout_fn = make_rollout_fn(setup, task=vtb_task.TaskConfig(max_turns=4, system_prompt="Zoom in first."))
     run = asyncio.run(
         rollout_fn(
             {
@@ -430,11 +424,15 @@ def test_task_flags_round_trip_to_task_config():
     vtb_task.add_task_args(parser)
     args = parser.parse_args(
         [
-            "--dataset", "train.jsonl",
+            "--dataset",
+            "train.jsonl",
             "--no-filter-truncated-rollouts",
-            "--judge-model", "accounts/fireworks/models/judge",
-            "--eval-top-k", "5",
-            "--critical-reward-weight", "0.5",
+            "--judge-model",
+            "accounts/fireworks/models/judge",
+            "--eval-top-k",
+            "5",
+            "--critical-reward-weight",
+            "0.5",
         ]
     )
 
@@ -460,15 +458,23 @@ def test_dedicated_entry_point_reuses_trainer_and_deployment(monkeypatch, tmp_pa
 
     result = train_visual_toolbench.main(
         [
-            "--dataset", train,
-            "--eval-dataset", held_out,
-            "--base-model", "accounts/fireworks/models/qwen3p6-35b-a3b",
-            "--tokenizer-model", "Qwen/Qwen3.6-35B-A3B",
-            "--job-id", "trainer-1",
-            "--deployment-id", "deployment-1",
+            "--dataset",
+            train,
+            "--eval-dataset",
+            held_out,
+            "--base-model",
+            "accounts/fireworks/models/qwen3p6-35b-a3b",
+            "--tokenizer-model",
+            "Qwen/Qwen3.6-35B-A3B",
+            "--job-id",
+            "trainer-1",
+            "--deployment-id",
+            "deployment-1",
             "--no-cleanup-on-exit",
-            "--max-rows", "1",
-            "--log-path", str(tmp_path / "log"),
+            "--max-rows",
+            "1",
+            "--log-path",
+            str(tmp_path / "log"),
         ]
     )
 

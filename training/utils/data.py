@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 
 def replicate_rows_for_epochs(
-    rows: List[Dict[str, Any]], epochs: int,
+    rows: List[Dict[str, Any]],
+    epochs: int,
 ) -> List[Dict[str, Any]]:
     """Duplicate ``rows`` ``epochs`` times with INDEPENDENT row dicts.
 
@@ -37,8 +38,7 @@ def replicate_rows_for_epochs(
 class RLPromptDataset:
     """Batch-indexed prompt dataset for RL training.
 
-    Follows tinker_cookbook's dataset pattern (``get_batch`` / ``__len__``)
-    but returns raw row dicts instead of ``EnvGroupBuilder``.
+    Exposes ``get_batch`` and ``__len__`` over raw prompt row dictionaries.
     """
 
     def __init__(self, rows: list[dict], prompts_per_step: int):
@@ -137,7 +137,8 @@ def normalize_preference_row(row: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def iter_preference_examples(
-    path: str, max_pairs: int | None = None,
+    path: str,
+    max_pairs: int | None = None,
 ) -> Iterator[Dict[str, Any]]:
     """Stream normalized preference examples from a JSONL file.
 
@@ -176,10 +177,7 @@ def _load_jsonl_object(line: str, *, path: str, line_no: int) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise DatasetError(f"{path}:{line_no}: invalid JSONL: {exc.msg}.") from exc
     if not isinstance(row, dict):
-        raise DatasetError(
-            f"{path}:{line_no}: JSONL row must be an object, got "
-            f"{type(row).__name__}."
-        )
+        raise DatasetError(f"{path}:{line_no}: JSONL row must be an object, got {type(row).__name__}.")
     return row
 
 
@@ -213,9 +211,7 @@ def load_preference_dataset(path: str, max_pairs: int | None = None) -> List[dic
     return data
 
 
-def _load_preference_shard(
-    path: str, data: list[dict[str, Any]], max_pairs: int | None
-) -> None:
+def _load_preference_shard(path: str, data: list[dict[str, Any]], max_pairs: int | None) -> None:
     """Append preference pairs parsed from one JSONL shard to ``data``.
 
     ``path`` is a single shard file; error context uses shard:line so
@@ -233,16 +229,12 @@ def _load_preference_shard(
             elif "samples" in row:
                 samples = row["samples"]
                 if not isinstance(samples, list):
-                    raise DatasetError(
-                        f"{path}:{line_no}: 'samples' must be a list, got "
-                        f"{type(samples).__name__}."
-                    )
+                    raise DatasetError(f"{path}:{line_no}: 'samples' must be a list, got {type(samples).__name__}.")
                 chosen = rejected = None
                 for i, sample in enumerate(samples):
                     if not isinstance(sample, dict):
                         raise DatasetError(
-                            f"{path}:{line_no}: samples[{i}] must be a dict, "
-                            f"got {type(sample).__name__}."
+                            f"{path}:{line_no}: samples[{i}] must be a dict, got {type(sample).__name__}."
                         )
                     evals = sample.get("evals")
                     if evals is not None and not isinstance(evals, dict):

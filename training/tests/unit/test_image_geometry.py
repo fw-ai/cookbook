@@ -6,8 +6,11 @@ from typing import Any
 
 import pytest
 from PIL import Image
-
-from training.dataset_utils.image_geometry import ImageGeometryError, qwen_vl_aspect_ratio_message
+from training.dataset_utils.image_geometry import (
+    ImageGeometryError,
+    qwen_vl_aspect_ratio_message,
+)
+from training.renderer.base import image_to_chunk
 from training.utils.runner import DatasetError
 from training.utils.streaming import (
     JSONL_ROW_INDEX_KEY,
@@ -15,7 +18,6 @@ from training.utils.streaming import (
     raise_rendered_dataset_errors,
 )
 from training.utils.supervised import render_messages_to_datums
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import image_to_chunk
 
 
 class _Qwen2VLImageProcessor:

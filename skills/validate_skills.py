@@ -241,7 +241,7 @@ def check_cookbook_routes(errors: list[str]) -> None:
         "training/recipes/async_rl_loop.py",
         "training/recipes/experiment/ppo_value_head_loop.py",
         "training/recipes/distillation_loop.py",
-        "training/recipes/sdft_loop.py",
+        "training/docs/sdft.md",
         "training/recipes/embedding_loop.py",
     )
     for relative in required:

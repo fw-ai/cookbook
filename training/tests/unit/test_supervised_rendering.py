@@ -4,7 +4,7 @@ import os
 
 import pytest
 import torch
-import tinker
+from fireworks.training import sdk
 from training.renderer import (
     Message,
     ParseTermination,
@@ -12,24 +12,23 @@ from training.renderer import (
     Renderer,
     TrainOnWhat,
 )
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderedMessage
-
 from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
-from training.utils.losses import make_batch_weighted_sft_loss_fn
+from training.renderer.base import RenderedMessage
 from training.utils.data import prepare_sampling_messages
+from training.utils.losses import make_batch_weighted_sft_loss_fn
 from training.utils.runner import DatasetError
 from training.utils.supervised import (
+    build_datum_from_token_mask,
     build_renderer,
     build_renderer_from_resolved_name,
-    build_datum_from_token_mask,
-    populate_render_worker_state,
-    resolve_renderer_name,
-    render_preference_pair,
     normalize_messages,
+    populate_render_worker_state,
     render_messages_to_datum,
     render_messages_to_datums,
+    render_preference_pair,
     renderer_supports_images,
     renderer_supports_tool_images,
+    resolve_renderer_name,
 )
 
 
@@ -39,9 +38,7 @@ class StubRenderer:
         self.weights = torch.tensor(weights, dtype=torch.float32)
         self.calls: list[tuple[list[dict], TrainOnWhat]] = []
 
-    def build_supervised_example(
-        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
-    ):
+    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE):
         self.calls.append((messages, train_on_what))
         return self.tokens, self.weights
 
@@ -57,9 +54,7 @@ class SequenceRenderer:
         ]
         self.calls: list[tuple[list[dict], TrainOnWhat]] = []
 
-    def build_supervised_example(
-        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
-    ):
+    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE):
         self.calls.append((messages, train_on_what))
         return self.outputs[len(self.calls) - 1]
 
@@ -73,19 +68,17 @@ class ModelInputRenderer:
     def __init__(self):
         self.calls: list[tuple[list[dict], TrainOnWhat]] = []
 
-    def build_supervised_example(
-        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
-    ):
+    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE):
         self.calls.append((messages, train_on_what))
-        model_input = tinker.ModelInput(
+        model_input = sdk.ModelInput(
             chunks=[
-                tinker.EncodedTextChunk(tokens=[10, 11]),
-                tinker.types.ImageAssetPointerChunk(
-                    location="https://example.com/cat.png",
+                sdk.EncodedTextChunk(tokens=[10, 11]),
+                sdk.types.ImageChunk(
+                    data=b"inline-image",
                     format="png",
                     expected_tokens=3,
                 ),
-                tinker.EncodedTextChunk(tokens=[12, 13]),
+                sdk.EncodedTextChunk(tokens=[12, 13]),
             ]
         )
         weights = torch.tensor([0, 0, 0, 0, 1, 1, 1], dtype=torch.float32)
@@ -127,9 +120,7 @@ class DisaggregateRecordingRenderer(DisaggregateMultiTurnMixin):
     def __init__(self):
         self.calls: list[tuple[list[dict], TrainOnWhat]] = []
 
-    def build_supervised_example(
-        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN
-    ):
+    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_TURN):
         self.calls.append(([dict(message) for message in messages], train_on_what))
         # Tokens depend only on the conversation, like a real renderer: the mask
         # mode never moves them, and rendering the same prefix twice matches.
@@ -154,9 +145,7 @@ class BaseToolPrefixRenderer(Renderer):
     def parse_response(self, response: list[int]) -> tuple[Message, ParseTermination]:
         return Message(role="assistant", content=""), ParseTermination.EOS
 
-    def build_supervised_example(
-        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
-    ):
+    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE):
         self.calls.append((messages, train_on_what))
         return (
             torch.tensor([10, 11, 12], dtype=torch.int64),
@@ -175,19 +164,13 @@ class BaseWarningRenderer(Renderer):
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
         role_token = 10 if message["role"] == "user" else 20
         return RenderedMessage(
-            output=[
-                tinker.EncodedTextChunk(
-                    tokens=[role_token + (ctx.idx * 2), role_token + (ctx.idx * 2) + 1]
-                )
-            ]
+            output=[sdk.EncodedTextChunk(tokens=[role_token + (ctx.idx * 2), role_token + (ctx.idx * 2) + 1])]
         )
 
     def parse_response(self, response: list[int]) -> tuple[Message, ParseTermination]:
         return Message(role="assistant", content=""), ParseTermination.EOS
 
-    def build_supervised_example(
-        self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE
-    ):
+    def build_supervised_example(self, messages, train_on_what=TrainOnWhat.LAST_ASSISTANT_MESSAGE):
         self.calls.append(train_on_what)
         return super().build_supervised_example(messages, train_on_what=train_on_what)
 
@@ -258,9 +241,7 @@ def test_render_messages_to_datums_supports_per_example_mean_reduction():
         reduction="mean",
     )
 
-    assert rendered.datum.loss_fn_inputs["weights"].data == pytest.approx(
-        [1 / 3, 1 / 3, 1 / 3]
-    )
+    assert rendered.datum.loss_fn_inputs["weights"].data == pytest.approx([1 / 3, 1 / 3, 1 / 3])
     assert sum(rendered.datum.loss_fn_inputs["weights"].data) == pytest.approx(1.0)
 
 
@@ -373,12 +354,8 @@ def test_render_messages_to_datums_suppresses_fake_single_target_warning(caplog)
         train_on_what="all_assistant_messages",
     )
 
-    assert [example.token_ids for example in actual] == [
-        example.token_ids for example in expected
-    ]
-    assert [example.token_weights for example in actual] == [
-        example.token_weights for example in expected
-    ]
+    assert [example.token_ids for example in actual] == [example.token_ids for example in expected]
+    assert [example.token_weights for example in actual] == [example.token_weights for example in expected]
     assert renderer.calls[-1] == TrainOnWhat.LAST_ASSISTANT_TURN
     assert "does not satisfy the extension property" not in caplog.text
 
@@ -404,12 +381,8 @@ def test_render_messages_to_datums_preserves_last_turn_with_multiple_assistants(
         train_on_what="all_assistant_messages",
     )
 
-    assert [example.token_ids for example in actual] == [
-        example.token_ids for example in expected
-    ]
-    assert [example.token_weights for example in actual] == [
-        example.token_weights for example in expected
-    ]
+    assert [example.token_ids for example in actual] == [example.token_ids for example in expected]
+    assert [example.token_weights for example in actual] == [example.token_weights for example in expected]
     assert renderer.calls[-1] == TrainOnWhat.LAST_ASSISTANT_TURN
     assert "does not satisfy the extension property" not in caplog.text
 
@@ -433,9 +406,7 @@ def test_render_messages_to_datums_keeps_real_extension_warning(caplog):
         train_on_what="last_assistant_turn",
     )
 
-    assert [example.token_weights for example in all_assistant] != [
-        example.token_weights for example in last_turn
-    ]
+    assert [example.token_weights for example in all_assistant] != [example.token_weights for example in last_turn]
     assert renderer.calls[0] == TrainOnWhat.ALL_ASSISTANT_MESSAGES
     assert "does not satisfy the extension property" in caplog.text
 
@@ -491,24 +462,15 @@ def test_weighted_row_trains_each_assistant_turn_in_exactly_one_split():
 
     # The a3 round is skipped entirely (its terminal assistant is masked),
     # and each remaining round trains only its own answer.
-    assert [
-        [message["content"] for message in messages] for messages, _ in renderer.calls
-    ] == [
+    assert [[message["content"] for message in messages] for messages, _ in renderer.calls] == [
         ["u1", "a1"],
         ["u1", "a1", "u2", "a2"],
         ["u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4"],
     ]
     # Every terminal turn here is fully trainable, so the per-message flags
     # carry no information and the split renders like an unweighted row.
-    assert all(
-        train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN
-        for _, train_on_what in renderer.calls
-    )
-    assert all(
-        "trainable" not in message
-        for messages, _ in renderer.calls
-        for message in messages
-    )
+    assert all(train_on_what == TrainOnWhat.LAST_ASSISTANT_TURN for _, train_on_what in renderer.calls)
+    assert all("trainable" not in message for messages, _ in renderer.calls for message in messages)
 
 
 def test_weighted_row_masks_terminal_turn_down_to_its_answer():
@@ -567,9 +529,7 @@ def test_weighted_row_keeps_customized_for_a_mask_no_builtin_mode_expresses():
     flagged_messages, flagged_mode = renderer.calls[-2]
     default_messages, default_mode = renderer.calls[-1]
     assert flagged_mode == TrainOnWhat.CUSTOMIZED
-    assert [
-        (message["content"], message["trainable"]) for message in flagged_messages
-    ] == [
+    assert [(message["content"], message["trainable"]) for message in flagged_messages] == [
         ("u1", False),
         ("a1", False),
         ("u2", False),
@@ -595,11 +555,7 @@ def test_weighted_row_split_does_not_warn_about_extension_property(recwarn):
         train_on_what="all_assistant_messages",
     )
 
-    assert not [
-        warning
-        for warning in recwarn
-        if "does not satisfy the extension property" in str(warning.message)
-    ]
+    assert not [warning for warning in recwarn if "does not satisfy the extension property" in str(warning.message)]
 
 
 def test_render_messages_to_datums_fails_fast_without_split_implementation():
@@ -860,9 +816,7 @@ def test_normalize_messages_empty_reasoning_falls_back_to_reasoning_content():
 def test_normalize_messages_empty_reasoning_is_not_a_generic_thinking_part(
     field: str,
 ):
-    normalized = normalize_messages(
-        [{"role": "assistant", field: "", "content": "answer"}]
-    )
+    normalized = normalize_messages([{"role": "assistant", field: "", "content": "answer"}])
 
     assert normalized[0]["content"] == "answer"
 
@@ -1151,9 +1105,7 @@ def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
         calls.append((name, image_processor))
         return "renderer"
 
-    monkeypatch.setattr(
-        "training.utils.supervised.get_image_processor", fake_get_image_processor
-    )
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fake_get_image_processor)
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
 
     renderer = build_renderer(
@@ -1219,9 +1171,7 @@ def test_build_renderer_from_resolved_name_loads_image_processor_by_default(
         calls.append((name, image_processor))
         return "renderer"
 
-    monkeypatch.setattr(
-        "training.utils.supervised.get_image_processor", fake_get_image_processor
-    )
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fake_get_image_processor)
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
 
     renderer = build_renderer_from_resolved_name(
@@ -1248,8 +1198,7 @@ def test_build_renderer_from_resolved_name_loads_muse_token_counter(monkeypatch)
         return "renderer"
 
     monkeypatch.setattr(
-        "training.utils.supervised._muse_glimmer_renderer."
-        "MuseGlimmerImageTokenCounter.from_pretrained",
+        "training.utils.supervised._muse_glimmer_renderer." "MuseGlimmerImageTokenCounter.from_pretrained",
         fake_from_pretrained,
     )
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
@@ -1274,9 +1223,7 @@ def test_build_renderer_from_resolved_name_can_skip_image_processor(monkeypatch)
         calls.append((name, image_processor))
         return "renderer"
 
-    monkeypatch.setattr(
-        "training.utils.supervised.get_image_processor", fail_get_image_processor
-    )
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fail_get_image_processor)
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
 
     renderer = build_renderer_from_resolved_name(
@@ -1306,9 +1253,7 @@ def test_build_renderer_uses_tokenizer_remote_code_default_for_image_processor(
     ) -> tuple[str, str, object | None]:
         return ("renderer", name, image_processor)
 
-    monkeypatch.setattr(
-        "training.utils.supervised.get_image_processor", fake_get_image_processor
-    )
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fake_get_image_processor)
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
 
     result = build_renderer(
@@ -1362,9 +1307,7 @@ def test_resolved_image_renderer_trusts_opaque_tokenizer_path(
     ) -> tuple[str, str, object | None]:
         return ("renderer", name, image_processor)
 
-    monkeypatch.setattr(
-        "training.utils.supervised.get_image_processor", fake_get_image_processor
-    )
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fake_get_image_processor)
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
 
     result = build_renderer_from_resolved_name(
@@ -1387,9 +1330,7 @@ def test_image_processor_failure_restores_remote_code_environment(
         assert os.environ["HF_TRUST_REMOTE_CODE"] == "1"
         raise RuntimeError("processor load failed")
 
-    monkeypatch.setattr(
-        "training.utils.supervised.get_image_processor", fail_get_image_processor
-    )
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fail_get_image_processor)
 
     with pytest.raises(RuntimeError, match="processor load failed"):
         build_renderer_from_resolved_name(
@@ -1412,9 +1353,7 @@ def test_new_image_renderer_inherits_remote_code_default(
         env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
         return "image-processor"
 
-    monkeypatch.setattr(
-        "training.utils.supervised.get_image_processor", fake_get_image_processor
-    )
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fake_get_image_processor)
     monkeypatch.setattr(
         "training.utils.supervised.get_renderer",
         lambda *_args, **_kwargs: "renderer",
@@ -1441,14 +1380,10 @@ def test_build_renderer_uses_remote_code_default_for_kimi_k2_5(
         env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
         return "image-processor"
 
-    def fake_get_renderer(
-        _name: str, _tokenizer: object, image_processor: object | None = None
-    ) -> str:
+    def fake_get_renderer(_name: str, _tokenizer: object, image_processor: object | None = None) -> str:
         return "renderer"
 
-    monkeypatch.setattr(
-        "training.utils.supervised.get_image_processor", fake_get_image_processor
-    )
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fake_get_image_processor)
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
 
     build_renderer(
@@ -1473,9 +1408,7 @@ def test_build_renderer_preserves_existing_trust_remote_code_value(monkeypatch):
     def fake_get_renderer(name, tokenizer, image_processor=None):
         return "renderer"
 
-    monkeypatch.setattr(
-        "training.utils.supervised.get_image_processor", fake_get_image_processor
-    )
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", fake_get_image_processor)
     monkeypatch.setattr("training.utils.supervised.get_renderer", fake_get_renderer)
 
     build_renderer(
@@ -1491,15 +1424,8 @@ def test_resolve_renderer_name_prefers_kimi_k25_for_kimi_k2_5():
 
 
 def test_resolve_renderer_name_prefers_mistral_small_24b() -> None:
-    assert (
-        resolve_renderer_name("mistralai/Mistral-Small-24B-Instruct-2501") == "mistral"
-    )
-    assert (
-        resolve_renderer_name(
-            "accounts/fireworks/models/mistral-small-24b-instruct-2501"
-        )
-        == "mistral"
-    )
+    assert resolve_renderer_name("mistralai/Mistral-Small-24B-Instruct-2501") == "mistral"
+    assert resolve_renderer_name("accounts/fireworks/models/mistral-small-24b-instruct-2501") == "mistral"
 
 
 def test_resolve_renderer_name_prefers_kimi_k26_for_kimi_k2_6():
@@ -1524,14 +1450,8 @@ def test_resolve_renderer_name_prefers_upstream_nemotron3() -> None:
     """Nemotron models use Tinker's upstream renderer with parse normalization."""
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-3-Super-120B") == "nemotron3"
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16") == "nemotron3_ultra"
-    assert (
-        resolve_renderer_name("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16")
-        == "nemotron3_ultra"
-    )
-    assert (
-        resolve_renderer_name("accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b")
-        == "nemotron3_ultra"
-    )
+    assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16") == "nemotron3_ultra"
+    assert resolve_renderer_name("accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b") == "nemotron3_ultra"
     assert resolve_renderer_name("nvidia/NVIDIA-Nemotron-H-8B") == "nemotron3"
 
 
@@ -1550,21 +1470,12 @@ def test_resolve_renderer_name_supports_qwen3_family_fallback() -> None:
 
 def test_resolve_renderer_name_targets_qwen2_5_32b_v1_contract() -> None:
     assert resolve_renderer_name("Qwen/Qwen2.5-32B-Instruct") == "qwen2_5"
-    assert (
-        resolve_renderer_name("accounts/fireworks/models/qwen2p5-32b-instruct")
-        == "qwen2_5"
-    )
+    assert resolve_renderer_name("accounts/fireworks/models/qwen2p5-32b-instruct") == "qwen2_5"
 
 
 def test_resolve_renderer_name_supports_qwen3_235b_instruct_fp8_alias() -> None:
-    assert (
-        resolve_renderer_name("Qwen/Qwen3-235B-A22B-Instruct-2507-FP8")
-        == "qwen3_instruct"
-    )
-    assert (
-        resolve_renderer_name("Qwen/Qwen3-235B-A22B-Instruct-2507")
-        == "qwen3_instruct"
-    )
+    assert resolve_renderer_name("Qwen/Qwen3-235B-A22B-Instruct-2507-FP8") == "qwen3_instruct"
+    assert resolve_renderer_name("Qwen/Qwen3-235B-A22B-Instruct-2507") == "qwen3_instruct"
 
 
 @pytest.mark.parametrize(
@@ -1628,9 +1539,7 @@ def test_resolve_renderer_name_prefers_gemma4() -> None:
 
 
 def test_resolve_renderer_name_supports_gemma4_thinking_override() -> None:
-    assert resolve_renderer_name("google/gemma-4-12b-it", "gemma4_thinking") == (
-        "gemma4_thinking"
-    )
+    assert resolve_renderer_name("google/gemma-4-12b-it", "gemma4_thinking") == ("gemma4_thinking")
 
 
 def test_resolve_renderer_name_prefers_deepseek_v4() -> None:
@@ -1659,10 +1568,7 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
     assert resolve_renderer_name("accounts/fireworks/models/glm-5p3") == "glm53"
     assert resolve_renderer_name("custom/glm-5p3-finetune") == "glm53"
     assert resolve_renderer_name("zai-org/GLM-5.3-Flash") == "glm53_flash"
-    assert (
-        resolve_renderer_name("accounts/fireworks/models/glm-5p3-flash")
-        == "glm53_flash"
-    )
+    assert resolve_renderer_name("accounts/fireworks/models/glm-5p3-flash") == "glm53_flash"
 
 
 @pytest.mark.parametrize(

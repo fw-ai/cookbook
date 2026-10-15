@@ -9,10 +9,9 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from training.renderer import get_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
-
 import training.renderer  # noqa: F401  (registers local renderers)
+from training.renderer import get_renderer
+from training.renderer.base import TrainOnWhat
 from training.utils.supervised import normalize_messages, render_messages_to_datums
 
 _NEMOTRON = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
@@ -81,13 +80,7 @@ def _render(renderer_name: str, tokenizer_model: str, messages):
 
 def _weights_for(tokenizer, datum, text: str) -> list[float]:
     [token_id] = tokenizer.encode(text, add_special_tokens=False)
-    return [
-        weight
-        for token, weight in zip(
-            datum.token_ids, datum.token_weights, strict=True
-        )
-        if token == token_id
-    ]
+    return [weight for token, weight in zip(datum.token_ids, datum.token_weights, strict=True) if token == token_id]
 
 
 @pytest.mark.timeout(180)
@@ -114,9 +107,7 @@ _DISABLE_THINKING = [
 
 @pytest.mark.timeout(180)
 @pytest.mark.parametrize(("renderer_name", "tokenizer_model"), _DISABLE_THINKING)
-def test_disable_thinking_masks_the_whole_prefilled_wrapper(
-    renderer_name, tokenizer_model
-):
+def test_disable_thinking_masks_the_whole_prefilled_wrapper(renderer_name, tokenizer_model):
     """A marker is masked exactly when the generation prompt supplies it.
 
     Disable-thinking prefills the entire empty wrapper, so unlike the thinking
@@ -126,11 +117,7 @@ def test_disable_thinking_masks_the_whole_prefilled_wrapper(
     """
     tokenizer = _load_tokenizer(tokenizer_model)
     renderer = get_renderer(renderer_name, tokenizer)
-    prompt = list(
-        renderer.build_generation_prompt(
-            normalize_messages(_PROMPT), role="assistant"
-        ).to_ints()
-    )
+    prompt = list(renderer.build_generation_prompt(normalize_messages(_PROMPT), role="assistant").to_ints())
     for marker in ("<think>", "</think>"):
         [token_id] = tokenizer.encode(marker, add_special_tokens=False)
         assert token_id in prompt, f"{renderer_name} must prefill {marker}"
@@ -143,9 +130,7 @@ def test_disable_thinking_masks_the_whole_prefilled_wrapper(
         tokenizer, datum = _render(renderer_name, tokenizer_model, messages)
         assert _weights_for(tokenizer, datum, "<think>") == [0.0]
         assert _weights_for(tokenizer, datum, "</think>") == [0.0]
-        rendered_text = tokenizer.decode(
-            datum.token_ids, skip_special_tokens=False
-        )
+        rendered_text = tokenizer.decode(datum.token_ids, skip_special_tokens=False)
         assert "6." in rendered_text
         if has_reasoning:
             assert "Add the numbers." in rendered_text
@@ -155,13 +140,13 @@ _UPSTREAM_PARITY = [
     (
         "qwen3_6",
         "Qwen/Qwen3.6-27B",
-        "training._vendor.tinker_cookbook_0_4_3.renderers.qwen3_5",
+        "training.renderer.qwen3_5",
         "Qwen3_5Renderer",
     ),
     (
         "nemotron3",
         _NEMOTRON,
-        "training._vendor.tinker_cookbook_0_4_3.renderers.nemotron3",
+        "training.renderer.nemotron3",
         "Nemotron3Renderer",
     ),
 ]
@@ -173,9 +158,7 @@ _UPSTREAM_PARITY = [
     ("renderer_name", "tokenizer_model", "module", "upstream_class"),
     _UPSTREAM_PARITY,
 )
-def test_reweighting_does_not_change_tokens(
-    messages, renderer_name, tokenizer_model, module, upstream_class
-):
+def test_reweighting_does_not_change_tokens(messages, renderer_name, tokenizer_model, module, upstream_class):
     """Only the header/output boundary moves; the token sequence is untouched."""
     upstream_type = getattr(importlib.import_module(module), upstream_class)
     tokenizer = _load_tokenizer(tokenizer_model)
@@ -198,9 +181,7 @@ def test_reweighting_does_not_change_tokens(
         ("nemotron3_ultra_preserved", _NEMOTRON_ULTRA),
     ],
 )
-def test_preserved_multi_turn_reweights_every_assistant(
-    renderer_name, tokenizer_model
-):
+def test_preserved_multi_turn_reweights_every_assistant(renderer_name, tokenizer_model):
     messages = [
         *_PROMPT,
         _WITH_REASONING[-1],

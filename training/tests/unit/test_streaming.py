@@ -35,7 +35,6 @@ from training.utils.streaming import (
     resolve_jsonl_shards,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -170,11 +169,7 @@ class _FakeGcsClient:
         return _FakeGcsBucket(self._buckets[name])
 
     def list_blobs(self, bucket_name: str, *, prefix: str):
-        return [
-            blob
-            for name, blob in self._buckets[bucket_name].items()
-            if name.startswith(prefix)
-        ]
+        return [blob for name, blob in self._buckets[bucket_name].items() if name.startswith(prefix)]
 
 
 def _install_fake_gcs(monkeypatch: pytest.MonkeyPatch, blobs: dict[str, dict[str, bytes]]) -> _FakeGcsClient:
@@ -225,7 +220,10 @@ def test_dataset_render_fn_can_return_none(tmp_path):
     # The dataset still has 4 entries; filtering is the loader's job.
     assert len(ds) == 4
     assert [ds[i] for i in range(4)] == [
-        {"id": 0}, None, {"id": 2}, None,
+        {"id": 0},
+        None,
+        {"id": 2},
+        None,
     ]
 
 
@@ -448,15 +446,24 @@ def test_dataloader_shuffle_is_deterministic_per_iteration(tmp_path):
     ds = JsonlRenderDataset(path, _identity_render)
 
     import torch  # local import: torch is heavy
+
     g1 = torch.Generator().manual_seed(0)
     loader = make_render_dataloader(
-        ds, batch_size=8, num_workers=0, shuffle=True, generator=g1,
+        ds,
+        batch_size=8,
+        num_workers=0,
+        shuffle=True,
+        generator=g1,
     )
     first = [item["id"] for item in next(iter(loader))]
 
     g2 = torch.Generator().manual_seed(0)
     loader = make_render_dataloader(
-        ds, batch_size=8, num_workers=0, shuffle=True, generator=g2,
+        ds,
+        batch_size=8,
+        num_workers=0,
+        shuffle=True,
+        generator=g2,
     )
     second = [item["id"] for item in next(iter(loader))]
 
@@ -577,9 +584,7 @@ def test_length_grouped_sampler_reduces_within_batch_spread():
 
 def test_length_grouped_sampler_no_shuffle_is_sorted_within_mega_batch():
     sizes = [5, 1, 4, 2, 3, 0]
-    sampler = LengthGroupedBatchSampler(
-        sizes, batch_size=2, shuffle=False, generator=None, group_factor=10
-    )
+    sampler = LengthGroupedBatchSampler(sizes, batch_size=2, shuffle=False, generator=None, group_factor=10)
     batches = list(sampler)
     # One mega-batch (group_factor large): sorted desc by size, chunked by 2.
     assert batches == [[0, 2], [4, 3], [1, 5]]
@@ -601,9 +606,7 @@ def test_dataloader_group_by_length_requires_sizes(tmp_path):
     _write_jsonl(path, [{"i": i} for i in range(4)])
     ds = JsonlRenderDataset(path, _identity_render)
     with pytest.raises(ValueError, match="requires `sizes`"):
-        make_render_dataloader(
-            ds, batch_size=2, num_workers=0, group_by_length=True, sizes=None
-        )
+        make_render_dataloader(ds, batch_size=2, num_workers=0, group_by_length=True, sizes=None)
 
 
 def test_dataloader_group_by_length_covers_all_rows(tmp_path):
@@ -677,9 +680,7 @@ def test_length_grouped_sampler_per_epoch_reseed_changes_order_same_coverage():
 
     sizes = [i % 11 for i in range(50)]
     gen = torch.Generator()
-    sampler = LengthGroupedBatchSampler(
-        sizes, batch_size=4, shuffle=True, generator=gen, group_factor=3
-    )
+    sampler = LengthGroupedBatchSampler(sizes, batch_size=4, shuffle=True, generator=gen, group_factor=3)
 
     gen.manual_seed(100)  # "epoch 0"
     epoch0 = list(sampler)
@@ -708,16 +709,24 @@ def test_dataloader_group_by_length_same_coverage_as_default(tmp_path):
     ds = JsonlRenderDataset(path, _identity_render)
 
     default_loader = make_render_dataloader(
-        ds, batch_size=5, num_workers=0, shuffle=True,
+        ds,
+        batch_size=5,
+        num_workers=0,
+        shuffle=True,
         generator=torch.Generator().manual_seed(1),
     )
     default_ids = sorted(it["id"] for b in default_loader for it in b)
     default_nbatches = len(list(default_loader))
 
     grouped_loader = make_render_dataloader(
-        ds, batch_size=5, num_workers=0, shuffle=True,
+        ds,
+        batch_size=5,
+        num_workers=0,
+        shuffle=True,
         generator=torch.Generator().manual_seed(1),
-        group_by_length=True, length_group_factor=3, sizes=ds.approx_row_sizes(),
+        group_by_length=True,
+        length_group_factor=3,
+        sizes=ds.approx_row_sizes(),
     )
     grouped_ids = sorted(it["id"] for b in grouped_loader for it in b)
 
@@ -755,9 +764,7 @@ def test_length_grouped_sampler_construction_scales_linearly():
 
         def run():
             gen = torch.Generator().manual_seed(0)
-            sampler = LengthGroupedBatchSampler(
-                sizes, batch_size=8, shuffle=True, generator=gen, group_factor=50
-            )
+            sampler = LengthGroupedBatchSampler(sizes, batch_size=8, shuffle=True, generator=gen, group_factor=50)
             list(sampler)
 
         return run
@@ -781,7 +788,10 @@ def test_dataloader_group_by_length_overhead_is_bounded(tmp_path):
 
     def run_default():
         loader = make_render_dataloader(
-            ds, batch_size=8, num_workers=0, shuffle=True,
+            ds,
+            batch_size=8,
+            num_workers=0,
+            shuffle=True,
             generator=torch.Generator().manual_seed(0),
         )
         for _ in loader:
@@ -789,9 +799,14 @@ def test_dataloader_group_by_length_overhead_is_bounded(tmp_path):
 
     def run_grouped():
         loader = make_render_dataloader(
-            ds, batch_size=8, num_workers=0, shuffle=True,
+            ds,
+            batch_size=8,
+            num_workers=0,
+            shuffle=True,
             generator=torch.Generator().manual_seed(0),
-            group_by_length=True, length_group_factor=16, sizes=sizes,
+            group_by_length=True,
+            length_group_factor=16,
+            sizes=sizes,
         )
         for _ in loader:
             pass
@@ -849,14 +864,14 @@ class TestAppendOnlyPickleLog:
         # After __exit__ the log is closed and iterable.
         assert list(log) == [{"hello": "world"}]
 
-    def test_disk_size_grows_with_appends(self, tmp_path):
-        log = AppendOnlyPickleLog(str(tmp_path / "log.pkl"))
-        log.append({"big": "x" * 4096})
-        size_after_one = log.disk_size_bytes()
-        log.append({"big": "x" * 4096})
-        log.close_write()
-        assert log.disk_size_bytes() > size_after_one
-        assert size_after_one > 4096
+    def test_disk_size_grows_after_completed_writes(self, tmp_path):
+        sizes = []
+        for count in (1, 2):
+            with AppendOnlyPickleLog(str(tmp_path / f"log-{count}.pkl")) as log:
+                for _ in range(count):
+                    log.append({"big": "x" * 4096})
+            sizes.append(log.disk_size_bytes())
+        assert sizes[1] > sizes[0] > 4096
 
     def test_empty_log_iterates_empty(self, tmp_path):
         log = AppendOnlyPickleLog(str(tmp_path / "log.pkl"))

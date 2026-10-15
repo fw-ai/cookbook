@@ -2,7 +2,7 @@
 
 Use this reference when working with `training/recipes/distillation_loop.py`,
 on-policy distillation (OPD), or `teacher_messages`. For top-K SDFT on the
-shared serverless pool, use `training/recipes/sdft_loop.py` instead.
+shared serverless pool, use the [external SDFT cookbook](https://github.com/fw-ai-external/tinker-cookbook); see the [customer guide](../../../training/docs/sdft.md).
 
 Before editing, read the recipe and the public example guide:
 
@@ -120,7 +120,7 @@ The loop has no mode flags. Fork it to change behavior:
   row inside `sample_one_prompt` (for example by a `row["teacher"]` route key).
 - **Different objective:** replace the datum builder and the loss call in phase
   2 of the training loop.
-- **Top-K SDFT:** use `training/recipes/sdft_loop.py`.
+- **Top-K SDFT:** use the [external Fireworks Tinker-Cookbook fork](https://github.com/fw-ai-external/tinker-cookbook).
 
 ## Guardrails
 

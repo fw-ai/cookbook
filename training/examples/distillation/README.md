@@ -4,7 +4,7 @@ Train a student on its **own rollouts** to match a frozen teacher. The shipping
 recipe is `training/recipes/distillation_loop.py`; helpers live in
 `training/utils/distillation/` (`losses.py`, `sampling.py`, `teacher.py`,
 `eval.py`). For top-K SDFT on the shared serverless pool, see
-`training/recipes/sdft_loop.py`.
+the [SDFT customer guide](../../docs/sdft.md).
 
 ## Objective
 

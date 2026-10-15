@@ -6,7 +6,7 @@ supervised data:
 - text/tool conversations rendered via a Tinker renderer
 - eval-protocol-style token trajectories with a per-token mask
 
-Both paths end in the same ``tinker.Datum`` schema with ``target_tokens`` and
+Both paths end in the same ``sdk.Datum`` schema with ``target_tokens`` and
 token-level ``weights`` so training uses the same spans that the UI shows.
 """
 
@@ -23,8 +23,21 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 
 import numpy as np
 import torch
-import tinker
-from training.renderer.model_info import get_recommended_renderer_name
+from fireworks.training import sdk
+
+import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 — split override
+import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.deepseek_v41 as _deepseek_v41_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.glm5 as _glm5_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.minimax_m3 as _minimax_m3_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.muse_glimmer as _muse_glimmer_renderer  # noqa: F401 — triggers register_renderer
+import training.renderer.qwen2_5 as _qwen2_5_renderer  # noqa: F401 — triggers register_renderer
+from training.dataset_utils.image_geometry import ImageGeometryError
 from training.renderer import (
     Message,
     Renderer,
@@ -32,23 +45,25 @@ from training.renderer import (
     TrainOnWhat,
     get_renderer,
 )
-
 from training.renderer.image_processing import get_image_processor
+from training.renderer.message_weights import (
+    equivalent_builtin_train_on_what,
+    render_masked_example,
+    stable_chunk_sentinel,
+    without_trainable_flags,
+)
+from training.renderer.model_info import get_recommended_renderer_name
+from training.renderer.plugins import (
+    renderer_image_processor_loader,
+    renderer_plugin_supports_images,
+    renderer_plugin_supports_tool_images,
+    resolve_renderer_name_from_plugins,
+)
+from training.renderer.reasoning_fields import (
+    ORIGINAL_REASONING,
+    ORIGINAL_REASONING_CONTENT,
+)
 from training.renderer.supervised import datum_from_model_input_weights
-import training.renderer.minimax_m2 as _minimax_m2_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer.minimax_m3 as _minimax_m3_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer.muse_glimmer as _muse_glimmer_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer.glm5 as _glm5_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer.gemma4 as _gemma4_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 — split override
-import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer.deepseek_v41 as _deepseek_v41_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer.mistral as _mistral_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer.kimi_k27_code as _kimi_k27_code_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer.kimi_k3 as _kimi_k3_renderer  # noqa: F401 — triggers register_renderer
-import training.renderer.qwen2_5 as _qwen2_5_renderer  # noqa: F401 — triggers register_renderer
-from training.dataset_utils.image_geometry import ImageGeometryError
-from training.utils.runner import DatasetError
 from training.renderer.thinking_trace import (
     ResolvedThinkingTraceRendererPlan,
     ThinkingTraceHistoryMode,
@@ -56,27 +71,10 @@ from training.renderer.thinking_trace import (
     normalize_thinking_trace_history_mode,
     resolve_thinking_trace_renderer_plan,
 )
-from training.renderer.message_weights import (
-    equivalent_builtin_train_on_what,
-    render_masked_example,
-    stable_chunk_sentinel,
-    without_trainable_flags,
-)
-from training.renderer.reasoning_fields import (
-    ORIGINAL_REASONING,
-    ORIGINAL_REASONING_CONTENT,
-)
-from training.renderer.plugins import (
-    renderer_image_processor_loader,
-    renderer_plugin_supports_images,
-    renderer_plugin_supports_tool_images,
-    resolve_renderer_name_from_plugins,
-)
+from training.utils.runner import DatasetError
 from training.utils.tokenizers import load_tokenizer
 
-_DEEPSEEK_V41_MODEL_RE = re.compile(
-    r"(?:^|[/_.-])deepseek[-_]?v?4(?:[._-]?1|p1)(?=$|[/_.-])"
-)
+_DEEPSEEK_V41_MODEL_RE = re.compile(r"(?:^|[/_.-])deepseek[-_]?v?4(?:[._-]?1|p1)(?=$|[/_.-])")
 
 
 @dataclass(frozen=True)
@@ -85,7 +83,7 @@ class RenderedSupervisedDatum:
 
     token_ids: list[int]
     token_weights: list[float]
-    datum: tinker.Datum
+    datum: sdk.Datum
 
 
 @dataclass(frozen=True)
@@ -114,8 +112,8 @@ class RenderedPreferencePair:
     chosen_tokens: list[int]
     rejected_tokens: list[int]
     response_start: int
-    chosen_datum: tinker.Datum
-    rejected_datum: tinker.Datum
+    chosen_datum: sdk.Datum
+    rejected_datum: sdk.Datum
 
 
 def parse_train_on_what(value: str | TrainOnWhat) -> TrainOnWhat:
@@ -130,9 +128,7 @@ def _tool_prefix_builder(renderer: Renderer):
     prefix_builder = getattr(renderer, "create_conversation_prefix_with_tools", None)
     if prefix_builder is None:
         return None
-    class_builder = getattr(
-        type(renderer), "create_conversation_prefix_with_tools", None
-    )
+    class_builder = getattr(type(renderer), "create_conversation_prefix_with_tools", None)
     if class_builder is Renderer.create_conversation_prefix_with_tools:
         return None
     return prefix_builder
@@ -173,11 +169,7 @@ def build_tool_prefixed_messages(
     prefix_builder = _tool_prefix_builder(renderer)
     if prefix_builder is None:
         return normalized_messages
-    tool_specs = [
-        t["function"]
-        for t in tools
-        if isinstance(t, Mapping) and isinstance(t.get("function"), Mapping)
-    ]
+    tool_specs = [t["function"] for t in tools if isinstance(t, Mapping) and isinstance(t.get("function"), Mapping)]
     if not tool_specs:
         return normalized_messages
     system_prompt = ""
@@ -237,25 +229,16 @@ def resolve_renderer_name(
         normalized_model_name,
     ):
         return "kimi_k3"
-    if (
-        "moonshotai/kimi-k2.5" in normalized_model_name
-        or "kimi-k2p5" in normalized_model_name
-    ):
+    if "moonshotai/kimi-k2.5" in normalized_model_name or "kimi-k2p5" in normalized_model_name:
         return "kimi_k25"
     # Preserve the legacy direct/default alias. Explicit semantic mode
     # resolution uses the capability registry's dedicated K2.6 names instead.
-    if (
-        "moonshotai/kimi-k2.6" in normalized_model_name
-        or "kimi-k2p6" in normalized_model_name
-    ):
+    if "moonshotai/kimi-k2.6" in normalized_model_name or "kimi-k2p6" in normalized_model_name:
         return "kimi_k25"
     # Kimi-K2.7-Code keeps the K2.6 tokenizer/vocab/tool format, but flips the
     # HF chat-template default to preserve historical thinking and no longer
     # injects Kimi's default system prompt when none is provided.
-    if (
-        "moonshotai/kimi-k2.7-code" in normalized_model_name
-        or "kimi-k2p7-code" in normalized_model_name
-    ):
+    if "moonshotai/kimi-k2.7-code" in normalized_model_name or "kimi-k2p7-code" in normalized_model_name:
         return "kimi_k27_code"
     if any(
         model_alias in normalized_model_name
@@ -270,7 +253,7 @@ def resolve_renderer_name(
         # differs from Super/Nano around the closing </think> boundary.
         return "nemotron3_ultra"
     if "nemotron" in normalized_model_name:
-        # Route the Nemotron family to tinker_cookbook's upstream Nemotron-3
+        # Route the Nemotron family to the Nemotron-3
         # renderer ("nemotron3"), which restores the prompt-prefilled <think>
         # in parse_response via _normalize_response_tokens. The retired
         # cookbook "nemotron" renderer inherited Qwen3Renderer's identity
@@ -290,7 +273,7 @@ def resolve_renderer_name(
         return "qwen3_vl_instruct"
     if normalized_model_name == "qwen/qwen3-235b-a22b-instruct-2507-fp8":
         # The FP8 weights repository reuses the canonical Instruct-2507
-        # tokenizer and chat template, but tinker-cookbook only registers the
+        # tokenizer and chat template, but the model registry uses the
         # canonical non-suffixed HF identity. This alias is renderer-only:
         # checkpoint precision and training-shape eligibility remain separate
         # control-plane contracts and must not be canonicalized here.
@@ -311,17 +294,9 @@ def resolve_renderer_name(
     # byte-identical to Qwen3.5's template, so the qwen3_5 renderer family
     # is correct for INTERLEAVED-history workflows on Qwen3.6 checkpoints.
     # Same alias pattern as the kimi-k25 → Kimi-K2.6 case above.
-    if (
-        "qwen3.6" in normalized_model_name
-        or "qwen3_6" in normalized_model_name
-        or "qwen3p6" in normalized_model_name
-    ):
+    if "qwen3.6" in normalized_model_name or "qwen3_6" in normalized_model_name or "qwen3p6" in normalized_model_name:
         return "qwen3_6"
-    if (
-        "qwen3.5" in normalized_model_name
-        or "qwen3_5" in normalized_model_name
-        or "qwen3p5" in normalized_model_name
-    ):
+    if "qwen3.5" in normalized_model_name or "qwen3_5" in normalized_model_name or "qwen3p5" in normalized_model_name:
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
         return "gemma4"
@@ -330,7 +305,7 @@ def resolve_renderer_name(
         return "deepseek_v41"
     # DeepSeek-V4 ships a custom non-Jinja encoder (see encoding_dsv4.py upstream)
     # with thinking blocks and DSML tool calls. Match the V4 family explicitly so
-    # we don't accidentally claim V3 (which routes through tinker_cookbook's
+    # we don't accidentally claim V3 (which routes through the
     # built-in deepseekv3_thinking renderer via get_recommended_renderer_name).
     if (
         "deepseek-v4" in normalized_model_name
@@ -341,10 +316,7 @@ def resolve_renderer_name(
     # GLM-5.3-Flash shares GLM-5.3's text/tool contract but replaces the
     # text-only model's unsupported-media reminder with real image/video/audio
     # branches. Resolve it first so image capability cannot leak to GLM-5.3.
-    if (
-        "glm-5p3-flash" in normalized_model_name
-        or "glm-5.3-flash" in normalized_model_name
-    ):
+    if "glm-5p3-flash" in normalized_model_name or "glm-5.3-flash" in normalized_model_name:
         return "glm53_flash"
     # GLM-5.3 keeps the GLM-5.2 wire format but changes the default thinking
     # history policy and adds ID-aware tool-result ordering. Keep it on a
@@ -359,11 +331,7 @@ def resolve_renderer_name(
         return "glm_moe_dsa"
     # ZhipuAI GLM-5.1 chat template (`[gMASK]<sop>`, `<|user|>`,
     # `<|assistant|>`, `<think>...</think>`, `<|endoftext|>`).
-    if (
-        "glm-5p1" in normalized_model_name
-        or "glm-5.1" in normalized_model_name
-        or "glm5" in normalized_model_name
-    ):
+    if "glm-5p1" in normalized_model_name or "glm-5.1" in normalized_model_name or "glm5" in normalized_model_name:
         return "glm5"
     # Mistral / Ministral Tekken-style chat (`[SYSTEM_PROMPT]`, `[INST]…[/INST]`,
     # `[TOOL_CALLS]…[ARGS]…`, `[TOOL_RESULTS]…[/TOOL_RESULTS]`). Covers
@@ -381,9 +349,8 @@ def resolve_renderer_name(
     try:
         return get_recommended_renderer_name(tokenizer_model)
     except Exception as exc:  # pragma: no cover - message only
-        # tinker-cookbook 0.4.3 curated its Qwen3 registry to a smaller set of
-        # validated checkpoints (notably dropping dense sizes like 0.6B/1.7B/
-        # 4B/14B). Keep these compatibility fallbacks exact so unknown
+        # The model registry includes a limited set of validated Qwen3
+        # checkpoints. Keep these compatibility fallbacks exact so unknown
         # Base/Instruct variants fail closed instead of silently using the
         # wrong format.
         if normalized_model_name == "qwen/qwen3-0.6b" or re.fullmatch(
@@ -416,9 +383,7 @@ def resolve_renderer_plan(
     tokenizer_model: str,
     renderer_name: str = "",
     *,
-    thinking_trace_history_mode: (
-        str | ThinkingTraceHistoryMode | None
-    ) = ThinkingTraceHistoryMode.UNSPECIFIED,
+    thinking_trace_history_mode: str | ThinkingTraceHistoryMode | None = ThinkingTraceHistoryMode.UNSPECIFIED,
 ) -> ResolvedThinkingTraceRendererPlan:
     """Resolve a semantic history mode to a concrete registered renderer.
 
@@ -439,11 +404,7 @@ def resolve_renderer_plan(
         capability = get_thinking_trace_model_capability(tokenizer_model)
         matched_plan = (
             next(
-                (
-                    plan
-                    for plan in capability.plans
-                    if plan.renderer_name == renderer_name
-                ),
+                (plan for plan in capability.plans if plan.renderer_name == renderer_name),
                 None,
             )
             if capability is not None
@@ -451,18 +412,10 @@ def resolve_renderer_plan(
         )
         return ResolvedThinkingTraceRendererPlan(
             requested_mode=requested_mode,
-            effective_mode=(
-                matched_plan.mode
-                if matched_plan is not None
-                else ThinkingTraceHistoryMode.UNSPECIFIED
-            ),
+            effective_mode=(matched_plan.mode if matched_plan is not None else ThinkingTraceHistoryMode.UNSPECIFIED),
             renderer_name=renderer_name,
-            unrolls_multi_turn=(
-                matched_plan.unrolls_multi_turn if matched_plan is not None else None
-            ),
-            canonical_family=(
-                capability.canonical_family if capability is not None else None
-            ),
+            unrolls_multi_turn=(matched_plan.unrolls_multi_turn if matched_plan is not None else None),
+            canonical_family=(capability.canonical_family if capability is not None else None),
         )
 
     resolved = resolve_thinking_trace_renderer_plan(
@@ -484,9 +437,7 @@ def build_renderer(
     tokenizer_model: str,
     renderer_name: str = "",
     *,
-    thinking_trace_history_mode: (
-        str | ThinkingTraceHistoryMode | None
-    ) = ThinkingTraceHistoryMode.UNSPECIFIED,
+    thinking_trace_history_mode: str | ThinkingTraceHistoryMode | None = ThinkingTraceHistoryMode.UNSPECIFIED,
     load_image_processor: bool = True,
 ) -> Renderer:
     """Construct the Tinker renderer used for supervised formatting."""
@@ -515,10 +466,7 @@ def build_renderer_from_resolved_name(
     if (
         load_image_processor
         and get_image_processor is not None
-        and (
-            renderer_supports_images(renderer_name)
-            or renderer_image_processor_loader(renderer_name) is not None
-        )
+        and (renderer_supports_images(renderer_name) or renderer_image_processor_loader(renderer_name) is not None)
     ):
         return get_renderer(
             renderer_name,
@@ -549,9 +497,7 @@ def resolve_renderer_snapshot(
 
     if renderer_name_is_resolved:
         if not renderer_name:
-            raise ValueError(
-                "renderer_name_is_resolved=True requires a non-empty renderer_name."
-            )
+            raise ValueError("renderer_name_is_resolved=True requires a non-empty renderer_name.")
         return renderer_name
 
     normalized_mode = normalize_thinking_trace_history_mode(thinking_trace_history_mode)
@@ -572,9 +518,7 @@ def populate_render_worker_state(
     tokenizer_trust_remote_code: bool | None = None,
     renderer_name: str,
     max_seq_len: int,
-    thinking_trace_history_mode: (
-        str | ThinkingTraceHistoryMode | None
-    ) = ThinkingTraceHistoryMode.UNSPECIFIED,
+    thinking_trace_history_mode: str | ThinkingTraceHistoryMode | None = ThinkingTraceHistoryMode.UNSPECIFIED,
     renderer_name_is_resolved: bool = False,
     **extras: Any,
 ) -> None:
@@ -635,28 +579,22 @@ def _get_image_processor_with_remote_code_default(
         # but does not register its image processor class yet. Only token
         # counting is needed on the rendering client; FireTitan owns pixel
         # preprocessing and independently checks the declared chunk length.
-        return _muse_glimmer_renderer.MuseGlimmerImageTokenCounter.from_pretrained(
-            tokenizer_model
-        )
+        return _muse_glimmer_renderer.MuseGlimmerImageTokenCounter.from_pretrained(tokenizer_model)
 
     if renderer_name == "deepseek_v41":
-        return _deepseek_v41_renderer.DeepseekV41ImageTokenCounter.from_pretrained(
-            tokenizer_model
-        )
+        return _deepseek_v41_renderer.DeepseekV41ImageTokenCounter.from_pretrained(tokenizer_model)
 
     if renderer_name in {
         "glm53_flash",
         "glm53_flash_interleaved",
         "glm53_flash_preserve_thinking",
     }:
-        return _glm5_renderer.Glm53FlashImageTokenCounter.from_pretrained(
-            tokenizer_model
-        )
+        return _glm5_renderer.Glm53FlashImageTokenCounter.from_pretrained(tokenizer_model)
 
     if "HF_TRUST_REMOTE_CODE" in os.environ:
         return get_image_processor(tokenizer_model)
 
-    # tinker-cookbook reads the policy from the environment. Scope the default
+    # The image processor reads policy from the environment. Scope the default
     # to this cached processor load and restore it even if Transformers raises,
     # so unrelated work in the same process cannot inherit the opt-in.
     os.environ["HF_TRUST_REMOTE_CODE"] = "1"
@@ -721,13 +659,9 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
     normalized: list[ToolCall] = []
     for index, tool_call in enumerate(tool_calls or []):
         if not isinstance(tool_call, Mapping):
-            raise DatasetError(
-                f"tool_calls[{index}] must be an object; got {type(tool_call).__name__}."
-            )
+            raise DatasetError(f"tool_calls[{index}] must be an object; got {type(tool_call).__name__}.")
 
-        if isinstance(tool_call.get("name"), str) and isinstance(
-            tool_call.get("args"), Mapping
-        ):
+        if isinstance(tool_call.get("name"), str) and isinstance(tool_call.get("args"), Mapping):
             normalized.append(
                 ToolCall(
                     function=ToolCall.FunctionBody(
@@ -819,9 +753,7 @@ def _normalize_content(content: Any) -> str | list[dict[str, Any]]:
                 normalized_parts.append(_normalize_image_part(part))
                 continue
             if part_type == "thinking" and isinstance(part.get("thinking"), str):
-                normalized_parts.append(
-                    {"type": "thinking", "thinking": part["thinking"]}
-                )
+                normalized_parts.append({"type": "thinking", "thinking": part["thinking"]})
                 continue
             raise TypeError(f"Unsupported message content part: {part!r}")
         # Preserve the content parts instead of collapsing an all-text list into
@@ -877,9 +809,7 @@ def _resolve_trainable(
     weight = message.get("weight")
     if weight is not None:
         if not isinstance(weight, (int, float)) or isinstance(weight, bool):
-            raise TypeError(
-                f"Unsupported weight value type: {type(weight)!r} (expected int or float)"
-            )
+            raise TypeError(f"Unsupported weight value type: {type(weight)!r} (expected int or float)")
         return bool(weight)
 
     return assistant_default
@@ -899,9 +829,7 @@ def normalize_messages(
     SFT trainer semantics.
     """
     messages_list = list(messages)
-    use_per_message_trainable = _any_message_has_per_message_training_flag(
-        messages_list
-    )
+    use_per_message_trainable = _any_message_has_per_message_training_flag(messages_list)
 
     normalized: list[Message] = []
     for message in messages_list:
@@ -921,9 +849,7 @@ def normalize_messages(
         # for validating whether their protocol supports message-level tools.
         message_tools = message.get("tools")
         if message_tools is not None:
-            if not isinstance(message_tools, Sequence) or isinstance(
-                message_tools, (str, bytes)
-            ):
+            if not isinstance(message_tools, Sequence) or isinstance(message_tools, (str, bytes)):
                 raise TypeError("Message tools must be a sequence of tool objects")
             normalized_tools: list[dict[str, Any]] = []
             for tool in message_tools:
@@ -973,17 +899,12 @@ def normalize_messages(
         reasoning_content = message.get("reasoning_content")
         if thinking is None:
             if reasoning is not None and not isinstance(reasoning, str):
-                raise TypeError(
-                    f"Unsupported reasoning value type: {type(reasoning)!r}"
-                )
+                raise TypeError(f"Unsupported reasoning value type: {type(reasoning)!r}")
 
             if reasoning_content is not None and not isinstance(reasoning_content, str):
-                raise TypeError(
-                    "Unsupported reasoning_content value type: "
-                    f"{type(reasoning_content)!r}"
-                )
+                raise TypeError("Unsupported reasoning_content value type: " f"{type(reasoning_content)!r}")
 
-            # ``Message`` is a TypedDict owned by tinker_cookbook. These
+            # ``Message`` is a cookbook message TypedDict. These
             # private keys are intentionally runtime-only metadata consumed by
             # cookbook-local renderer adapters and ignored by upstream ones.
             if isinstance(reasoning, str):
@@ -994,9 +915,7 @@ def normalize_messages(
             promoted_reasoning = (
                 reasoning
                 if isinstance(reasoning, str) and reasoning
-                else reasoning_content
-                if isinstance(reasoning_content, str) and reasoning_content
-                else None
+                else reasoning_content if isinstance(reasoning_content, str) and reasoning_content else None
             )
             if promoted_reasoning is not None:
                 normalized_message["content"] = [
@@ -1033,10 +952,10 @@ def normalize_messages(
     return normalized
 
 
-def _flatten_model_input_sequence_ids(model_input: tinker.ModelInput) -> list[int]:
+def _flatten_model_input_sequence_ids(model_input: sdk.ModelInput) -> list[int]:
     sequence_ids: list[int] = []
     for chunk in model_input.chunks:
-        if isinstance(chunk, tinker.types.EncodedTextChunk):
+        if isinstance(chunk, sdk.types.EncodedTextChunk):
             sequence_ids.extend(int(token) for token in chunk.tokens)
             continue
 
@@ -1046,9 +965,9 @@ def _flatten_model_input_sequence_ids(model_input: tinker.ModelInput) -> list[in
 
 
 def _image_chunk_fingerprint(chunk: Any) -> str:
-    if isinstance(chunk, tinker.types.ImageChunk):
+    if isinstance(chunk, sdk.types.ImageChunk):
         payload = bytes(chunk.data)
-    elif isinstance(chunk, tinker.types.ImageAssetPointerChunk):
+    elif isinstance(chunk, sdk.types.ImageAssetPointerChunk):
         payload = chunk.location.encode()
     else:  # pragma: no cover - guarded by rendered_chunk_spans
         raise TypeError(f"Unsupported image chunk type: {type(chunk)!r}")
@@ -1078,12 +997,12 @@ def rendered_chunk_spans(rendered: RenderedSupervisedDatum | Any) -> list[Render
     cursor = 0
     image_index = 0
     for chunk in chunks:
-        if isinstance(chunk, tinker.types.EncodedTextChunk):
+        if isinstance(chunk, sdk.types.EncodedTextChunk):
             chunk_token_count = len(chunk.tokens)
             kind: Literal["text", "image"] = "text"
         elif isinstance(
             chunk,
-            (tinker.types.ImageChunk, tinker.types.ImageAssetPointerChunk),
+            (sdk.types.ImageChunk, sdk.types.ImageAssetPointerChunk),
         ):
             chunk_token_count = int(chunk.length)
             kind = "image"
@@ -1134,13 +1053,11 @@ def rendered_chunk_spans(rendered: RenderedSupervisedDatum | Any) -> list[Render
     return spans
 
 
-def _rendered_sequence_ids_from_datum(datum: tinker.Datum) -> list[int]:
+def _rendered_sequence_ids_from_datum(datum: sdk.Datum) -> list[int]:
     sequence_ids = _flatten_model_input_sequence_ids(datum.model_input)
     target_tokens = [int(x) for x in datum.loss_fn_inputs["target_tokens"].data]
     if not target_tokens:
-        raise ValueError(
-            "Need at least one target token to reconstruct the rendered sequence."
-        )
+        raise ValueError("Need at least one target token to reconstruct the rendered sequence.")
     return sequence_ids + [target_tokens[-1]]
 
 
@@ -1152,7 +1069,7 @@ def build_datum_from_tokens_and_weights(
     include_loss_mask: bool = False,
     reduction: Literal["none", "mean"] = "none",
 ) -> RenderedSupervisedDatum:
-    """Build a weighted ``tinker.Datum`` from full tokens and per-token weights."""
+    """Build a weighted ``sdk.Datum`` from full tokens and per-token weights."""
     return _build_text_datum(
         _text_token_array(token_ids),
         _text_weight_array(token_weights).astype(np.float32),
@@ -1196,12 +1113,12 @@ def _text_weight_array(token_weights: Sequence[float]) -> np.ndarray:
     return np.asarray([float(x) for x in token_weights], dtype=np.float64)
 
 
-def _model_input_from_checked_tokens(tokens: np.ndarray) -> tinker.ModelInput:
+def _model_input_from_checked_tokens(tokens: np.ndarray) -> sdk.ModelInput:
     # _text_token_array already applied int() coercion and checked int64
     # overflow. Its tolist() owns a list of Python ints, so validating the
     # EncodedTextChunk Sequence[int] again only scans and copies that list.
-    chunk = tinker.types.EncodedTextChunk.model_construct(tokens=tokens.tolist())
-    return tinker.ModelInput(chunks=[chunk])
+    chunk = sdk.types.EncodedTextChunk.model_construct(tokens=tokens.tolist())
+    return sdk.ModelInput(chunks=[chunk])
 
 
 def _build_text_datum(
@@ -1233,11 +1150,9 @@ def _build_text_training_datum(
     max_seq_len: int | None,
     include_loss_mask: bool,
     reduction: Literal["none", "mean"] = "none",
-) -> tuple[np.ndarray, tinker.Datum]:
+) -> tuple[np.ndarray, sdk.Datum]:
     if len(tokens) != len(weights):
-        raise ValueError(
-            f"tokens/weights length mismatch: {len(tokens)} != {len(weights)}"
-        )
+        raise ValueError(f"tokens/weights length mismatch: {len(tokens)} != {len(weights)}")
     if len(tokens) < 2:
         raise ValueError("Need at least 2 tokens to build a supervised datum.")
 
@@ -1252,11 +1167,11 @@ def _build_text_training_datum(
     if reduction == "none":
         # Text already has one flat coordinate space. Shift it once instead
         # of building, flattening and validating a second full ModelInput.
-        datum = tinker.Datum(
+        datum = sdk.Datum(
             model_input=_model_input_from_checked_tokens(tokens[:-1]),
             loss_fn_inputs={
-                "target_tokens": tinker.TensorData.from_numpy(tokens[1:]),
-                "weights": tinker.TensorData.from_numpy(weights[1:]),
+                "target_tokens": sdk.TensorData.from_numpy(tokens[1:]),
+                "weights": sdk.TensorData.from_numpy(weights[1:]),
             },
         )
     else:
@@ -1269,13 +1184,13 @@ def _build_text_training_datum(
         )
 
     if include_loss_mask:
-        datum.loss_fn_inputs["loss_mask"] = tinker.TensorData.from_numpy(
+        datum.loss_fn_inputs["loss_mask"] = sdk.TensorData.from_numpy(
             datum.loss_fn_inputs["weights"].to_numpy().copy(),
         )
     return tokens, datum
 
 
-def _extract_token_ids(model_input: tinker.ModelInput) -> list[int]:
+def _extract_token_ids(model_input: sdk.ModelInput) -> list[int]:
     """Extract token IDs from a ModelInput, handling multimodal chunks.
 
     Text chunks contribute their token IDs directly.  Non-text chunks
@@ -1291,7 +1206,7 @@ def _extract_token_ids(model_input: tinker.ModelInput) -> list[int]:
     return ids
 
 
-def _extract_text_token_ids(model_input: tinker.ModelInput) -> list[int]:
+def _extract_text_token_ids(model_input: sdk.ModelInput) -> list[int]:
     """Extract text IDs for sampling-side multimodal rollout bookkeeping.
 
     Trainer datums must use :func:`_extract_token_ids` instead so image slots
@@ -1304,19 +1219,17 @@ def _extract_text_token_ids(model_input: tinker.ModelInput) -> list[int]:
     return ids
 
 
-def has_non_text_chunks(model_input: tinker.ModelInput) -> bool:
+def has_non_text_chunks(model_input: sdk.ModelInput) -> bool:
     """Return True when *model_input* carries image (or other non-text) chunks."""
-    return any(
-        not isinstance(c, tinker.types.EncodedTextChunk) for c in model_input.chunks
-    )
+    return any(not isinstance(c, sdk.types.EncodedTextChunk) for c in model_input.chunks)
 
 
-def _has_non_text_chunks(model_input: tinker.ModelInput) -> bool:
+def _has_non_text_chunks(model_input: sdk.ModelInput) -> bool:
     return has_non_text_chunks(model_input)
 
 
 def _chunk_weight_slots(chunk: Any) -> int:
-    if isinstance(chunk, tinker.types.EncodedTextChunk):
+    if isinstance(chunk, sdk.types.EncodedTextChunk):
         return len(chunk.tokens)
     if hasattr(chunk, "length"):
         return int(chunk.length)
@@ -1326,7 +1239,7 @@ def _chunk_weight_slots(chunk: Any) -> int:
 
 
 def build_multimodal_rollout_weights(
-    prompt_model_input: tinker.ModelInput,
+    prompt_model_input: sdk.ModelInput,
     completion_token_count: int,
 ) -> list[float]:
     """Per-position training weights for a single-turn RL trajectory."""
@@ -1338,32 +1251,29 @@ def build_multimodal_rollout_weights(
 
 
 def build_multimodal_policy_datum(
-    prompt_model_input: tinker.ModelInput,
+    prompt_model_input: sdk.ModelInput,
     completion_tokens: Sequence[int],
     *,
     max_seq_len: int | None = None,
-) -> tinker.Datum:
-    """Build a policy :class:`tinker.Datum` that preserves image chunks in ``model_input``."""
+) -> sdk.Datum:
+    """Build a policy :class:`sdk.Datum` that preserves image chunks in ``model_input``."""
     completion = [int(t) for t in completion_tokens]
-    chunks = list(prompt_model_input.chunks) + [
-        tinker.types.EncodedTextChunk(tokens=completion)
-    ]
-    full_input = tinker.ModelInput(chunks=chunks)
+    chunks = list(prompt_model_input.chunks) + [sdk.types.EncodedTextChunk(tokens=completion)]
+    full_input = sdk.ModelInput(chunks=chunks)
     weights = build_multimodal_rollout_weights(prompt_model_input, len(completion))
     if len(weights) != full_input.length:
         raise ValueError(
-            f"multimodal rollout weights length {len(weights)} != "
-            f"model_input.length {full_input.length}"
+            f"multimodal rollout weights length {len(weights)} != " f"model_input.length {full_input.length}"
         )
     return _build_multimodal_datum(full_input, weights, max_seq_len)
 
 
 def _build_multimodal_datum(
-    model_input: tinker.ModelInput,
+    model_input: sdk.ModelInput,
     weights: list[float],
     max_seq_len: int | None = None,
     reduction: Literal["none", "mean"] = "none",
-) -> tinker.Datum:
+) -> sdk.Datum:
     """Build a canonical Tinker-shaped multimodal next-token datum.
 
     Image positions remain in ``target_tokens`` as zero wire placeholders, so
@@ -1375,10 +1285,7 @@ def _build_multimodal_datum(
     chunks may be truncated, while image chunks are retained or removed whole.
     """
     if len(weights) != model_input.length:
-        raise ValueError(
-            "model_input/weights length mismatch: "
-            f"{model_input.length} != {len(weights)}"
-        )
+        raise ValueError("model_input/weights length mismatch: " f"{model_input.length} != {len(weights)}")
 
     return datum_from_model_input_weights(
         model_input,
@@ -1389,7 +1296,7 @@ def _build_multimodal_datum(
 
 
 def build_datum_from_model_input_and_weights(
-    model_input: tinker.ModelInput,
+    model_input: sdk.ModelInput,
     token_weights: Sequence[int | float],
     *,
     max_seq_len: int | None = None,
@@ -1411,9 +1318,7 @@ def build_datum_from_model_input_and_weights(
     elif datum_from_model_input_weights is not None:
         weight_tensor = torch.tensor(weights, dtype=torch.float32)
         if weight_tensor.numel() != model_input.length:
-            raise ValueError(
-                f"model_input/weights length mismatch: {model_input.length} != {weight_tensor.numel()}"
-            )
+            raise ValueError(f"model_input/weights length mismatch: {model_input.length} != {weight_tensor.numel()}")
         datum = datum_from_model_input_weights(
             model_input,
             weight_tensor,
@@ -1432,7 +1337,7 @@ def build_datum_from_model_input_and_weights(
 
     if include_loss_mask:
         shifted_weights = [float(x) for x in datum.loss_fn_inputs["weights"].data]
-        datum.loss_fn_inputs["loss_mask"] = tinker.TensorData(
+        datum.loss_fn_inputs["loss_mask"] = sdk.TensorData(
             data=shifted_weights,
             dtype="float32",
             shape=[len(shifted_weights)],
@@ -1445,15 +1350,15 @@ def build_datum_from_model_input_and_weights(
     )
 
 
-def build_next_token_datum(token_ids: Sequence[int]) -> tinker.Datum:
+def build_next_token_datum(token_ids: Sequence[int]) -> sdk.Datum:
     """Build a standard next-token prediction datum without token weights."""
     tokens = [int(x) for x in token_ids]
     if len(tokens) < 2:
         raise ValueError("Need at least 2 tokens to build a next-token datum.")
-    return tinker.Datum(
-        model_input=tinker.ModelInput.from_ints(tokens[:-1]),
+    return sdk.Datum(
+        model_input=sdk.ModelInput.from_ints(tokens[:-1]),
         loss_fn_inputs={
-            "target_tokens": tinker.TensorData(
+            "target_tokens": sdk.TensorData(
                 data=tokens[1:],
                 dtype="int64",
                 shape=[len(tokens) - 1],
@@ -1484,7 +1389,7 @@ def build_training_datum_from_token_mask(
     *,
     max_seq_len: int | None = None,
     include_loss_mask: bool = False,
-) -> tinker.Datum:
+) -> sdk.Datum:
     """Build the training datum without materializing rendered token metadata.
 
     Use this when the caller only needs ``build_datum_from_token_mask(...).datum``.
@@ -1548,7 +1453,7 @@ def _build_rendered_supervised_datum(
     reduction: Literal["none", "mean"] = "none",
 ) -> RenderedSupervisedDatum:
     weight_values = weights.tolist() if hasattr(weights, "tolist") else list(weights)
-    if isinstance(rendered_input, tinker.ModelInput):
+    if isinstance(rendered_input, sdk.ModelInput):
         return build_datum_from_model_input_and_weights(
             rendered_input,
             weight_values,
@@ -1556,11 +1461,7 @@ def _build_rendered_supervised_datum(
             include_loss_mask=include_loss_mask,
             reduction=reduction,
         )
-    token_values = (
-        rendered_input.tolist()
-        if hasattr(rendered_input, "tolist")
-        else list(rendered_input)
-    )
+    token_values = rendered_input.tolist() if hasattr(rendered_input, "tolist") else list(rendered_input)
     return build_datum_from_tokens_and_weights(
         token_values,
         weight_values,
@@ -1615,18 +1516,14 @@ def _equivalent_single_example_train_on_what(
     the false-positive warning while preserving true warnings for non-equivalent
     conversations.
     """
-    if train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES or getattr(
-        renderer, "has_extension_property", False
-    ):
+    if train_on_what != TrainOnWhat.ALL_ASSISTANT_MESSAGES or getattr(renderer, "has_extension_property", False):
         return train_on_what
 
     last_user_idx = max(
         (idx for idx, message in enumerate(messages) if message["role"] == "user"),
         default=-1,
     )
-    assistant_idxs = [
-        idx for idx, message in enumerate(messages) if message["role"] == "assistant"
-    ]
+    assistant_idxs = [idx for idx, message in enumerate(messages) if message["role"] == "assistant"]
     if assistant_idxs and all(idx > last_user_idx for idx in assistant_idxs):
         return TrainOnWhat.LAST_ASSISTANT_TURN
 
@@ -1654,10 +1551,7 @@ def _render_singular_example(
         messages,
         requested_train_on_what,
     )
-    if (
-        train_on_what is TrainOnWhat.CUSTOMIZED
-        and default_mode is not TrainOnWhat.CUSTOMIZED
-    ):
+    if train_on_what is TrainOnWhat.CUSTOMIZED and default_mode is not TrainOnWhat.CUSTOMIZED:
         builtin_mode = equivalent_builtin_train_on_what(messages, default_mode)
         if builtin_mode is None:
             return render_masked_example(
@@ -1678,9 +1572,7 @@ def _build_renderer_supervised_examples(
     train_on_what: TrainOnWhat,
     requested_train_on_what: TrainOnWhat,
 ) -> list[tuple[Any, Any]]:
-    if _requires_renderer_supervised_examples(
-        renderer, messages, requested_train_on_what
-    ):
+    if _requires_renderer_supervised_examples(renderer, messages, requested_train_on_what):
         build_supervised_examples = getattr(renderer, "build_supervised_examples", None)
         if build_supervised_examples is None:
             raise TypeError(
@@ -1725,9 +1617,7 @@ def render_messages_to_datums(
     content is preserved as the system prompt passed to the renderer.
     Renderers without tool-prefix support silently drop the field.
     """
-    normalized_messages = build_tool_prefixed_messages(
-        messages, renderer=renderer, tools=tools
-    )
+    normalized_messages = build_tool_prefixed_messages(messages, renderer=renderer, tools=tools)
 
     requested_train_on_what = parse_train_on_what(train_on_what)
     effective_train_on_what = requested_train_on_what
@@ -1769,7 +1659,7 @@ def _render_preference_item_tokens(
     *,
     renderer: Renderer,
     tokenizer: Any,
-) -> tuple[list[int], tinker.Datum] | None:
+) -> tuple[list[int], sdk.Datum] | None:
     if "messages" in item:
         messages = item.get("messages") or []
         if not messages:
@@ -1791,21 +1681,15 @@ def render_preference_pair(
     max_seq_len: int | None = None,
 ) -> RenderedPreferencePair | None:
     """Render a chosen/rejected pair through the shared tokenizer path."""
-    chosen_rendered = _render_preference_item_tokens(
-        chosen, renderer=renderer, tokenizer=tokenizer
-    )
-    rejected_rendered = _render_preference_item_tokens(
-        rejected, renderer=renderer, tokenizer=tokenizer
-    )
+    chosen_rendered = _render_preference_item_tokens(chosen, renderer=renderer, tokenizer=tokenizer)
+    rejected_rendered = _render_preference_item_tokens(rejected, renderer=renderer, tokenizer=tokenizer)
     if chosen_rendered is None or rejected_rendered is None:
         return None
     chosen_tokens, chosen_datum = chosen_rendered
     rejected_tokens, rejected_datum = rejected_rendered
     if len(chosen_tokens) < 2 or len(rejected_tokens) < 2:
         return None
-    if max_seq_len is not None and (
-        len(chosen_tokens) > max_seq_len or len(rejected_tokens) > max_seq_len
-    ):
+    if max_seq_len is not None and (len(chosen_tokens) > max_seq_len or len(rejected_tokens) > max_seq_len):
         return None
 
     return RenderedPreferencePair(

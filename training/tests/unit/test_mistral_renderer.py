@@ -20,11 +20,9 @@ from typing import Any
 
 import pytest
 import transformers
-
+from training.renderer.base import RenderContext, ToolCall, TrainOnWhat
 from training.renderer.mistral import MistralRenderer
 from training.utils.tokenizers import load_tokenizer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import RenderContext, ToolCall, TrainOnWhat
-
 
 _LOCAL_PATH = os.environ.get("MISTRAL_LOCAL_TOKENIZER")
 _HF_REPO = "mistralai/Ministral-3-3B-Instruct-2512"
@@ -88,9 +86,7 @@ def _renderer_supervised_tokens(
     *,
     train_on_what: TrainOnWhat,
 ) -> tuple[list[int], list[float]]:
-    model_input, weights = renderer.build_supervised_example(
-        messages, train_on_what=train_on_what
-    )
+    model_input, weights = renderer.build_supervised_example(messages, train_on_what=train_on_what)
     return list(model_input.to_ints()), weights.tolist()
 
 
@@ -98,9 +94,7 @@ def _hf_supervised_tokens(
     tokenizer: transformers.PreTrainedTokenizerBase,
     messages: list[dict[str, Any]],
 ) -> list[int]:
-    result = tokenizer.apply_chat_template(
-        messages, tokenize=True, add_generation_prompt=False
-    )
+    result = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=False)
     if hasattr(result, "input_ids"):
         return list(result.input_ids)
     return list(result)
@@ -160,9 +154,7 @@ def _message_output_slices(
 # --- Generation prompt parity ----------------------------------------
 
 
-def test_single_turn_no_system(
-    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
-) -> None:
+def test_single_turn_no_system(tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer) -> None:
     """Conversations with no system message should auto-inject the default."""
     messages = [
         {"role": "user", "content": "Hello"},
@@ -173,9 +165,7 @@ def test_single_turn_no_system(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_single_turn_with_system(
-    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
-) -> None:
+def test_single_turn_with_system(tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer) -> None:
     messages = [
         {"role": "system", "content": "You are concise."},
         {"role": "user", "content": "Hi"},
@@ -200,9 +190,7 @@ def test_explicit_empty_system_renders_empty_block(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_multi_turn(
-    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
-) -> None:
+def test_multi_turn(tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer) -> None:
     messages = [
         {"role": "system", "content": "Be terse."},
         {"role": "user", "content": "Hi"},
@@ -268,9 +256,7 @@ def test_generation_prompt_with_top_level_tools_matches_hf(
 # --- Tool calls / tool responses ------------------------------------
 
 
-def test_tool_call_single(
-    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
-) -> None:
+def test_tool_call_single(tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer) -> None:
     cookbook_messages = [
         {"role": "system", "content": "S"},
         {"role": "user", "content": "weather?"},
@@ -302,9 +288,7 @@ def test_tool_call_single(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_tool_call_multi(
-    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
-) -> None:
+def test_tool_call_multi(tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer) -> None:
     cookbook_messages = [
         {"role": "system", "content": "S"},
         {"role": "user", "content": "u"},
@@ -337,9 +321,7 @@ def test_tool_call_multi(
     _assert_tokens_match(tokenizer, expected, actual)
 
 
-def test_tool_response_round_trip(
-    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
-) -> None:
+def test_tool_response_round_trip(tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer) -> None:
     cookbook_messages = [
         {"role": "system", "content": "S"},
         {"role": "user", "content": "weather?"},
@@ -378,9 +360,7 @@ def test_tool_response_round_trip(
 # --- Supervised tokenization parity --------------------------------
 
 
-def test_supervised_basic(
-    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
-) -> None:
+def test_supervised_basic(tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer) -> None:
     messages = [
         {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "What is 2+2?"},
@@ -448,25 +428,17 @@ def test_supervised_weights_mask_non_assistant(
 # --- Response parsing -----------------------------------------------
 
 
-def test_parse_response_plain_text(
-    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
-) -> None:
-    response = tokenizer.encode("Hello world!", add_special_tokens=False) + [
-        tokenizer.eos_token_id
-    ]
+def test_parse_response_plain_text(tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer) -> None:
+    response = tokenizer.encode("Hello world!", add_special_tokens=False) + [tokenizer.eos_token_id]
     message, termination = renderer.parse_response(response)
     assert message["role"] == "assistant"
     assert message["content"] == "Hello world!"
     assert termination.is_clean
 
 
-def test_parse_response_tool_call(
-    tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer
-) -> None:
+def test_parse_response_tool_call(tokenizer: transformers.PreTrainedTokenizerBase, renderer: MistralRenderer) -> None:
     raw = 'Sure thing.[TOOL_CALLS]get_weather[ARGS]{"city": "SF"}'
-    response = tokenizer.encode(raw, add_special_tokens=False) + [
-        tokenizer.eos_token_id
-    ]
+    response = tokenizer.encode(raw, add_special_tokens=False) + [tokenizer.eos_token_id]
     message, termination = renderer.parse_response(response)
     assert termination.is_clean
     assert message["content"].rstrip() == "Sure thing."

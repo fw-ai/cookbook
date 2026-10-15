@@ -7,38 +7,37 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-import tinker
 import torch
-
-from training._vendor.tinker_cookbook_0_4_3.exceptions import DataValidationError
-import training._vendor.tinker_cookbook_0_4_3.supervised.common as vendored_supervised
+import training.renderer._supervised as native_supervised
 import training.renderer.supervised as fireworks_supervised
+from fireworks.training import sdk
+from training.renderer.errors import DataValidationError
 
 
-def _text_input() -> tinker.ModelInput:
-    return tinker.ModelInput.from_ints([10, 11, 12, 13, 14])
+def _text_input() -> sdk.ModelInput:
+    return sdk.ModelInput.from_ints([10, 11, 12, 13, 14])
 
 
-def _multimodal_input() -> tinker.ModelInput:
-    return tinker.ModelInput(
+def _multimodal_input() -> sdk.ModelInput:
+    return sdk.ModelInput(
         chunks=[
-            tinker.EncodedTextChunk(tokens=[10, 11]),
-            tinker.types.ImageAssetPointerChunk(
-                location="https://example.com/image.png",
+            sdk.EncodedTextChunk(tokens=[10, 11]),
+            sdk.types.ImageChunk(
+                data=b"inline-image",
                 format="png",
                 expected_tokens=3,
             ),
-            tinker.EncodedTextChunk(tokens=[12, 13, 14]),
+            sdk.EncodedTextChunk(tokens=[12, 13, 14]),
         ]
     )
 
 
-def _trailing_image_input() -> tinker.ModelInput:
-    return tinker.ModelInput(
+def _trailing_image_input() -> sdk.ModelInput:
+    return sdk.ModelInput(
         chunks=[
-            tinker.EncodedTextChunk(tokens=[10, 11, 12]),
-            tinker.types.ImageAssetPointerChunk(
-                location="https://example.com/image.png",
+            sdk.EncodedTextChunk(tokens=[10, 11, 12]),
+            sdk.types.ImageChunk(
+                data=b"inline-image",
                 format="png",
                 expected_tokens=2,
             ),
@@ -46,27 +45,13 @@ def _trailing_image_input() -> tinker.ModelInput:
     )
 
 
-def test_public_surface_exports_vendored_implementation() -> None:
-    assert fireworks_supervised.compute_mean_nll is vendored_supervised.compute_mean_nll
-    assert (
-        fireworks_supervised.create_rightshifted_model_input_and_leftshifted_targets
-        is vendored_supervised.create_rightshifted_model_input_and_leftshifted_targets
-    )
-    assert (
-        fireworks_supervised.datum_from_model_input_weights
-        is vendored_supervised.datum_from_model_input_weights
-    )
-
-
-def _chunk_layout(model_input: tinker.ModelInput) -> list[tuple[Any, ...]]:
+def _chunk_layout(model_input: sdk.ModelInput) -> list[tuple[Any, ...]]:
     layout: list[tuple[Any, ...]] = []
     for chunk in model_input.chunks:
-        if isinstance(chunk, tinker.EncodedTextChunk):
+        if isinstance(chunk, sdk.EncodedTextChunk):
             layout.append(("text", *chunk.tokens))
         else:
-            layout.append(
-                ("image", chunk.location, chunk.format, chunk.expected_tokens)
-            )
+            layout.append(("image", chunk.data, chunk.format, chunk.expected_tokens))
     return layout
 
 
@@ -116,7 +101,7 @@ def _chunk_layout(model_input: tinker.ModelInput) -> list[tuple[Any, ...]]:
             "none",
             [
                 ("text", 10, 11),
-                ("image", "https://example.com/image.png", "png", 3),
+                ("image", b"inline-image", "png", 3),
                 ("text", 12, 13),
             ],
             [11, 0, 0, 0, 12, 13, 14],
@@ -129,7 +114,7 @@ def _chunk_layout(model_input: tinker.ModelInput) -> list[tuple[Any, ...]]:
             "none",
             [
                 ("text", 10, 11),
-                ("image", "https://example.com/image.png", "png", 3),
+                ("image", b"inline-image", "png", 3),
                 ("text", 12),
             ],
             [11, 0, 0, 0, 12, 13],
@@ -166,7 +151,7 @@ def _chunk_layout(model_input: tinker.ModelInput) -> list[tuple[Any, ...]]:
     ],
 )
 def test_serialized_datum_matches_frozen_snapshot(
-    input_factory: Callable[[], tinker.ModelInput],
+    input_factory: Callable[[], sdk.ModelInput],
     weights: list[float],
     max_length: int | None,
     reduction: str,
@@ -187,13 +172,11 @@ def test_serialized_datum_matches_frozen_snapshot(
 
 @pytest.mark.parametrize("input_factory", [_text_input, _multimodal_input])
 def test_input_target_shift_is_stable(
-    input_factory: Callable[[], tinker.ModelInput],
+    input_factory: Callable[[], sdk.ModelInput],
 ) -> None:
     fireworks_input = input_factory()
-    input_model, targets = (
-        fireworks_supervised.create_rightshifted_model_input_and_leftshifted_targets(
-            list(fireworks_input.chunks)
-        )
+    input_model, targets = fireworks_supervised.create_rightshifted_model_input_and_leftshifted_targets(
+        list(fireworks_input.chunks)
     )
     if input_factory is _text_input:
         assert _chunk_layout(input_model) == [("text", 10, 11, 12, 13)]
@@ -201,7 +184,7 @@ def test_input_target_shift_is_stable(
     else:
         assert _chunk_layout(input_model) == [
             ("text", 10, 11),
-            ("image", "https://example.com/image.png", "png", 3),
+            ("image", b"inline-image", "png", 3),
             ("text", 12, 13),
         ]
         assert targets == [11, 0, 0, 0, 12, 13, 14]
@@ -212,14 +195,14 @@ def test_input_target_shift_is_stable(
     [
         ([], AssertionError, "must have at least one chunk"),
         (
-            [tinker.EncodedTextChunk(tokens=[1])],
+            [sdk.EncodedTextChunk(tokens=[1])],
             DataValidationError,
             "need at least 2 tokens",
         ),
         (
             [
-                tinker.types.ImageAssetPointerChunk(
-                    location="https://example.com/image.png",
+                sdk.types.ImageChunk(
+                    data=b"inline-image",
                     format="png",
                     expected_tokens=2,
                 )
@@ -231,38 +214,32 @@ def test_input_target_shift_is_stable(
     ids=["empty", "one-token", "trailing-image"],
 )
 def test_input_target_shift_error_is_stable(
-    chunks: list[tinker.ModelInputChunk],
+    chunks: list[sdk.ModelInputChunk],
     expected_type: type[BaseException],
     expected_message: str,
 ) -> None:
     with pytest.raises(expected_type, match=expected_message):
-        fireworks_supervised.create_rightshifted_model_input_and_leftshifted_targets(
-            chunks
-        )
+        fireworks_supervised.create_rightshifted_model_input_and_leftshifted_targets(chunks)
 
 
 def test_unknown_reduction_error_is_stable() -> None:
     with pytest.raises(ValueError, match="Unknown reduction mode: 'sum'"):
-        fireworks_supervised.datum_from_model_input_weights(
-            _text_input(), torch.ones(5), reduction="sum"
-        )
+        fireworks_supervised.datum_from_model_input_weights(_text_input(), torch.ones(5), reduction="sum")
 
 
 def test_compute_mean_nll_is_stable() -> None:
     logprobs = [
-        tinker.TensorData(data=[-1.0, -2.0], dtype="float32", shape=[2]),
-        tinker.TensorData(data=[-3.0], dtype="float32", shape=[1]),
+        sdk.TensorData(data=[-1.0, -2.0], dtype="float32", shape=[2]),
+        sdk.TensorData(data=[-3.0], dtype="float32", shape=[1]),
     ]
     weights = [
-        tinker.TensorData(data=[0.0, 1.0], dtype="float32", shape=[2]),
-        tinker.TensorData(data=[2.0], dtype="float32", shape=[1]),
+        sdk.TensorData(data=[0.0, 1.0], dtype="float32", shape=[2]),
+        sdk.TensorData(data=[2.0], dtype="float32", shape=[1]),
     ]
-    assert fireworks_supervised.compute_mean_nll(logprobs, weights) == pytest.approx(
-        8 / 3
-    )
+    assert fireworks_supervised.compute_mean_nll(logprobs, weights) == pytest.approx(8 / 3)
 
     zero_weights = [
-        tinker.TensorData(data=[0.0, 0.0], dtype="float32", shape=[2]),
-        tinker.TensorData(data=[0.0], dtype="float32", shape=[1]),
+        sdk.TensorData(data=[0.0, 0.0], dtype="float32", shape=[2]),
+        sdk.TensorData(data=[0.0], dtype="float32", shape=[1]),
     ]
     assert math.isnan(fireworks_supervised.compute_mean_nll(logprobs, zero_weights))

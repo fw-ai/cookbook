@@ -57,9 +57,7 @@ def _supervised_tokens(renderer, messages):
 
 
 def _hf_tokens(tokenizer, messages):
-    text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=False
-    )
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
     # The HF template emits a trailing "\n" after the final turn; nothing is
     # trained on it and the property harness forgives it, so do the same.
     if text.endswith("\n"):
@@ -206,9 +204,7 @@ def _tool_call_objects(messages):
 @pytest.mark.timeout(180)
 def test_parallel_tool_results_merge_matches_hf() -> None:
     tokenizer = _load_tokenizer()
-    ours = _supervised_tokens(
-        _renderer(tokenizer), _tool_call_objects(_PARALLEL_TOOLS_HF)
-    )
+    ours = _supervised_tokens(_renderer(tokenizer), _tool_call_objects(_PARALLEL_TOOLS_HF))
     hf = _hf_tokens(tokenizer, _PARALLEL_TOOLS_HF)
     assert ours == hf
 
@@ -300,9 +296,7 @@ def test_agentic_reasoning_kept_after_last_query() -> None:
 @pytest.mark.timeout(180)
 def test_agentic_parallel_tools_with_reasoning() -> None:
     tokenizer = _load_tokenizer()
-    ours = _normalized_supervised_tokens(
-        _renderer(tokenizer), _AGENTIC_PARALLEL_REASONING
-    )
+    ours = _normalized_supervised_tokens(_renderer(tokenizer), _AGENTIC_PARALLEL_REASONING)
     assert ours == _hf_tokens(tokenizer, _AGENTIC_PARALLEL_REASONING)
 
 
@@ -316,9 +310,7 @@ def test_reasoning_before_last_query_stripped() -> None:
 @pytest.mark.timeout(180)
 def test_final_reasoning_with_tool_calls_no_text() -> None:
     tokenizer = _load_tokenizer()
-    ours = _normalized_supervised_tokens(
-        _renderer(tokenizer), _FINAL_REASONING_TOOL_CALLS
-    )
+    ours = _normalized_supervised_tokens(_renderer(tokenizer), _FINAL_REASONING_TOOL_CALLS)
     assert ours == _hf_tokens(tokenizer, _FINAL_REASONING_TOOL_CALLS)
 
 
@@ -343,9 +335,7 @@ def test_final_tool_only_turn_wrapper_then_call_no_extra_newline() -> None:
     """HF emits `<think>\\n\\n</think>\\n\\n<tool_call>`; upstream's
     unconditional tool-call separator must not add a third newline."""
     tokenizer = _load_tokenizer()
-    ours = _normalized_supervised_tokens(
-        _renderer(tokenizer), _FINAL_NO_REASONING_TOOL_CALLS
-    )
+    ours = _normalized_supervised_tokens(_renderer(tokenizer), _FINAL_NO_REASONING_TOOL_CALLS)
     assert ours == _hf_tokens(tokenizer, _FINAL_NO_REASONING_TOOL_CALLS)
 
 
@@ -353,7 +343,7 @@ def test_final_tool_only_turn_wrapper_then_call_no_extra_newline() -> None:
 def test_fold_skipped_when_trainable_flags_differ() -> None:
     """Folding keeps only the first result's metadata, so messages with
     different `trainable` flags must stay separate (CUSTOMIZED weights)."""
-    from training._vendor.tinker_cookbook_0_4_3.renderers.base import TrainOnWhat
+    from training.renderer.base import TrainOnWhat
     from training.utils.supervised import normalize_messages
 
     tokenizer = _load_tokenizer()
@@ -407,9 +397,7 @@ _FINAL_LEADING_NEWLINE_ANSWER = [
 def test_final_answer_leading_newline_matches_hf() -> None:
     """HF strips leading newlines from the answer after the empty wrapper."""
     tokenizer = _load_tokenizer()
-    ours = _normalized_supervised_tokens(
-        _renderer(tokenizer), _FINAL_LEADING_NEWLINE_ANSWER
-    )
+    ours = _normalized_supervised_tokens(_renderer(tokenizer), _FINAL_LEADING_NEWLINE_ANSWER)
     assert ours == _hf_tokens(tokenizer, _FINAL_LEADING_NEWLINE_ANSWER)
 
 
@@ -449,9 +437,7 @@ def test_tool_only_structured_empty_content_matches_hf() -> None:
     """Structured empty content (parse_response shape) must not keep the
     extra tool-call newline."""
     tokenizer = _load_tokenizer()
-    ours = _normalized_supervised_tokens(
-        _renderer(tokenizer), _TOOL_ONLY_STRUCTURED_EMPTY
-    )
+    ours = _normalized_supervised_tokens(_renderer(tokenizer), _TOOL_ONLY_STRUCTURED_EMPTY)
     hf = _hf_tokens(
         tokenizer,
         [
@@ -509,9 +495,7 @@ def test_final_newline_only_tool_call_keeps_separator() -> None:
     """HF decides the tool-call separator on the original content: a
     newline-only answer keeps it (three newlines before the call)."""
     tokenizer = _load_tokenizer()
-    ours = _normalized_supervised_tokens(
-        _renderer(tokenizer), _FINAL_NEWLINE_ONLY_TOOL_CALLS
-    )
+    ours = _normalized_supervised_tokens(_renderer(tokenizer), _FINAL_NEWLINE_ONLY_TOOL_CALLS)
     assert ours == _hf_tokens(tokenizer, _FINAL_NEWLINE_ONLY_TOOL_CALLS)
 
 
@@ -538,9 +522,7 @@ def test_multipart_visible_content_keeps_tool_call_separator() -> None:
         {"role": "user", "content": "go"},
         {"role": "assistant", "content": "done", "tool_calls": [tc]},
     ]
-    assert _normalized_supervised_tokens(r, structured) == _normalized_supervised_tokens(
-        _renderer(tokenizer), plain
-    )
+    assert _normalized_supervised_tokens(r, structured) == _normalized_supervised_tokens(_renderer(tokenizer), plain)
 
 
 @pytest.mark.timeout(180)
@@ -552,9 +534,7 @@ def test_preserved_history_mode_untouched_and_prefix_stable() -> None:
     tokenizer = _load_tokenizer()
     renderer = _renderer(tokenizer)
     renderer.strip_thinking_from_history = False
-    short = normalize_messages(
-        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
-    )
+    short = normalize_messages([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}])
     long = normalize_messages(
         [
             {"role": "user", "content": "hi"},

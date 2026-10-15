@@ -18,12 +18,13 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-import tinker
 import torch
+from fireworks.training import sdk
 from jinja2.exceptions import TemplateError
-from training.renderer import RendererError
-from training.renderer import register_renderer
-from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
+
+from training.renderer import RendererError, register_renderer
+from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
+from training.renderer.base import (
     Message,
     ParseTermination,
     RenderContext,
@@ -36,11 +37,9 @@ from training._vendor.tinker_cookbook_0_4_3.renderers.base import (
     UnparsedToolCall,
     image_to_chunk,
 )
-from training.renderer.tokenizer import Tokenizer
-
 from training.renderer.message_weights import untrained_synthesized_context
-from training.renderer._disaggregate_mixin import DisaggregateMultiTurnMixin
 from training.renderer.reasoning_fields import original_reasoning_content
+from training.renderer.tokenizer import Tokenizer
 
 _BOS = "<|begin_of_text|>"
 _START = "<|start|>"
@@ -138,9 +137,7 @@ class MuseGlimmerImageTokenCounter:
                 (math.floor(ideal_h), math.ceil(ideal_h)),
                 (math.floor(ideal_w), math.ceil(ideal_w)),
             )
-            if patches_h >= 1
-            and patches_w >= 1
-            and patches_h * patches_w <= max_tokens
+            if patches_h >= 1 and patches_w >= 1 and patches_h * patches_w <= max_tokens
         }
         if not candidates:
             candidates = {(max(1, round(ideal_h)), max(1, round(ideal_w)))}
@@ -336,10 +333,7 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
         self.options = options or MuseGlimmerOptions()
         patch_ids = list(tokenizer.encode("<|patch|>", add_special_tokens=False))
         if len(patch_ids) != 1:
-            raise RuntimeError(
-                "Muse Glimmer expected '<|patch|>' to be one token: "
-                f"{patch_ids}"
-            )
+            raise RuntimeError("Muse Glimmer expected '<|patch|>' to be one token: " f"{patch_ids}")
         self.image_placeholder_token_id = int(patch_ids[0])
 
     @property
@@ -353,12 +347,12 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
         # appended, so legal consecutive-assistant histories are not prefixes.
         return False
 
-    def _encode(self, text: str) -> tinker.EncodedTextChunk:
-        return tinker.types.EncodedTextChunk(tokens=self.tokenizer.encode(text, add_special_tokens=False))
+    def _encode(self, text: str) -> sdk.EncodedTextChunk:
+        return sdk.types.EncodedTextChunk(tokens=self.tokenizer.encode(text, add_special_tokens=False))
 
     @staticmethod
     def _append_text_piece(
-        pieces: list[str | tinker.types.ImageChunk],
+        pieces: list[str | sdk.types.ImageChunk],
         text: str,
     ) -> None:
         if not text:
@@ -373,7 +367,7 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
         content: Any,
         *,
         text_transform=lambda text: text,
-    ) -> list[str | tinker.types.ImageChunk]:
+    ) -> list[str | sdk.types.ImageChunk]:
         """Materialize template content while retaining image payloads.
 
         The Jinja template emits one symbolic ``<|patch|>`` per image. The
@@ -387,7 +381,7 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
         if content is None:
             return []
 
-        pieces: list[str | tinker.types.ImageChunk] = []
+        pieces: list[str | sdk.types.ImageChunk] = []
         pending_text = ""
 
         def flush_text() -> None:
@@ -423,8 +417,8 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
 
     def _encode_pieces(
         self,
-        pieces: list[str | tinker.types.ImageChunk],
-    ) -> list[tinker.types.ModelInputChunk]:
+        pieces: list[str | sdk.types.ImageChunk],
+    ) -> list[sdk.types.ModelInputChunk]:
         return [self._encode(piece) if isinstance(piece, str) else piece for piece in pieces]
 
     def _reasoning(self) -> str:
@@ -477,14 +471,14 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
         messages: list[Message],
         role: Role = "assistant",
         prefill: str | None = None,
-    ) -> tinker.ModelInput:
+    ) -> sdk.ModelInput:
         return super().build_generation_prompt(self._preprocess(messages), role=role, prefill=prefill)
 
     def build_supervised_example(
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
-    ) -> tuple[tinker.ModelInput, torch.Tensor]:
+    ) -> tuple[sdk.ModelInput, torch.Tensor]:
         return super().build_supervised_example(self._preprocess(messages), train_on_what=train_on_what)
 
     def render_message(self, message: Message, ctx: RenderContext) -> RenderedMessage:
@@ -504,9 +498,7 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
             content_pieces = self._content_pieces(
                 message.get("content"),
                 text_transform=(
-                    (lambda text: text)
-                    if message.get("_muse_glimmer_default_system")
-                    else _replace_reasoning_effort
+                    (lambda text: text) if message.get("_muse_glimmer_default_system") else _replace_reasoning_effort
                 ),
             )
             self._append_text_piece(content_pieces, suffix)
@@ -529,9 +521,7 @@ class MuseGlimmerRenderer(DisaggregateMultiTurnMixin, Renderer):
                 or ""
             )
             header = _START + "tool " + name + _MESSAGE
-            pieces: list[str | tinker.types.ImageChunk] = [
-                f'<tool_output name="{name}">\n'
-            ]
+            pieces: list[str | sdk.types.ImageChunk] = [f'<tool_output name="{name}">\n']
             for piece in self._content_pieces(message.get("content")):
                 if isinstance(piece, str):
                     self._append_text_piece(pieces, piece)

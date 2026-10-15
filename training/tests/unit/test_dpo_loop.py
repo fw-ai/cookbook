@@ -24,15 +24,13 @@ import array
 import asyncio
 import json
 import time
-from types import SimpleNamespace
 from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import Mock
 
-import tinker
-
 import pytest
-
 import training.recipes.dpo_loop as module
+from fireworks.training import sdk
 from training.utils import AppendOnlyPickleLog, JsonlRenderDataset, RawRowCursor
 from training.utils import supervised as supervised_utils
 from training.utils.data import iter_preference_examples, load_preference_dataset
@@ -284,9 +282,7 @@ class TestRenderPairWorker:
             captured["state"] = state
             captured["kwargs"] = kwargs
 
-        monkeypatch.setattr(
-            module, "populate_render_worker_state", fake_populate_render_worker_state
-        )
+        monkeypatch.setattr(module, "populate_render_worker_state", fake_populate_render_worker_state)
 
         module._init_pair_worker(
             "moonshotai/Kimi-K2.6",
@@ -311,33 +307,32 @@ class TestRenderPairWorker:
     def test_returns_none_when_render_fails(self, monkeypatch):
         _setup_pair_worker(monkeypatch)
         monkeypatch.setattr(module, "render_preference_pair", lambda *a, **k: None)
-        assert module._render_pair_worker(
-            {"chosen": {"messages": []}, "rejected": {"messages": []}}
-        ) is None
+        assert module._render_pair_worker({"chosen": {"messages": []}, "rejected": {"messages": []}}) is None
 
     def test_returns_none_when_too_long(self, monkeypatch):
         _setup_pair_worker(monkeypatch)
         long_pair = SimpleNamespace(
-            chosen_tokens=[1] * 9, rejected_tokens=[2, 3], response_start=3,
-            chosen_datum={"kind": "chosen"}, rejected_datum={"kind": "rejected"},
+            chosen_tokens=[1] * 9,
+            rejected_tokens=[2, 3],
+            response_start=3,
+            chosen_datum={"kind": "chosen"},
+            rejected_datum={"kind": "rejected"},
         )
         monkeypatch.setattr(module, "render_preference_pair", lambda *a, **k: long_pair)
-        assert module._render_pair_worker(
-            {"chosen": {}, "rejected": {}}
-        ) is None
+        assert module._render_pair_worker({"chosen": {}, "rejected": {}}) is None
 
     def test_returns_dict_with_lengths_only(self, monkeypatch):
         """Stored dict carries lengths, not token lists -- saves O(N*L) RAM."""
         _setup_pair_worker(monkeypatch)
         valid_pair = SimpleNamespace(
-            chosen_tokens=[1, 2, 3, 4], rejected_tokens=[1, 2, 9],
+            chosen_tokens=[1, 2, 3, 4],
+            rejected_tokens=[1, 2, 9],
             response_start=2,
-            chosen_datum={"kind": "chosen"}, rejected_datum={"kind": "rejected"},
+            chosen_datum={"kind": "chosen"},
+            rejected_datum={"kind": "rejected"},
         )
         monkeypatch.setattr(module, "render_preference_pair", lambda *a, **k: valid_pair)
-        result = module._render_pair_worker(
-            {"chosen": {}, "rejected": {}}
-        )
+        result = module._render_pair_worker({"chosen": {}, "rejected": {}})
         assert result == {
             "chosen_tokens_len": 4,
             "rejected_tokens_len": 3,
@@ -357,15 +352,20 @@ class TestRenderPairWorker:
             captured["chosen"] = chosen
             captured["rejected"] = rejected
             return SimpleNamespace(
-                chosen_tokens=[1], rejected_tokens=[1], response_start=0,
-                chosen_datum={}, rejected_datum={},
+                chosen_tokens=[1],
+                rejected_tokens=[1],
+                response_start=0,
+                chosen_datum={},
+                rejected_datum={},
             )
 
         monkeypatch.setattr(module, "render_preference_pair", fake_render)
-        row = {"samples": [
-            {"text": "good", "evals": {"score": 1.0}},
-            {"text": "bad", "evals": {"score": 0.0}},
-        ]}
+        row = {
+            "samples": [
+                {"text": "good", "evals": {"score": 1.0}},
+                {"text": "bad", "evals": {"score": 0.0}},
+            ]
+        }
         assert module._render_pair_worker(row) is not None
         assert captured["chosen"]["text"] == "good"
         assert captured["rejected"]["text"] == "bad"
@@ -392,30 +392,42 @@ class TestRefForwardBatch:
 
             def forward(self, datums, loss_fn):
                 self.calls.append((datums, loss_fn))
-                return SimpleNamespace(loss_fn_outputs=[
-                    {"logprobs": SimpleNamespace(data=[-0.1, -0.2])},
-                    {"logprobs": SimpleNamespace(data=[-0.3])},
-                    {"logprobs": SimpleNamespace(data=[-0.4])},
-                    {"logprobs": SimpleNamespace(data=[-0.5, -0.6])},
-                ])
+                return SimpleNamespace(
+                    loss_fn_outputs=[
+                        {"logprobs": SimpleNamespace(data=[-0.1, -0.2])},
+                        {"logprobs": SimpleNamespace(data=[-0.3])},
+                        {"logprobs": SimpleNamespace(data=[-0.4])},
+                        {"logprobs": SimpleNamespace(data=[-0.5, -0.6])},
+                    ]
+                )
 
         reference = FakeReference()
         pairs = [
-            {"chosen_tokens_len": 3, "rejected_tokens_len": 3, "response_start": 2,
-             "chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"}},
-            {"chosen_tokens_len": 3, "rejected_tokens_len": 3, "response_start": 2,
-             "chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"}},
+            {
+                "chosen_tokens_len": 3,
+                "rejected_tokens_len": 3,
+                "response_start": 2,
+                "chosen_datum": {"id": "c0"},
+                "rejected_datum": {"id": "r0"},
+            },
+            {
+                "chosen_tokens_len": 3,
+                "rejected_tokens_len": 3,
+                "response_start": 2,
+                "chosen_datum": {"id": "c1"},
+                "rejected_datum": {"id": "r1"},
+            },
         ]
 
         sem = asyncio.Semaphore(2)
-        enriched = asyncio.run(
-            module._ref_forward_batch(pairs, reference, sem, ref_batch_size=2)
-        )
+        enriched = asyncio.run(module._ref_forward_batch(pairs, reference, sem, ref_batch_size=2))
 
-        assert reference.calls == [(
-            [{"id": "c0"}, {"id": "r0"}, {"id": "c1"}, {"id": "r1"}],
-            "cross_entropy",
-        )]
+        assert reference.calls == [
+            (
+                [{"id": "c0"}, {"id": "r0"}, {"id": "c1"}, {"id": "r1"}],
+                "cross_entropy",
+            )
+        ]
         assert len(enriched) == 2
         assert isinstance(enriched[0]["ref_chosen"], array.array)
         assert enriched[0]["ref_chosen"].typecode == "f"
@@ -435,19 +447,25 @@ class TestRefForwardBatch:
 
             def forward(self, datums, loss_fn):
                 self.calls.append(len(datums))
-                return SimpleNamespace(loss_fn_outputs=[
-                    {"logprobs": SimpleNamespace(data=[-0.1])} for _ in datums
-                ])
+                return SimpleNamespace(loss_fn_outputs=[{"logprobs": SimpleNamespace(data=[-0.1])} for _ in datums])
 
         reference = FakeReference()
         pairs = [
-            {"chosen_tokens_len": 1, "rejected_tokens_len": 1, "response_start": 0,
-             "chosen_datum": {"i": i}, "rejected_datum": {"i": -i}}
+            {
+                "chosen_tokens_len": 1,
+                "rejected_tokens_len": 1,
+                "response_start": 0,
+                "chosen_datum": {"i": i},
+                "rejected_datum": {"i": -i},
+            }
             for i in range(5)
         ]
         asyncio.run(
             module._ref_forward_batch(
-                pairs, reference, asyncio.Semaphore(4), ref_batch_size=2,
+                pairs,
+                reference,
+                asyncio.Semaphore(4),
+                ref_batch_size=2,
             )
         )
         # 5 pairs / 2 per batch -> [2, 2, 1] pairs -> [4, 4, 2] datums
@@ -464,8 +482,10 @@ def test_forward_backward_pairs_interleaves_and_builds_loss_fn(monkeypatch):
 
     def fake_make_loss(ref_chosen, ref_rejected, response_starts, beta):
         captured.update(
-            ref_chosen=ref_chosen, ref_rejected=ref_rejected,
-            response_starts=response_starts, beta=beta,
+            ref_chosen=ref_chosen,
+            ref_rejected=ref_rejected,
+            response_starts=response_starts,
+            beta=beta,
         )
         return "loss-fn"
 
@@ -478,17 +498,32 @@ def test_forward_backward_pairs_interleaves_and_builds_loss_fn(monkeypatch):
     monkeypatch.setattr(module, "make_batch_dpo_loss_fn", fake_make_loss)
 
     batch_pairs = [
-        {"chosen_datum": {"id": "c0"}, "rejected_datum": {"id": "r0"},
-         "ref_chosen": array.array("f", [-0.1]), "ref_rejected": array.array("f", [-0.2]),
-         "response_start": 3, "chosen_tokens_len": 1, "rejected_tokens_len": 1},
-        {"chosen_datum": {"id": "c1"}, "rejected_datum": {"id": "r1"},
-         "ref_chosen": array.array("f", [-0.3]), "ref_rejected": array.array("f", [-0.4]),
-         "response_start": 5, "chosen_tokens_len": 1, "rejected_tokens_len": 1},
+        {
+            "chosen_datum": {"id": "c0"},
+            "rejected_datum": {"id": "r0"},
+            "ref_chosen": array.array("f", [-0.1]),
+            "ref_rejected": array.array("f", [-0.2]),
+            "response_start": 3,
+            "chosen_tokens_len": 1,
+            "rejected_tokens_len": 1,
+        },
+        {
+            "chosen_datum": {"id": "c1"},
+            "rejected_datum": {"id": "r1"},
+            "ref_chosen": array.array("f", [-0.3]),
+            "ref_rejected": array.array("f", [-0.4]),
+            "response_start": 5,
+            "chosen_tokens_len": 1,
+            "rejected_tokens_len": 1,
+        },
     ]
     assert module._forward_backward_pairs(batch_pairs, FakePolicy(), beta=0.25) == "result"
 
     assert captured["datums"] == [
-        {"id": "c0"}, {"id": "r0"}, {"id": "c1"}, {"id": "r1"},
+        {"id": "c0"},
+        {"id": "r0"},
+        {"id": "c1"},
+        {"id": "r1"},
     ]
     assert all(isinstance(r, array.array) for r in captured["ref_chosen"])
     assert captured["response_starts"] == [3, 5]
@@ -526,10 +561,9 @@ def _make_pair_dataset(tmp_path, n: int) -> JsonlRenderDataset:
 
 class _FakeReference:
     def forward(self, datums, loss_fn):
-        return SimpleNamespace(loss_fn_outputs=[
-            {"logprobs": SimpleNamespace(data=[-0.1 * (j + 1)])}
-            for j in range(len(datums))
-        ])
+        return SimpleNamespace(
+            loss_fn_outputs=[{"logprobs": SimpleNamespace(data=[-0.1 * (j + 1)])} for j in range(len(datums))]
+        )
 
 
 class _FakePolicy:
@@ -551,19 +585,19 @@ class _FakePolicy:
         return name
 
 
-def _adam_params(*, weight_decay: float = 0.01) -> module.tinker.AdamParams:
+def _adam_params(*, weight_decay: float = 0.01) -> module.sdk.AdamParams:
     adam_kwargs = dict(module.DEFAULT_ADAM)
     adam_kwargs["weight_decay"] = weight_decay
-    return module.tinker.AdamParams(learning_rate=1e-4, **adam_kwargs)
+    return module.sdk.AdamParams(learning_rate=1e-4, **adam_kwargs)
 
 
 def _stub_train_step_deps(monkeypatch, events: dict):
     """Common stubs so _train_loop runs without metrics/wandb/checkpoint side effects."""
     monkeypatch.setattr(
-        module, "_forward_backward_pairs",
-        lambda batch, policy, beta: events.setdefault("flush_batches", []).append(
-            (list(batch), beta)
-        ) or SimpleNamespace(metrics={"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75}),
+        module,
+        "_forward_backward_pairs",
+        lambda batch, policy, beta: events.setdefault("flush_batches", []).append((list(batch), beta))
+        or SimpleNamespace(metrics={"dpo_loss": 1.5, "margin": 0.25, "accuracy": 0.75}),
     )
     monkeypatch.setattr(module, "flush_timing", lambda: {})
     monkeypatch.setattr(module, "log_metrics_json", lambda *a, **kw: None)
@@ -627,7 +661,10 @@ class TestTrainLoop:
 
         ds = _make_pair_dataset(tmp_path, n=4)
         cfg = module.Config(
-            log_path=str(tmp_path), beta=0.2, epochs=1, batch_size=2,
+            log_path=str(tmp_path),
+            beta=0.2,
+            epochs=1,
+            batch_size=2,
             render_workers=0,
         )
         ref_done = []
@@ -635,8 +672,10 @@ class TestTrainLoop:
         policy = _FakePolicy()
         step = asyncio.run(
             module._train_loop(
-                ds, None,
-                _FakeReference(), policy,
+                ds,
+                None,
+                _FakeReference(),
+                policy,
                 adam_params=_adam_params(weight_decay=0.07),
                 cfg=cfg,
                 step_offset=0,
@@ -669,16 +708,22 @@ class TestTrainLoop:
 
         ds = _make_pair_dataset(tmp_path, n=4)
         cfg = module.Config(
-            log_path=str(tmp_path), beta=0.2, epochs=1, batch_size=2,
-            dcp_save_interval=2, sampler_save_interval=1,
+            log_path=str(tmp_path),
+            beta=0.2,
+            epochs=1,
+            batch_size=2,
+            dcp_save_interval=2,
+            sampler_save_interval=1,
             render_workers=0,
         )
         ckpt = FakeCheckpoints()
 
         step = asyncio.run(
             module._train_loop(
-                ds, None,
-                _FakeReference(), _FakePolicy(),
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
                 adam_params=_adam_params(),
                 cfg=cfg,
                 step_offset=0,
@@ -702,16 +747,22 @@ class TestTrainLoop:
         ref_cache = AppendOnlyPickleLog(ref_cache_path)
         try:
             cfg = module.Config(
-                log_path=str(tmp_path), beta=0.1, epochs=3, batch_size=2,
+                log_path=str(tmp_path),
+                beta=0.1,
+                epochs=3,
+                batch_size=2,
                 render_workers=0,
             )
             cursor = _new_cursor(max_rows=4 * 3)
             step = asyncio.run(
                 module._train_loop(
-                    ds, ref_cache,
-                    _FakeReference(), _FakePolicy(),
+                    ds,
+                    ref_cache,
+                    _FakeReference(),
+                    _FakePolicy(),
                     adam_params=_adam_params(),
-                    cfg=cfg, step_offset=0,
+                    cfg=cfg,
+                    step_offset=0,
                     cursor=cursor,
                 )
             )
@@ -735,15 +786,21 @@ class TestTrainLoop:
     def test_multi_epoch_requires_ref_cache_log(self, tmp_path):
         ds = _make_pair_dataset(tmp_path, n=2)
         cfg = module.Config(
-            log_path=str(tmp_path), epochs=2, batch_size=1, render_workers=0,
+            log_path=str(tmp_path),
+            epochs=2,
+            batch_size=1,
+            render_workers=0,
         )
         with pytest.raises(ValueError, match="ref_cache_log"):
             asyncio.run(
                 module._train_loop(
-                    ds, None,
-                    _FakeReference(), _FakePolicy(),
+                    ds,
+                    None,
+                    _FakeReference(),
+                    _FakePolicy(),
                     adam_params=_adam_params(),
-                    cfg=cfg, step_offset=0,
+                    cfg=cfg,
+                    step_offset=0,
                     cursor=_new_cursor(max_rows=4),
                 )
             )
@@ -765,16 +822,23 @@ class TestTrainLoop:
 
         ds = _make_pair_dataset(tmp_path, n=4)
         cfg = module.Config(
-            log_path=str(tmp_path), beta=0.1, epochs=1, batch_size=1,
-            ref_cache_concurrency=4, render_workers=0,
+            log_path=str(tmp_path),
+            beta=0.1,
+            epochs=1,
+            batch_size=1,
+            ref_cache_concurrency=4,
+            render_workers=0,
         )
         t0 = time.monotonic()
         step = asyncio.run(
             module._train_loop(
-                ds, None,
-                _FakeReference(), _FakePolicy(),
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
                 adam_params=_adam_params(),
-                cfg=cfg, step_offset=0,
+                cfg=cfg,
+                step_offset=0,
                 cursor=_new_cursor(max_rows=4),
                 on_ref_done=lambda: timeline.append(time.monotonic()),
             )
@@ -811,13 +875,21 @@ class TestTrainLoop:
                 return SimpleNamespace(loss_fn_outputs=[])
 
         cfg = module.Config(
-            log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0,
+            log_path=str(tmp_path),
+            epochs=1,
+            batch_size=2,
+            render_workers=0,
         )
         with pytest.raises(module.DatasetError, match="after tokenization"):
             asyncio.run(
                 module._train_loop(
-                    ds, None, CountingReference(), _FakePolicy(),
-                    adam_params=_adam_params(), cfg=cfg, step_offset=0,
+                    ds,
+                    None,
+                    CountingReference(),
+                    _FakePolicy(),
+                    adam_params=_adam_params(),
+                    cfg=cfg,
+                    step_offset=0,
                     cursor=_new_cursor(max_rows=4),
                 )
             )
@@ -850,8 +922,13 @@ class TestTrainLoop:
 
         step = asyncio.run(
             module._train_loop(
-                ds, None, _FakeReference(), _FakePolicy(),
-                adam_params=_adam_params(), cfg=cfg, step_offset=0,
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=0,
                 cursor=_new_cursor(max_rows=5),
             )
         )
@@ -944,11 +1021,13 @@ class TestTrainLoop:
                 pass
 
             def append_metrics(self, step, metrics, *, tokens=0):
-                append_calls.append({
-                    "step": step,
-                    "metrics": dict(metrics),
-                    "tokens": tokens,
-                })
+                append_calls.append(
+                    {
+                        "step": step,
+                        "metrics": dict(metrics),
+                        "tokens": tokens,
+                    }
+                )
 
             def report_rendering_progress(self, *args, **kwargs):
                 pass
@@ -1007,7 +1086,10 @@ class TestTrainLoop:
 
         ds = JsonlRenderDataset(str(path), render_drop_some)
         cfg = module.Config(
-            log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0,
+            log_path=str(tmp_path),
+            epochs=1,
+            batch_size=2,
+            render_workers=0,
             dcp_save_interval=1,
         )
 
@@ -1020,10 +1102,13 @@ class TestTrainLoop:
         cursor = _new_cursor(max_rows=6)
         step = asyncio.run(
             module._train_loop(
-                ds, None,
-                _FakeReference(), _FakePolicy(),
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
                 adam_params=_adam_params(),
-                cfg=cfg, step_offset=0,
+                cfg=cfg,
+                step_offset=0,
                 cursor=cursor,
                 ckpt=_CapturingCkpt(),
             )
@@ -1041,7 +1126,10 @@ class TestTrainLoop:
 
         ds = _make_pair_dataset(tmp_path, n=4)
         cfg = module.Config(
-            log_path=str(tmp_path), epochs=1, batch_size=2, render_workers=0,
+            log_path=str(tmp_path),
+            epochs=1,
+            batch_size=2,
+            render_workers=0,
             dcp_save_interval=1,
         )
 
@@ -1055,10 +1143,13 @@ class TestTrainLoop:
         cursor = _new_cursor(persisted=100)
         step = asyncio.run(
             module._train_loop(
-                ds, None,
-                _FakeReference(), _FakePolicy(),
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
                 adam_params=_adam_params(),
-                cfg=cfg, step_offset=10,
+                cfg=cfg,
+                step_offset=10,
                 cursor=cursor,
                 ckpt=_CapturingCkpt(),
             )
@@ -1077,15 +1168,21 @@ class TestTrainLoop:
         ref_cache = AppendOnlyPickleLog(ref_cache_path)
         try:
             cfg = module.Config(
-                log_path=str(tmp_path), epochs=3, batch_size=2, render_workers=0,
+                log_path=str(tmp_path),
+                epochs=3,
+                batch_size=2,
+                render_workers=0,
             )
             cursor = _new_cursor(max_rows=4 * 3)
             step = asyncio.run(
                 module._train_loop(
-                    ds, ref_cache,
-                    _FakeReference(), _FakePolicy(),
+                    ds,
+                    ref_cache,
+                    _FakeReference(),
+                    _FakePolicy(),
                     adam_params=_adam_params(),
-                    cfg=cfg, step_offset=0,
+                    cfg=cfg,
+                    step_offset=0,
                     cursor=cursor,
                 )
             )
@@ -1113,28 +1210,40 @@ def _sized_pair_dataset(tmp_path, order_sizes) -> JsonlRenderDataset:
 
 
 def _run_dpo_batches(
-    tmp_path, monkeypatch, order_sizes, *, batch_size, group_by_length, group_factor=50,
+    tmp_path,
+    monkeypatch,
+    order_sizes,
+    *,
+    batch_size,
+    group_by_length,
+    group_factor=50,
 ):
     """Run a single-epoch _train_loop and return the trained id batches in order."""
     events: dict = {}
     _stub_train_step_deps(monkeypatch, events)
     ds = _sized_pair_dataset(tmp_path, order_sizes)
     cfg = module.Config(
-        log_path=str(tmp_path), beta=0.1, epochs=1, batch_size=batch_size,
-        render_workers=0, group_by_length=group_by_length, length_group_factor=group_factor,
+        log_path=str(tmp_path),
+        beta=0.1,
+        epochs=1,
+        batch_size=batch_size,
+        render_workers=0,
+        group_by_length=group_by_length,
+        length_group_factor=group_factor,
     )
     asyncio.run(
         module._train_loop(
-            ds, None,
-            _FakeReference(), _FakePolicy(),
-            adam_params=_adam_params(), cfg=cfg, step_offset=0,
+            ds,
+            None,
+            _FakeReference(),
+            _FakePolicy(),
+            adam_params=_adam_params(),
+            cfg=cfg,
+            step_offset=0,
             cursor=_new_cursor(max_rows=len(order_sizes)),
         )
     )
-    return [
-        [int(p["chosen_datum"]["id"][1:]) for p in batch]
-        for batch, _beta in events.get("flush_batches", [])
-    ]
+    return [[int(p["chosen_datum"]["id"][1:]) for p in batch] for batch, _beta in events.get("flush_batches", [])]
 
 
 class TestGroupByLength:
@@ -1143,7 +1252,11 @@ class TestGroupByLength:
         which batch a pair lands in."""
         order_sizes = [(i * 37) % 500 for i in range(20)]
         batches = _run_dpo_batches(
-            tmp_path, monkeypatch, order_sizes, batch_size=4, group_by_length=True,
+            tmp_path,
+            monkeypatch,
+            order_sizes,
+            batch_size=4,
+            group_by_length=True,
             group_factor=2,
         )
         flat = sorted(i for b in batches for i in b)
@@ -1155,11 +1268,19 @@ class TestGroupByLength:
         ref cache replays correctly and epoch-0 resume is valid."""
         order_sizes = [(i * 101) % 999 for i in range(23)]
         a = _run_dpo_batches(
-            tmp_path, monkeypatch, order_sizes, batch_size=4, group_by_length=True,
+            tmp_path,
+            monkeypatch,
+            order_sizes,
+            batch_size=4,
+            group_by_length=True,
             group_factor=3,
         )
         b = _run_dpo_batches(
-            tmp_path, monkeypatch, order_sizes, batch_size=4, group_by_length=True,
+            tmp_path,
+            monkeypatch,
+            order_sizes,
+            batch_size=4,
+            group_by_length=True,
             group_factor=3,
         )
         assert a == b
@@ -1173,18 +1294,23 @@ class TestGroupByLength:
         order_sizes = [rng.randint(0, 4000) for _ in range(120)]
 
         grouped = _run_dpo_batches(
-            tmp_path, monkeypatch, order_sizes, batch_size=6, group_by_length=True,
+            tmp_path,
+            monkeypatch,
+            order_sizes,
+            batch_size=6,
+            group_by_length=True,
             group_factor=10,
         )
         default = _run_dpo_batches(
-            tmp_path, monkeypatch, order_sizes, batch_size=6, group_by_length=False,
+            tmp_path,
+            monkeypatch,
+            order_sizes,
+            batch_size=6,
+            group_by_length=False,
         )
 
         def mean_spread(batches):
-            vals = [
-                max(order_sizes[i] for i in b) - min(order_sizes[i] for i in b)
-                for b in batches
-            ]
+            vals = [max(order_sizes[i] for i in b) - min(order_sizes[i] for i in b) for b in batches]
             return sum(vals) / len(vals)
 
         assert mean_spread(grouped) < 0.5 * mean_spread(default)
@@ -1198,7 +1324,9 @@ class TestGroupByLength:
 def test_main_requires_tokenizer_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
     cfg = module.Config(
-        log_path="/tmp/dpo_test_logs", dataset="/tmp/pairs.jsonl", tokenizer_model="",
+        log_path="/tmp/dpo_test_logs",
+        dataset="/tmp/pairs.jsonl",
+        tokenizer_model="",
     )
     with pytest.raises(ValueError, match="tokenizer_model"):
         module.main(cfg)
@@ -1219,23 +1347,33 @@ def _write_jsonl(path, rows) -> None:
 class TestIterPreferenceExamples:
     def test_chosen_rejected_format_passthrough(self, tmp_path):
         path = tmp_path / "pairs.jsonl"
-        _write_jsonl(path, [
-            {"chosen": {"messages": [{"role": "user", "content": "x"}]},
-             "rejected": {"messages": [{"role": "user", "content": "y"}]}},
-        ])
+        _write_jsonl(
+            path,
+            [
+                {
+                    "chosen": {"messages": [{"role": "user", "content": "x"}]},
+                    "rejected": {"messages": [{"role": "user", "content": "y"}]},
+                },
+            ],
+        )
         out = list(iter_preference_examples(str(path)))
         assert len(out) == 1
         assert out[0]["chosen"]["messages"][0]["content"] == "x"
 
     def test_samples_format_with_score_evals(self, tmp_path):
         path = tmp_path / "samples.jsonl"
-        _write_jsonl(path, [
-            {"samples": [
-                {"text": "good", "evals": {"score": 1.0}},
-                {"text": "bad", "evals": {"score": 0.0}},
-            ]},
-            {"samples": [{"text": "lonely", "evals": {"score": 1.0}}]},
-        ])
+        _write_jsonl(
+            path,
+            [
+                {
+                    "samples": [
+                        {"text": "good", "evals": {"score": 1.0}},
+                        {"text": "bad", "evals": {"score": 0.0}},
+                    ]
+                },
+                {"samples": [{"text": "lonely", "evals": {"score": 1.0}}]},
+            ],
+        )
         out = list(iter_preference_examples(str(path)))
         assert len(out) == 1
         assert out[0]["chosen"]["text"] == "good"
@@ -1243,11 +1381,16 @@ class TestIterPreferenceExamples:
 
     def test_preferred_output_format(self, tmp_path):
         path = tmp_path / "pref.jsonl"
-        _write_jsonl(path, [{
-            "input": {"messages": [{"role": "user", "content": "q"}]},
-            "preferred_output": [{"role": "assistant", "content": "yes"}],
-            "non_preferred_output": "no",
-        }])
+        _write_jsonl(
+            path,
+            [
+                {
+                    "input": {"messages": [{"role": "user", "content": "q"}]},
+                    "preferred_output": [{"role": "assistant", "content": "yes"}],
+                    "non_preferred_output": "no",
+                }
+            ],
+        )
         out = list(iter_preference_examples(str(path)))
         assert len(out) == 1
         assert out[0]["chosen"]["messages"] == [
@@ -1261,10 +1404,7 @@ class TestIterPreferenceExamples:
 
     def test_max_pairs_caps_valid_pairs(self, tmp_path):
         path = tmp_path / "pairs.jsonl"
-        _write_jsonl(path, [
-            {"chosen": {"text": str(i)}, "rejected": {"text": "_"}}
-            for i in range(5)
-        ])
+        _write_jsonl(path, [{"chosen": {"text": str(i)}, "rejected": {"text": "_"}} for i in range(5)])
         assert len(list(iter_preference_examples(str(path), max_pairs=3))) == 3
 
     def test_skips_blank_and_unrecognized_rows(self, tmp_path):
@@ -1279,9 +1419,7 @@ class TestIterPreferenceExamples:
 
     def test_is_lazy(self, tmp_path):
         path = tmp_path / "pairs.jsonl"
-        _write_jsonl(path, [
-            {"chosen": {"i": i}, "rejected": {"i": -i}} for i in range(100)
-        ])
+        _write_jsonl(path, [{"chosen": {"i": i}, "rejected": {"i": -i}} for i in range(100)])
         it = iter_preference_examples(str(path), max_pairs=2)
         first = next(it)
         second = next(it)
@@ -1398,11 +1536,9 @@ def test_sampler_reference_aligns_targets_and_preserves_pair_order():
             return future
 
     def datum(tokens):
-        return tinker.Datum(
-            model_input=tinker.ModelInput.from_ints(tokens[:-1]),
-            loss_fn_inputs={
-                "target_tokens": tinker.TensorData(data=tokens[1:], dtype="int64", shape=[len(tokens) - 1])
-            },
+        return sdk.Datum(
+            model_input=sdk.ModelInput.from_ints(tokens[:-1]),
+            loss_fn_inputs={"target_tokens": sdk.TensorData(data=tokens[1:], dtype="int64", shape=[len(tokens) - 1])},
         )
 
     chosen, rejected = datum([1, 2, 3]), datum([1, 4, 5])
@@ -1431,9 +1567,9 @@ def test_sampler_reference_rejects_missing_scores(values):
     future.set_result(values)
     sampler = Mock()
     sampler.compute_logprobs.return_value = future
-    datum = tinker.Datum(
-        model_input=tinker.ModelInput.from_ints([1, 2]),
-        loss_fn_inputs={"target_tokens": tinker.TensorData(data=[2, 3], dtype="int64", shape=[2])},
+    datum = sdk.Datum(
+        model_input=sdk.ModelInput.from_ints([1, 2]),
+        loss_fn_inputs={"target_tokens": sdk.TensorData(data=[2, 3], dtype="int64", shape=[2])},
     )
     with pytest.raises(ValueError, match="logprob length|unscored target"):
         module.SamplerReference(sampler, timeout=10).forward([datum], "cross_entropy")
@@ -1484,7 +1620,8 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
         assert isinstance(args[2], module.SamplerReference)
         assert args[3] is policy
         ckpt.resume.assert_called_once_with(
-            init_from_checkpoint=None, warm_start_from_adapter=None,
+            init_from_checkpoint=None,
+            warm_start_from_adapter=None,
             prefer_current_run=False,
         )
         if failure == "training":
@@ -1552,24 +1689,33 @@ def test_pair_dataset_multi_shard_directory(tmp_path):
     assert pair_dataset.num_underlying_rows == 5
 
 
-@pytest.mark.parametrize("epochs,consumed,step_offset", [(1,2,1),(3,2,1),(3,6,3),(3,8,4),(3,4,3)])
+@pytest.mark.parametrize("epochs,consumed,step_offset", [(1, 2, 1), (3, 2, 1), (3, 6, 3), (3, 8, 4), (3, 4, 3)])
 def test_dpo_resume_skips_committed_batches_across_epochs(tmp_path, monkeypatch, epochs, consumed, step_offset):
     events = {}
     _stub_train_step_deps(monkeypatch, events)
     ds = _make_pair_dataset(tmp_path, n=4)
     cache = AppendOnlyPickleLog(str(tmp_path / "resume-cache.pkl")) if epochs > 1 else None
     policy = _FakePolicy()
-    cursor = _new_cursor(max_rows=4*epochs, persisted=consumed)
+    cursor = _new_cursor(max_rows=4 * epochs, persisted=consumed)
     try:
-        step = asyncio.run(module._train_loop(ds, cache, _FakeReference(), policy,
-            _adam_params(), module.Config(log_path=str(tmp_path),epochs=epochs,batch_size=2,render_workers=0),
-            step_offset, cursor=cursor))
+        step = asyncio.run(
+            module._train_loop(
+                ds,
+                cache,
+                _FakeReference(),
+                policy,
+                _adam_params(),
+                module.Config(log_path=str(tmp_path), epochs=epochs, batch_size=2, render_workers=0),
+                step_offset,
+                cursor=cursor,
+            )
+        )
     finally:
         if cache is not None:
             cache.close()
-    assert step == 2*epochs
-    assert policy.optim_step_count == 2*epochs-step_offset
+    assert step == 2 * epochs
+    assert policy.optim_step_count == 2 * epochs - step_offset
     trained = [[p["chosen_datum"]["id"] for p in batch] for batch, _ in events["flush_batches"]]
-    expected = ([["c0","c1"],["c2","c3"]]*epochs)[step_offset:]
+    expected = ([["c0", "c1"], ["c2", "c3"]] * epochs)[step_offset:]
     assert trained == expected
-    assert cursor.value == 4*epochs
+    assert cursor.value == 4 * epochs

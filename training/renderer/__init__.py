@@ -1,9 +1,9 @@
+# ruff: noqa: I001
+# Public exports must exist before model-specific registrations run.
 """Fireworks-owned renderer API and cookbook-local model renderers.
 
-The pinned renderer implementation and registry live in the targeted behavior
-snapshot under ``training._vendor``.  This package is the stable public owner:
-it re-exports that API, then imports each Fireworks-local renderer so all custom
-models register into the same registry.
+Renderers convert messages into native SDK inputs and preserve per-message
+training weights.
 
 Importing this package eagerly imports every contained renderer module so
 the registrations take effect.
@@ -16,8 +16,8 @@ templates strip historical thinking but ship without a
 shadows the upstream registration.
 """
 
-from training._vendor.tinker_cookbook_0_4_3.exceptions import RendererError as RendererError
-from training._vendor.tinker_cookbook_0_4_3.renderers import *  # noqa: F403
+from training.renderer.errors import RendererError as RendererError
+from training.renderer._registry import *  # noqa: F403
 
 from training.renderer import deepseek_v4 as _deepseek_v4  # noqa: F401  (registers "deepseek_v4")
 from training.renderer import deepseek_v41 as _deepseek_v41  # noqa: F401  (registers "deepseek_v41")

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
-from fireworks.training.sdk.client import GradAccNormalization
+import httpx
 import pytest
-import tinker.lib.api_future_impl as tinker_api_future_impl
-
+from fireworks.training.sdk import FiretitanServiceClient
+from fireworks.training.sdk._core._base_client import AsyncHttpxClientWrapper
+from fireworks.training.sdk._core.lib import internal_client_holder
+from fireworks.training.sdk._core.lib.api_future_impl import FutureRetrieveRequest
+from fireworks.training.sdk._core.lib.client_connection_pool_type import (
+    ClientConnectionPoolType,
+)
+from fireworks.training.sdk.client import GradAccNormalization
 from training.utils.client import ReconnectableClient
 
 
-def test_client_preserves_tinker_metadata_only_future_retrieval_by_default():
-    request = tinker_api_future_impl.FutureRetrieveRequest(
+def test_client_preserves_metadata_only_future_retrieval_by_default():
+    request = FutureRetrieveRequest(
         request_id="req-1",
         allow_metadata_only=True,
     )
@@ -68,6 +75,9 @@ class _FakeService:
     def __init__(self):
         self.calls = []
 
+    def close(self):
+        self.calls.append("close")
+
     def create_deployment_sampler(self, **kwargs):
         self.calls.append(kwargs)
         return "sampler"
@@ -84,52 +94,6 @@ def _make_client(inner: _FakeInnerClient) -> ReconnectableClient:
     client._owns_service = True
     client._lora_rank = 0
     return client
-
-
-class _FakeCleanupFuture:
-    def __init__(self):
-        self.timeout = None
-
-    def result(self, timeout=None):
-        self.timeout = timeout
-        return None
-
-
-class _FakeTelemetry:
-    def __init__(self):
-        self.flushed = 0
-        self.drained = 0
-        self.drain_result = True
-        self.stopped = 0
-
-    def _trigger_flush(self):
-        self.flushed += 1
-
-    def _wait_until_drained_sync(self):
-        self.drained += 1
-        return self.drain_result
-
-    def stop(self):
-        self.stopped += 1
-
-
-class _FakeHolder:
-    def __init__(self):
-        self.future = _FakeCleanupFuture()
-        self._telemetry = _FakeTelemetry()
-
-    async def _async_cleanup(self):
-        return None
-
-    def get_telemetry(self):
-        return self._telemetry
-
-    def run_coroutine_threadsafe(self, coro):
-        try:
-            coro.close()
-        except Exception:
-            pass
-        return self.future
 
 
 def test_weight_sync_waits_without_checkpoint_options():
@@ -186,9 +150,7 @@ def test_optim_step_forwards_grad_norm_metrics_mode():
         (
             "adam",
             {
-                "grad_accumulation_normalization": (
-                    GradAccNormalization.NUM_SEQUENCES
-                ),
+                "grad_accumulation_normalization": (GradAccNormalization.NUM_SEQUENCES),
                 "emit_grad_norm_metrics": "detailed",
             },
         )
@@ -243,24 +205,55 @@ def test_save_weights_and_get_sampler_uses_snapshot_identity():
     ]
 
 
-def test_close_drains_telemetry_and_stops_holder_cleanup():
+def test_close_stops_owned_holder_once():
     inner = _FakeInnerClient()
-    inner.holder = _FakeHolder()
+    service = _FakeService()
     client = _make_client(inner)
+    client._service = service
 
     client.close(timeout=7.5)
 
     assert client._closed is True
     assert client._client is None
-    assert inner.holder._telemetry.flushed == 1
-    assert inner.holder._telemetry.drained == 1
-    assert inner.holder.future.timeout == 7.5
-    assert inner.holder._telemetry.stopped == 1
+    assert service.calls == ["close"]
 
     client.close(timeout=1.0)
-    assert inner.holder._telemetry.flushed == 1
-    assert inner.holder._telemetry.drained == 1
-    assert inner.holder._telemetry.stopped == 1
+
+
+def test_unload_uses_native_training_pool_and_wire_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    def receive(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path, json.loads(request.content)))
+        if request.url.path.endswith("create_session"):
+            return httpx.Response(200, json={"session_id": "session-test"})
+        if request.url.path.endswith("retrieve_future"):
+            return httpx.Response(200, json={"model_id": "model-test", "type": "unload_model"})
+        assert request.url.path.endswith("unload_model")
+        return httpx.Response(200, json={"request_id": "unload-test"})
+
+    monkeypatch.setattr(internal_client_holder, "init_telemetry", lambda *a, **kw: None)
+    service = FiretitanServiceClient(
+        api_key="fw-test",
+        base_url="https://trainer.invalid/training/v1/rlorTrainerJobs/test/job",
+        http_client=AsyncHttpxClientWrapper(transport=httpx.MockTransport(receive)),
+        _client_config={"use_pyqwest_transport": False},
+    )
+    from fireworks.training.sdk import FiretitanTrainingClient
+
+    inner = FiretitanTrainingClient(service.holder, model_seq_id=0, model_id="model-test", lora_rank=8)
+    client = _make_client(inner)
+    client._lora_rank = 8
+    try:
+        client.unload_model()
+        assert (
+            "/training/v1/rlorTrainerJobs/test/job/api/v1/unload_model",
+            {"model_id": "model-test", "type": "unload_model"},
+        ) in calls
+        assert ClientConnectionPoolType.TRAIN in service.holder._client_pools
+        assert all(isinstance(key, ClientConnectionPoolType) for key in service.holder._client_pools)
+    finally:
+        service.close()
 
 
 def test_forward_backward_custom_default_path_omits_embedding_kwargs():
