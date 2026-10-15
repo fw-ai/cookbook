@@ -151,8 +151,9 @@ class Config:
     """Staleness budget in weight-sync versions; ``0`` is fully on-policy.
     See ``skills/fireworks-training/references/rl-async.md`` (gate semantics)."""
     max_concurrency_rollout_sample: int | None = None
-    """In-flight LLM-call cap (same unit as ``deployment.max_batch_size``);
-    must be ``>= completions_per_prompt`` or the gate stalls."""
+    """Cap on in-flight ``rollout_fn`` calls, not individual inference requests
+    (a multi-turn rollout counts once); must be ``>= completions_per_prompt``
+    or the gate stalls."""
     min_group_size: int = 1
     """Minimum surviving rollout runs per row to emit a PromptGroup."""
     max_incomplete_group_retries: int = 0
