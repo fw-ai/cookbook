@@ -46,7 +46,7 @@ surface, so swapping objectives is one import plus its config:
 | Name | What it is |
 |---|---|
 | `<Name>Config` | Frozen settings, validated on construction |
-| `LOSS_FN`, `loss_fn_config(cfg)` | Trainer built-in loss (absent for `reinforce`, `score_centering`) |
+| `LOSS_FN`, `loss_fn_config(cfg)` | Module's trainer built-in loss (absent for the client `reinforce`, `score_centering` modules) |
 | `build_datums(batch, cfg)` | Datums for that loss |
 | `metrics(batch, result, cfg)` | `{PREFIX}_ratio_mean`, `{PREFIX}_clip_frac`, `{PREFIX}_kl` |
 | `make_loss_fn(batch, cfg)` | Same objective as a client loss on `batch.data`, same metric names |
@@ -68,6 +68,68 @@ result = policy.forward_backward_custom(batch.data, objective.make_loss_fn(batch
 A new client loss is `loss_fn(data, logprobs_list) -> (scalar_loss, metrics)`;
 build it on `common.run_loss_loop(batch, ...)` and name its metrics with
 `common.client_loss_metrics`.
+
+## Server TIS/MIS
+
+All built-in RL policy losses support token TIS/MIS on compatible trainers.
+Anchored losses such as PPO opt in with:
+
+```python
+loss_fn_config = {
+    "anchor_logprob_source": "current_detached",
+    "weighting": "mis", "weight_low": 0.2, "weight_high": 5.0,
+    "target_logprob_support": "sampling_support",
+}
+```
+
+Require `supports_policy_importance_sampling`, raw advantages, sampler logprobs,
+and an explicit response mask. The trainer reuses its forward for a detached
+anchor and weighting; no separate anchor forward is needed. Use exactly one
+optimizer update per weight sync, finish publication before the next training
+window, and do not reuse a batch. Rollouts can remain async. PPO's ratio is 1
+with a nonzero gradient, so clipping is inactive and its gradient matches
+REINFORCE with the same weights. Keep the objective's existing normalization;
+MIS rejection must not shrink its denominator. Separate auxiliaries are unweighted.
+
+## Score-centering paths
+
+Both client-side and server-side SC are supported; neither is selected by default.
+
+| Path | API | Objective |
+|---|---|---|
+| Client SC | `score_centering.make_loss_fn` + `forward_backward_custom` | Explicit vanilla policy-gradient correction; partial top-k head/tail approximation. |
+| Built-in REINFORCE + SC | `loss_fn="reinforce"`, `score_centering=True` | Explicit correction after detached none/TIS/MIS weighting; full vocabulary or complete support replay. |
+
+With identical heads, masks and normalization, client SC matches unweighted
+full-vocabulary server SC. The old STE option `train_inference_correction` has
+been removed; server-side `score_centering=True` is supported only on REINFORCE.
+
+The new path requires a compatible SDK release and trainer capabilities
+`supports_reinforce` / `supports_score_centering`. Reference loops retain GRPO.
+Send ordinary single-target datums with raw advantages, sampler logprobs and
+an explicit response mask; do not use client SC's expanded datums or preapply TIS.
+
+```python
+from training.utils.rl.sampling_support import attach_top_sampling_references
+
+datums = attach_top_sampling_references(datums, batch.top_sampling_references)
+result = policy.forward_backward(datums, "reinforce", loss_fn_config={
+    "score_centering": True, "weighting": "tis", "weight_high": 2.0,
+    "target_logprob_support": "sampling_support",
+})
+policy.optim_step(adam, grad_accumulation_normalization="num_loss_tokens")
+```
+
+SC needs inline sampler IDs/logprobs or Parquet references (see replay below).
+The example requires complete support captured during rollout. `apply_tis`
+rewrites returned datums, not client SC's `batch.advantages`; use the server
+path for SC combined with TIS/MIS.
+Default `full_vocabulary` allows partial heads; `sampling_support` requires the
+complete recorded support/counts and normalizes both distributions there.
+SC, none/TIS/MIS weighting and mask replay are independent options and can be
+combined. v1 uses temperature 1; SC/replay are text-only. Do not preweight
+advantages or add PPO/GSPO clipping. Response-mask tokens count even when their
+advantage is zero.
 
 ## Recompute the anchor
 
@@ -101,7 +163,9 @@ datums, tis = apply_tis(datums, batch, cap=2.0)   # level="sequence": one weight
 result.metrics.update(tis)                         # tis_weight_mean, tis_clip_frac
 ```
 
-With the rollout logprobs as the anchor every weight is 1.
+With the rollout logprobs as the anchor every weight is 1. For REINFORCE + SC,
+use built-in `weighting="tis"` instead: it weights each candidate inside the
+SC correction as well as the sampled token. Keep advantages raw.
 
 ## Add reference KL
 
@@ -226,7 +290,8 @@ which `build_datums` and every client loss read. See
 
 - Keep target tokens, prompt boundaries and logprob rows aligned.
 - Change the anchor only through `PolicyBatch.anchor_logprobs`; never overwrite
-  the rollout logprobs. Only `apply_tis` reweights advantages.
+  the rollout logprobs. Client `apply_tis` reweights advantages; built-in
+  REINFORCE weighting receives raw advantages.
 - Use raw inference logprobs only for drift metrics.
 - Use the objective's `NORMALIZATION`
   ([`rl-gradient-accumulation.md`](rl-gradient-accumulation.md)).
