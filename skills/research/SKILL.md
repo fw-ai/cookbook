@@ -75,7 +75,7 @@ starter only when it tests the same uncertainty.
 Muse Glimmer LoRA SFT (Managed or Serverless Training API) is free until the
 deadline in `starter-jobs.md`; RL is not covered. Apply the exact model,
 method, surfaces, and deadline from that file; state it unambiguously as
-`2026-11-01T00:00:00-07:00` or "through Oct 31 Pacific".
+`2026-12-01T00:00:00-08:00` or "through Nov 30 Pacific".
 
 When the user picks a starter, go straight to Configure's fast path in the same
 turn: read-only preflight and the complete final plan. The next approval

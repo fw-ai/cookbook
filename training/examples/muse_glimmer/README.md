@@ -2,9 +2,9 @@
 
 Fine-tune Muse Glimmer 30B for free on the example datasets, then on your own
 data. "Muse Glimmer 30B SFT is free via UI and Serverless Training API until
-10/31. No credit card required"
+11/30. No credit card required"
 ([source](https://docs.fireworks.ai/fine-tuning/models)). The promotion covers
-LoRA SFT jobs started before `2026-11-01T00:00:00-07:00` (end of Oct 31 Pacific); full-parameter SFT, RL, deployments, inference,
+LoRA SFT jobs started before `2026-12-01T00:00:00-08:00` (end of Nov 30 Pacific); full-parameter SFT, RL, deployments, inference,
 DPO, and Dedicated trainers are not covered. The starter script refuses to launch after
 the deadline unless you pass `--allow-paid`.
 

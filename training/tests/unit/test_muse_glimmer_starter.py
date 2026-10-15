@@ -7,9 +7,9 @@ import pytest
 from training.examples.sft import muse_glimmer_starter as starter
 
 
-def test_promotion_deadline_is_end_of_oct_31_pacific():
-    assert starter.promotion_active(datetime(2026, 11, 1, 6, 59, tzinfo=timezone.utc))
-    assert not starter.promotion_active(datetime(2026, 11, 1, 7, 0, tzinfo=timezone.utc))
+def test_promotion_deadline_is_end_of_nov_30_pacific():
+    assert starter.promotion_active(datetime(2026, 12, 1, 7, 59, tzinfo=timezone.utc))
+    assert not starter.promotion_active(datetime(2026, 12, 1, 8, 0, tzinfo=timezone.utc))
 
 
 def test_serverless_names_include_a_promoted_model():

@@ -20,8 +20,8 @@ Shape and catalog context (not rates):
 ## Temporary Muse Glimmer SFT promotion
 
 Source: <https://docs.fireworks.ai/fine-tuning/models> — "Muse Glimmer 30B SFT
-is free via UI and Serverless Training API until 10/31. No credit card
-required." For jobs started before `2026-11-01T00:00:00-07:00`, these training
+is free via UI and Serverless Training API until 11/30. No credit card
+required." For jobs started before `2026-12-01T00:00:00-08:00`, these training
 lines for `accounts/fireworks/models/muse-glimmer-30b` are promotional `$0`:
 
 | Covered | Surface |
@@ -33,8 +33,8 @@ It does not cover full-parameter SFT, RL, DPO, Managed RFT, Dedicated trainers, 
 inference outside the training run, other models, or jobs started at or after
 the deadline. Put excluded operations on separate cost lines; label in-session
 evaluation sampling as a separate line unless the account shows it covered.
-State the promotion deadline unambiguously as `2026-11-01T00:00:00-07:00` or
-"through Oct 31 Pacific". Never quote a deployment or inference rate unless
+State the promotion deadline unambiguously as `2026-12-01T00:00:00-08:00` or
+"through Nov 30 Pacific". Never quote a deployment or inference rate unless
 fetched in this transcript; otherwise say `separately priced`.
 
 If the current UTC time is at or after the deadline, ignore this section and
