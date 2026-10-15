@@ -51,7 +51,13 @@ class DisableThinkingWeightsMixin:
         **kwargs: object,
     ) -> tuple[sdk.ModelInput, torch.Tensor]:
         model_input, weights = super().build_supervised_example(messages, *args, **kwargs)
-        token_ids = list(model_input.to_ints())
+        # Weights index expanded positions, so image chunks occupy their full
+        # length with ids that can never match a marker.
+        token_ids = [
+            token
+            for chunk in model_input.chunks
+            for token in (chunk.tokens if isinstance(chunk, sdk.EncodedTextChunk) else [None] * chunk.length)
+        ]
         masked = weights.clone()
         for marker in (_THINK_OPEN, _THINK_CLOSE):
             marker_tokens = self.tokenizer.encode(marker, add_special_tokens=False)
