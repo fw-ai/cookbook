@@ -274,6 +274,14 @@ def resolve_renderer_name(
     # thinking tags, and XML tool-call format; it is not M2-compatible.
     if "minimax-m3" in normalized_model_name or "minimax_m3" in normalized_model_name:
         return "minimax_m3"
+    # The open checkpoint uses the public ATEM renderer. Match only its
+    # reviewed identities; older private Muse Spark models keep their selectors.
+    if normalized_model_name in {
+        "meta-models/muse-spark-1.2-816b-a42b-nvfp4-open",
+        "https://huggingface.co/meta-models/muse-spark-1.2-816b-a42b-nvfp4-open",
+        "accounts/fireworks/models/muse-spark-open-nvfp4",
+    }:
+        return "muse_spark"
     if "muse-glimmer" in normalized_model_name or "muse_glimmer" in normalized_model_name:
         return "muse_glimmer"
     if "qwen3-vl" in normalized_model_name:
