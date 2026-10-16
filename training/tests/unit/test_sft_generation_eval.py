@@ -1,4 +1,6 @@
+import base64
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -11,6 +13,7 @@ from training.utils.sft_generation_eval import (
     prepare_generation_eval,
     run_generation_eval,
 )
+from training.utils import sft_generation_eval as generation_eval_module
 from training.utils.streaming import JsonlRenderDataset
 
 
@@ -32,11 +35,6 @@ def test_generation_prompt_excludes_reference_and_later_turns(tmp_path, flags):
     assert examples[0][1]["reference"] == "reference"
     assert examples[0][1]["prompt"] == "user: question"
     assert examples[0][1]["messages"] == messages[:1]
-
-    renderer.build_generation_prompt.return_value = Mock()
-    renderer.build_generation_prompt.return_value.to_ints.side_effect = ValueError("image")
-    with pytest.raises(DatasetError, match="text-only"):
-        prepare_generation_eval(dataset, renderer=renderer, max_examples=10, max_seq_len=10)
 
 
 def test_display_preserves_multiturn_context_and_tool_reference(tmp_path):
@@ -155,6 +153,23 @@ def test_paired_answers_persist_with_shared_prompts_and_partial_failures(tmp_pat
     assert json.loads(status_path.read_text())["details"][0]["state"] == "JOB_STATE_EVALUATION"
 
 
+def test_cancellation_during_artifact_write_propagates(tmp_path, monkeypatch):
+    service = Mock()
+    service.create_sampling_client.side_effect = RuntimeError("sampler unavailable")
+    monkeypatch.setattr(fileio, "write_json", Mock(side_effect=SystemExit("cancelled")))
+    with pytest.raises(SystemExit, match="cancelled"):
+        run_generation_eval(
+            cfg=Config(log_path=str(tmp_path)),
+            examples=[],
+            renderer=Mock(),
+            tokenizer=Mock(),
+            service=service,
+            client=Mock(),
+            runner=Mock(),
+            step=1,
+        )
+
+
 def test_cancellation_propagates_and_closes_samplers(tmp_path):
     service, client, sampler, renderer = Mock(), Mock(), Mock(), Mock()
     service.create_sampling_client.return_value = sampler
@@ -174,11 +189,188 @@ def test_cancellation_propagates_and_closes_samplers(tmp_path):
     assert sampler.close.call_count == 2
 
 
-def test_artifact_failure_propagates_after_optional_inference_failure(tmp_path, monkeypatch):
+def test_image_prompt_is_accepted_and_sampled(tmp_path):
+    messages = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,aa"}}]},
+        {"role": "assistant", "content": "a cat"},
+    ]
+    path = tmp_path / "eval.jsonl"
+    path.write_text(json.dumps({"messages": messages}))
+    prompt = sdk.ModelInput(
+        chunks=[
+            sdk.types.EncodedTextChunk(tokens=[1, 2]),
+            sdk.types.ImageChunk(data=b"jpeg-bytes", format="jpeg", expected_tokens=4),
+        ]
+    )
+    with pytest.raises(ValueError, match="EncodedTextChunks"):
+        prompt.to_ints()
+    renderer = Mock()
+    renderer.build_generation_prompt.return_value = prompt
+    examples = prepare_generation_eval(
+        JsonlRenderDataset(str(path), lambda row: row),
+        renderer=renderer,
+        max_examples=1,
+        max_seq_len=10,
+    )
+    assert examples[0][0] is prompt
+    assert examples[0][1]["reference"] == "a cat"
+    assert examples[0][1]["generation_messages"]
+
+    cfg = Config(log_path=str(tmp_path), serverless=True, generation_eval=True, max_seq_len=10)
+    baseline, trained, service, client = Mock(), Mock(), Mock(), Mock()
+    service.create_sampling_client.side_effect = [baseline, trained]
+    client.save_weights_for_sampler.return_value.path = "account/run/eval-step-1"
+    sequence = SimpleNamespace(tokens=[8, 9], stop_reason="stop")
+    baseline.sample.return_value.result.return_value = SimpleNamespace(sequences=[sequence])
+    trained.sample.return_value.result.return_value = SimpleNamespace(sequences=[sequence])
+    tokenizer = Mock()
+    tokenizer.decode.return_value = "a cat"
+    renderer.get_stop_sequences.return_value = []
+    renderer.image_placeholder_token_id = 77
+    renderer.sampler_image_placeholder_affixes = None
+    renderer.render_trace = None
+    run_generation_eval(
+        cfg=cfg,
+        examples=examples,
+        renderer=renderer,
+        tokenizer=tokenizer,
+        service=service,
+        client=client,
+        runner=RunnerIO(RunnerConfig()),
+        step=1,
+    )
+    result = json.loads((tmp_path / "generation_eval.json").read_text())
+    assert result["status"] == "completed"
+    assert "generation_messages" not in result["examples"][0]
+    assert result["examples"][0]["cells"] == [
+        {"output": "a cat", "tokens": [8, 9], "stop_reason": "stop"},
+        {"output": "a cat", "tokens": [8, 9], "stop_reason": "stop"},
+    ]
+    sampled = baseline.sample.call_args.args[0]
+    image_url = "data:image/jpeg;base64," + base64.b64encode(b"jpeg-bytes").decode("ascii")
+    assert sampled.to_ints() == [1, 2, 77]
+    assert baseline.sample.call_args.kwargs["images"] == [image_url]
+    assert trained.sample.call_args.kwargs["images"] == [image_url]
+    assert baseline.sample.call_args.kwargs["sampling_params"].max_tokens == 4
+
+
+def test_image_prompt_with_tools_reuses_tool_prefixed_messages(tmp_path, monkeypatch):
+    tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
+    messages = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,aa"}}]},
+        {"role": "assistant", "content": "sunny"},
+    ]
+    path = tmp_path / "eval.jsonl"
+    path.write_text(json.dumps({"messages": messages, "tools": tools}))
+    prompt = sdk.ModelInput(
+        chunks=[
+            sdk.types.EncodedTextChunk(tokens=[1, 2]),
+            sdk.types.ImageChunk(data=b"jpeg-bytes", format="jpeg", expected_tokens=4),
+        ]
+    )
+    prefixed = [{"role": "system", "content": "tool decls"}, messages[0]]
+    renderer = Mock()
+    renderer.build_generation_prompt.return_value = prompt
+    monkeypatch.setattr(
+        generation_eval_module,
+        "build_tool_prefixed_messages",
+        lambda context, renderer, tools=None: prefixed,
+    )
+    examples = prepare_generation_eval(
+        JsonlRenderDataset(str(path), lambda row: row),
+        renderer=renderer,
+        max_examples=1,
+        max_seq_len=10,
+    )
+    assert examples[0][1]["generation_messages"] == prefixed
+    renderer.build_generation_prompt.assert_called_once_with(prefixed)
+
+    seen = {}
+
+    def fake_project(messages, model_input, tokenizer, *, renderer=None):
+        seen["messages"] = messages
+        seen["model_input"] = model_input
+        return [1, 2, 77], ["data:image/jpeg;base64,anBlZy1ieXRlcw=="]
+
+    monkeypatch.setattr(
+        "training.utils.rl.rollout.renderer.build_multimodal_completions_prompt_token_ids",
+        fake_project,
+    )
+    baseline, trained, service, client = Mock(), Mock(), Mock(), Mock()
+    service.create_sampling_client.side_effect = [baseline, trained]
+    client.save_weights_for_sampler.return_value.path = "account/run/eval-step-1"
+    sequence = SimpleNamespace(tokens=[8, 9], stop_reason="stop")
+    baseline.sample.return_value.result.return_value = SimpleNamespace(sequences=[sequence])
+    trained.sample.return_value.result.return_value = SimpleNamespace(sequences=[sequence])
+    tokenizer = Mock()
+    tokenizer.decode.return_value = "sunny"
+    renderer.get_stop_sequences.return_value = []
+    run_generation_eval(
+        cfg=Config(log_path=str(tmp_path), serverless=True, generation_eval=True, max_seq_len=10),
+        examples=examples,
+        renderer=renderer,
+        tokenizer=tokenizer,
+        service=service,
+        client=client,
+        runner=RunnerIO(RunnerConfig()),
+        step=1,
+    )
+    assert seen["messages"] == prefixed
+    assert seen["model_input"] is prompt
+    assert baseline.sample.call_args.args[0].to_ints() == [1, 2, 77]
+    assert "generation_messages" not in json.loads((tmp_path / "generation_eval.json").read_text())["examples"][0]
+
+
+def test_image_prompt_falls_back_to_messages_without_generation_messages(tmp_path, monkeypatch):
+    messages = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,aa"}}]},
+    ]
+    prompt = sdk.ModelInput(
+        chunks=[
+            sdk.types.EncodedTextChunk(tokens=[1, 2]),
+            sdk.types.ImageChunk(data=b"jpeg-bytes", format="jpeg", expected_tokens=4),
+        ]
+    )
+    seen = {}
+
+    def fake_project(project_messages, model_input, tokenizer, *, renderer=None):
+        seen["messages"] = project_messages
+        return [1, 2, 77], ["data:image/jpeg;base64,anBlZy1ieXRlcw=="]
+
+    monkeypatch.setattr(
+        "training.utils.rl.rollout.renderer.build_multimodal_completions_prompt_token_ids",
+        fake_project,
+    )
+    baseline, trained, service, client = Mock(), Mock(), Mock(), Mock()
+    service.create_sampling_client.side_effect = [baseline, trained]
+    client.save_weights_for_sampler.return_value.path = "account/run/eval-step-1"
+    sequence = SimpleNamespace(tokens=[8, 9], stop_reason="stop")
+    baseline.sample.return_value.result.return_value = SimpleNamespace(sequences=[sequence])
+    trained.sample.return_value.result.return_value = SimpleNamespace(sequences=[sequence])
+    tokenizer = Mock()
+    tokenizer.decode.return_value = "a cat"
+    renderer = Mock()
+    renderer.get_stop_sequences.return_value = []
+    run_generation_eval(
+        cfg=Config(log_path=str(tmp_path), serverless=True, generation_eval=True, max_seq_len=10),
+        examples=[(prompt, {"messages": messages, "reference": "a cat", "prompt": "user: image"})],
+        renderer=renderer,
+        tokenizer=tokenizer,
+        service=service,
+        client=client,
+        runner=RunnerIO(RunnerConfig()),
+        step=1,
+    )
+    assert seen["messages"] == messages
+    assert baseline.sample.call_args.args[0].to_ints() == [1, 2, 77]
+    assert baseline.sample.call_args.kwargs["images"] == ["data:image/jpeg;base64,anBlZy1ieXRlcw=="]
+
+
+def test_artifact_failure_is_logged_and_does_not_fail_training(tmp_path, monkeypatch, caplog):
     service = Mock()
     service.create_sampling_client.side_effect = RuntimeError("sampler unavailable")
     monkeypatch.setattr(fileio, "write_json", Mock(side_effect=OSError("storage unavailable")))
-    with pytest.raises(OSError, match="storage unavailable"):
+    with caplog.at_level(logging.ERROR, logger=generation_eval_module.logger.name):
         run_generation_eval(
             cfg=Config(log_path=str(tmp_path)),
             examples=[],
@@ -190,3 +382,6 @@ def test_artifact_failure_propagates_after_optional_inference_failure(tmp_path, 
             step=1,
         )
     service.create_sampling_client.assert_called_once()
+    assert "Generation evaluation failed" in caplog.text
+    assert "Failed to write generation_eval.json" in caplog.text
+    assert "storage unavailable" in caplog.text
