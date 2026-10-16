@@ -76,7 +76,8 @@ from training.utils.tokenizers import load_tokenizer
 
 _DEEPSEEK_V41_MODEL_RE = re.compile(r"(?:^|[/_.-])deepseek[-_]?v?4(?:[._-]?1|p1)(?=$|[/_.-])")
 _NEMOTRON35_VL_MODEL_RE = re.compile(
-    r"(?:^|[/_.-])(?:nemotron-3p5-super-vl|nemotron-3\.5-super-vl|nemotron3\.5-super-vl)$"
+    r"(?:^|[/_.-])(?:nemotron-3p5-super-vl|nemotron-3\.5-super-vl|nemotron3\.5-super-vl)"
+    r"(?:-120b-a12b(?:-base)?-(?:bf16|nvfp4))?$"
 )
 
 
