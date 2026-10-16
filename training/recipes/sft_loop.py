@@ -542,7 +542,7 @@ def _render_one_worker(
 # ---------------------------------------------------------------------------
 
 DEFAULT_EVAL_CARVE_RATIO = 0.1
-DEFAULT_MAX_EVAL_SEQS = 100
+DEFAULT_MAX_EVAL_SEQS = 20
 GENERATION_EVAL_HOLDOUT_RATIO = 0.2
 
 
