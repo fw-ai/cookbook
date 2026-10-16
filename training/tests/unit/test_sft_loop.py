@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import random
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import training.recipes.sft_loop as module
@@ -572,7 +574,7 @@ class _ResolvedFuture:
         return self._value
 
 
-def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generation_eval=False):
+def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generation_eval=False, generation_eval_fails=False):
     """Run ``main`` for one epoch of 4 rows (batch_size=2) against a fake trainer.
 
     Returns the ordered train/eval events and the eval rows of metrics.jsonl.
@@ -585,6 +587,7 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
     eval_path = tmp_path / "eval.jsonl"
     eval_path.write_text(json.dumps(rows[0]))
     metrics_path = tmp_path / "metrics.jsonl"
+    status_path = tmp_path / "status.json"
 
     class FakeClient:
         def submit_forward_backward(self, batch, loss_fn):
@@ -593,6 +596,9 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
 
         def submit_optim_step(self, adam_params, emit_grad_norm_metrics=None):
             return _ResolvedFuture(SimpleNamespace(metrics={}))
+
+        def save_weights_for_sampler(self, name):
+            return SimpleNamespace(path=f"account/run/{name}")
 
     class FakeService:
         accelerator_type = None
@@ -603,6 +609,11 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
 
         def create_training_client(self, *args, **kwargs):
             return object()
+
+        def create_sampling_client(self, *args, **kwargs):
+            sampler = Mock()
+            sampler.sample.return_value.result.side_effect = RuntimeError("sampler unavailable")
+            return sampler
 
         def close(self):
             if generation_eval:
@@ -634,7 +645,14 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
         SimpleNamespace(from_training_client=lambda *args, **kwargs: FakeClient()),
     )
     monkeypatch.setattr(module, "TrainingCheckpoints", FakeCheckpoints)
-    monkeypatch.setattr(module, "populate_render_worker_state", _make_stub_render_worker_state())
+    renderer = Mock()
+    renderer.build_generation_prompt.return_value = sdk.ModelInput.from_ints([1, 2])
+    renderer.get_stop_sequences.return_value = []
+    monkeypatch.setattr(
+        module,
+        "populate_render_worker_state",
+        _make_stub_render_worker_state(renderer=renderer, tokenizer=Mock()),
+    )
     monkeypatch.setattr(
         module,
         "render_messages_to_datums",
@@ -649,8 +667,9 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
             return FakeService(), FakeClient(), FakeCheckpoints(), "session-1", 32
 
         monkeypatch.setattr(module, "setup_serverless_training", setup_serverless)
-        monkeypatch.setattr(module, "prepare_generation_eval", lambda *args, **kwargs: ["prompt"])
-        monkeypatch.setattr(module, "run_generation_eval", lambda **kwargs: events.append("generate"))
+        if not generation_eval_fails:
+            monkeypatch.setattr(module, "prepare_generation_eval", lambda *args, **kwargs: ["prompt"])
+            monkeypatch.setattr(module, "run_generation_eval", lambda **kwargs: events.append("generate"))
         complete = module.write_completed
 
         def record_completed(*args, **kwargs):
@@ -659,7 +678,7 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
 
         monkeypatch.setattr(module, "write_completed", record_completed)
 
-    module.main(
+    result = module.main(
         module.Config(
             log_path=str(tmp_path / "logs"),
             dataset=str(dataset_path),
@@ -672,17 +691,17 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
             save_final_checkpoint=generation_eval,
             serverless=generation_eval,
             generation_eval=generation_eval,
-            runner=RunnerConfig(metrics_file=str(metrics_path)),
+            runner=RunnerConfig(metrics_file=str(metrics_path), status_file=str(status_path)),
         )
     )
 
     records = [json.loads(line) for line in metrics_path.read_text().splitlines()] if metrics_path.exists() else []
-    return events, [record for record in records if "eval/loss" in record]
+    return events, [record for record in records if "eval/loss" in record], result
 
 
 @pytest.mark.parametrize("resumed", [False, True])
 def test_generation_eval_finishes_before_completion_and_session_close(tmp_path, monkeypatch, resumed):
-    events, _ = _run_main_with_fake_trainer(
+    events, _, _ = _run_main_with_fake_trainer(
         tmp_path,
         monkeypatch,
         generation_eval=True,
@@ -694,13 +713,33 @@ def test_generation_eval_finishes_before_completion_and_session_close(tmp_path, 
     assert events.count("save") == (0 if resumed else 1)
 
 
+def test_generation_eval_failure_is_logged_and_training_still_succeeds(tmp_path, monkeypatch, caplog):
+    with caplog.at_level(logging.ERROR, logger="training.utils.sft_generation_eval"):
+        events, _, result = _run_main_with_fake_trainer(
+            tmp_path,
+            monkeypatch,
+            generation_eval=True,
+            generation_eval_fails=True,
+            resume_info=None,
+        )
+    assert result == {"steps": 2, "job_id": "session-1"}
+    assert events[-2:] == ["completed", "close"]
+    assert "Generation evaluation failed" in caplog.text
+    artifact = json.loads((tmp_path / "logs" / "generation_eval.json").read_text())
+    assert artifact["status"] == "failed"
+    assert "Generation evaluation failed" in artifact["error"]
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["code"] == 0
+    assert status["message"] == "done"
+
+
 @pytest.mark.parametrize(
     "resume_info",
     [None, SimpleNamespace(step=0, data_consumed=0)],
     ids=["fresh", "warm_start"],
 )
 def test_main_runs_baseline_eval_before_first_train_step(tmp_path, monkeypatch, resume_info):
-    events, eval_records = _run_main_with_fake_trainer(tmp_path, monkeypatch, resume_info=resume_info)
+    events, eval_records, _ = _run_main_with_fake_trainer(tmp_path, monkeypatch, resume_info=resume_info)
 
     assert events == [
         "eval(step=0, epoch=None)",
@@ -712,7 +751,7 @@ def test_main_runs_baseline_eval_before_first_train_step(tmp_path, monkeypatch, 
 
 
 def test_main_skips_baseline_eval_on_mid_run_resume(tmp_path, monkeypatch):
-    events, eval_records = _run_main_with_fake_trainer(
+    events, eval_records, _ = _run_main_with_fake_trainer(
         tmp_path,
         monkeypatch,
         resume_info=SimpleNamespace(step=1, data_consumed=2),

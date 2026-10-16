@@ -92,11 +92,11 @@ cross-run reference format.
 
 For serverless SFT, set `generation_eval=True` (managed SFT: `generation_eval`,
 `firectl --generation-eval`). The recipe uses `evaluation_dataset`, or a seeded
-20% holdout excluded from training, and samples up to `max_eval_seqs` text-only
-conversations. The last assistant turn selected by `train_on_what` and the
-normalized per-message flags is the reference; earlier turns
-are the prompt. After training, the base model and the final LoRA weights answer
-each prompt with temperature 0 and at most 1024 generated tokens.
+20% holdout excluded from training, and samples up to `max_eval_seqs`
+conversations, including image prompts. The last assistant turn selected by
+`train_on_what` and the normalized per-message flags is the reference; earlier
+turns are the prompt. After training, the base model and the final LoRA weights
+answer each prompt with temperature 0 and at most 1024 generated tokens.
 `log_path/generation_eval.json` (managed: `generation_eval_signed_url`) stores
 the prompts, references, answers and status. Its `checkpoints` are
 `["Original", "Your model"]`; each `examples` entry has string `prompt` and
@@ -105,9 +105,10 @@ the prompts, references, answers and status. Its `checkpoints` are
 message content is JSON-encoded. Cells without a generated answer have only
 `output: ""`. There is no automatic scoring: `isCorrect` and `reason` are omitted,
 so consumers must treat them as optional and hide correctness badges when absent.
-Generation prompts are validated before training. Unsupported or invalid prompts
-fail validation; an inference failure stops evaluation and saves partial answers
-without failing the training job.
+Generation prompts are validated before training. Invalid prompts fail
+validation before training. After the final checkpoint, an inference failure
+or a failure to write `generation_eval.json` is logged and does not fail the
+training job. A requested cancellation still stops the job.
 Managed jobs enter `JOB_STATE_EVALUATION` during generation and complete only
 afterwards, so session cleanup follows evaluation; `state_timestamps` keeps the
 evaluation entry even when it finishes between watcher polls.

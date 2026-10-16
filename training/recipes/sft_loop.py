@@ -877,7 +877,9 @@ class Config:
     generation_eval: bool = False
     """Save base/LoRA answers before completing a serverless SFT job. Uses an
     explicit evaluation_dataset or holds out 20% of rows (seeded, excluded from
-    training). Samples up to max_eval_seqs text conversations, without scoring."""
+    training). Samples up to max_eval_seqs conversations, including image
+    prompts, without scoring. A failed sample or artifact write is logged and
+    does not fail the trained model."""
 
     render_workers: int | None = None
     """Number of worker processes for streaming dataset rendering. ``None``
