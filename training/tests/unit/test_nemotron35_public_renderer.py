@@ -27,6 +27,12 @@ def test_vl_checkpoints_select_nemotron35_vl(monkeypatch: pytest.MonkeyPatch) ->
         "accounts/fireworks-e2e-tests/models/nemotron-3p5-super-vl",
         "nvidia/NVIDIA-Nemotron-3.5-Super-VL",
         "nemotron-3p5-super-vl",
+        "accounts/fireworks/models/nvidia-nemotron-3p5-super-vl-120b-a12b-bf16",
+        "accounts/fireworks/models/nvidia-nemotron-3p5-super-vl-120b-a12b-nvfp4",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Base-BF16",
+        "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
     ):
         assert resolve_renderer_name(model) == "nemotron35_vl"
     assert resolve_renderer_name("any-model", "nemotron35_vl_disable_thinking") == "nemotron35_vl_disable_thinking"
@@ -41,6 +47,8 @@ def test_text_nemotron_checkpoints_stay_on_the_text_renderer(monkeypatch: pytest
         "nvidia/NVIDIA-Nemotron-3-Super-120B",
         "accounts/pyroworks/models/nemotron-3-5-super-ea-0911-textonly",
         "accounts/fireworks/models/nemotron-3p5-super-vl-unreviewed",
+        "accounts/fireworks/models/nvidia-nemotron-3p5-super-vl-120b-a12b-fp8",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16-unreviewed",
         "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b",
     ):
         expected = "nemotron3_ultra" if "lightning" in model else "nemotron3"
