@@ -210,11 +210,10 @@ async def main(
     policy_loss = objective.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
     if rollout_fn_factory is None:
         rollout_fn_factory = single_turn_rollout_fn(cfg.renderer_name)
-    if cfg.trainer.reference_training_shape_id or cfg.trainer.reference_job_id:
-        raise ValueError(
-            "rl_loop trains without a reference model; unset "
-            "trainer.reference_training_shape_id and trainer.reference_job_id."
-        )
+    # Reference KL belongs in a custom train step: utils.rl.reference provides
+    # LoRA base-only trainer and full-parameter frozen-inference forwards.
+    # Keep reference setup/scoring outside this fixed-objective GRPO loop;
+    # see skills/fireworks-training/references/rl-custom-loss.md.
     if cfg.completions_per_prompt < 2:
         raise ValueError("completions_per_prompt must be >= 2 for GRPO.")
     if cfg.prompt_groups_per_step < 1:

@@ -760,16 +760,16 @@ def test_render_one_worker_uses_per_example_mean_reduction(monkeypatch):
 
 class TestComputeEvalCarveout:
     def test_basic_carveout(self):
-        # 1000 samples, 10% ratio, max 100 → carve out 100
-        assert module.compute_eval_carveout(1000) == 100
+        # 1000 samples, 10% ratio = 100, max 20 caps it
+        assert module.compute_eval_carveout(1000) == 20
 
     def test_ratio_smaller_than_max(self):
-        # 50 samples, 10% → 5 (ratio wins over max_seqs=100)
+        # 50 samples, 10% → 5 (ratio wins over max_seqs=20)
         assert module.compute_eval_carveout(50) == 5
 
     def test_max_seqs_cap(self):
-        # 5000 samples, 10% = 500, but max_seqs=100 caps it
-        assert module.compute_eval_carveout(5000) == 100
+        # 5000 samples, 10% = 500, but max_seqs=20 caps it
+        assert module.compute_eval_carveout(5000) == 20
 
     def test_custom_ratio_and_max(self):
         assert module.compute_eval_carveout(200, max_ratio=0.2, max_seqs=50) == 40

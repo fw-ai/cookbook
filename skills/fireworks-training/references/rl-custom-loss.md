@@ -46,7 +46,7 @@ surface, so swapping objectives is one import plus its config:
 | Name | What it is |
 |---|---|
 | `<Name>Config` | Frozen settings, validated on construction |
-| `LOSS_FN`, `loss_fn_config(cfg)` | Trainer built-in loss (absent for `reinforce`, `score_centering`) |
+| `LOSS_FN`, `loss_fn_config(cfg)` | Module's trainer built-in loss (absent for the client `reinforce`, `score_centering` modules) |
 | `build_datums(batch, cfg)` | Datums for that loss |
 | `metrics(batch, result, cfg)` | `{PREFIX}_ratio_mean`, `{PREFIX}_clip_frac`, `{PREFIX}_kl` |
 | `make_loss_fn(batch, cfg)` | Same objective as a client loss on `batch.data`, same metric names |
@@ -68,6 +68,68 @@ result = policy.forward_backward_custom(batch.data, objective.make_loss_fn(batch
 A new client loss is `loss_fn(data, logprobs_list) -> (scalar_loss, metrics)`;
 build it on `common.run_loss_loop(batch, ...)` and name its metrics with
 `common.client_loss_metrics`.
+
+## Server TIS/MIS
+
+All built-in RL policy losses support token TIS/MIS on compatible trainers.
+Anchored losses such as PPO opt in with:
+
+```python
+loss_fn_config = {
+    "anchor_logprob_source": "current_detached",
+    "weighting": "mis", "weight_low": 0.2, "weight_high": 5.0,
+    "target_logprob_support": "sampling_support",
+}
+```
+
+Require `supports_policy_importance_sampling`, raw advantages, sampler logprobs,
+and an explicit response mask. The trainer reuses its forward for a detached
+anchor and weighting; no separate anchor forward is needed. Use exactly one
+optimizer update per weight sync, finish publication before the next training
+window, and do not reuse a batch. Rollouts can remain async. PPO's ratio is 1
+with a nonzero gradient, so clipping is inactive and its gradient matches
+REINFORCE with the same weights. Keep the objective's existing normalization;
+MIS rejection must not shrink its denominator. Separate auxiliaries are unweighted.
+
+## Score-centering paths
+
+Both client-side and server-side SC are supported; neither is selected by default.
+
+| Path | API | Objective |
+|---|---|---|
+| Client SC | `score_centering.make_loss_fn` + `forward_backward_custom` | Explicit vanilla policy-gradient correction; partial top-k head/tail approximation. |
+| Built-in REINFORCE + SC | `loss_fn="reinforce"`, `score_centering=True` | Explicit correction after detached none/TIS/MIS weighting; full vocabulary or complete support replay. |
+
+With identical heads, masks and normalization, client SC matches unweighted
+full-vocabulary server SC. The old STE option `train_inference_correction` has
+been removed; server-side `score_centering=True` is supported only on REINFORCE.
+
+The new path requires a compatible SDK release and trainer capabilities
+`supports_reinforce` / `supports_score_centering`. Reference loops retain GRPO.
+Send ordinary single-target datums with raw advantages, sampler logprobs and
+an explicit response mask; do not use client SC's expanded datums or preapply TIS.
+
+```python
+from training.utils.rl.sampling_support import attach_top_sampling_references
+
+datums = attach_top_sampling_references(datums, batch.top_sampling_references)
+result = policy.forward_backward(datums, "reinforce", loss_fn_config={
+    "score_centering": True, "weighting": "tis", "weight_high": 2.0,
+    "target_logprob_support": "sampling_support",
+})
+policy.optim_step(adam, grad_accumulation_normalization="num_loss_tokens")
+```
+
+SC needs inline sampler IDs/logprobs or Parquet references (see replay below).
+The example requires complete support captured during rollout. `apply_tis`
+rewrites returned datums, not client SC's `batch.advantages`; use the server
+path for SC combined with TIS/MIS.
+Default `full_vocabulary` allows partial heads; `sampling_support` requires the
+complete recorded support/counts and normalizes both distributions there.
+SC, none/TIS/MIS weighting and mask replay are independent options and can be
+combined. v1 uses temperature 1; SC/replay are text-only. Do not preweight
+advantages or add PPO/GSPO clipping. Response-mask tokens count even when their
+advantage is zero.
 
 ## Recompute the anchor
 
@@ -101,26 +163,91 @@ datums, tis = apply_tis(datums, batch, cap=2.0)   # level="sequence": one weight
 result.metrics.update(tis)                         # tis_weight_mean, tis_clip_frac
 ```
 
-With the rollout logprobs as the anchor every weight is 1.
+With the rollout logprobs as the anchor every weight is 1. For REINFORCE + SC,
+use built-in `weighting="tis"` instead: it weights each candidate inside the
+SC correction as well as the sampled token. Keep advantages raw.
 
 ## Add reference KL
 
 Client-side GRPO and REINFORCE add a reference penalty when the batch carries
-reference logprobs. In the fork, drop the loop's reference guard, pass
-`reference_required=True` to `build_service_client`, and:
+reference logprobs. Keep reference setup outside the stock sync/async loops;
+use `training.utils.rl.reference` in your custom train step. Reference scores
+come from the frozen baseline, while rollout logprobs remain the clipping
+anchor. They are different distributions with different purposes.
+
+For **LoRA**, create the SDK base-only client once on the policy service:
 
 ```python
-from dataclasses import replace
+from training.utils.rl.reference import LoraReference, with_reference_logprobs
 
-reference = service.create_reference_client(policy_client=training_client)
-ref = reference.forward(batch.data, "cross_entropy").result()
-batch = replace(batch, ref_logprobs=[list(o["logprobs"].data) for o in ref.loss_fn_outputs])
+# No explicit reference shape/job: SDK shares the LoRA trainer and disables
+# adapters on this client. Only forward on it; never optimize the reference.
+reference = LoraReference(service.create_reference_client(policy_client=training_client))
+```
+
+For **full-parameter** tuning, provision a separate base-model inference
+deployment through the SDK. Use the same validated deployment shape as the
+policy rollout and enough context for the full input plus final target (and
+one generated token for `compute_logprobs`). Do not bind this deployment to
+policy hot-loads or publish policy checkpoints to it. No reference training
+shape or second trainer is needed:
+
+```python
+from fireworks.training.sdk.deployment import DeploymentConfig
+from training.utils.rl.reference import SamplerReference, with_reference_logprobs
+
+base_sampler = service.create_inference_deployment_sampler(
+    DeploymentConfig(
+        deployment_id="frozen-base-reference",
+        base_model=cfg.base_model,
+        deployment_shape=cfg.deployment.deployment_shape,
+        min_replica_count=1,
+        enable_hot_load=False,
+        hot_load_bucket_type=None,
+    ),
+    cleanup_on_close="delete",
+    tokenizer=tokenizer,
+)
+reference_sampler = service.create_sampling_client(deployment_sampler=base_sampler)
+reference = SamplerReference(reference_sampler)
+```
+
+Close the sampling client and service in `finally`/an exit stack. Service
+cleanup deletes only deployments it created, leaving reattached resources to
+their owner. Reference inference is separately billed. Validate model/tokenizer
+identity and context coverage when choosing the reference deployment; a shorter
+LoRA training shape does not constrain full-parameter inference references.
+An independent reference can run in another region. To place it separately,
+create and wait for a `DeploymentConfig` with an explicit region through
+`DeploymentManager`, then attach it with
+`service.create_deployment_sampler_for_model(deployment.name, tokenizer=tokenizer)`
+and `service.create_sampling_client(deployment_sampler=base_sampler)`. The caller
+owns deletion of that independently created deployment. Use a region with
+available inference quota; the policy trainer's training quota is separate.
+
+For either source, score the exact token IDs without decoding/re-encoding:
+
+```python
+batch = with_reference_logprobs(batch, reference)
 policy_loss = objective.GRPOConfig(eps_clip=0.2, kl_beta=0.001)
 result = policy.forward_backward_custom(batch.data, objective.make_loss_fn(batch, policy_loss))
 ```
 
+The helper returns a new batch, preserves its rollout anchor, validates score
+lengths/finiteness and times `reference_forward`. In an async fork, use
+`batch = await asyncio.to_thread(with_reference_logprobs, batch, reference)`
+under a bounded semaphore. The sampler adapter supports shifted text datums,
+appends the final target token and removes the unscored first prompt position.
+It requests raw base logprobs at temperature 1 without top-p/top-k truncation.
+Both adapters discard policy routing replay and sampling-support metadata so
+the frozen reference chooses its own experts and scores its full vocabulary.
+Trainer and inference scores can differ numerically because their execution
+and precision differ. Multimodal scoring needs a compatible reference trainer;
+the sampler adapter cannot score image-containing inputs.
+
 Logs `train/ref_kl` and `train/mean_kl_penalty`. The built-in loss has no
-reference input, so `loss_fn_config` rejects `kl_beta > 0`.
+reference input, so `loss_fn_config` rejects `kl_beta > 0`. The stock RL loops
+keep their fixed GRPO objective and do not provision or score references.
 
 ## Replay the sampling support (top-p)
 
@@ -163,7 +290,8 @@ which `build_datums` and every client loss read. See
 
 - Keep target tokens, prompt boundaries and logprob rows aligned.
 - Change the anchor only through `PolicyBatch.anchor_logprobs`; never overwrite
-  the rollout logprobs. Only `apply_tis` reweights advantages.
+  the rollout logprobs. Client `apply_tis` reweights advantages; built-in
+  REINFORCE weighting receives raw advantages.
 - Use raw inference logprobs only for drift metrics.
 - Use the objective's `NORMALIZATION`
   ([`rl-gradient-accumulation.md`](rl-gradient-accumulation.md)).
