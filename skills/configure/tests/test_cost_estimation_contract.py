@@ -115,7 +115,7 @@ class CostEstimationContractTest(unittest.TestCase):
     def test_muse_glimmer_sft_promotion_is_bounded(self) -> None:
         for marker in (
             "accounts/fireworks/models/muse-glimmer-30b",
-            "2026-11-01T00:00:00-07:00",
+            "2026-12-01T00:00:00-08:00",
             "https://docs.fireworks.ai/fine-tuning/models",
             "| LoRA SFT | Managed SFT",
             "| LoRA SFT | Serverless Training API |",

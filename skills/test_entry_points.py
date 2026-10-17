@@ -90,7 +90,7 @@ def test_starter_jobs_are_linked() -> None:
     assert "onboarding-prompt-router" in starters
     assert "onboarding-cord-receipts" in starters
     assert not re.search(r"accounts/(?!<current-account>)[^/\s]+/datasets/onboarding-", starters)
-    assert "2026-11-01T00:00:00-07:00" in starters
+    assert "2026-12-01T00:00:00-08:00" in starters
     assert "https://docs.fireworks.ai/fine-tuning/models" in starters
     assert "**Managed LoRA SFT**" in starters
     assert "**Serverless Training API LoRA SFT.**" in starters
