@@ -1034,7 +1034,12 @@ def _finish_harbor_trial(
                 from fireworks.training.sdk import dump_tito_failure_trace
 
                 collected_root = outcome.trial_path / "artifacts" / "tito" / "failures"
-                for source in sorted(collected_root.glob("*/failed/*.jsonl")):
+                # A killed sidecar leaves in-flight trajectory traces pending.
+                collected_traces = [
+                    *collected_root.glob("*/failed/*.jsonl"),
+                    *collected_root.glob("*/pending/*.jsonl"),
+                ]
+                for source in sorted(collected_traces):
                     path = dump_tito_failure_trace(
                         None, exc, code="tito_cookbook_artifact_error", source_trace=source,
                         source_trace_root=outcome.trial_path,
