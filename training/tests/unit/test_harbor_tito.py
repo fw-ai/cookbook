@@ -1524,8 +1524,9 @@ def test_parser_failure_evidence_survives_temporary_trial_cleanup(tmp_path, monk
 
 @pytest.mark.parametrize("incomplete_artifact", [False, True])
 @pytest.mark.parametrize("retry_kind", [None, "e2b_timeout", "sidecar_readiness"])
+@pytest.mark.parametrize("trace_state", ["failed", "pending"])
 def test_detached_failure_trace_survives_missing_compact_artifact(
-    tmp_path, monkeypatch, caplog, incomplete_artifact, retry_kind
+    tmp_path, monkeypatch, caplog, incomplete_artifact, retry_kind, trace_state
 ) -> None:
     import shutil
     from fireworks.training.sdk.tito import _failure_trace
@@ -1540,7 +1541,7 @@ def test_detached_failure_trace_survives_missing_compact_artifact(
     if incomplete_artifact:
         _write_collected_artifact(trial_path, _artifact())
         (trial_path / "artifacts/tito/compact/COMPLETE").unlink()
-    collected = trial_path / "artifacts/tito/failures/writer/failed/evidence.jsonl"
+    collected = trial_path / f"artifacts/tito/failures/writer/{trace_state}/evidence.jsonl"
     collected.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps({"event": "call_terminal", "arrays": {"completion_0_full_tokens": [1, 2, 3]}}) + "\n"
     collected.write_text(body)
