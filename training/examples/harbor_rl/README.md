@@ -27,3 +27,9 @@ renderers, artifacts) are in
 [`rl-agentic.md`](/skills/fireworks-training/references/rl-agentic.md); shared
 training controls in
 [`rl-async.md`](/skills/fireworks-training/references/rl-async.md).
+
+Sampling settings in `RolloutSetup.sample_kwargs` are authoritative for MiMo,
+Mini-SWE, Pi and OpenCode: the shared TITO sidecar overrides agent-supplied
+`temperature`, `top_p` and `top_k` before calling the sampler. `top_k=0` disables
+top-k. Omitted fields retain request/service defaults. No harness-specific
+inheritance flag or task-image rebuild is needed to change these settings.

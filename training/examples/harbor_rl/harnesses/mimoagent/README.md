@@ -2,8 +2,9 @@
 
 Runs Xiaomi MiMo's **mimoagent** as a Harbor agent against the
 environment-local TITO sidecar: the trial lifecycle, allowlist networking,
-and task dirs come from Harbor; the agent loop, tools, and sampling come from
-mimoagent itself.
+and task dirs come from Harbor; the agent loop and tools come from mimoagent.
+The shared TITO sidecar applies `RolloutSetup.sample_kwargs` over the driver's
+sampling defaults before inference.
 
 ## Provenance and license
 
