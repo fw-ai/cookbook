@@ -58,6 +58,11 @@ from training.renderer.tito.qwen35 import (
     QWEN35_TOKENIZER_FINGERPRINT,
     Qwen35TITORenderer,
 )
+from training.renderer.tito.qwen36 import (
+    QWEN36_RENDERER_NAME,
+    QWEN36_TOKENIZER_FINGERPRINT,
+    Qwen36TITORenderer,
+)
 from training.renderer.tito.qwen38 import QWEN38_RENDERER_NAME, Qwen38TITORenderer
 from training.renderer.tito.shared import TITORendererCertification
 
@@ -95,6 +100,13 @@ def _build_qwen35_tito_renderer(
     certification: TITORendererCertification,
 ) -> TITORenderer:
     return Qwen35TITORenderer(tokenizer, certification=certification)
+
+
+def _build_qwen36_tito_renderer(
+    tokenizer: Any,
+    certification: TITORendererCertification,
+) -> TITORenderer:
+    return Qwen36TITORenderer(tokenizer, certification=certification)
 
 
 def _build_qwen38_tito_renderer(
@@ -175,6 +187,12 @@ _TITO_RENDERER_CERTIFICATIONS = (
         renderer_names=frozenset({QWEN35_RENDERER_NAME}),
         tokenizer_fingerprint=QWEN35_TOKENIZER_FINGERPRINT,
         renderer_factory=_build_qwen35_tito_renderer,
+    ),
+    TITORendererCertification(
+        certification_id="qwen3.6-35b-a3b-preserved@995ad96e-candidate",
+        renderer_names=frozenset({QWEN36_RENDERER_NAME}),
+        tokenizer_fingerprint=QWEN36_TOKENIZER_FINGERPRINT,
+        renderer_factory=_build_qwen36_tito_renderer,
     ),
     TITORendererCertification(
         certification_id="qwen3.8-27b-preserved@1d4bf0f2-v2",

@@ -25,6 +25,7 @@ from training.renderer.tito.plugins import (
     registered_tito_extensions,
 )
 from training.renderer.tito.qwen35 import Qwen35TITORenderer
+from training.renderer.tito.qwen36 import Qwen36TITORenderer
 from training.renderer.tito.qwen38 import Qwen38TITORenderer
 from training.renderer.tito.registry import (
     build_sidecar_tito_renderer,
@@ -43,6 +44,7 @@ __all__ = [
     "GLM53FlashTITORenderer",
     "MuseGlimmerTITORenderer",
     "Qwen35TITORenderer",
+    "Qwen36TITORenderer",
     "Qwen38TITORenderer",
     "TITORendererCertification",
     "TITORendererExtension",
