@@ -85,6 +85,13 @@ The following additional text/function-tool pairs also use `full_history`:
 | `deepseek-v4p1-flash` | `deepseek_v41_flash` | `deepseek-ai/DeepSeek-V4.1-Flash@2cba9e42aa026125f3ed06c6d98c1db82f7ca027` |
 | `glm-5p3-flash` | `glm53_flash_preserve_thinking` | `zai-org/GLM-5.3-Flash@690b705278a3a58e538fcb37c2ca8b5f9511213c` |
 
+Qwen3.6-35B-A3B has a candidate `qwen3_6_preserved` renderer pinned to
+`Qwen/Qwen3.6-35B-A3B@995ad96eacd98c81ed38be0c5b274b04031597b0`.
+It explicitly enables thinking and preserves prior reasoning; the template
+default drops prior reasoning. This pin passed six live text/tool token-parity
+cases. Validate your exact serving deployment before training with this
+candidate. Use `full_history`.
+
 GLM-5.3 Flash is distinct: `glm53_flash.py` does not inherit the GLM-5.3 adapter.
 Prompts use `apply_chat_template`, `clear_thinking=False`, and `reasoning_effort="max"`.
 Only text/tool primitives verified by Flash-specific tests are reused.
