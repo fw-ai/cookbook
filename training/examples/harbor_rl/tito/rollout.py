@@ -239,6 +239,8 @@ class HarborSettings:
     trials_dir: str | Path | None = None
     """Retain trials here; ``None`` uses the trial config's ``trials_dir`` or
     a temporary directory per trial."""
+    e2b_template_manifest: str | Path | None = None
+    """Frozen agent/verifier template pins; only supported with E2B."""
     reward_key: str = "reward"
     rollout_retries: int = DEFAULT_ROLLOUT_RETRIES
     retry_include_exceptions: frozenset[str] = DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS
@@ -251,6 +253,8 @@ class HarborSettings:
     def __post_init__(self) -> None:
         if self.environment not in {"docker", "e2b"}:
             raise ValueError("Harbor environment must be docker or e2b")
+        if self.e2b_template_manifest is not None and self.environment != "e2b":
+            raise ValueError("e2b_template_manifest requires the E2B environment")
         if not self.reward_key:
             raise ValueError("Harbor reward_key must not be empty")
         if self.rollout_retries < 0:
@@ -437,6 +441,8 @@ class HarborRollout:
                 category="rollout",
                 attributes={"task_name": task_name, "retry_index": retry_index},
             ):
+                if self._settings.e2b_template_manifest is not None:
+                    trial_kwargs["e2b_template_manifest"] = self._settings.e2b_template_manifest
                 return await run_harbor_trial(**trial_kwargs)
 
     async def _pace_trial_start(self) -> None:

@@ -543,3 +543,10 @@ parallelism beyond one host. Prebuild remote templates in waves before
 rollouts fan out (`prebuild_e2b_templates`) so trials start from ready
 templates instead of building inline, and keep verification local when the
 task allows it.
+
+For large prepared Dockerfile contexts, pin qualified E2B templates with
+`training.examples.harbor_rl.tito.e2b_frozen.pin_e2b_context` and pass the
+manifest to `HarborSettings.e2b_template_manifest`. Pin both `environment/`
+and `tests/` for separate grading. Runtime checks files, resources, and build
+IDs and reuses those snapshots without rebuilding or rehashing build archives.
+Retained build archives must keep their pinned sizes; symlink inputs must be materialized.

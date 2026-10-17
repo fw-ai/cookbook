@@ -501,6 +501,7 @@ def _build_trial_config(
     tool_profile: str = "coding",
     agent_extra_kwargs: Mapping[str, Any] | None = None,
     collect_tito_artifacts: bool = True,
+    e2b_template_manifest: str | Path | None = None,
 ) -> Any:
     """Merge a native TrialConfig template with Fireworks-owned runtime fields."""
 
@@ -528,6 +529,12 @@ def _build_trial_config(
     # Remove trial-local containers and volumes after verification. A task's
     # explicitly configured prepared image has its own stable reference and is
     # not the disposable Harbor build tag.
+    if e2b_template_manifest is not None:
+        if harbor_environment != "e2b":
+            raise ValueError("e2b_template_manifest requires the E2B environment")
+        environment["type"] = None
+        environment["import_path"] = "training.examples.harbor_rl.tito.e2b_frozen:FrozenE2BEnvironment"
+        environment["kwargs"] = {**environment.get("kwargs", {}), "frozen_manifest": str(e2b_template_manifest)}
     environment["delete"] = True
     # Docker must rebuild an untagged prepared context. Harbor's E2B backend
     # names templates by the environment-content hash, so force_build would
@@ -801,6 +808,7 @@ async def run_harbor_trial(
     artifact_processor: ArtifactProcessPool | None = None,
     materializer: Callable[[HarborTrialOutcome], RolloutRun | None] | None = None,
     require_trajectory_artifact: bool = True,
+    e2b_template_manifest: str | Path | None = None,
 ) -> HarborTrialOutcome:
     """Run one TITO-backed agent through Harbor's native Trial lifecycle."""
 
@@ -843,6 +851,7 @@ async def run_harbor_trial(
             tool_profile=tool_profile,
             agent_extra_kwargs=agent_extra_kwargs,
             collect_tito_artifacts=require_trajectory_artifact,
+            e2b_template_manifest=e2b_template_manifest,
         )
         result = None
         trial_path = trial_root / config.trial_name
@@ -960,7 +969,11 @@ async def run_harbor_trial(
             rewards={},
             exception_type=exception_type,
             exception_message=exception.exception_message if exception else None,
-            environment_type=str(config.environment.type.value),
+            environment_type=(
+                str(config.environment.type.value)
+                if config.environment.type is not None
+                else harbor_environment
+            ),
             phase_timings=phase_timings,
         )
         process = artifact_processor.run if artifact_processor else run_artifact_task
