@@ -1278,6 +1278,28 @@ def _fake_harbor():
     return SimpleNamespace(EnvironmentType=_EnvironmentType, TrialConfig=_Config)
 
 
+@pytest.mark.parametrize("environment", ["e2b", "docker"])
+def test_frozen_e2b_manifest_selects_only_the_builtin_adapter(tmp_path, environment):
+    kwargs = dict(
+        template=None, task_config={"path": "/tasks/example"}, run_id="run",
+        trials_dir=tmp_path, harbor_environment=environment,
+        sidecar_bundle_path=tmp_path / "bundle",
+        sidecar_launch_spec=json.dumps({"inference_base_url": "https://api.fireworks.ai"}),
+        agent_import_path=OPENCODE_HARBOR_IMPORT_PATH, agent_version=DEFAULT_OPENCODE_VERSION,
+        e2b_template_manifest=tmp_path / "pins.json",
+    )
+    if environment == "docker":
+        with pytest.raises(ValueError, match="requires the E2B"):
+            harbor_adapter._build_trial_config(_fake_harbor(), **kwargs)
+    else:
+        config = harbor_adapter._build_trial_config(_fake_harbor(), **kwargs)
+        assert config.environment.type is None
+        assert config.environment.import_path.endswith("e2b_frozen:FrozenE2BEnvironment")
+        assert config.environment.kwargs["frozen_manifest"] == str(tmp_path / "pins.json")
+        assert config.environment.delete is True
+        assert config.environment.force_build is False
+
+
 @pytest.mark.parametrize(
     ("configured_environment", "environment"),
     [("docker", "docker"), ("e2b", "e2b"), ("docker", "e2b")],
@@ -1518,7 +1540,8 @@ def test_e2b_stream_open_timeout_retries_even_with_valid_prefix_artifact(
         )
 
 
-def test_harbor_trial_selects_configured_numeric_reward(monkeypatch, tmp_path) -> None:
+@pytest.mark.parametrize("frozen", [False, True])
+def test_harbor_trial_selects_configured_numeric_reward(monkeypatch, tmp_path, frozen) -> None:
     artifact = _artifact("partial-reward")
 
     class Trial:
@@ -1562,9 +1585,11 @@ def test_harbor_trial_selects_configured_numeric_reward(monkeypatch, tmp_path) -
             agent_import_path=OPENCODE_HARBOR_IMPORT_PATH,
             agent_version=DEFAULT_OPENCODE_VERSION,
             reward_key="partial",
+            e2b_template_manifest=tmp_path / "pins.json" if frozen else None,
         )
     )
     assert outcome.reward == 0.75
+    assert outcome.environment_type == "e2b"
     assert outcome.rewards == {"reward": 0.0, "partial": 0.75}
 
 

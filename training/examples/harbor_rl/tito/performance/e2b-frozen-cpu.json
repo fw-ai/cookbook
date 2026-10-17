@@ -1,0 +1,19 @@
+{
+  "scope": "CPU constructor only; no provider requests or GPU workloads",
+  "harbor_version": "0.21.0",
+  "repetitions": 3,
+  "build_archive_bytes": 454742557,
+  "small_context_bytes": 18160,
+  "constructor_ms": {
+    "Regular E2B constructor": [
+      258.43574,
+      256.711413,
+      256.441556
+    ],
+    "Frozen E2B constructor": [
+      0.978403,
+      0.8384349999999999,
+      0.8064669999999999
+    ]
+  }
+}
