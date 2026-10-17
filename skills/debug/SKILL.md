@@ -98,6 +98,7 @@ After three failed hypotheses on the same issue:
 |---|---|
 | Triage categories | `references/triage-paths.md` |
 | Error catalog | `../fireworks-training/references/error-reference.md` |
+| TITO parsing, local traces, and transport errors | `references/tito-failures.md` |
 | Resume and idempotency | `../fireworks-training/references/run-state-and-reporting.md` |
 | Deployment proof | `../fireworks-training/references/deploy-and-troubleshoot.md` |
 | Journey telemetry | `../fireworks-training/references/telemetry.md` |

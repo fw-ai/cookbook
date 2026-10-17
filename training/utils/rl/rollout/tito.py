@@ -12,6 +12,7 @@ from fireworks.training.sdk.routing import (
     routing_has_gaps,
 )
 
+from training.utils.rl.async_rl.errors import DiscardTrajectoryError, trajectory_discard_error
 from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 
 if TYPE_CHECKING:
@@ -411,7 +412,7 @@ class _SampleBuilder:
         )
 
 
-def materialize_tito_trajectory(
+def _materialize_tito_trajectory(
     result: TITOTrajectoryArtifact,
     *,
     reward: float,
@@ -697,3 +698,39 @@ def materialize_tito_trajectory(
 
 
 __all__ = ["materialize_tito_trajectory"]
+
+
+def materialize_tito_trajectory(
+    result: TITOTrajectoryArtifact,
+    *,
+    reward: float,
+    harness_visible_turn_ids: set[str] | None = None,
+    harness_abandoned_turn_ids: set[str] | None = None,
+    max_context_tokens: int | None = None,
+    debug_enabled: bool = False,
+) -> RolloutRun:
+    """Validate an exact trajectory; local parsing failures discard its entirety."""
+    from fireworks.training.sdk import dump_tito_failure_trace
+
+    if max_context_tokens is not None and max_context_tokens < 1:
+        raise ValueError("max_context_tokens must be positive")
+
+    failure = trajectory_discard_error(result)
+    if failure is not None:
+        raise failure
+    try:
+        return _materialize_tito_trajectory(
+            result,
+            reward=reward,
+            harness_visible_turn_ids=harness_visible_turn_ids,
+            harness_abandoned_turn_ids=harness_abandoned_turn_ids,
+            max_context_tokens=max_context_tokens,
+            debug_enabled=debug_enabled,
+        )
+    except (ValueError, TypeError, AssertionError) as exc:
+        trace_path = dump_tito_failure_trace(result, exc, code="tito_cookbook_parse_error")
+        raise DiscardTrajectoryError(
+            f"Local cookbook trajectory validation failed ({type(exc).__name__}); trace_path={trace_path}",
+            "tito_cookbook_parse_error",
+            trace_path,
+        ) from exc

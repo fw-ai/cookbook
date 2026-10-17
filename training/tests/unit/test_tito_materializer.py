@@ -20,6 +20,7 @@ from fireworks.training.sdk import (
 from training.utils.rl.losses import combine_prompt_groups
 from training.utils.rl.metrics import compute_step_metrics
 from training.utils.rl.rollout.tito import materialize_tito_trajectory
+from training.utils.rl.async_rl.errors import DiscardTrajectoryError
 from training.utils.rl.rollout.types import Rollout, rollout_to_prompt_group
 from training.utils.rl.losses import build_policy_datums
 from training.utils.rl.sampling_support import attach_top_sampling_references
@@ -511,12 +512,14 @@ def test_harness_abandoned_length_turn_overrides_completed_emission() -> None:
 
 def test_harness_cannot_abandon_non_length_turn() -> None:
     turn = _turn("one", (1, 2), (3, 4))
-    with pytest.raises(ValueError, match="only length-truncated"):
+    with pytest.raises(DiscardTrajectoryError) as failure:
         materialize_tito_trajectory(
             _result((turn,), (_attempt("one"),)),
             reward=1.0,
             harness_abandoned_turn_ids={"one"},
         )
+    assert isinstance(failure.value.__cause__, ValueError)
+    assert "only length-truncated" in str(failure.value.__cause__)
 
 
 def test_fail_closed_turn_is_context_only_when_later_policy_turn_is_trainable() -> None:
@@ -930,10 +933,12 @@ def test_top_sampling_references_must_cover_every_turn_in_a_segment(realign) -> 
         replace(without_refs, top_sampling_references=_top_sampling_refs(2)),
     )
     for turns in ((with_refs, without_refs), late_refs):
-        with pytest.raises(ValueError, match="top-K sampling references"):
+        with pytest.raises(DiscardTrajectoryError) as failure:
             materialize_tito_trajectory(
                 _result(turns, (_attempt("one"), _attempt("two"))), reward=1.0
             )
+        assert "top-K sampling references" in str(failure.value.__cause__)
+        assert failure.value.trace_path is not None
 
 
 def test_full_prompt_parquet_routes_cover_tools_and_survive_materialization():
@@ -994,3 +999,28 @@ def test_full_prompt_parquet_routes_cover_tools_and_survive_materialization():
     ]
     assert rows == list(range(len(sample.tokens) - 1))
     assert sample.loss_mask == [0, 0, 1, 1, 0, 1, 1]
+
+
+@pytest.mark.parametrize(
+    "code,status,metadata,discard",
+    [
+        ("tito_model_malformed_output", "completed", {}, False),
+        ("tito_model_malformed_output", "failed", {}, True),
+        ("tito_sdk_parse_error", "completed", {}, True),
+        ("tito_model_malformed_output", "completed", {"tito_failure": {"code": "tito_model_malformed_output"}}, True),
+    ],
+)
+def test_recovered_legacy_artifact_uses_terminal_disposition(code, status, metadata, discard):
+    from dataclasses import replace
+
+    turn = _turn("one", (1, 2), (3, 4))
+    artifact = _result((turn,), (_attempt("one"),), status=status)
+    failed_call = replace(artifact.calls[0], call_id="earlier-failure", outcome="model_malformed", error_code=code)
+    artifact = replace(artifact, calls=(failed_call, *artifact.calls), metadata=metadata)
+    if discard:
+        with pytest.raises(DiscardTrajectoryError) as failure:
+            materialize_tito_trajectory(artifact, reward=1.0)
+        assert failure.value.code == code
+    else:
+        run = materialize_tito_trajectory(artifact, reward=1.0)
+        assert len(run.segments) == 1

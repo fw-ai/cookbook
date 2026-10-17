@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fireworks.training.sdk import (
+    TITOParseError,
     TITOChatRequest,
     TITOIncrementalPrompt,
     TITOParsedAssistant,
@@ -158,9 +159,7 @@ class Qwen38TITORenderer:
         reasoning: str | None = None
         if "</think>" in content:
             if not content.startswith("<think>"):
-                raise ValueError(
-                    f"{self._label} reasoning close has no opening boundary"
-                )
+                raise TITOParseError(f"{self._label} reasoning close has no opening boundary")
             reasoning, content = content[len("<think>") :].split("</think>", 1)
             content = content.lstrip("\n")
         elif finish_reason == "length":
@@ -175,7 +174,7 @@ class Qwen38TITORenderer:
         elif content.startswith("<think>"):
             # A clean stop before the prompt-opened reasoning boundary closes
             # is malformed structured output, not visible assistant text.
-            raise ValueError(f"{self._label} reasoning open has no closing boundary")
+            raise TITOParseError(f"{self._label} reasoning open has no closing boundary")
 
         # Tool markup is protocol only after the reasoning boundary. Malformed
         # model output is classified by the engine; the renderer must not
@@ -188,16 +187,14 @@ class Qwen38TITORenderer:
             name = match.group(1).strip()
             body = match.group(2)
             if not name:
-                raise ValueError(f"{self._label} tool call is missing a function name")
+                raise TITOParseError(f"{self._label} tool call is missing a function name")
             arguments = {
                 item.group(1).strip(): self._parse_argument(item.group(2))
                 for item in _QWEN_TOOL_ARG_RE.finditer(body)
             }
             residue = _QWEN_TOOL_ARG_RE.sub("", body).strip()
             if residue:
-                raise ValueError(
-                    f"unparsed {self._label} tool-call content: {residue!r}"
-                )
+                raise TITOParseError(f"unparsed {self._label} tool-call content: {residue!r}")
             calls.append(
                 {
                     "type": "function",
@@ -211,7 +208,7 @@ class Qwen38TITORenderer:
         cleaned.append(content[position:])
         content = "".join(cleaned)
         if "<tool_call>" in content or "</tool_call>" in content:
-            raise ValueError(f"unparsed {self._label} tool-call boundary")
+            raise TITOParseError(f"unparsed {self._label} tool-call boundary")
 
         allowed_tool_names = {
             str((tool.get("function") or {}).get("name"))
@@ -219,15 +216,9 @@ class Qwen38TITORenderer:
             if (tool.get("function") or {}).get("name")
         }
         if calls and (
-            not allowed_tool_names
-            or any(
-                str(call["function"]["name"]) not in allowed_tool_names
-                for call in calls
-            )
+            not allowed_tool_names or any(str(call["function"]["name"]) not in allowed_tool_names for call in calls)
         ):
-            raise ValueError(
-                f"{self._label} tool call names are absent from the request"
-            )
+            raise TITOParseError(f"{self._label} tool call names are absent from the request")
 
         message: dict[str, Any] = {"role": "assistant", "content": content}
         if reasoning is not None:
@@ -259,11 +250,11 @@ class Qwen38TITORenderer:
                 finish_reason,
             )
         if not clean and finish_reason != "length":
-            raise ValueError(f"unclean {self._label} renderer parse")
+            raise TITOParseError(f"unclean {self._label} renderer parse")
         message = _ensure_tool_call_ids(message, completion_ids)
         tool_calls = message.get("tool_calls") or []
         if finish_reason == "length" and tool_calls:
-            raise ValueError("truncated structured tool call is not protocol-safe")
+            raise TITOParseError("truncated structured tool call is not protocol-safe")
         output_kind = (
             "tool_calls"
             if tool_calls
@@ -272,17 +263,6 @@ class Qwen38TITORenderer:
             else "text"
         )
         return TITOParsedAssistant(message=message, output_kind=output_kind)
-
-    def fallback_assistant_text(
-        self,
-        request: TITOChatRequest,
-        completion_ids: Sequence[int],
-        finish_reason: str,
-        parser_error: BaseException,
-    ) -> str | None:
-        del request, finish_reason, parser_error
-        del completion_ids
-        return None
 
     def render_contract_id(self, request: TITOChatRequest) -> str:
         contract = {

@@ -26,6 +26,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fireworks.training.sdk import (
+    TITOParseError,
     TITOChatRequest,
     TITOIncrementalPrompt,
     TITOParsedAssistant,
@@ -167,11 +168,11 @@ class MuseGlimmerTITORenderer:
         for segment in text.split(_SEGMENT_SEPARATOR):
             if _MESSAGE not in segment:
                 if segment.strip():
-                    raise ValueError("Muse Glimmer segment has no message boundary")
+                    raise TITOParseError("Muse Glimmer segment has no message boundary")
                 continue
             recipient, payload = segment.split(_MESSAGE, 1)
             if not recipient.startswith(" to="):
-                raise ValueError("Muse Glimmer segment is missing its recipient")
+                raise TITOParseError("Muse Glimmer segment is missing its recipient")
             recipient = recipient[len(" to=") :]
             if recipient == "self":
                 reasoning_parts.append(payload)
@@ -186,16 +187,14 @@ class MuseGlimmerTITORenderer:
                 for match in matches:
                     name = match.group("name")
                     if not name:
-                        raise ValueError("Muse Glimmer tool call is missing a name")
+                        raise TITOParseError("Muse Glimmer tool call is missing a name")
                     arguments = {
                         item.group("name"): self._parse_argument(item.group("value"))
                         for item in _ATEM_ARG_RE.finditer(match.group("body"))
                     }
                     residue = _ATEM_ARG_RE.sub("", match.group("body")).strip()
                     if residue:
-                        raise ValueError(
-                            f"unparsed Muse Glimmer tool-call content: {residue!r}"
-                        )
+                        raise TITOParseError(f"unparsed Muse Glimmer tool-call content: {residue!r}")
                     calls.append(
                         {
                             "type": "function",
@@ -209,7 +208,7 @@ class MuseGlimmerTITORenderer:
             if recipient == "user":
                 visible_parts.append(payload)
                 continue
-            raise ValueError(f"unknown Muse Glimmer recipient {recipient!r}")
+            raise TITOParseError(f"unknown Muse Glimmer recipient {recipient!r}")
 
         allowed_tool_names = {
             str((tool.get("function") or {}).get("name"))
@@ -217,13 +216,9 @@ class MuseGlimmerTITORenderer:
             if (tool.get("function") or {}).get("name")
         }
         if calls and (
-            not allowed_tool_names
-            or any(
-                str(call["function"]["name"]) not in allowed_tool_names
-                for call in calls
-            )
+            not allowed_tool_names or any(str(call["function"]["name"]) not in allowed_tool_names for call in calls)
         ):
-            raise ValueError("Muse Glimmer tool call names are absent from the request")
+            raise TITOParseError("Muse Glimmer tool call names are absent from the request")
 
         content = "".join(visible_parts)
         message: dict[str, Any] = {"role": "assistant", "content": content}
@@ -256,11 +251,11 @@ class MuseGlimmerTITORenderer:
                 finish_reason,
             )
         if not clean and finish_reason != "length":
-            raise ValueError("unclean Muse Glimmer renderer parse")
+            raise TITOParseError("unclean Muse Glimmer renderer parse")
         message = _ensure_tool_call_ids(message, completion_ids)
         tool_calls = message.get("tool_calls") or []
         if finish_reason == "length" and tool_calls:
-            raise ValueError("truncated structured tool call is not protocol-safe")
+            raise TITOParseError("truncated structured tool call is not protocol-safe")
         output_kind = (
             "tool_calls"
             if tool_calls
@@ -269,17 +264,6 @@ class MuseGlimmerTITORenderer:
             else "text"
         )
         return TITOParsedAssistant(message=message, output_kind=output_kind)
-
-    def fallback_assistant_text(
-        self,
-        request: TITOChatRequest,
-        completion_ids: Sequence[int],
-        finish_reason: str,
-        parser_error: BaseException,
-    ) -> str | None:
-        del request, finish_reason, parser_error
-        del completion_ids
-        return None
 
     def render_contract_id(self, request: TITOChatRequest) -> str:
         contract = {

@@ -185,7 +185,6 @@ def test_malformed_protocol_never_falls_back_to_text(
     ids = tokenizer.encode(text, add_special_tokens=False)
     with pytest.raises(ValueError):
         renderer.parse_assistant(request, ids, text, finish)
-    assert renderer.fallback_assistant_text(request, ids, finish, ValueError()) is None
 
 
 def test_length_stop_inside_reasoning_is_not_visible_content(native: tuple[Any, DeepSeekV4TITORenderer]) -> None:

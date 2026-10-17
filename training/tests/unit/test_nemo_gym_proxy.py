@@ -32,9 +32,6 @@ class StubRenderer:
     ) -> TITOParsedAssistant:
         return TITOParsedAssistant(message={"role": "assistant", "content": "ok"})
 
-    def fallback_assistant_text(self, *args: Any) -> str:
-        return "ok"
-
     def render_contract_id(self, request: Any) -> str:
         return self.renderer_id
 

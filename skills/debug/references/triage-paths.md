@@ -67,6 +67,9 @@ answer to `triage_category` (`job_state`, `error_message`, `quality`,
 ## Path: Error message
 
 1. Capture exact status message and request/correlation IDs.
+   For TITO codes, first read [TITO failures](tito-failures.md). Separate local
+   parsing failures from upstream HTTP/transport failures using the structured
+   code and origin, including error events inside HTTP 200 streams.
 2. Read `../../fireworks-training/references/error-reference.md`.
 3. Classify platform-side vs user-side vs unknown before acting.
 4. De-mask: pull strongest progress signal for the method (the job's

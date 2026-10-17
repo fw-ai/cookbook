@@ -7,14 +7,18 @@ import errno
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, TypeAlias
+from typing import TYPE_CHECKING, Callable, TypeAlias
 
 import aiohttp
 import httpx
 import requests
 
+if TYPE_CHECKING:
+    from fireworks.training.sdk import TITOTrajectoryArtifact
+
 
 class ErrorDisposition(str, Enum):
+    DISCARD = "discard"
     RECOVERABLE = "recoverable"
     FATAL = "fatal"
 
@@ -22,14 +26,80 @@ class ErrorDisposition(str, Enum):
 class RecoverableRolloutError(RuntimeError):
     """Explicitly mark a rollout-infrastructure failure as recoverable.
 
-    ``reason`` is an optional stable slug for failure telemetry. It survives
-    only in-process: an error pickled back from an artifact worker rebuilds
-    from ``args`` alone, so the catch site labels those itself.
+    ``reason`` is an optional stable slug for failure telemetry. Exception
+    attributes, including retained trace pointers, survive worker serialization.
     """
 
-    def __init__(self, *args: object, reason: str | None = None) -> None:
+    def __init__(
+        self, *args: object, reason: str | None = None, trace_paths: tuple[str, ...] = ()
+    ) -> None:
         super().__init__(*args)
         self.reason = reason
+        self.trace_paths = trace_paths
+
+
+class DiscardTrajectoryError(RuntimeError):
+    """A diagnosed trajectory-local failure; never retry it as infrastructure."""
+
+    def __init__(self, message: str, code: str = "tito_cookbook_parse_error", trace_path: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.trace_path = trace_path
+
+    def __reduce__(self) -> tuple:
+        return (type(self), (str(self), self.code, self.trace_path))
+
+
+_TITO_DISCARD_CODES = frozenset(
+    {
+        "tito_sdk_parse_error",
+        "tito_sdk_parser_internal_error",
+        "tito_sdk_sampling_parse_error",
+        "tito_sdk_internal_error",
+        "tito_cookbook_parse_error",
+        "tito_model_malformed_output",
+    }
+)
+
+
+def _tito_failure_details(error: BaseException) -> dict:
+    # SDK exceptions, OpenAI SDK exceptions and raw HTTP failures all preserve
+    # the same structured code. Never classify by free-form message matching.
+    body = getattr(error, "body", None)
+    if not isinstance(body, dict):
+        response = getattr(error, "response", None)
+        try:
+            body = response.json() if response is not None else None
+        except (ValueError, TypeError, RuntimeError):
+            body = None
+    if isinstance(body, dict):
+        details = body.get("error", body)
+        if isinstance(details, dict) and details.get("code") in _TITO_DISCARD_CODES:
+            return details
+    if getattr(error, "code", None) in _TITO_DISCARD_CODES:
+        return {"code": error.code, **dict(getattr(error, "context", {}) or {})}
+    return {}
+
+
+def trajectory_discard_error(artifact: TITOTrajectoryArtifact) -> DiscardTrajectoryError | None:
+    """A failed trajectory may never contribute its successful prefix to training."""
+    failure = artifact.metadata.get("tito_failure") or {}
+    code = failure.get("code")
+    if code not in _TITO_DISCARD_CODES:
+        code = next(
+            (
+                call.error_code
+                for call in artifact.calls
+                if call.error_code in _TITO_DISCARD_CODES
+                and not (call.error_code == "tito_model_malformed_output" and artifact.status == "completed")
+            ),
+            None,
+        )
+    if code is None:
+        return None
+    return DiscardTrajectoryError(
+        f"Discarding TITO trajectory {artifact.trajectory_id}: {code}", code, failure.get("trace_path")
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +107,7 @@ class ErrorClassification:
     disposition: ErrorDisposition
     reason: str
     status_code: int | None = None
+    trace_path: str | None = None
 
     @property
     def recoverable(self) -> bool:
@@ -78,6 +149,11 @@ def classify_rollout_error(error: BaseException) -> ErrorClassification:
 
     if isinstance(error, asyncio.CancelledError):
         return ErrorClassification(ErrorDisposition.FATAL, "unexpected_cancellation")
+    if isinstance(error, DiscardTrajectoryError):
+        return ErrorClassification(ErrorDisposition.DISCARD, error.code, trace_path=error.trace_path)
+    details = _tito_failure_details(error)
+    if details:
+        return ErrorClassification(ErrorDisposition.DISCARD, details["code"], trace_path=details.get("trace_path"))
     if isinstance(error, RecoverableRolloutError):
         return ErrorClassification(
             ErrorDisposition.RECOVERABLE,
@@ -285,6 +361,7 @@ __all__ = [
     "CircuitBreakerTripped",
     "ErrorClassification",
     "ErrorDisposition",
+    "DiscardTrajectoryError",
     "RecoverableCircuitBreaker",
     "RecoverableRolloutError",
     "RolloutErrorClassifier",
