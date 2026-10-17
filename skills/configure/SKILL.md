@@ -71,7 +71,7 @@ local run state. Telemetry must never block or slow training.
 3. Public cookbook code at the recorded commit.
 4. This skill and its installed references for stable workflow rules.
 
-Never guess current models, shapes, prices, limits, or defaults. Never quote an excluded deployment/inference rate unless fetched in this transcript; otherwise say `separately priced`. State promotion deadlines unambiguously (`2026-11-01T00:00:00-07:00` or through Oct 31 Pacific).
+Never guess current models, shapes, prices, limits, or defaults. Never quote an excluded deployment/inference rate unless fetched in this transcript; otherwise say `separately priced`. State promotion deadlines unambiguously (`2026-12-01T00:00:00-08:00` or through Nov 30 Pacific).
 
 ## Authentication and execution surface
 

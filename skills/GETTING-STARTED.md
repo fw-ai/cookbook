@@ -63,8 +63,8 @@ and monitors the job. Built-in starters (see
 | Code-first SFT with a base-vs-tuned comparison | your own chat JSONL | Serverless Training API |
 | Muse Glimmer receipt-extraction SFT | account-relative dataset ID `onboarding-cord-receipts` | Managed SFT |
 
-Muse Glimmer 30B LoRA SFT is free for jobs started before `2026-11-01T00:00:00-07:00`
-(Oct 31) on Managed SFT (UI or API) and on the Serverless Training API
+Muse Glimmer 30B LoRA SFT is free for jobs started before `2026-12-01T00:00:00-08:00`
+(Nov 30) on Managed SFT (UI or API) and on the Serverless Training API
 ([source](https://docs.fireworks.ai/fine-tuning/models)). RL, DPO,
 deployments, inference, and Dedicated trainers are not covered. After the
 deadline the agent resolves live pricing instead.

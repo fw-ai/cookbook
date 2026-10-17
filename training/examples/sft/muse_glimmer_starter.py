@@ -2,7 +2,7 @@
 """Muse Glimmer starter: a first SFT job on the preloaded prompt-router data.
 
 Muse Glimmer 30B LoRA SFT is promotional ``$0`` on Managed SFT and on the Serverless
-Training API for jobs started before ``2026-11-01T00:00:00-07:00``.
+Training API for jobs started before ``2026-12-01T00:00:00-08:00``.
 Source: https://docs.fireworks.ai/fine-tuning/models. RL, DPO, deployments,
 inference, and Dedicated resources are not covered.
 
@@ -47,8 +47,8 @@ warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality")
 BASE_MODEL = "accounts/fireworks/models/muse-glimmer-30b"
 TOKENIZER_MODEL = "meta-models/Muse-Glimmer-30B"
 RENDERER_NAME = "muse_glimmer"
-# End of Oct 31 Pacific; Nov 1 00:00 is still PDT (UTC-7).
-PROMOTION_DEADLINE = datetime(2026, 11, 1, tzinfo=timezone(timedelta(hours=-7)))
+# End of Nov 30 Pacific; DST ends Nov 1, so Dec 1 00:00 is PST (UTC-8).
+PROMOTION_DEADLINE = datetime(2026, 12, 1, tzinfo=timezone(timedelta(hours=-8)))
 PROMOTION_SOURCE = "https://docs.fireworks.ai/fine-tuning/models"
 LORA_ALPHA = 32
 LORA_TARGETS = {"train_mlp": True, "train_attn": True, "train_unembed": True}

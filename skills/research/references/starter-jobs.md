@@ -13,7 +13,7 @@ user's next approval launches the job.
 
 Source: <https://docs.fireworks.ai/fine-tuning/models>. Muse Glimmer 30B
 (`accounts/fireworks/models/muse-glimmer-30b`) is free for jobs started before
-`2026-11-01T00:00:00-07:00` (Oct 31) on:
+`2026-12-01T00:00:00-08:00` (Nov 30) on:
 
 - **Managed LoRA SFT** — the UI, or the same managed job created through the SDK/API.
 - **Serverless Training API LoRA SFT.**
@@ -25,7 +25,7 @@ one line; do not list every exclusion unless the user asks.
 Before calling a starter free:
 
 1. Confirm the current UTC time is before the deadline. State it unambiguously
-   as `2026-11-01T00:00:00-07:00` or "through Oct 31 Pacific".
+   as `2026-12-01T00:00:00-08:00` or "through Nov 30 Pacific".
 2. Confirm the chosen surface is enabled for the account (read-only check).
 3. Keep paid work (deployment, inference evaluation) out of the plan or show it
    as a separate line that needs its own approval. Say `separately priced`
