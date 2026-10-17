@@ -42,7 +42,7 @@ from training.examples.harbor_rl.tito.trial import (
 )
 from training.utils.phase_tracing import phase_span
 from training.utils.rl import trial_events
-from training.utils.rl.async_rl.errors import RecoverableRolloutError
+from training.utils.rl.async_rl.errors import RecoverableRolloutError, DiscardTrajectoryError
 from training.utils.rl.rollout import RolloutRun
 from training.utils.rl.rollout.lifecycle import ActiveRolloutTasks
 from training.utils.rl.rollout.tito import materialize_tito_trajectory
@@ -103,27 +103,33 @@ async def run_with_fresh_trajectory_retries(
             return await operation(attempt)
         except asyncio.CancelledError:
             raise
+        except DiscardTrajectoryError as exc:
+            trial_events.record_trial_discarded(exc.code)
+            logger.error("Discarding Harbor task %s code=%s trace_path=%s", task_name, exc.code, exc.trace_path)
+            raise
         except RecoverableRolloutError as exc:
             reason = getattr(exc, "reason", None) or "recoverable_rollout_error"
             if attempt == retries:
                 trial_events.record_trial_discarded(reason)
                 logger.warning(
-                    "Discarding Harbor task %s after %d attempts: %s",
+                    "Discarding Harbor task %s after %d attempts: %s trace_paths=%s",
                     task_name,
                     retries + 1,
                     exc,
+                    exc.trace_paths,
                 )
                 return None
             trial_events.record_trial_retry(reason)
             delay = _RETRY_DELAY_SECONDS * (attempt + 1)
             logger.warning(
                 "Harbor task %s failed transiently (attempt %d/%d); "
-                "retrying with a fresh trajectory in %ds: %s",
+                "retrying with a fresh trajectory in %ds: %s trace_paths=%s",
                 task_name,
                 attempt + 1,
                 retries + 1,
                 delay,
                 exc,
+                exc.trace_paths,
             )
             await asyncio.sleep(delay)
         except Exception as exc:  # noqa: BLE001 - rollout isolation boundary
@@ -186,7 +192,7 @@ def materialize_harbor_trajectory(
             max_context_tokens=max_context_tokens,
             debug_enabled=debug_enabled,
         )
-    except RecoverableRolloutError:
+    except (RecoverableRolloutError, DiscardTrajectoryError):
         raise
     except Exception as exc:
         raise RecoverableRolloutError(

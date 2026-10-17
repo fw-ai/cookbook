@@ -61,6 +61,12 @@ categories.
 
 ## Structured errors and support routing
 
+For TITO rollout failures, use the separate local parsing and upstream transport
+codes described in [TITO failures](../../debug/references/tito-failures.md).
+Known parser failures discard only the affected trajectory and log a local
+trace pointer. They do not establish a backend incident, including the legacy
+`tito_model_malformed_output` code that used HTTP 502.
+
 Use a registered `google.rpc.ErrorInfo` detail as the only source for an
 `error_reason`. Its canonical `reason` is the stable semantic classification.
 Do not derive a reason from `status.message`, raw exceptions, or other

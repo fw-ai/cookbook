@@ -99,6 +99,7 @@ class _ProducerStats:
     sample_fails: int = 0
     filter_drops: int = 0
     recoverable_errors: int = 0
+    discard_errors: int = 0
     trajectory_drops: int = 0
     incomplete_group_retries: int = 0
 
@@ -265,6 +266,7 @@ class RolloutProducer:
             "sample_fails": self._stats.sample_fails,
             "filter_drops": self._stats.filter_drops,
             "recoverable_errors": self._stats.recoverable_errors,
+            "discard_errors": self._stats.discard_errors,
             "trajectory_drops": self._stats.trajectory_drops,
             "incomplete_group_retries": self._stats.incomplete_group_retries,
         }
@@ -429,21 +431,27 @@ class RolloutProducer:
             if classification.disposition is ErrorDisposition.FATAL:
                 self._fail(error)
                 return
-            self._stats.recoverable_errors += 1
-            try:
-                self._breaker.record_failure(error, classification)
-            except CircuitBreakerTripped as breaker_error:
-                self._fail(breaker_error)
-                return
-            if (
-                self._stats.recoverable_errors == 1
-                or self._stats.recoverable_errors % 10 == 0
-            ):
-                logger.warning(
-                    "Async RL recoverable rollout errors: total=%d reason=%s",
-                    self._stats.recoverable_errors,
+            if classification.disposition is ErrorDisposition.DISCARD:
+                self._stats.discard_errors += 1
+                logger.error(
+                    "Discarding trajectory row=%s code=%s trace_path=%s",
+                    draw.sequence,
                     classification.reason,
+                    classification.trace_path,
                 )
+            else:
+                self._stats.recoverable_errors += 1
+                try:
+                    self._breaker.record_failure(error, classification)
+                except CircuitBreakerTripped as breaker_error:
+                    self._fail(breaker_error)
+                    return
+                if self._stats.recoverable_errors == 1 or self._stats.recoverable_errors % 10 == 0:
+                    logger.warning(
+                        "Async RL recoverable rollout errors: total=%d reason=%s",
+                        self._stats.recoverable_errors,
+                        classification.reason,
+                    )
             resolution = self._note_trajectory_dropped(draw.sequence)
         else:
             run = task.result()

@@ -8,7 +8,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from fireworks.training.sdk import TITOChatRequest, TITOError, TITOParsedAssistant
+from fireworks.training.sdk import TITOParseError, TITOChatRequest, TITOError, TITOParsedAssistant
 
 from training.renderer.tito.shared import (
     TITORendererCertification,
@@ -153,7 +153,7 @@ class DeepSeekV4TITORenderer:
         if finish_reason == "length":
             reasoning, boundary, content = text.partition(self._encoder.thinking_end_token)
             if boundary and self._encoder.dsml_token in content:
-                raise ValueError("truncated DeepSeek V4 tool call is not protocol-safe")
+                raise TITOParseError("truncated DeepSeek V4 tool call is not protocol-safe")
             message = {
                 "role": "assistant",
                 "content": content if boundary else "",
@@ -165,14 +165,18 @@ class DeepSeekV4TITORenderer:
                     text + self._encoder.eos_token, thinking_mode="thinking"
                 )
             except (AssertionError, ValueError) as exc:
-                raise ValueError("malformed DeepSeek V4 assistant output") from exc
+                raise TITOParseError("malformed DeepSeek V4 assistant output") from exc
         calls = message.get("tool_calls") or []
         allowed = {str((tool.get("function") or {}).get("name")) for tool in request.tools}
         if any(call.get("namespace") or str(call["function"]["name"]) not in allowed for call in calls):
-            raise ValueError("DeepSeek V4 tool call names are absent from the request")
+            raise TITOParseError("DeepSeek V4 tool call names are absent from the request")
         for call in calls:
-            if not isinstance(json.loads(call["function"]["arguments"]), dict):
-                raise ValueError("DeepSeek V4 tool arguments must be a JSON object")
+            try:
+                arguments = json.loads(call["function"]["arguments"])
+            except json.JSONDecodeError as exc:
+                raise TITOParseError("DeepSeek V4 tool arguments are invalid JSON") from exc
+            if not isinstance(arguments, dict):
+                raise TITOParseError("DeepSeek V4 tool arguments must be a JSON object")
         if not calls:
             message.pop("tool_calls", None)
         message = _ensure_tool_call_ids(message, completion_ids)
@@ -180,15 +184,6 @@ class DeepSeekV4TITORenderer:
             message=message,
             output_kind="tool_calls" if calls else "reasoning",
         )
-
-    def fallback_assistant_text(
-        self,
-        request: TITOChatRequest,
-        completion_ids: Sequence[int],
-        finish_reason: str,
-        parser_error: BaseException,
-    ) -> str | None:
-        return None
 
     def render_contract_id(self, request: TITOChatRequest) -> str:
         contract = {

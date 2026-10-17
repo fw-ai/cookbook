@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fireworks.training.sdk import (
+    TITOParseError,
     TITOChatRequest,
     TITOIncrementalPrompt,
     TITOParsedAssistant,
@@ -248,7 +249,7 @@ class GLM52TITORenderer:
         reasoning: str | None = None
         if "</think>" in content:
             if not content.startswith("<think>"):
-                raise ValueError("GLM-5.2 reasoning close has no opening boundary")
+                raise TITOParseError("GLM-5.2 reasoning close has no opening boundary")
             reasoning, content = content[len("<think>") :].split("</think>", 1)
             content = content.lstrip("\n")
         elif finish_reason == "length":
@@ -264,7 +265,7 @@ class GLM52TITORenderer:
             # A clean stop before the prompt-opened reasoning boundary closes
             # is malformed structured output, not visible assistant text.
             # Reject it before tool parsing can reinterpret reasoning.
-            raise ValueError("GLM-5.2 reasoning open has no closing boundary")
+            raise TITOParseError("GLM-5.2 reasoning open has no closing boundary")
 
         # Tool markup is protocol only after the reasoning boundary. Malformed
         # model output is classified by the engine; the renderer must not
@@ -278,14 +279,14 @@ class GLM52TITORenderer:
             first_arg = body.find("<arg_key>")
             name = body[:first_arg].strip() if first_arg >= 0 else body.strip()
             if not name:
-                raise ValueError("GLM-5.2 tool call is missing a function name")
+                raise TITOParseError("GLM-5.2 tool call is missing a function name")
             arguments = {
                 item.group(1): self._parse_argument(item.group(2))
                 for item in _GLM_TOOL_ARG_RE.finditer(body)
             }
             residue = _GLM_TOOL_ARG_RE.sub("", body).strip().removeprefix(name).strip()
             if residue:
-                raise ValueError(f"unparsed GLM-5.2 tool-call content: {residue!r}")
+                raise TITOParseError(f"unparsed GLM-5.2 tool-call content: {residue!r}")
             calls.append(
                 {
                     "type": "function",
@@ -299,7 +300,7 @@ class GLM52TITORenderer:
         cleaned.append(content[position:])
         content = "".join(cleaned)
         if "<tool_call>" in content or "</tool_call>" in content:
-            raise ValueError("unparsed GLM-5.2 tool-call boundary")
+            raise TITOParseError("unparsed GLM-5.2 tool-call boundary")
 
         allowed_tool_names = {
             str((tool.get("function") or {}).get("name"))
@@ -307,13 +308,9 @@ class GLM52TITORenderer:
             if (tool.get("function") or {}).get("name")
         }
         if calls and (
-            not allowed_tool_names
-            or any(
-                str(call["function"]["name"]) not in allowed_tool_names
-                for call in calls
-            )
+            not allowed_tool_names or any(str(call["function"]["name"]) not in allowed_tool_names for call in calls)
         ):
-            raise ValueError("GLM-5.2 tool call names are absent from the request")
+            raise TITOParseError("GLM-5.2 tool call names are absent from the request")
 
         message: dict[str, Any] = {"role": "assistant", "content": content}
         if reasoning is not None:
@@ -345,11 +342,11 @@ class GLM52TITORenderer:
                 finish_reason,
             )
         if not clean and finish_reason != "length":
-            raise ValueError("unclean GLM-5.2 renderer parse")
+            raise TITOParseError("unclean GLM-5.2 renderer parse")
         message = _ensure_tool_call_ids(message, completion_ids)
         tool_calls = message.get("tool_calls") or []
         if finish_reason == "length" and tool_calls:
-            raise ValueError("truncated structured tool call is not protocol-safe")
+            raise TITOParseError("truncated structured tool call is not protocol-safe")
         output_kind = (
             "tool_calls"
             if tool_calls
@@ -358,17 +355,6 @@ class GLM52TITORenderer:
             else "text"
         )
         return TITOParsedAssistant(message=message, output_kind=output_kind)
-
-    def fallback_assistant_text(
-        self,
-        request: TITOChatRequest,
-        completion_ids: Sequence[int],
-        finish_reason: str,
-        parser_error: BaseException,
-    ) -> str | None:
-        del request, finish_reason, parser_error
-        del completion_ids
-        return None
 
     def render_contract_id(self, request: TITOChatRequest) -> str:
         contract = {

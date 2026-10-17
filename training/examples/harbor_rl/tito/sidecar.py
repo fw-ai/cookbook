@@ -34,6 +34,7 @@ SIDECAR_LOG_ROOT = "/logs/tito"
 SIDECAR_ARTIFACT_PATH = f"{SIDECAR_LOG_ROOT}/trajectory.tito"
 SIDECAR_ARTIFACT_MANIFEST_PATH = f"{SIDECAR_LOG_ROOT}/trajectory.json"
 SIDECAR_DEBUG_ROOT = f"{SIDECAR_LOG_ROOT}/debug"
+SIDECAR_FAILURE_ROOT = f"{SIDECAR_LOG_ROOT}/failures"
 SIDECAR_COMPLETE_PATH = f"{SIDECAR_LOG_ROOT}/COMPLETE"
 SIDECAR_STDOUT_PATH = f"{SIDECAR_LOG_ROOT}/sidecar.stdout"
 SIDECAR_STDERR_PATH = f"{SIDECAR_LOG_ROOT}/sidecar.stderr"
@@ -890,6 +891,7 @@ async def serve(spec_path: Path) -> None:
         DeploymentSampler,
         TITOLocalDebugConfig,
         TITOLocalDebugSink,
+        TITOFailureTraceConfig,
         TITOSidecar,
         TrajectoryDriftPolicy,
     )
@@ -973,6 +975,7 @@ async def serve(spec_path: Path) -> None:
         call_classifier=call_classifier,
         sampling_defaults=dict(spec.get("sampling_defaults") or {}),
         observer=observer,
+        failure_trace_config=TITOFailureTraceConfig(root_dir=Path(SIDECAR_FAILURE_ROOT)),
         keepalive_seconds=float(spec.get("keepalive_seconds", 5.0)),
         default_drift_policy=TrajectoryDriftPolicy(
             max_masked_tokens=int(spec.get("max_masked_tokens", 1024)),
@@ -1059,6 +1062,7 @@ __all__ = [
     "SIDECAR_COMPLETE_PATH",
     "SIDECAR_CONTEXT_OVERFLOW_PATH",
     "SIDECAR_DEBUG_ROOT",
+    "SIDECAR_FAILURE_ROOT",
     "SIDECAR_ENDPOINT_PATH",
     "SIDECAR_LOG_ROOT",
     "SIDECAR_STDERR_PATH",

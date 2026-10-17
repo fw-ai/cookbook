@@ -32,11 +32,12 @@ from training.examples.harbor_rl.tito.sidecar import (
     SIDECAR_ARTIFACT_PATH,
     SIDECAR_COMPLETE_PATH,
     SIDECAR_DEBUG_ROOT,
+    SIDECAR_FAILURE_ROOT,
     SIDECAR_STDERR_PATH,
     SIDECAR_STDOUT_PATH,
 )
 from training.utils.rl import trial_events
-from training.utils.rl.async_rl.errors import RecoverableRolloutError
+from training.utils.rl.async_rl.errors import RecoverableRolloutError, DiscardTrajectoryError, trajectory_discard_error
 
 if TYPE_CHECKING:
     from training.utils.rl.rollout import RolloutRun
@@ -619,6 +620,7 @@ def _build_trial_config(
                     "destination": str(_LOG_ARTIFACT_DESTINATION / Path(source).name),
                 }
             )
+        artifacts.append({"source": SIDECAR_FAILURE_ROOT, "destination": "tito/failures"})
         if bool(sidecar_spec.get("debug_enabled")):
             artifacts.append(
                 {
@@ -1026,15 +1028,37 @@ def _finish_harbor_trial(
                 outcome.trial_path
             )
         except RecoverableRolloutError as exc:
+            retained = []
+            try:
+                # lazy: new SDK diagnostics are needed only for failed TITO trials.
+                from fireworks.training.sdk import dump_tito_failure_trace
+
+                collected_root = outcome.trial_path / "artifacts" / "tito" / "failures"
+                for source in sorted(collected_root.glob("*/failed/*.jsonl")):
+                    path = dump_tito_failure_trace(
+                        None, exc, code="tito_cookbook_artifact_error", source_trace=source,
+                        source_trace_root=outcome.trial_path,
+                    )
+                    if path is not None:
+                        retained.append(path)
+                        logger.error(
+                            "Harbor artifact unavailable; retained sidecar evidence code=tito_cookbook_artifact_error trace_path=%s",
+                            path,
+                        )
+            except Exception as diagnostic_error:
+                logger.warning("Harbor detached failure trace unavailable: %s", type(diagnostic_error).__name__)
+            exc.trace_paths = tuple(retained)
             if retryable_e2b_timeout:
                 raise RecoverableRolloutError(
                     "Harbor E2B command stream did not open before its provider "
-                    "request timeout"
+                    "request timeout",
+                    trace_paths=exc.trace_paths,
                 ) from exc
             if retryable_sidecar_readiness:
                 raise RecoverableRolloutError(
                     "Harbor E2B sidecar did not become ready within its bounded "
-                    "startup window"
+                    "startup window",
+                    trace_paths=exc.trace_paths,
                 ) from exc
             if exception_type and exception_type not in retry_names:
                 raise RuntimeError(
@@ -1042,6 +1066,27 @@ def _finish_harbor_trial(
                     f"{exception_type}: {exc}"
                 ) from exc
             raise
+    if trajectory_artifact is not None:
+        error = trajectory_discard_error(trajectory_artifact)
+        if error is not None:
+            # lazy: new SDK diagnostics are needed only for failed TITO trials.
+            from fireworks.training.sdk import dump_tito_failure_trace
+
+            collected_root = outcome.trial_path / "artifacts" / "tito" / "failures"
+            name = Path(error.trace_path or "missing").name
+            source_trace = next(collected_root.rglob(name), None) if collected_root.exists() else None
+            trace_path = dump_tito_failure_trace(
+                trajectory_artifact,
+                error,
+                code=error.code,
+                source_trace=source_trace,
+                source_trace_root=outcome.trial_path,
+            )
+            raise DiscardTrajectoryError(
+                f"Discarding Harbor trajectory: code={error.code} trace_path={trace_path}",
+                error.code,
+                trace_path,
+            )
     if retryable_e2b_timeout:
         raise RecoverableRolloutError(
             "Harbor E2B command stream did not open before its provider request timeout"

@@ -19,7 +19,9 @@ from training.utils.rl.async_rl.errors import (
     CircuitBreakerTripped,
     ErrorClassification,
     ErrorDisposition,
+    DiscardTrajectoryError,
     RecoverableCircuitBreaker,
+    RecoverableRolloutError,
     classify_rollout_error,
 )
 from training.utils.rl.async_rl import (
@@ -722,6 +724,62 @@ def test_recoverable_rollout_error_drops_and_continues() -> None:
     _run(scenario())
 
 
+def test_parser_failures_discard_without_tripping_infrastructure_breaker() -> None:
+    from training.examples.harbor_rl.tito.rollout import run_with_fresh_trajectory_retries
+
+    async def scenario() -> None:
+        async def invalid(_sub_index: int) -> RolloutRun:
+            async def operation(attempt: int):
+                assert attempt == 0  # Diagnosed discards never retry.
+                raise DiscardTrajectoryError("invalid sampled output", "tito_sdk_parse_error", "/local/failure.jsonl")
+
+            return await run_with_fresh_trajectory_retries(operation, task_name="test", retries=3)
+
+        coordinator = _coordinator(
+            [_row(index, run_factory=invalid) for index in range(6)] + [_row(7)],
+            prompt_groups_per_step=1,
+            circuit_breaker=CircuitBreakerConfig(max_consecutive_failures=1),
+        )
+        async with coordinator:
+            batch = await asyncio.wait_for(coordinator.next_batch(), timeout=1)
+            assert batch is not None
+            assert await _consume(batch) == [1]
+            coordinator.publish(batch)
+            assert await coordinator.next_batch() is None
+            snapshot = coordinator.snapshot()
+            assert snapshot["recoverable_errors"] == 0
+            assert snapshot["discard_errors"] == 6
+            assert snapshot["trajectory_drops"] == 6
+
+    _run(scenario())
+
+
+@pytest.mark.parametrize("code,status", [("tito_sdk_parse_error", 422), ("tito_sdk_internal_error", 500)])
+def test_http_parser_error_preserves_discard_and_trace_path(code, status) -> None:
+    import httpx
+
+    response = httpx.Response(
+        status,
+        request=httpx.Request("POST", "http://localhost/chat/completions"),
+        json={"error": {"code": code, "trace_path": "/local/failure.jsonl"}},
+    )
+    error = httpx.HTTPStatusError("unprocessable", request=response.request, response=response)
+    classification = classify_rollout_error(error)
+    assert classification.disposition is ErrorDisposition.DISCARD
+    assert classification.trace_path == "/local/failure.jsonl"
+
+
+def test_discard_error_survives_artifact_worker_serialization() -> None:
+    import pickle
+
+    error = DiscardTrajectoryError("invalid trajectory", "tito_cookbook_parse_error", "/local/failure.jsonl")
+    restored = pickle.loads(pickle.dumps(error))
+    classification = classify_rollout_error(restored)
+    assert classification.disposition is ErrorDisposition.DISCARD
+    assert classification.reason == "tito_cookbook_parse_error"
+    assert classification.trace_path == "/local/failure.jsonl"
+
+
 def test_misaligned_r3_rollout_drops_before_group_admission() -> None:
     async def scenario() -> None:
         malformed = _rollout_run()
@@ -876,3 +934,12 @@ def test_accepted_cursor_is_not_durable_before_publish() -> None:
             assert resolved == [(0, "accepted"), (1, "accepted")]
 
     _run(scenario())
+
+
+def test_recoverable_error_preserves_reason_and_trace_pointers_through_worker() -> None:
+    import pickle
+
+    error = RecoverableRolloutError("missing artifact", reason="artifact_missing", trace_paths=("/local/failure.jsonl",))
+    restored = pickle.loads(pickle.dumps(error))
+    assert restored.reason == "artifact_missing"
+    assert restored.trace_paths == ("/local/failure.jsonl",)

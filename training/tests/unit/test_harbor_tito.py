@@ -46,7 +46,7 @@ from training.examples.harbor_rl.tito import sidecar as sidecar_runtime
 from training.examples.harbor_rl.tito import e2b_templates
 from training.examples.harbor_rl.tito import rollout as tito_rollout
 from training.examples.harbor_rl.tito import trial as harbor_adapter
-from training.utils.rl.async_rl.errors import RecoverableRolloutError
+from training.utils.rl.async_rl.errors import RecoverableRolloutError, DiscardTrajectoryError
 from training.utils.rl.rollout import RolloutRun, RolloutSample
 
 
@@ -1337,7 +1337,7 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
     assert config.agent.extra_allowed_hosts == ["api.fireworks.ai"]
     assert config.environment.extra_allowed_hosts == ["api.fireworks.ai"]
     assert not getattr(config.environment, "extra_docker_compose", [])
-    assert config.artifacts[-5:] == [
+    assert config.artifacts[-6:] == [
         {
             "source": sidecar_runtime.SIDECAR_ARTIFACT_PATH,
             "destination": "tito/compact/trajectory.tito",
@@ -1358,6 +1358,7 @@ def test_trial_config_uses_same_sidecar_contract_for_both_backends(
             "source": sidecar_runtime.SIDECAR_STDERR_PATH,
             "destination": "tito/logs/sidecar.stderr",
         },
+        {"source": sidecar_runtime.SIDECAR_FAILURE_ROOT, "destination": "tito/failures"},
     ]
 
 
@@ -1471,6 +1472,107 @@ def test_collected_artifact_is_checksum_and_schema_validated(tmp_path) -> None:
     decoded, manifest = harbor_adapter._load_sidecar_artifact(tmp_path)
     assert decoded == artifact
     assert manifest["trajectory_id"] == artifact.trajectory_id
+
+
+def test_parser_failure_evidence_survives_temporary_trial_cleanup(tmp_path, monkeypatch) -> None:
+    import shutil
+    from fireworks.training.sdk.tito import _failure_trace
+
+    monkeypatch.setattr(
+        _failure_trace,
+        "_default_recorder",
+        _failure_trace._FailureTraceRecorder(
+            _failure_trace.TITOFailureTraceConfig(root_dir=tmp_path / "retained", min_free_bytes=0)
+        ),
+    )
+    trial_path = tmp_path / "temporary-trial"
+    artifact = replace(
+        _artifact(),
+        status="failed",
+        terminal_reason="tito_sdk_parse_error",
+        metadata={
+            "tito_failure": {
+                "code": "tito_sdk_parse_error",
+                "trace_path": "/logs/tito/failures/writer/failed/evidence.jsonl",
+            }
+        },
+    )
+    _write_collected_artifact(trial_path, artifact)
+    collected = trial_path / "artifacts/tito/failures/writer/failed/evidence.jsonl"
+    collected.parent.mkdir(parents=True)
+    collected.write_text(
+        json.dumps({"event": "call_terminal", "arrays": {"completion_0_full_tokens": [1, 2, 3]}}) + "\n"
+    )
+    with pytest.raises(DiscardTrajectoryError) as failure:
+        harbor_adapter._finish_harbor_trial(
+            replace(_outcome(artifact=artifact), trial_path=trial_path),
+            raw_rewards={"reward": 1},
+            reward_key="reward",
+            terminal_failure_reward=None,
+            has_exception=False,
+            retry_names=frozenset(),
+            retryable_e2b_timeout=False,
+            retryable_sidecar_readiness=False,
+        )
+    shutil.rmtree(trial_path)
+    retained = Path(failure.value.trace_path)
+    assert retained.is_file()
+    payload = json.loads(retained.read_text().splitlines()[-1])["payload"]
+    assert json.loads(payload["collected_trace_jsonl"])["arrays"]["completion_0_full_tokens"] == [1, 2, 3]
+    assert payload["artifact_base64"]
+
+
+@pytest.mark.parametrize("incomplete_artifact", [False, True])
+@pytest.mark.parametrize("retry_kind", [None, "e2b_timeout", "sidecar_readiness"])
+def test_detached_failure_trace_survives_missing_compact_artifact(
+    tmp_path, monkeypatch, caplog, incomplete_artifact, retry_kind
+) -> None:
+    import shutil
+    from fireworks.training.sdk.tito import _failure_trace
+
+    monkeypatch.setattr(
+        _failure_trace, "_default_recorder",
+        _failure_trace._FailureTraceRecorder(
+            _failure_trace.TITOFailureTraceConfig(root_dir=tmp_path / "retained", min_free_bytes=0)
+        ),
+    )
+    trial_path = tmp_path / "temporary-trial"
+    if incomplete_artifact:
+        _write_collected_artifact(trial_path, _artifact())
+        (trial_path / "artifacts/tito/compact/COMPLETE").unlink()
+    collected = trial_path / "artifacts/tito/failures/writer/failed/evidence.jsonl"
+    collected.parent.mkdir(parents=True, exist_ok=True)
+    body = json.dumps({"event": "call_terminal", "arrays": {"completion_0_full_tokens": [1, 2, 3]}}) + "\n"
+    collected.write_text(body)
+    with pytest.raises(RecoverableRolloutError) as failure:
+        harbor_adapter._finish_harbor_trial(
+            replace(_outcome(), trial_path=trial_path),
+            raw_rewards={"reward": 1}, reward_key="reward",
+            terminal_failure_reward=None, has_exception=False,
+            retry_names=frozenset(), retryable_e2b_timeout=retry_kind == "e2b_timeout",
+            retryable_sidecar_readiness=retry_kind == "sidecar_readiness",
+        )
+    import pickle
+
+    error = pickle.loads(pickle.dumps(failure.value))
+    shutil.rmtree(trial_path)
+    assert len(error.trace_paths) == 1
+    retained = Path(error.trace_paths[0])
+    assert retained.read_text() == body
+    assert str(retained) in caplog.text
+
+
+def test_parser_failure_is_discarded_without_fresh_trajectory_retries() -> None:
+    attempts = []
+
+    async def operation(attempt):
+        attempts.append(attempt)
+        raise DiscardTrajectoryError("malformed output", "tito_sdk_parse_error", "/local/failure.jsonl")
+
+    with pytest.raises(DiscardTrajectoryError) as failure:
+        asyncio.run(tito_rollout.run_with_fresh_trajectory_retries(operation, task_name="test", retries=3))
+    assert failure.value.trace_path == "/local/failure.jsonl"
+    assert attempts == [0]
 
 
 def test_missing_or_corrupt_collected_artifact_is_retryable(tmp_path) -> None:

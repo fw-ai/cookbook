@@ -85,6 +85,7 @@ from training.utils.rl.rollout import (
     single_turn_renderer_rollout,
 )
 from training.utils.rl.rollout.lifecycle import close_rollout_fn
+from training.utils.rl.async_rl.errors import ErrorDisposition, classify_rollout_error
 from training.utils.rl.rollout.setup import (
     DynamicFilterFn,
     RolloutFn,
@@ -370,17 +371,28 @@ async def main(
         total_steps_estimate = step_offset + math.ceil(remaining_rows / cfg.prompt_groups_per_step)
 
         async def sample_group(row: dict, *, cursor_index: int) -> PromptGroup | None:
-            runs = await asyncio.gather(
-                *(
-                    call_rollout_fn(
+            async def sample_one(index: int):
+                try:
+                    return await call_rollout_fn(
                         rollout_fn,
                         row,
-                        {"cursor_index": cursor_index, "rollout_idx": i, "sample_index": i},
+                        {"cursor_index": cursor_index, "rollout_idx": index, "sample_index": index},
                         context_names,
                     )
-                    for i in range(cfg.completions_per_prompt)
-                )
-            )
+                except Exception as error:
+                    classification = classify_rollout_error(error)
+                    if classification.disposition is not ErrorDisposition.DISCARD:
+                        raise
+                    logger.error(
+                        "Discarding trajectory row=%s sample=%s code=%s trace_path=%s",
+                        cursor_index,
+                        index,
+                        classification.reason,
+                        classification.trace_path,
+                    )
+                    return None
+
+            runs = await asyncio.gather(*(sample_one(i) for i in range(cfg.completions_per_prompt)))
             # Failed trajectories are dropped; group advantages need two survivors.
             runs = [run for run in runs if run is not None]
             if len(runs) < 2:
