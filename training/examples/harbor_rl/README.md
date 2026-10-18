@@ -33,3 +33,13 @@ Mini-SWE, Pi and OpenCode: the shared TITO sidecar overrides agent-supplied
 `temperature`, `top_p` and `top_k` before calling the sampler. `top_k=0` disables
 top-k. Omitted fields retain request/service defaults. No harness-specific
 inheritance flag or task-image rebuild is needed to change these settings.
+
+For MiMo coding images, `tasks.mimo.sanitize.sanitize_rootfs` rebuilds an
+exported root filesystem from a pinned Git base, with one clean commit,
+normalized timestamps and no original object store. It retains only explicitly
+listed dependency directories inside the checkout. Import the output archive
+or unpack it onto a clean OS base; do not layer it over the upstream image.
+Audit retained dependencies and other source copies, then require empty-patch
+failure and reference-patch success in a fresh verifier before freezing tasks.
+Duplicate archive paths are rejected. These controls require adversarial leak
+and grader-bypass checks; they do not certify the upstream dataset as hack-free.
