@@ -69,3 +69,22 @@ python -m training.examples.harbor_rl.harnesses.mimoagent.prepare_tasks \
 # build the images, set [environment] docker_image to the built tag, then run
 # through mimoagent.rollout.make_rollout_fn.
 ```
+
+For clean coding tasks, call `write_harbor_task(..., fresh_verifier=True)` with
+its cleaned image and `clean_base_commit`. Harbor captures the candidate patch
+and grades it in a separate pristine, offline container with hidden tests.
+Capture ignores agent Git config/content conversion and supports full SHA-1 or
+SHA-256 bases in ordinary complete checkouts; materialize linked/sparse trees first.
+The verifier materializes raw base bytes only for accepted candidate paths;
+untouched and protected fixtures keep their image checkout contents. Conversion-only
+changes can appear in the captured patch, but are not converted again.
+
+Trusted test commands run with `bash -euo pipefail`. Commands expecting an early
+reader exit must handle SIGPIPE explicitly, for example
+`{ producer || test "$?" -eq 141; } | head -n 1`; other producer failures still fail.
+
+This isolates the old agent environment, not candidate code from grader
+privileges. Code still executes during tests; verifier-side background processes
+and source-level grader attacks need task-specific adversarial qualification.
+Scrub images separately and require empty/reference controls plus leak/grader
+attack checks before freezing tasks. Fresh verification alone is not certification.

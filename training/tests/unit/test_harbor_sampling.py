@@ -1,4 +1,8 @@
-"""CPU transport checks for sampling ownership across Harbor harnesses."""
+"""CPU factory/sidecar contract checks with synthetic agent HTTP requests.
+
+Trials are stubbed: these checks do not exercise external agent implementations
+or certify the requests emitted by agents running in real sandboxes.
+"""
 
 from __future__ import annotations
 
