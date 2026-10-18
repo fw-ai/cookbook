@@ -189,6 +189,14 @@ class DeepseekV41Renderer(DeepseekV4Renderer):
         super().__init__(tokenizer)
         self.image_processor = image_processor
 
+    @property
+    def image_placeholder_token_id(self) -> int:
+        """One unexpanded image marker for token-in rollout sampling."""
+        tokens = self._encode(_IMAGE_PLACEHOLDER)
+        if len(tokens) != 1 or tokens[0] == getattr(self.tokenizer, "unk_token_id", None):
+            raise ValueError("DeepSeek V4.1 image placeholder must encode as one known token")
+        return tokens[0]
+
     def _last_assistant_turn_boundary(self, messages: list[Message]) -> int:
         boundary = -1
         for index, message in enumerate(messages):

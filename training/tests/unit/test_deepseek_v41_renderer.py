@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ from training.renderer.deepseek_v41 import (
     DeepseekV41ImageTokenCounter,
     DeepseekV41Renderer,
 )
+from training.utils.rl.rollout.renderer import build_multimodal_completions_prompt_token_ids
 from training.utils.supervised import (
     build_tool_prefixed_messages,
     normalize_messages,
@@ -279,6 +281,59 @@ def test_top_level_tools_preserve_structured_system_metadata() -> None:
 def test_raw_image_placeholder_is_rejected(message: dict[str, object]) -> None:
     with pytest.raises(ValueError, match="image placeholders"):
         _renderer().build_supervised_example(normalize_messages([message]))
+
+
+@pytest.mark.parametrize("image_count,placeholder_id", [(1, 129264), (2, 0x110003)])
+def test_image_rollout_prompt_preserves_text_and_image_payloads(image_count: int, placeholder_id: int) -> None:
+    class ImageTokenizer(_MergingTokenizer):
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            if text == "<｜deepseek_image｜>":
+                return [placeholder_id]
+            return super().encode(text, add_special_tokens=add_special_tokens)
+
+    renderer = DeepseekV41Renderer(ImageTokenizer(), image_processor=_renderer(images=True).image_processor)
+    content = [{"type": "text", "text": "Compare.\n\n"}]
+    for color in ("red", "blue")[:image_count]:
+        content.extend(
+            [
+                {"type": "image", "image": Image.new("RGB", (4, 4), color)},
+                {"type": "text", "text": f"After {color}.\n\n"},
+            ]
+        )
+    messages = normalize_messages([{"role": "user", "content": content}])
+    model_input = renderer.build_generation_prompt(messages)
+    tokens, images = build_multimodal_completions_prompt_token_ids(
+        messages, model_input, renderer.tokenizer, renderer=renderer
+    )
+    expected_tokens, expected_images = [], []
+    for chunk in model_input.chunks:
+        if isinstance(chunk, sdk.types.ImageChunk):
+            expected_tokens.append(placeholder_id)
+            expected_images.append(bytes(chunk.data))
+        else:
+            expected_tokens.extend(chunk.tokens)
+    assert tokens == expected_tokens
+    assert tokens.count(placeholder_id) == image_count
+    assert [base64.b64decode(image.split(",", 1)[1]) for image in images] == expected_images
+    assert len(tokens) == model_input.length - sum(
+        chunk.expected_tokens - 1 for chunk in model_input.chunks if isinstance(chunk, sdk.types.ImageChunk)
+    )
+
+
+@pytest.mark.parametrize("image_tokens", [[1, 2], [0]])
+def test_invalid_image_placeholder_does_not_break_text_rendering(image_tokens: list[int]) -> None:
+    class InvalidImageTokenizer(_Tokenizer):
+        unk_token_id = 0
+
+        def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+            if text == "<｜deepseek_image｜>":
+                return image_tokens
+            return super().encode(text, add_special_tokens=add_special_tokens)
+
+    renderer = DeepseekV41Renderer(InvalidImageTokenizer())
+    assert renderer.build_generation_prompt(normalize_messages([{"role": "user", "content": "Hello."}])).length
+    with pytest.raises(ValueError, match="one known token"):
+        _ = renderer.image_placeholder_token_id
 
 
 def test_images_are_ordered_counted_and_zero_loss() -> None:

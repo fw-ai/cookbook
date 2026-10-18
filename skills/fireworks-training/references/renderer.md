@@ -120,6 +120,14 @@ not be selected by the history-mode enum.
   contract, document and track each public-HF difference in
   `training/tests/unit/renderer_expected_divergences.py`.
 
+### Image sampling
+
+For token-in RL sampling, expose the model's single image marker through
+`image_placeholder_token_id`; resolve it from the tokenizer rather than fixing
+its numeric ID. DeepSeek V4.1 uses `<｜deepseek_image｜>` for each image chunk.
+Serving expands that marker into the full image span, including its boundaries,
+so its renderer does not add `sampler_image_placeholder_affixes`.
+
 ## 4. Implementation flow
 
 1. **Skim a similar existing renderer** to scaffold. Pick the closest
