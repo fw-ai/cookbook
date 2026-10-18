@@ -74,6 +74,8 @@ packages = [
     "training.examples.archive.eval_protocol_chat",
     "training.examples.archive.eval_protocol_chat.remote_server",
     "training.examples.archive.single_turn_token_in",
+    "training.examples.decision",
+    "training.examples.decision.kalshi_v1",
     "training.examples.distillation.gsm8k_privileged",
     "training.examples.distillation.serverless_k3_privileged",
     "training.examples.dpo",
