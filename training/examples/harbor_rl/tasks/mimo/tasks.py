@@ -1,6 +1,6 @@
 """Write one MiMo-V2.6-RL-oss row as a Harbor task directory.
 
-The agent image is the published task image, unchanged. Hidden tests stay in
+By default the agent image is the supplied task image, unchanged. Hidden tests stay in
 ``tests/`` and Harbor mounts that directory at ``/tests`` only at verify time.
 ``docker_image`` must already be a pullable reference (see the dataset's
 ``image-mapping.jsonl``); this module does not talk to a registry.
@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -87,6 +88,7 @@ def write_harbor_task(
     *,
     bundle_dir: Path | None = None,
     judge_base_url: str | None = None,
+    fresh_verifier: bool = False,
 ) -> Path:
     """Create ``destination/<instance_id>`` and return that path.
 
@@ -105,6 +107,15 @@ def write_harbor_task(
     missing = [field for field in (*_COMMON, *required) if not instance.get(field)]
     if missing:
         raise ValueError(f"{instance.get('instance_id')}: missing {missing}")
+    if fresh_verifier and (
+        dataset_type != "opensource-code"
+        or not re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", str(instance.get("clean_base_commit", ""))
+        )
+    ):
+        raise ValueError(
+            "fresh code verification requires an opensource-code task and clean_base_commit"
+        )
 
     instance_id = str(instance["instance_id"])
     root = destination / instance_id
@@ -125,6 +136,8 @@ def write_harbor_task(
         _write_inline_tests(root / "tests", instance)
     elif dataset_type == "opensource-code":
         _write_patch_tests(root / "tests", instance)
+        if fresh_verifier:
+            spec = _write_fresh_code_verifier(root, instance)
     elif dataset_type == "arvo":
         spec = _write_arvo(root, instance)
     elif dataset_type == "webdev":
@@ -185,6 +198,43 @@ def write_harbor_task(
         encoding="utf-8",
     )
     return root
+
+
+def _write_fresh_code_verifier(root: Path, instance: Mapping[str, Any]) -> _TaskSpec:
+    tests = root / "tests"
+    # Harbor builds separate verifiers from tests/ and skips runtime test upload.
+    (tests / "Dockerfile").write_text(
+        (root / "environment" / "Dockerfile").read_text()
+        + "COPY code_verify.py hidden.patch verifier.json test.sh /tests/\n",
+        encoding="utf-8",
+    )
+    shutil.copy(_ASSETS / "code_verify.py", tests / "code_verify.py")
+    config = {
+        "cwd": instance["cwd"],
+        "base_commit": instance["clean_base_commit"],
+        "test_command": instance["test_command"],
+    }
+    (tests / "verifier.json").write_text(json.dumps(config), encoding="utf-8")
+    candidate = "/logs/artifacts/candidate.patch"
+    (tests / "test.sh").write_text(
+        "#!/bin/bash\nset -euo pipefail\n"
+        "python3 /tests/code_verify.py --config /tests/verifier.json "
+        f"--candidate {candidate} --hidden-patch /tests/hidden.patch\n",
+        encoding="utf-8",
+    )
+    cwd = shlex.quote(str(instance["cwd"]))
+    base = shlex.quote(str(instance["clean_base_commit"]))
+    collector = shlex.quote((_ASSETS / "code_collect.py").read_text())
+    collect = f"python3 -I -c {collector} --cwd {cwd} --base {base} --destination {candidate}"
+    return _TaskSpec(
+        verifier_lines=['environment_mode = "separate"', 'network_mode = "no-network"'],
+        artifacts=[candidate],
+        tail=[
+            "[[verifier.collect]]",
+            "command = " + json.dumps(collect),
+            "timeout_sec = 60.0",
+        ],
+    )
 
 
 def _write_patch_tests(tests: Path, instance: Mapping[str, Any]) -> None:

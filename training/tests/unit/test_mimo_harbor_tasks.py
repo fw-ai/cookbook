@@ -61,6 +61,33 @@ def test_write_harbor_task_keeps_hidden_tests_out_of_the_image(tmp_path: Path) -
     assert "allowed_hosts = []" in toml
 
 
+def test_fresh_code_verifier_collects_only_candidate_patch(tmp_path: Path) -> None:
+    row = {**_row(), "clean_base_commit": "a" * 40}
+    root = write_harbor_task(row, tmp_path, fresh_verifier=True)
+    toml = (root / "task.toml").read_text()
+    assert 'environment_mode = "separate"' in toml
+    assert 'network_mode = "no-network"' in toml
+    assert "[[verifier.collect]]" in toml
+    assert "GIT_ALTERNATE_OBJECT_DIRECTORIES" in toml
+    assert (root / "tests" / "code_verify.py").is_file()
+    assert (
+        json.loads((root / "tests" / "verifier.json").read_text())["base_commit"]
+        == "a" * 40
+    )
+    assert "code_verify.py" in (root / "tests" / "test.sh").read_text()
+    assert "hidden.patch" not in (root / "environment" / "Dockerfile").read_text()
+    # The separate verifier's build context must be independently runnable.
+    assert (root / "tests" / "Dockerfile").read_text() == (
+        "FROM example.invalid/mimo:task-000001\nWORKDIR /testbed\n"
+        "COPY code_verify.py hidden.patch verifier.json test.sh /tests/\n"
+    )
+
+
+def test_fresh_code_verifier_requires_clean_base_revision(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="clean_base_commit"):
+        write_harbor_task(_row(), tmp_path, fresh_verifier=True)
+
+
 def test_terminal_bench_row_ships_its_inline_verifier(tmp_path: Path) -> None:
     files = {
         "test.sh": b"#!/bin/sh\nprintf '1\\n' > /logs/verifier/reward.txt\n",
@@ -129,7 +156,10 @@ def test_arvo_task_starts_the_grader_and_scores_its_result(tmp_path: Path) -> No
     toml = (root / "task.toml").read_text()
     assert "8666" in toml
     assert 'artifacts = ["/logs/artifacts/poc"]' in toml
-    assert '[verifier]\ntimeout_sec = 90.0\nenvironment_mode = "separate"\nnetwork_mode = "no-network"' in toml
+    assert (
+        '[verifier]\ntimeout_sec = 90.0\nenvironment_mode = "separate"\nnetwork_mode = "no-network"'
+        in toml
+    )
     assert "[[verifier.collect]]" in toml
     assert "/root/last_poc" in toml
 
@@ -150,7 +180,10 @@ def test_webdev_task_carries_the_eval_grader(tmp_path: Path) -> None:
     assert "qwen3p8-max" in toml
     assert "FIREWORKS_API_KEY" in toml
     # The verifier's vision call is allowlisted to exactly the judge host.
-    assert '[verifier]\ntimeout_sec = 90.0\nnetwork_mode = "allowlist"\nallowed_hosts = ["api.fireworks.ai"]' in toml
+    assert (
+        '[verifier]\ntimeout_sec = 90.0\nnetwork_mode = "allowlist"\nallowed_hosts = ["api.fireworks.ai"]'
+        in toml
+    )
 
 
 def test_webdev_verifier_allowlist_follows_the_judge_url(tmp_path: Path) -> None:
