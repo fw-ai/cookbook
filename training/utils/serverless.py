@@ -96,7 +96,16 @@ def enable_serverless_supervised_409_retry(service: FiretitanServiceClient) -> N
         enable_retry()
 
 
-def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, stack):
+def close_serverless_session(service: FiretitanServiceClient) -> None:
+    """Close ``service``'s serverless training session, releasing its quota
+    slot immediately instead of waiting out the idle grace. No-op on older
+    supported SDK releases without the hook; their sessions expire naturally."""
+    close_session = getattr(service, "delete_training_session", None)
+    if close_session is not None:
+        close_session()
+
+
+def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, stack, close_session_on_exit=False):
     """Build the training + checkpoint handles for a serverless LoRA run.
 
     Returns ``(service, client, ckpt, session_id, max_seq_len)``. The caller
@@ -105,6 +114,12 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
     when setup fails after the training session is reserved. Requires
     ``cfg.lora_rank > 0`` and a concrete ``cfg.max_seq_len`` (there is no training
     shape to resolve sequence length from on this path).
+
+    With ``close_session_on_exit=True`` the stack also closes the training
+    session at teardown, releasing the run's concurrent-run quota slot
+    immediately. Opt in only when nothing later needs to resume from or promote
+    this run's checkpoints — teardown runs on the crash path too, and a closed
+    session ends that run's checkpoint lifecycle.
     """
     if cfg.lora_rank <= 0:
         raise ValueError(
@@ -122,6 +137,10 @@ def setup_serverless_training(cfg, *, api_key, base_url, additional_headers, sta
         managed_additional_headers=additional_headers,
     )
     stack.callback(service.close)
+    if close_session_on_exit:
+        # Registered before model creation reserves the session, so a setup
+        # failure still releases it; unwinds before ``service.close``.
+        stack.callback(close_serverless_session, service)
     # This helper is shared by the serverless SFT and DPO recipes only. Opt the
     # holder in before model creation so create/retrieve and training futures
     # share the narrowly scoped capacity-409 retry policy.

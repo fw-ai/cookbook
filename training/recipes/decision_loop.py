@@ -258,7 +258,12 @@ def main(config: Config) -> dict:
     with runner, ExitStack() as stack:
         if cfg.serverless:
             service, client, ckpt, job_id, max_seq_len = setup_serverless_training(
-                cfg, api_key=api_key, base_url=base_url, additional_headers=headers, stack=stack
+                cfg,
+                api_key=api_key,
+                base_url=base_url,
+                additional_headers=headers,
+                stack=stack,
+                close_session_on_exit=cfg.close_session_on_exit,
             )
             stack.callback(service.close)
             runner.set_accelerator_info(None, None, profile=None)

@@ -177,6 +177,13 @@ user nothing is in use until then; a new run (Managed or Serverless) on the
 same model may queue or be rejected. More in
 [`execution-notes.md`](execution-notes.md).
 
+To release the slot immediately, call `service.delete_training_session()`
+before `service.close()`, after promoting anything you want to keep. The
+`sft_loop` / `dpo_loop` `close_session_on_exit=True` option does this at
+teardown, including when the run fails. Either way the session's checkpoints
+can no longer be resumed or promoted, so leave it off for runs that a later
+process may resume.
+
 ## Core SDK primitives
 
 - `forward_backward` — built-in losses by id (e.g. `"cross_entropy"`), no extra forward pass.

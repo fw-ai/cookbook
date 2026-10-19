@@ -786,6 +786,10 @@ class Config:
     plane (``CookbookTrainingConfig.serverless``) when a routable pooled trainer
     exists for the base model; requires ``lora_rank > 0`` and a concrete
     ``max_seq_len`` (there is no training shape to resolve it from)."""
+    close_session_on_exit: bool = False
+    """Serverless only: close the training session at teardown, including on
+    failure, to release its concurrent-run quota slot immediately. Leave off
+    when a later process needs to resume from or promote this run's checkpoints."""
 
     save_final_checkpoint: bool = True
 
@@ -1067,6 +1071,7 @@ def main(
                 base_url=base_url,
                 additional_headers=additional_headers,
                 stack=stack,
+                close_session_on_exit=cfg.close_session_on_exit,
             )
             stack.callback(service.close)
             # Per-token billed by the pool trainer; there is no dedicated

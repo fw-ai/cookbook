@@ -228,3 +228,102 @@ def test_serverless_urls_accept_a_root_or_surface_base_url(base_url):
 
     assert serverless_base_url(base_url) == "https://api.fireworks.ai/training/v1/serverless"
     assert gateway_root_url(base_url) == "https://api.fireworks.ai"
+
+
+class _CloseableFakeService(_FakeService):
+    def delete_training_session(self):
+        self.events.append("delete-training-session")
+
+
+@pytest.mark.parametrize(
+    "service_cls,close_session_on_exit,expected_events",
+    [
+        (_CloseableFakeService, True, ["enable-supervised-retry", "create-training-client", "delete-training-session"]),
+        (_CloseableFakeService, False, ["enable-supervised-retry", "create-training-client"]),
+        (_LegacyFakeService, True, ["create-training-client"]),
+    ],
+    ids=["close-on-exit", "opt-out", "legacy-sdk"],
+)
+def test_setup_serverless_training_close_session_on_exit(
+    monkeypatch, tmp_path, service_cls, close_session_on_exit, expected_events
+):
+    """close_session_on_exit deletes the session on teardown; legacy SDKs skip it."""
+    monkeypatch.setattr(serverless_utils, "FiretitanServiceClient", service_cls)
+    monkeypatch.setattr(serverless_utils, "FireworksClient", _FakeFireworksClient)
+    monkeypatch.setattr(
+        serverless_utils.ReconnectableClient,
+        "from_training_client",
+        lambda training_client, **kwargs: MagicMock(),
+    )
+
+    cfg = SimpleNamespace(
+        base_model="accounts/fireworks/models/qwen3-4b",
+        lora_rank=8,
+        max_seq_len=512,
+        step_timeout=None,
+        log_path=str(tmp_path),
+    )
+    with ExitStack() as stack:
+        service, *_ = serverless_utils.setup_serverless_training(
+            cfg,
+            api_key="fw-test-key",
+            base_url="https://api.example.test",
+            additional_headers={"x-test": "1"},
+            stack=stack,
+            close_session_on_exit=close_session_on_exit,
+        )
+
+    assert service.events == expected_events
+
+
+def test_setup_serverless_training_closes_session_when_setup_fails(monkeypatch, tmp_path):
+    """A failure after the session is reserved still releases it on teardown."""
+    services = []
+
+    def make_service(**kwargs):
+        services.append(_CloseableFakeService(**kwargs))
+        return services[-1]
+
+    def fail_from_training_client(training_client, **kwargs):
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(serverless_utils, "FiretitanServiceClient", make_service)
+    monkeypatch.setattr(serverless_utils, "FireworksClient", _FakeFireworksClient)
+    monkeypatch.setattr(
+        serverless_utils.ReconnectableClient, "from_training_client", fail_from_training_client
+    )
+
+    cfg = SimpleNamespace(
+        base_model="accounts/fireworks/models/qwen3-4b",
+        lora_rank=8,
+        max_seq_len=512,
+        step_timeout=None,
+        log_path=str(tmp_path),
+    )
+    with pytest.raises(RuntimeError, match="setup failed"), ExitStack() as stack:
+        serverless_utils.setup_serverless_training(
+            cfg,
+            api_key="fw-test-key",
+            base_url="https://api.example.test",
+            additional_headers=None,
+            stack=stack,
+            close_session_on_exit=True,
+        )
+
+    assert services[0].events == [
+        "enable-supervised-retry",
+        "create-training-client",
+        "delete-training-session",
+    ]
+
+
+def test_close_serverless_session_is_noop_for_legacy_sdk():
+    service = _LegacyFakeService(
+        base_url="https://api.example.test",
+        api_key="fw-test-key",
+        default_headers=None,
+        managed_additional_headers=None,
+    )
+    serverless_utils.close_serverless_session(service)
+
+    assert service.events == []

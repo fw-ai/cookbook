@@ -53,7 +53,8 @@ answer to `triage_category` (`job_state`, `error_message`, `quality`,
    "Waiting for a serverless training slot" is queued behind the account's
    concurrent-run quota. Open Serverless Training API sessions use the same
    quota, do not appear in job lists, and hold their slot until the session
-   expires, so check the user's own recent sessions before suspecting anyone
+   expires or its owner calls `service.delete_training_session()`, so check
+   the user's own recent sessions before suspecting anyone
    else. List jobs with a `filter` on the base model rather than paging the
    whole account.
 4. If no progress past the approved timeout → report the numeric evidence,
