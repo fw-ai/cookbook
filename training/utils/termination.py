@@ -7,6 +7,7 @@ import os
 import signal
 import threading
 from collections.abc import Callable, Coroutine
+from concurrent.futures import Future, ThreadPoolExecutor
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
@@ -61,6 +62,64 @@ async def _join_task(worker: asyncio.Task[T]) -> T:
         raise
 
 
+def _loop_is_running() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _run_beside_running_loop(awaitable: Coroutine[Any, Any, T]) -> T:
+    """Run a recipe on its own loop in a worker thread, for kernels that already run a loop.
+
+    Jupyter and IPython run an event loop on the main thread, where asyncio.run()
+    raises. A kernel interrupt arrives on the main thread as KeyboardInterrupt: it
+    deletes still-provisioning trainers, cancels the recipe and waits for its
+    cleanup. A second interrupt stops waiting and may leave remote work running.
+    """
+    started: Future[tuple[asyncio.AbstractEventLoop, asyncio.Task[Any]]] = Future()
+
+    async def run() -> T:
+        task = asyncio.current_task()
+        assert task is not None
+        started.set_result((asyncio.get_running_loop(), task))
+        return await awaitable
+
+    def wait(result: Future[T]) -> T:
+        # Short timeouts keep the main thread able to take the interrupt while it waits.
+        while True:
+            try:
+                return result.result(timeout=0.1)
+            except TimeoutError:
+                if result.done():
+                    return result.result()  # Finished meanwhile, or the recipe raised TimeoutError.
+                continue
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recipe-loop")
+    result = executor.submit(asyncio.run, run())
+    try:
+        return wait(result)
+    except KeyboardInterrupt:
+        if result.done():
+            raise
+        from training.utils.service import abandon_provisioning_trainers
+
+        abandon_provisioning_trainers()
+        loop, task = started.result()
+        try:
+            loop.call_soon_threadsafe(task.cancel)
+        except RuntimeError:
+            pass  # The loop closed after the recipe finished.
+        try:
+            wait(result)
+        except (asyncio.CancelledError, Exception):
+            pass
+        raise
+    finally:
+        executor.shutdown(wait=False)
+
+
 def run_async_with_signals(awaitable: Coroutine[Any, Any, T]) -> T:
     """First signal cancels training cooperatively; a second exits immediately.
 
@@ -69,6 +128,8 @@ def run_async_with_signals(awaitable: Coroutine[Any, Any, T]) -> T:
     """
     if threading.current_thread() is not threading.main_thread():
         return asyncio.run(awaitable)
+    if _loop_is_running():
+        return _run_beside_running_loop(awaitable)
 
     received_signal: str | None = None
     previous = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}

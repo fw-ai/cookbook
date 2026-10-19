@@ -71,3 +71,73 @@ def test_second_signal_forces_exit_during_stalled_cleanup(signum):
         if process.poll() is None:
             process.kill()
             process.communicate()
+
+
+def test_runs_inside_an_already_running_event_loop():
+    """Notebook kernels run an event loop on the main thread; recipes must still run there."""
+    import asyncio
+
+    from training.utils.termination import run_async_with_signals
+
+    async def recipe():
+        await asyncio.sleep(0)
+        return "done"
+
+    async def notebook_cell():
+        return run_async_with_signals(recipe())
+
+    assert asyncio.run(notebook_cell()) == "done"
+
+
+def test_kernel_interrupt_cancels_notebook_recipe_and_waits_for_cleanup(monkeypatch):
+    """A kernel interrupt must stop the recipe, run its cleanup and delete provisioning trainers."""
+    import _thread
+    import asyncio
+    import signal
+    import threading
+    import time
+
+    from training.utils import service
+    from training.utils.termination import run_async_with_signals
+
+    abandoned = []
+    monkeypatch.setattr(service, "abandon_provisioning_trainers", lambda: abandoned.append(True))
+    cleaned_up = threading.Event()
+
+    async def recipe():
+        try:
+            await asyncio.sleep(30)
+        finally:
+            await asyncio.sleep(0.1)
+            cleaned_up.set()
+
+    async def notebook_cell():
+        # Like ipykernel, raise KeyboardInterrupt on SIGINT instead of asyncio.run's task cancel.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        threading.Timer(0.2, _thread.interrupt_main).start()
+        return run_async_with_signals(recipe())
+
+    started = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        asyncio.run(notebook_cell())
+
+    assert time.monotonic() - started < 5
+    assert cleaned_up.is_set()
+    assert abandoned == [True]
+
+
+def test_notebook_recipe_timeout_error_propagates():
+    """A TimeoutError raised by the recipe must surface, not look like a pending wait."""
+    import asyncio
+
+    from training.utils.termination import run_async_with_signals
+
+    async def recipe():
+        await asyncio.sleep(0)
+        raise TimeoutError("trainer never became ready")
+
+    async def notebook_cell():
+        return run_async_with_signals(recipe())
+
+    with pytest.raises(TimeoutError, match="never became ready"):
+        asyncio.run(notebook_cell())

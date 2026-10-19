@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import atexit
 import logging
-from dataclasses import fields
+import signal
+import threading
+import time
+import uuid
+from collections.abc import Callable
+from dataclasses import fields, replace
 from typing import Any
 
 from fireworks.training.sdk import (
     DeploymentCleanupOnClose,
     FireworksClient,
     FiretitanServiceClient,
+    TrainerJobManager,
 )
 from fireworks.training.sdk.managed import FiretitanProvisioningConfig
 
@@ -248,7 +255,17 @@ def build_service_client(
     cleanup_deployment_on_close: DeploymentCleanupOnClose | None = None,
     reference_required: bool = False,
 ) -> FiretitanServiceClient:
-    """Create an SDK-managed service client from cookbook config."""
+    """Create an SDK-managed service client from cookbook config.
+
+    When the recipe owns trainer cleanup and no trainer is being reattached, the
+    trainer ID is chosen before provisioning starts. An interrupt, timeout or
+    failure before ``create_training_client`` returns then deletes that trainer,
+    instead of leaving a paid trainer behind that the SDK has not handed back yet.
+    """
+    provisioning_job_id = None
+    if cleanup_trainer_on_close and trainer.job_id is None:
+        provisioning_job_id = _new_trainer_job_id()
+        trainer = replace(trainer, job_id=provisioning_job_id)
     service_kwargs = _firetitan_service_kwargs(
         base_model=base_model,
         tokenizer_model=tokenizer_model,
@@ -263,10 +280,189 @@ def build_service_client(
         cleanup_deployment_on_close=cleanup_deployment_on_close,
         reference_required=reference_required,
     )
-    return FiretitanServiceClient.from_firetitan_config(
-        api_key=api_key,
-        base_url=base_url,
-        inference_url=inference_url,
-        additional_headers=additional_headers,
-        **service_kwargs,
+    if provisioning_job_id is None:
+        return FiretitanServiceClient.from_firetitan_config(
+            api_key=api_key,
+            base_url=base_url,
+            inference_url=inference_url,
+            additional_headers=additional_headers,
+            **service_kwargs,
+        )
+
+    def delete_trainer() -> None:
+        try:
+            manager = TrainerJobManager(api_key=api_key, base_url=base_url, additional_headers=additional_headers)
+        except Exception:  # noqa: BLE001 - never mask the error that stopped provisioning
+            logger.warning("Could not delete trainer %s; delete it manually", provisioning_job_id, exc_info=True)
+            return
+        try:
+            exists = manager.try_get(provisioning_job_id) is not None
+        except Exception:  # noqa: BLE001 - unknown; the watcher below retries the lookup
+            exists = False
+        if exists:
+            _delete_confirmed(manager, provisioning_job_id)
+            return
+        # The create request may still be in flight, so the trainer can appear after this check.
+        _start_late_trainer_watch(manager, provisioning_job_id)
+
+    _PROVISIONING[provisioning_job_id] = delete_trainer
+    _install_provisioning_signal_cleanup()
+    try:
+        service = FiretitanServiceClient.from_firetitan_config(
+            api_key=api_key,
+            base_url=base_url,
+            inference_url=inference_url,
+            additional_headers=additional_headers,
+            **service_kwargs,
+        )
+    except BaseException:
+        _abandon_provisioning(provisioning_job_id)
+        raise
+
+    # The SDK may finish provisioning inside create_training_client, so the trainer
+    # stays registered for cleanup until that call returns.
+    create_training_client = service.create_training_client
+
+    def create_training_client_or_clean_up(*args: Any, **kwargs: Any) -> Any:
+        try:
+            client = create_training_client(*args, **kwargs)
+        except BaseException:
+            _abandon_provisioning(provisioning_job_id)
+            raise
+        _PROVISIONING.pop(provisioning_job_id, None)
+        return client
+
+    service.create_training_client = create_training_client_or_clean_up
+    return service
+
+
+# Trainers created by build_service_client that are not handed back yet, keyed by job ID.
+_PROVISIONING: dict[str, Callable[[], None]] = {}
+
+
+def _new_trainer_job_id() -> str:
+    # Same shape as the SDK's own client-generated IDs.
+    return f"training-api-service-{uuid.uuid4().hex[:8]}"
+
+
+# How long to watch for a trainer whose create request was in flight when provisioning stopped.
+_CREATE_SETTLE_S = 120.0
+_CREATE_POLL_S = 2.0
+_DELETE_ATTEMPTS = 3
+_DELETE_RETRY_S = 2.0
+_GONE_STATES = {"JOB_STATE_DELETING", "JOB_STATE_DELETED"}
+
+
+def _delete_confirmed(manager: TrainerJobManager, job_id: str) -> bool:
+    """Delete a trainer and confirm it is gone, retrying a few times.
+
+    ``TrainerJobManager.delete`` logs request failures instead of raising, so success is
+    read back from the trainer's state.
+    """
+    logger.warning("Provisioning stopped; deleting trainer %s", job_id)
+    for attempt in range(_DELETE_ATTEMPTS):
+        if attempt:
+            time.sleep(_DELETE_RETRY_S)
+        try:
+            manager.delete(job_id)
+            job = manager.try_get(job_id)
+        except Exception:  # noqa: BLE001 - cleanup must never mask the error that stopped provisioning
+            logger.debug("Deleting trainer %s failed; retrying", job_id, exc_info=True)
+            continue
+        if job is None or job.get("state") in _GONE_STATES:
+            return True
+    logger.warning("Could not confirm trainer %s was deleted; delete it manually", job_id)
+    return False
+
+
+# How long process exit waits for running watchers, so a create that lands just after an
+# interrupt is still deleted without making every interrupted exit wait out the full window.
+_EXIT_SETTLE_S = 30.0
+_LATE_TRAINER_WATCHES: list[threading.Thread] = []
+_exit_wait_registered = False
+
+
+def _start_late_trainer_watch(manager: TrainerJobManager, job_id: str) -> None:
+    global _exit_wait_registered
+    watch = threading.Thread(
+        target=_delete_when_created, args=(manager, job_id), name=f"delete-{job_id}", daemon=True
     )
+    _LATE_TRAINER_WATCHES.append(watch)
+    if not _exit_wait_registered:
+        atexit.register(_wait_for_late_trainer_watches)
+        _exit_wait_registered = True
+    watch.start()
+
+
+def _wait_for_late_trainer_watches() -> None:
+    running = [watch for watch in _LATE_TRAINER_WATCHES if watch.is_alive()]
+    if not running:
+        return
+    logger.warning("Waiting up to %.0fs for interrupted trainer creation to settle", _EXIT_SETTLE_S)
+    deadline = time.monotonic() + _EXIT_SETTLE_S
+    for watch in running:
+        watch.join(max(0.0, deadline - time.monotonic()))
+
+
+def _delete_when_created(manager: TrainerJobManager, job_id: str) -> None:
+    # A daemon thread: it keeps running while shutdown joins the SDK's provisioning
+    # threads, and deleting the trainer is what lets those threads finish.
+    deadline = time.monotonic() + _CREATE_SETTLE_S
+    lookup_failed = False
+    while time.monotonic() < deadline:
+        time.sleep(_CREATE_POLL_S)
+        try:
+            if manager.try_get(job_id) is None:
+                continue
+        except Exception:  # noqa: BLE001 - a failed lookup does not mean the trainer won't appear
+            logger.debug("Lookup of trainer %s failed; retrying", job_id, exc_info=True)
+            lookup_failed = True
+            continue
+        _delete_confirmed(manager, job_id)
+        return
+    if lookup_failed:
+        logger.warning("Could not confirm whether trainer %s was created; check for it and delete it manually", job_id)
+    else:
+        logger.debug("Trainer %s was not created within %.0fs; nothing to delete", job_id, _CREATE_SETTLE_S)
+
+
+def _abandon_provisioning(job_id: str) -> None:
+    delete = _PROVISIONING.pop(job_id, None)
+    if delete is not None:
+        delete()
+
+
+def abandon_provisioning_trainers() -> None:
+    """Delete every trainer that build_service_client created and has not handed back yet."""
+    for job_id in list(_PROVISIONING):
+        _abandon_provisioning(job_id)
+
+
+def _install_provisioning_signal_cleanup() -> None:
+    """Delete still-provisioning trainers on SIGINT/SIGTERM, then run the previous handler.
+
+    The SDK waits for the trainer on a worker thread, so a signal alone does not
+    stop the wait. Deleting the trainer makes that wait fail fast, and the previous
+    handler then unwinds the recipe as before. Signal handlers can only be set on
+    the main thread; elsewhere, cleanup still runs when provisioning raises.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous = signal.getsignal(signum)
+        if getattr(previous, "_deletes_provisioning_trainers", False):
+            continue
+
+        def handler(signum: int, frame: Any, previous: Any = previous) -> None:
+            abandon_provisioning_trainers()
+            if callable(previous):
+                previous(signum, frame)
+            elif previous == signal.SIG_IGN:
+                return
+            elif signum == signal.SIGINT:
+                raise KeyboardInterrupt
+            else:
+                raise SystemExit(128 + signum)
+
+        handler._deletes_provisioning_trainers = True  # type: ignore[attr-defined]
+        signal.signal(signum, handler)

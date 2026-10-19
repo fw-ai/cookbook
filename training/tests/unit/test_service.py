@@ -895,3 +895,309 @@ def test_trainer_config_does_not_advertise_removed_accelerator_fields():
     assert "accelerator_count" not in field_names
     assert "accelerator_type" not in parameters
     assert "accelerator_count" not in parameters
+
+
+class _FakeTrainerJobManager:
+    existing: set[str] = set()
+    deleted: list[str] = []
+
+    def __init__(self, **_kwargs):
+        pass
+
+    def try_get(self, job_id):
+        return {"name": job_id} if job_id in self.existing else None
+
+    def delete(self, job_id):
+        self.deleted.append(job_id)
+        self.existing.discard(job_id)
+
+
+def _provisioning_kwargs(trainer: TrainerConfig, cleanup: bool = True) -> dict:
+    return dict(
+        api_key="k",
+        base_url="https://api",
+        additional_headers=None,
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=None,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=trainer,
+        cleanup_trainer_on_close=cleanup,
+    )
+
+
+class _FakeProvisioningService:
+    """Stands in for an SDK service whose trainer finishes provisioning in create_training_client."""
+
+    def __init__(self, job_id, on_create):
+        self.job_id = job_id
+        self.on_create = on_create
+
+    def create_training_client(self, *args, **kwargs):
+        return self.on_create(self.job_id)
+
+
+@pytest.fixture
+def provisioning(monkeypatch):
+    import signal as signal_module
+
+    _FakeTrainerJobManager.existing = set()
+    _FakeTrainerJobManager.deleted = []
+    monkeypatch.setattr(service, "TrainerJobManager", _FakeTrainerJobManager)
+    monkeypatch.setattr(service, "_PROVISIONING", {})
+    monkeypatch.setattr(service, "_DELETE_RETRY_S", 0.0)
+    handlers = {s: signal_module.getsignal(s) for s in (signal_module.SIGINT, signal_module.SIGTERM)}
+
+    def patch(from_config):
+        class FakeServiceClient:
+            from_firetitan_config = staticmethod(from_config)
+
+        monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
+
+    yield patch
+    for signum, handler in handlers.items():
+        signal_module.signal(signum, handler)
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit, TimeoutError])
+def test_failed_provisioning_deletes_the_new_trainer(provisioning, error):
+    def from_config(**kwargs):
+        _FakeTrainerJobManager.existing.add(kwargs["trainer_job_id"])
+        raise error()
+
+    provisioning(from_config)
+    with pytest.raises(error):
+        build_service_client(**_provisioning_kwargs(TrainerConfig()))
+
+    assert len(_FakeTrainerJobManager.deleted) == 1
+    assert _FakeTrainerJobManager.deleted[0].startswith("training-api-service-")
+
+
+def test_interrupted_create_training_client_deletes_the_new_trainer(provisioning):
+    def interrupted(job_id):
+        _FakeTrainerJobManager.existing.add(job_id)
+        raise KeyboardInterrupt
+
+    provisioning(lambda **kwargs: _FakeProvisioningService(kwargs["trainer_job_id"], interrupted))
+    svc = build_service_client(**_provisioning_kwargs(TrainerConfig()))
+    with pytest.raises(KeyboardInterrupt):
+        svc.create_training_client("accounts/acct/models/base")
+
+    assert _FakeTrainerJobManager.deleted == [svc.job_id]
+
+
+def test_ready_trainer_is_left_to_the_service(provisioning):
+    import signal as signal_module
+
+    def ready(job_id):
+        _FakeTrainerJobManager.existing.add(job_id)
+        return "training-client"
+
+    provisioning(lambda **kwargs: _FakeProvisioningService(kwargs["trainer_job_id"], ready))
+    signal_module.signal(signal_module.SIGTERM, lambda *_: (_ for _ in ()).throw(SystemExit("stopped")))
+    svc = build_service_client(**_provisioning_kwargs(TrainerConfig()))
+    assert svc.create_training_client("accounts/acct/models/base") == "training-client"
+    with pytest.raises(SystemExit, match="stopped"):
+        signal_module.raise_signal(signal_module.SIGTERM)
+
+    assert _FakeTrainerJobManager.deleted == []
+
+
+def test_provisioning_never_deletes_a_reattached_trainer(provisioning):
+    def from_config(**kwargs):
+        _FakeTrainerJobManager.existing.add(kwargs["trainer_job_id"])
+        raise KeyboardInterrupt
+
+    provisioning(from_config)
+    with pytest.raises(KeyboardInterrupt):
+        build_service_client(**_provisioning_kwargs(TrainerConfig(job_id="existing-job")))
+    with pytest.raises(KeyboardInterrupt):
+        build_service_client(**_provisioning_kwargs(TrainerConfig(), cleanup=False))
+
+    assert _FakeTrainerJobManager.deleted == []
+
+
+def test_signal_while_provisioning_deletes_trainer_then_runs_previous_handler(provisioning):
+    import signal as signal_module
+
+    seen = []
+
+    def previous_handler(signum, _frame):
+        seen.append(signum)
+        raise SystemExit("stopped")
+
+    def signalled(job_id):
+        _FakeTrainerJobManager.existing.add(job_id)
+        signal_module.raise_signal(signal_module.SIGTERM)
+
+    provisioning(lambda **kwargs: _FakeProvisioningService(kwargs["trainer_job_id"], signalled))
+    signal_module.signal(signal_module.SIGTERM, previous_handler)
+    svc = build_service_client(**_provisioning_kwargs(TrainerConfig()))
+    with pytest.raises(SystemExit, match="stopped"):
+        svc.create_training_client("accounts/acct/models/base")
+
+    assert seen == [signal_module.SIGTERM]
+    assert _FakeTrainerJobManager.deleted == [svc.job_id]
+
+
+def test_trainer_created_after_the_interrupt_is_still_deleted(provisioning, monkeypatch):
+    import threading
+    import time
+
+    monkeypatch.setattr(service, "_CREATE_POLL_S", 0.01)
+    job_ids = []
+
+    def interrupted_before_create_lands(job_id):
+        job_ids.append(job_id)
+        # The create request lands after cleanup first looks for the trainer.
+        threading.Timer(0.05, _FakeTrainerJobManager.existing.add, args=(job_id,)).start()
+        raise KeyboardInterrupt
+
+    provisioning(lambda **kwargs: _FakeProvisioningService(kwargs["trainer_job_id"], interrupted_before_create_lands))
+    svc = build_service_client(**_provisioning_kwargs(TrainerConfig()))
+    with pytest.raises(KeyboardInterrupt):
+        svc.create_training_client("accounts/acct/models/base")
+
+    deadline = time.monotonic() + 2
+    while not _FakeTrainerJobManager.deleted and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert _FakeTrainerJobManager.deleted == job_ids
+
+
+def test_late_trainer_watch_retries_failed_lookups(monkeypatch):
+    monkeypatch.setattr(service, "_CREATE_POLL_S", 0.0)
+    deleted = []
+
+    class FlakyManager:
+        lookups = 0
+
+        def try_get(self, job_id):
+            self.lookups += 1
+            if self.lookups == 1:
+                raise RuntimeError("503 Service Unavailable")
+            return None if deleted else {"name": job_id}
+
+        def delete(self, job_id):
+            deleted.append(job_id)
+
+    service._delete_when_created(FlakyManager(), "training-api-service-12345678")
+
+    assert deleted == ["training-api-service-12345678"]
+
+
+def test_failed_first_lookup_still_watches_for_the_trainer(provisioning, monkeypatch):
+    import time
+
+    monkeypatch.setattr(service, "_CREATE_POLL_S", 0.01)
+    lookups = []
+    real_try_get = _FakeTrainerJobManager.try_get
+
+    def flaky_try_get(self, job_id):
+        lookups.append(job_id)
+        if len(lookups) == 1:
+            raise RuntimeError("503 Service Unavailable")
+        return real_try_get(self, job_id)
+
+    monkeypatch.setattr(_FakeTrainerJobManager, "try_get", flaky_try_get)
+
+    def interrupted(job_id):
+        _FakeTrainerJobManager.existing.add(job_id)
+        raise KeyboardInterrupt
+
+    provisioning(lambda **kwargs: _FakeProvisioningService(kwargs["trainer_job_id"], interrupted))
+    svc = build_service_client(**_provisioning_kwargs(TrainerConfig()))
+    with pytest.raises(KeyboardInterrupt):
+        svc.create_training_client("accounts/acct/models/base")
+
+    deadline = time.monotonic() + 2
+    while not _FakeTrainerJobManager.deleted and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert _FakeTrainerJobManager.deleted == [svc.job_id]
+
+
+def test_late_trainer_watch_warns_when_lookups_keep_failing(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(service, "_CREATE_POLL_S", 0.0)
+    monkeypatch.setattr(service, "_CREATE_SETTLE_S", 0.05)
+
+    class DownManager:
+        def try_get(self, job_id):
+            raise RuntimeError("503 Service Unavailable")
+
+        def delete(self, job_id):
+            pytest.fail("nothing was found to delete")
+
+    with caplog.at_level(logging.WARNING, logger=service.logger.name):
+        service._delete_when_created(DownManager(), "training-api-service-12345678")
+
+    assert "Could not confirm whether trainer training-api-service-12345678 was created" in caplog.text
+
+
+def test_unconfirmed_delete_is_retried_then_reported(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(service, "_DELETE_RETRY_S", 0.0)
+    attempts = []
+
+    class SwallowingManager:
+        """Like TrainerJobManager.delete: a failed request is logged, not raised."""
+
+        def delete(self, job_id):
+            attempts.append(job_id)
+
+        def try_get(self, job_id):
+            if len(attempts) < 2:
+                return {"name": job_id, "state": "JOB_STATE_PENDING"}
+            return {"name": job_id, "state": "JOB_STATE_DELETING"}
+
+    assert service._delete_confirmed(SwallowingManager(), "training-api-service-12345678") is True
+    assert len(attempts) == 2
+
+    class StuckManager(SwallowingManager):
+        def try_get(self, job_id):
+            return {"name": job_id, "state": "JOB_STATE_PENDING"}
+
+    attempts.clear()
+    with caplog.at_level(logging.WARNING, logger=service.logger.name):
+        assert service._delete_confirmed(StuckManager(), "training-api-service-12345678") is False
+    assert len(attempts) == service._DELETE_ATTEMPTS
+    assert "Could not confirm trainer training-api-service-12345678 was deleted" in caplog.text
+
+
+def test_process_exit_waits_for_an_in_flight_trainer_create(tmp_path):
+    """A create that lands just after the interrupted process exits must still be deleted."""
+    import subprocess
+    import sys
+    import textwrap
+    from pathlib import Path
+
+    deleted_file = tmp_path / "deleted.txt"
+    script = textwrap.dedent(
+        f"""
+        import sys, time
+        from training.utils import service
+
+        service._CREATE_POLL_S = 0.05
+        started = time.monotonic()
+
+        class Manager:
+            def try_get(self, job_id):
+                # The in-flight create lands 0.3s after the process starts exiting.
+                if time.monotonic() - started < 0.3 or open({str(deleted_file)!r}).read():
+                    return None
+                return {{"name": job_id, "state": "JOB_STATE_PENDING"}}
+
+            def delete(self, job_id):
+                open({str(deleted_file)!r}, "a").write(job_id)
+
+        open({str(deleted_file)!r}, "w").close()
+        service._start_late_trainer_watch(Manager(), "training-api-service-12345678")
+        sys.exit(0)
+        """
+    )
+    repo_root = Path(__file__).resolve().parents[3]
+    subprocess.run([sys.executable, "-c", script], check=True, cwd=repo_root, timeout=60)
+
+    assert deleted_file.read_text() == "training-api-service-12345678"

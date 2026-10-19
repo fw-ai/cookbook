@@ -79,9 +79,12 @@ split are passed explicitly:
 export FIREWORKS_API_KEY=fw_...
 python -m training.examples.rl.visual_toolbench.train_visual_toolbench_serverless \
   --dataset /abs/train.jsonl --eval-dataset /abs/eval.jsonl \
-  --base-model accounts/fireworks/models/qwen3p6-27b --tokenizer-model Qwen/Qwen3.6-27B \
-  --renderer-name qwen3_6_disable_thinking_interleaved
+  --base-model accounts/fireworks/models/qwen3p8-27b --tokenizer-model Qwen/Qwen3.8-27B \
+  --renderer-name qwen3_8_disable_thinking_interleaved
 ```
+
+The base model must be in the serverless training pool (Models catalog, Availability:
+Serverless). Qwen3.6-27B is not, so it runs only on the dedicated path below.
 
 Settings used for the reference runs (the per-model launchers are archived in
 [`../../archive/launchers/`](../../archive/launchers/)):

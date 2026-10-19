@@ -14,6 +14,7 @@ per stdin line and one JSON boolean per stdout line.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -50,6 +51,10 @@ class MathVerifyService:
 
     def verify(self, pred_str: str, gt_str: str, timeout: float = 5.0) -> bool:
         """Return the worker's verdict, or ``False`` after killing a wedged worker."""
+        if importlib.util.find_spec("math_verify") is None:
+            # The worker would die on import and every symbolic answer would score
+            # False while training continues on wrong rewards.
+            raise ImportError("math-verify is required for DeepMath rewards: pip install math-verify")
         with self._lock:
             try:
                 proc = self._ensure()

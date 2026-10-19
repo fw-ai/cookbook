@@ -76,5 +76,5 @@ fast with nothing to manage, and the dedicated path when you need reserved capac
 full-parameter training, or to keep the tuned model served.
 
 > **What we'll do (either notebook).** Run it top to bottom: build data → evaluate the base model
-> → LoRA SFT → evaluate again and compare. Training cells spend real compute; defaults are
-> smoke-sized (`N_TRAIN` / `N_EVAL`), so scale them up for real signal.
+> → LoRA SFT → evaluate again and compare. Training cells spend real compute, and the defaults
+> are the full benchmark run; lower `N_TRAIN` / `N_EVAL` / `EPOCHS` for a quick smoke run.

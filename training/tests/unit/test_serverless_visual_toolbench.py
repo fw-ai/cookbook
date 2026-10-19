@@ -59,8 +59,8 @@ def test_cli_maps_to_serverless_config_and_task_config(tmp_path) -> None:
     cfg = serverless_vtb.config_from_args(args)
     task_config = task.task_config_from_args(args)
 
-    assert cfg.base_model == "accounts/fireworks/models/qwen3p6-27b"
-    assert cfg.tokenizer_model == "Qwen/Qwen3.6-27B"
+    assert cfg.base_model == "accounts/fireworks/models/qwen3p8-27b"
+    assert cfg.tokenizer_model == "Qwen/Qwen3.8-27B"
     assert (cfg.lora_rank, cfg.learning_rate) == (64, 3e-5)
     assert (cfg.adam_beta2, cfg.adam_epsilon, cfg.weight_decay) == (0.95, 1e-12, 0.0)
     assert (cfg.prompt_groups_per_step, cfg.completions_per_prompt) == (8, 8)
@@ -69,7 +69,7 @@ def test_cli_maps_to_serverless_config_and_task_config(tmp_path) -> None:
     assert (cfg.max_completion_tokens, cfg.max_seq_len) == (32768, 131072)
     assert cfg.dcp_save_interval == 2
     assert cfg.metrics_file == str(tmp_path / "metrics.jsonl")
-    assert task_config.renderer_name == "qwen3_6_disable_thinking_interleaved"
+    assert task_config.renderer_name == "qwen3_8_disable_thinking_interleaved"
     assert task_config.max_prompt_tokens == 57344
     assert task_config.filter_truncated_rollouts is True
     assert task_config.system_prompt == task.DEFAULT_SYSTEM_PROMPT

@@ -64,7 +64,8 @@ and `chromadb_text2sql/` are all gitignored.
 ## Run
 
 ```bash
-pip install --pre "fireworks-ai[training]" transformers python-dotenv matplotlib
+# from the cookbook repo root: the cookbook package (with eval-protocol) plus this notebook's tools
+pip install -e "./training[eval]" chromadb langchain-chroma langchain-fireworks python-dotenv matplotlib
 export FIREWORKS_API_KEY=fw_...
 ```
 
