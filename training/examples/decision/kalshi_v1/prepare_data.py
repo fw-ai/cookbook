@@ -12,8 +12,8 @@ Splits (row counts and sha256 are pinned in SPLITS below):
 Usage (from ``training/``)::
 
     export FIREWORKS_API_KEY=fw_...
-    python -m examples.decision.kalshi_v1.prepare_data
-    python -m examples.decision.kalshi_v1.prepare_data --splits train,dev
+    python -m training.examples.decision.kalshi_v1.prepare_data
+    python -m training.examples.decision.kalshi_v1.prepare_data --splits train,dev
 """
 
 from __future__ import annotations

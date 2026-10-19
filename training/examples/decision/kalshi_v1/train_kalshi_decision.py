@@ -3,20 +3,20 @@
 
 Downloads (via ``prepare_data.py``) the public Fireworks datasets, then runs
 ``recipes.decision_loop`` on serverless Muse Glimmer with the same defaults as
-the Decision Model Tuning E2E (LoRA r64, 1 epoch, batch 64, lr 1e-4, seed 0).
+the published training run (LoRA r64, 1 epoch, batch 64, lr 1e-4, seed 0).
 ``dev`` is the calibration split for fit-T; the promoted checkpoint is
 ``step-N-cal``.
 
 Usage (from ``training/``)::
 
     export FIREWORKS_API_KEY=fw_...
-    python -m examples.decision.kalshi_v1.prepare_data --splits train,dev
-    python -m examples.decision.kalshi_v1.train_kalshi_decision \\
+    python -m training.examples.decision.kalshi_v1.prepare_data --splits train,dev
+    python -m training.examples.decision.kalshi_v1.train_kalshi_decision \\
         --output-model-id kalshi-decision-v1-glimmer
 
 After training, download the full test set for offline eval::
 
-    python -m examples.decision.kalshi_v1.prepare_data --splits test,unseen_family
+    python -m training.examples.decision.kalshi_v1.prepare_data --splits test
 """
 
 from __future__ import annotations
