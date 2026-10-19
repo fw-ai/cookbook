@@ -45,8 +45,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     add_task_args(parser)
-    parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3p6-27b")
-    parser.add_argument("--tokenizer-model", default="Qwen/Qwen3.6-27B")
+    # Defaults must be in the serverless training pool; Qwen3.6-27B is dedicated-only.
+    parser.set_defaults(renderer_name="qwen3_8_disable_thinking_interleaved")
+    parser.add_argument("--base-model", default="accounts/fireworks/models/qwen3p8-27b")
+    parser.add_argument("--tokenizer-model", default="Qwen/Qwen3.8-27B")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--prompt-groups-per-step", type=int, default=8)

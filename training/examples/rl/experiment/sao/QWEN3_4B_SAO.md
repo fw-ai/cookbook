@@ -80,11 +80,10 @@ critic warmup and offline value pretraining belong in a fork of the recipe.
 
 Run the converter on the machine that runs the cookbook. It downloads
 `zwhe99/DeepMath-103K` from Hugging Face and writes one JSONL row per training
-example. The base cookbook install above includes `datasets`; install
-`math-verify` as well for the symbolic answer checker used by `--task deepmath`:
+example. The base cookbook install above includes `datasets` and `math-verify`, the
+symbolic answer checker used by `--task deepmath`:
 
 ```bash
-uv pip install --python .venv/bin/python math-verify
 .venv/bin/python -m training.examples.rl.deepmath.prepare_data \
   --output ./deepmath_103k.jsonl
 ```

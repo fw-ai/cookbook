@@ -1,16 +1,15 @@
-HERE=$(dirname $(realpath $0))
-echo $HERE
+#!/usr/bin/env bash
+# Dedicated embedding fine-tuning on a trainer job. Extra flags are passed through and
+# override the defaults below, for example a training shape:
+#   ./run.sh --training-shape <training-shape> --epochs 1
+set -euo pipefail
 
-export PYTHONPATH=$PYTHONPATH:$HERE/../../../
-echo $PYTHONPATH
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+cd "$HERE"
 
-missing_vars=""
-[ -z "${FIREWORKS_API_KEY:-}" ] && missing_vars="$missing_vars FIREWORKS_API_KEY"
-
-if [ -n "$missing_vars" ]; then
-    echo "Error: missing required env var(s):$missing_vars" >&2
-    exit 1
-fi
+: "${FIREWORKS_API_KEY:?missing required env var FIREWORKS_API_KEY}"
 
 python train_embedding.py \
     --base-model accounts/fireworks/models/qwen3-embedding-8b \
@@ -19,4 +18,5 @@ python train_embedding.py \
     --epochs 3 \
     --batch-size 8 \
     --temperature 0.02 \
-    --learning-rate 1e-5
+    --learning-rate 1e-5 \
+    "$@"

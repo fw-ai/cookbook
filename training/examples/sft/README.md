@@ -118,9 +118,10 @@ K3 script timestamps it).
 
 | File | What it is |
 | --- | --- |
-| `support_triage_sft.py` | CLI → `sft_loop.Config(serverless=True)` → `sft_loop.main`. |
+| `train_sft_serverless.py` | CLI → `sft_loop.Config(serverless=True)` → `sft_loop.main`. |
 | `data/support_triage_train.jsonl` | 72-row sample so the example runs out of the box. Point `--dataset` at your own JSONL. |
 | `run_serverless.sh` | Kimi K3 wrapper. |
+| `train_sft.py`, `run.sh` | The same recipe on a dedicated trainer (`serverless=False`). Pass `--training-shape` to pick the trainer; extra `run.sh` flags override its defaults. |
 
 Dataset rows are plain chat records —
 `{"messages": [{"role": "system"|"user"|"assistant", "content": ...}]}` — and
@@ -142,5 +143,5 @@ every assistant turn is trained on.
 - **Cost.** Defaults are a real training run against a real pooled trainer.
   Lower `--epochs` / use `--dataset` with fewer rows for a cheap smoke run.
 
-For the dedicated SFT example see [`examples/sft/`](../sft/); for the serverless
+For the dedicated SFT path see [`train_sft.py`](train_sft.py) and [`run.sh`](run.sh); for the serverless
 RL counterpart see [`examples/rl/deepmath/`](../rl/deepmath/train_deepmath_serverless.py).

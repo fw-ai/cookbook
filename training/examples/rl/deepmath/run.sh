@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Dedicated GRPO on a trainer plus deployment. Extra flags are passed through and
+# override the defaults below, for example a training shape or a smaller smoke run:
+#   ./run.sh --training-shape <training-shape> --max-rows 12 --epochs 1
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -20,4 +23,5 @@ python "$HERE/train_deepmath.py" \
     --completions-per-prompt 8 \
     --learning-rate 1e-5 \
     --output-model-id deepmath-qwen3-4b-$(date +%s) \
-    "${TRAINER_REPLICAS_ARG[@]}"
+    ${TRAINER_REPLICAS_ARG[@]+"${TRAINER_REPLICAS_ARG[@]}"} \
+    "$@"

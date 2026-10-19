@@ -116,6 +116,17 @@ def test_math_verify_service_works_from_worker_threads():
     assert results == [True]
 
 
+def test_math_verify_service_fails_loudly_without_math_verify(monkeypatch):
+    real_find_spec = math_verify_service.importlib.util.find_spec
+    monkeypatch.setattr(
+        math_verify_service.importlib.util,
+        "find_spec",
+        lambda name, *a: None if name == "math_verify" else real_find_spec(name, *a),
+    )
+    with pytest.raises(ImportError, match="pip install math-verify"):
+        math_verify_service.MathVerifyService().verify(r"\boxed{1/2}", r"\boxed{0.5}")
+
+
 def test_math_verify_service_kills_a_wedged_worker(tmp_path):
     slow_worker = tmp_path / "slow_worker.py"
     slow_worker.write_text("import sys, time\nfor _line in sys.stdin:\n    time.sleep(3600)\n")

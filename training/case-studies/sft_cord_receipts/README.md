@@ -6,7 +6,7 @@ In this example we'll take a general vision model and teach it to turn a **photo
 
 **The data.** We'll use [`naver-clova-ix/cord-v2`](https://huggingface.co/datasets/naver-clova-ix/cord-v2): real receipt photos, each paired with the correct JSON parse. This one is **visual** — the images ride along inside the training file as base64. The notebook builds it inline (downloads CORD-v2, encodes images, and carves off a `test`-split holdout the model never trains on, so the "after" score is honest).
 
-**The model.** We'll fine-tune `qwen3-vl-8b-instruct` — small enough to be cheap to train and serve, but a vision model, so it can actually *see* the receipt.
+**The model.** We'll fine-tune `qwen3p5-9b` — small enough to be cheap to train and serve, but a vision model, so it can actually *see* the receipt. Managed SFT support is per model, so check the [Models catalog](https://docs.fireworks.ai/fine-tuning/models) before swapping in another vision base.
 
 **The technique.** This is plain **supervised fine-tuning (SFT)**: when you can show the model gold input→output pairs, SFT is the most direct way to lock in the behavior you want.
 

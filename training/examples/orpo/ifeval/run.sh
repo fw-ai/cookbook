@@ -1,16 +1,15 @@
-HERE=$(dirname $(realpath $0))
-echo $HERE
+#!/usr/bin/env bash
+# Dedicated ORPO on a trainer job. Extra flags are passed through and override the
+# defaults below, for example a training shape or a smaller smoke run:
+#   ./run.sh --training-shape <training-shape> --max-pairs 12
+set -euo pipefail
 
-export PYTHONPATH=$PYTHONPATH:$HERE/../../../
-echo $PYTHONPATH
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../../../.." && pwd)"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+cd "$HERE"
 
-missing_vars=""
-[ -z "${FIREWORKS_API_KEY:-}" ] && missing_vars="$missing_vars FIREWORKS_API_KEY"
-
-if [ -n "$missing_vars" ]; then
-    echo "Error: missing required env var(s):$missing_vars" >&2
-    exit 1
-fi
+: "${FIREWORKS_API_KEY:?missing required env var FIREWORKS_API_KEY}"
 
 python train_ifeval_orpo.py \
     --base-model accounts/fireworks/models/qwen3-8b \
@@ -20,4 +19,5 @@ python train_ifeval_orpo.py \
     --epochs 1 \
     --learning-rate 1e-5 \
     --orpo-lambda 1.0 \
-    --output-model-id orpo-finetuned-qwen3-8b-$(date +%Y%m%d%H%M)
+    --output-model-id orpo-finetuned-qwen3-8b-$(date +%Y%m%d%H%M) \
+    "$@"

@@ -126,7 +126,12 @@ def pairwise_judge(
 ) -> str:
     """Return "A", "B", or "tie". If swap_guard, run both orderings and only
     keep a decisive verdict when the two runs agree after un-swapping (removes
-    position bias); otherwise "tie"."""
+    position bias); otherwise "tie".
+
+    A transient judge failure counts as a tie so one bad call doesn't stop the eval.
+    A request the judge can never answer (bad model id, auth, invalid request)
+    raises instead: scoring every pair as a tie would report a 0% win rate.
+    """
 
     def _one(resp_a: str, resp_b: str) -> str:
         prompt = _PAIRWISE_PROMPT.format(context=_ctx_to_text(context_messages), a=resp_a[:3000], b=resp_b[:3000])
@@ -139,9 +144,12 @@ def pairwise_judge(
                 response_format={"type": "json_object", "schema": _PAIRWISE_SCHEMA},
             )
             obj = json.loads(r.choices[0].message.content or "{}")
-            return str(obj.get("winner", "tie")).upper() if obj.get("winner") != "tie" else "tie"
-        except Exception:  # noqa: BLE001 - judge must never crash the eval
+        except Exception as e:  # noqa: BLE001
+            if getattr(e, "status_code", None) in (400, 401, 403, 404):
+                raise RuntimeError(f"judge {judge_model} rejected the request: {e}") from e
             return "tie"
+        winner = str(obj.get("winner", "tie")).strip().upper()
+        return winner if winner in ("A", "B") else "tie"
 
     v1 = _one(a, b)
     if not swap_guard:

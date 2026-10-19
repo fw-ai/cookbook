@@ -144,9 +144,12 @@ class TrainerConfig:
     """Skip server-side shape validation. Requires superuser API key."""
 
     use_reservation: bool = True
-    """Use matching account reservation capacity when available.
+    """Use the account's matching reservation when one exists.
 
-    Accounts without a reservation for the selected accelerator use shared capacity.
+    With a matching reservation, the trainer runs only on that reservation and
+    never falls back to shared capacity. Accounts without a reservation for the
+    selected accelerator use shared capacity. Set to False to always use shared
+    capacity.
     """
 
     reservation_target: str | None = None
