@@ -156,6 +156,10 @@ class Config:
     """Cap on *valid rendered pairs* after schema/length filtering."""
     serverless: bool = False
     """Use one pooled policy run and a frozen snapshot sampler for reference scoring."""
+    close_session_on_exit: bool = False
+    """Serverless only: close the training session at teardown, including on
+    failure, to release its concurrent-run quota slot immediately. Leave off
+    when a later process needs to resume from or promote this run's checkpoints."""
     lora_rank: int = 0
     lora_alpha: int | None = 32
     """LoRA alpha scaling factor. Ignored when ``lora_rank == 0``.
@@ -814,6 +818,7 @@ def main(
                 base_url=base_url,
                 additional_headers=additional_headers,
                 stack=stack,
+                close_session_on_exit=cfg.close_session_on_exit,
             )
             stack.callback(service.close)
             runner.set_accelerator_info(None, None, profile=None)
