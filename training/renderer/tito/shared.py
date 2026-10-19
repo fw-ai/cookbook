@@ -165,6 +165,29 @@ def _plain(value: Any) -> Any:
     return value
 
 
+def parse_xml_tool_argument(
+    value: str,
+    *,
+    parameter_name: str,
+    tool_name: str,
+    tools: Sequence[Mapping[str, Any]],
+) -> Any:
+    """Preserve XML text for explicitly string-typed tool parameters."""
+    for tool in tools:
+        function = tool.get("function") or {}
+        if function.get("name") != tool_name:
+            continue
+        parameters = function.get("parameters") or {}
+        schema = (parameters.get("properties") or {}).get(parameter_name) or {}
+        if isinstance(schema, Mapping) and schema.get("type") == "string":
+            return value
+        break
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
 def _normalize_template_tools(
     tools: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:

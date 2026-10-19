@@ -1,0 +1,49 @@
+{
+  "source": "synthetic task, unforced live generation",
+  "model": "accounts/fireworks/models/qwen3p5-35b-a3b",
+  "deployment_shape": "accounts/fireworks/deploymentShapes/rft-qwen3p5-35b-a3b/versions/hin8hfh3",
+  "image": "text-completion:4.517.1",
+  "tokenizer_repository": "Qwen/Qwen3.5-35B-A3B-FP8",
+  "tokenizer_revision": "9d1823d2dee688a6b25e77009dc727688c44936e",
+  "request_id": "cmpl-b15b8fd843f6465e9a085ef4ede5e9db",
+  "request": {
+    "model": "accounts/training/deployments/tito-val-1018-qwen35-rl",
+    "messages": [
+      {
+        "role": "system",
+        "content": "Use the provided tool once, then stop."
+      },
+      {
+        "role": "user",
+        "content": "Use write_file to write value.txt containing exactly this text, with no extra whitespace: 42"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "write_file",
+          "description": "Write a file with exact string contents.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "completion_token_ids": [760,1156,6587,728,310,3165,264,999,2512,328,927,3778,1,8222,6681,279,1414,328,19,17,1,440,874,4799,35169,13,353,1144,310,958,279,3165,2378,709,440,25,198,12,1752,25,328,927,3778,1,198,12,2144,25,328,19,17,1,271,40,1220,1132,958,279,5224,2957,321,1179,2842,11,430,39622,13,198,248069,271,248058,198,27,1628,28,4775,2378,29,198,27,15704,79114,29,198,927,3778,198,510,15704,29,198,27,15704,28,1733,29,198,19,17,198,510,15704,29,198,510,1628,29,198,248059],
+  "completion_text": "The user wants me to write a file called \"value.txt\" containing exactly the text \"42\" with no extra whitespace. I need to use the write_file function with:\n- path: \"value.txt\"\n- content: \"42\"\n\nI should only use the tool once and then stop, as instructed.\n</think>\n\n<tool_call>\n<function=write_file>\n<parameter=path>\nvalue.txt\n</parameter>\n<parameter=content>\n42\n</parameter>\n</function>\n</tool_call>",
+  "finish_reason": "length"
+}

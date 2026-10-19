@@ -141,7 +141,7 @@ packages = [
 "training.examples.distillation.serverless_k3_privileged" = ["data/gsm8k_privileged.jsonl", "data/gsm8k_200.jsonl"]
 "training.examples.archive.countdown" = ["data/countdown_train.jsonl"]
 "training.examples.archive.eval_protocol_chat" = ["train.jsonl"]
-"training.tests" = ["_encoding_dsv41_oracle.LICENSE"]
+"training.tests" = ["_encoding_dsv41_oracle.LICENSE", "fixtures/tito_qwen35_complete_length.json"]
 
 [tool.uv]
 
