@@ -137,8 +137,9 @@ def test_full_history_matches_official_encoder(
 
 @pytest.mark.parametrize("with_eos", [False, True])
 @pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
 def test_parse_parallel_tools_preserves_argument_order_and_ids(
-    native: tuple[Any, DeepSeekV4TITORenderer], with_eos: bool, parallel: bool
+    native: tuple[Any, DeepSeekV4TITORenderer], with_eos: bool, parallel: bool, finish_reason: str
 ) -> None:
     tokenizer, renderer = native
     assistant = {
@@ -159,7 +160,7 @@ def test_parse_parallel_tools_preserves_argument_order_and_ids(
         text = text.removesuffix(renderer._encoder.eos_token)
     request = TITOChatRequest.from_openai({"messages": [{"role": "user", "content": "run"}], "tools": [TOOL]})
     ids = tokenizer.encode(text, add_special_tokens=False)
-    parsed = renderer.parse_assistant(request, ids, "ignored", "stop")
+    parsed = renderer.parse_assistant(request, ids, "ignored", finish_reason)
     calls = parsed.response_message["tool_calls"]
     assert len(calls) == (2 if parallel else 1)
     assert len({call["id"] for call in calls}) == len(calls)
@@ -174,6 +175,8 @@ def test_parse_parallel_tools_preserves_argument_order_and_ids(
         ("missing close", "stop"),
         ("reason</think>\n\n<\uff5cDSML\uff5ctool_calls>", "stop"),
         ("reason</think>\n\n<\uff5cDSML\uff5ctool_calls>", "length"),
+        ("reason</think>Explain the \uff5cDSML\uff5c marker", "stop"),
+        ("reason</think>Explain the \uff5cDSML\uff5c marker", "length"),
         ("reason</think>answer<\uff5cbegin\u2581of\u2581sentence\uff5c>", "stop"),
     ],
 )
@@ -192,6 +195,34 @@ def test_length_stop_inside_reasoning_is_not_visible_content(native: tuple[Any, 
     request = TITOChatRequest.from_openai({"messages": [{"role": "user", "content": "run"}]})
     parsed = renderer.parse_assistant(request, tokenizer.encode("unfinished", add_special_tokens=False), "", "length")
     assert parsed.message == {"role": "assistant", "content": "", "reasoning_content": "unfinished"}
+
+
+def test_partial_native_tool_block_cannot_execute_at_length_limit(native: tuple[Any, DeepSeekV4TITORenderer]) -> None:
+    tokenizer, renderer = native
+    assistant = {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "reason",
+        "tool_calls": [{"type": "function", "function": {"name": "run", "arguments": '{"z":"hello","a":2}'}}],
+    }
+    text = (
+        renderer._encoder.render_message(
+            1, [{"role": "user", "content": "run"}, assistant], "thinking", drop_thinking=False
+        )
+        .removeprefix("<think>")
+        .removesuffix(renderer._encoder.eos_token)
+    )
+    ids = tokenizer.encode(text, add_special_tokens=False)
+    closing_marker = text[text.rfind("</") :].rstrip()
+    request = TITOChatRequest.from_openai({"messages": [{"role": "user", "content": "run"}], "tools": [TOOL]})
+    for end in range(1, len(ids)):
+        prefix = ids[:end]
+        try:
+            parsed = renderer.parse_assistant(request, prefix, "", "length")
+        except ValueError:
+            continue
+        if closing_marker not in tokenizer.decode(prefix):
+            assert not parsed.message.get("tool_calls")
 
 
 @pytest.mark.parametrize("echo_indices", [False, True])

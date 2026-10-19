@@ -19,6 +19,7 @@ from training.renderer.tito.shared import (
     _ensure_tool_call_ids,
     _normalize_template_messages,
     _normalize_template_tools,
+    parse_xml_tool_argument,
     validate_no_dynamic_template_fields,
     TITORendererCertification,
 )
@@ -189,7 +190,12 @@ class Qwen38TITORenderer:
             if not name:
                 raise TITOParseError(f"{self._label} tool call is missing a function name")
             arguments = {
-                item.group(1).strip(): self._parse_argument(item.group(2))
+                item.group(1).strip(): parse_xml_tool_argument(
+                    item.group(2),
+                    parameter_name=item.group(1).strip(),
+                    tool_name=name,
+                    tools=request.tools,
+                )
                 for item in _QWEN_TOOL_ARG_RE.finditer(body)
             }
             residue = _QWEN_TOOL_ARG_RE.sub("", body).strip()
@@ -205,6 +211,8 @@ class Qwen38TITORenderer:
                 }
             )
             position = match.end()
+        if calls and finish_reason == "length" and content[position:].strip():
+            raise TITOParseError(f"{self._label} length-stopped tool calls have trailing content")
         cleaned.append(content[position:])
         content = "".join(cleaned)
         if "<tool_call>" in content or "</tool_call>" in content:
@@ -227,13 +235,6 @@ class Qwen38TITORenderer:
             message["tool_calls"] = calls
         return message, clean
 
-    @staticmethod
-    def _parse_argument(value: str) -> Any:
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return value
-
     def parse_assistant(
         self,
         request: TITOChatRequest,
@@ -253,8 +254,6 @@ class Qwen38TITORenderer:
             raise TITOParseError(f"unclean {self._label} renderer parse")
         message = _ensure_tool_call_ids(message, completion_ids)
         tool_calls = message.get("tool_calls") or []
-        if finish_reason == "length" and tool_calls:
-            raise TITOParseError("truncated structured tool call is not protocol-safe")
         output_kind = (
             "tool_calls"
             if tool_calls

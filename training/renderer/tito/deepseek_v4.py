@@ -150,10 +150,8 @@ class DeepSeekV4TITORenderer:
         if ids and ids[-1] == self._eos[0]:
             ids = ids[:-1]
         text = self.tokenizer.decode(ids, skip_special_tokens=False)
-        if finish_reason == "length":
-            reasoning, boundary, content = text.partition(self._encoder.thinking_end_token)
-            if boundary and self._encoder.dsml_token in content:
-                raise TITOParseError("truncated DeepSeek V4 tool call is not protocol-safe")
+        reasoning, boundary, content = text.partition(self._encoder.thinking_end_token)
+        if finish_reason == "length" and (not boundary or self._encoder.dsml_token not in content):
             message = {
                 "role": "assistant",
                 "content": content if boundary else "",
