@@ -2,7 +2,7 @@
 """Render dataset-breakdown and category-mix charts for the kalshi_v1 README.
 
 Matches the clean-chart visual language used by the study figures
-(kalshi-clean-*.png): white ground, bold title, framed legend, dpi=140.
+(kalshi-clean-*.png): white ground, bold title, framed legend, dpi=150.
 
     python make_split_charts.py
 """
@@ -20,13 +20,14 @@ import numpy as np  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 from PIL import Image  # noqa: E402
 
+plt.rcParams.update({"font.family": "DejaVu Sans", "text.color": "#202733"})
+
 OUT_DIR = Path(__file__).resolve().parent
 
 SPLIT_COLORS = {
     "Training": "#1f4fd1",
     "Calibration (dev)": "#5b6676",
-    "Unseen topics": "#e8730c",
-    "New events": "#2e9e4f",
+    "Test": "#2e9e4f",
 }
 
 CATEGORY_COLORS = {
@@ -42,10 +43,9 @@ CATEGORY_COLORS = {
 }
 
 SPLIT_SIZES = {
-    "Training": {"markets": 6461, "questions": 20051},
-    "Calibration (dev)": {"markets": 2000, "questions": 6232},
-    "Unseen topics": {"markets": 765, "questions": 3567},
-    "New events": {"markets": 8000, "questions": 30145},
+    "Training": {"events": 6461, "questions": 20051},
+    "Calibration (dev)": {"events": 2000, "questions": 6232},
+    "Test": {"events": 8765, "questions": 33712},
 }
 
 CATEGORY_COUNTS: dict[str, dict[str, int]] = {
@@ -70,27 +70,16 @@ CATEGORY_COUNTS: dict[str, dict[str, int]] = {
         "Mentions": 118,
         "Climate and Weather": 5,
     },
-    "Unseen topics": {
-        "Sports": 119,
-        "Politics": 66,
-        "Entertainment": 171,
-        "Economics": 151,
-        "Science and Technology": 176,
-        "Elections": 26,
-        "Mentions": 14,
-        "Climate and Weather": 36,
-        "Other": 6,
-    },
-    "New events": {
-        "Sports": 4695,
-        "Politics": 474,
-        "Entertainment": 694,
-        "Economics": 481,
-        "Science and Technology": 224,
-        "Elections": 499,
-        "Mentions": 845,
-        "Climate and Weather": 78,
-        "Other": 10,
+    "Test": {
+        "Sports": 4814,
+        "Politics": 540,
+        "Entertainment": 865,
+        "Economics": 632,
+        "Science and Technology": 400,
+        "Elections": 525,
+        "Mentions": 859,
+        "Climate and Weather": 114,
+        "Other": 16,
     },
 }
 
@@ -111,9 +100,9 @@ def _donut(ax, labels: list[str], sizes: list[int], colors: list[str], title: st
         counterclock=False,
         wedgeprops={"width": 0.40, "edgecolor": "white", "linewidth": 1.0},
     )
-    ax.set_title(title, fontsize=11.5, fontweight="bold", pad=2)
-    ax.text(0, 0.05, f"{total:,}", ha="center", va="center", fontsize=13.5, fontweight="bold", color="#222")
-    ax.text(0, -0.16, subtitle, ha="center", va="center", fontsize=8.5, color="#555")
+    ax.set_title(title, fontsize=12, fontweight="bold", pad=4)
+    ax.text(0, 0.05, f"{total:,}", ha="center", va="center", fontsize=17, fontweight="bold", color="#202733")
+    ax.text(0, -0.16, subtitle, ha="center", va="center", fontsize=10, color="#596474")
     # Pull the ring to the panel edges (default pie leaves a large empty margin).
     ax.set_xlim(-1.05, 1.05)
     ax.set_ylim(-1.05, 1.05)
@@ -131,7 +120,7 @@ def _donut(ax, labels: list[str], sizes: list[int], colors: list[str], title: st
             f"{100 * share:.0f}%",
             ha="center",
             va="center",
-            fontsize=9,
+            fontsize=10,
             fontweight="bold",
             color="#222",
         )
@@ -142,7 +131,9 @@ def _framed_legend(ax, handles, labels, *, fontsize: float = 9.0) -> None:
     legend = ax.legend(
         handles=handles,
         labels=labels,
-        loc="center",
+        loc="center right",
+        bbox_to_anchor=(1.0, 0.5),
+        borderaxespad=0,
         fontsize=fontsize,
         title="Legend",
         title_fontsize=fontsize + 0.5,
@@ -187,7 +178,7 @@ def _assert_tight(path: Path, *, max_side: float = 0.06, max_bottom: float = 0.0
 
 def render_dataset_breakdown(path: Path) -> None:
     # Compact row: pie | pie | legend. Footnote rides under with almost no gap.
-    fig = plt.figure(figsize=(9.2, 3.35))
+    fig = plt.figure(figsize=(12.8, 4.7))
     gs = fig.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 0.72], wspace=0.01)
     ax0 = fig.add_subplot(gs[0, 0])
     ax1 = fig.add_subplot(gs[0, 1])
@@ -195,77 +186,73 @@ def render_dataset_breakdown(path: Path) -> None:
 
     labels = list(SPLIT_SIZES)
     colors = [SPLIT_COLORS[name] for name in labels]
-    _donut(ax0, labels, [SPLIT_SIZES[n]["markets"] for n in labels], colors, "Markets by split", "markets")
+    _donut(ax0, labels, [SPLIT_SIZES[n]["events"] for n in labels], colors, "Events by split", "events")
     _donut(ax1, labels, [SPLIT_SIZES[n]["questions"] for n in labels], colors, "Questions by split", "questions")
 
     _framed_legend(
         ax_leg,
         handles=[Patch(facecolor=c, edgecolor="none") for c in colors],
         labels=[
-            f"{name}\n{SPLIT_SIZES[name]['markets']:,} mkts · {SPLIT_SIZES[name]['questions']:,} q"
-            for name in labels
+            f"{name}\n{SPLIT_SIZES[name]['events']:,} events · {SPLIT_SIZES[name]['questions']:,} q" for name in labels
         ],
-        fontsize=8.8,
+        fontsize=10,
     )
 
-    fig.suptitle("Dataset breakdown", fontsize=13, fontweight="bold", y=0.995)
-    fig.subplots_adjust(left=0.005, right=0.998, top=0.84, bottom=0.13)
+    fig.suptitle("Dataset breakdown", x=0.02, ha="left", fontsize=16, fontweight="bold", y=0.98)
+    fig.subplots_adjust(left=0.025, right=0.975, top=0.83, bottom=0.14)
     fig.text(
-        0.5,
-        0.015,
-        "Published kalshi-decision-v1 splits. New events = original test (2k) + test_extra (6k); "
-        "unseen topics is also folded into the published test set.",
-        ha="center",
+        0.02,
+        0.025,
+        "One published test set: 8,765 events / 33,712 questions. "
+        "Unseen topics (765 events) is a subset of test, not another split.",
+        ha="left",
         va="bottom",
-        fontsize=7.5,
-        color="#444",
+        fontsize=8.2,
+        color="#596474",
     )
-    fig.savefig(path, dpi=140, facecolor="white", bbox_inches="tight", pad_inches=0.05)
+    fig.savefig(path, dpi=150, facecolor="white")
     plt.close(fig)
 
 
 def render_category_mix(path: Path) -> None:
     order = list(CATEGORY_COLORS)
-    # 2x2 pies with a shared side legend — no tall empty footer band.
-    fig = plt.figure(figsize=(9.4, 6.2))
-    gs = fig.add_gridspec(2, 3, width_ratios=[1.0, 1.0, 0.48], wspace=0.0, hspace=0.06)
-    axes = [fig.add_subplot(gs[r, c]) for r in range(2) for c in range(2)]
-    ax_leg = fig.add_subplot(gs[:, 2])
+    fig = plt.figure(figsize=(12.8, 4.7))
+    gs = fig.add_gridspec(1, 4, width_ratios=[1.0, 1.0, 1.0, 0.70], wspace=0.02)
+    axes = [fig.add_subplot(gs[0, c]) for c in range(3)]
+    ax_leg = fig.add_subplot(gs[0, 3])
 
     panel_titles = {
         "Training": "Training (balanced)",
         "Calibration (dev)": "Calibration / fit-T",
-        "Unseen topics": "Unseen topics",
-        "New events": "New events",
+        "Test": "Consolidated test",
     }
     for ax, split in zip(axes, CATEGORY_COUNTS):
         counts = CATEGORY_COUNTS[split]
         labels = [c for c in order if c in counts and counts[c] > 0]
         sizes = [counts[c] for c in labels]
         colors = [CATEGORY_COLORS[c] for c in labels]
-        _donut(ax, labels, sizes, colors, panel_titles[split], f"{sum(sizes):,} markets")
+        _donut(ax, labels, sizes, colors, panel_titles[split], "events")
 
     legend_cats = [c for c in order if any(c in CATEGORY_COUNTS[s] for s in CATEGORY_COUNTS)]
     _framed_legend(
         ax_leg,
         handles=[Patch(facecolor=CATEGORY_COLORS[c], edgecolor="none") for c in legend_cats],
         labels=legend_cats,
-        fontsize=8.5,
+        fontsize=10,
     )
 
-    fig.suptitle("Category mix (share of markets)", fontsize=13, fontweight="bold", y=0.995)
-    fig.subplots_adjust(left=0.005, right=0.998, top=0.93, bottom=0.06)
+    fig.suptitle("Category mix across the three splits", x=0.02, ha="left", fontsize=16, fontweight="bold", y=0.98)
+    fig.subplots_adjust(left=0.025, right=0.975, top=0.84, bottom=0.14)
     fig.text(
-        0.5,
-        0.008,
-        "Sports capped at 18.6% in training; calibration and new-events keep Kalshi's natural Sports-heavy mix. "
-        "Unseen topics is deliberately spread across categories.",
-        ha="center",
+        0.02,
+        0.025,
+        "Sports capped at 18.6% in training. The consolidated test includes the unseen-topic subset.",
+        ha="left",
         va="bottom",
-        fontsize=7.5,
-        color="#444",
+        fontsize=8.2,
+        color="#596474",
     )
-    fig.savefig(path, dpi=140, facecolor="white", bbox_inches="tight", pad_inches=0.05)
+    fig.savefig(path, dpi=150, facecolor="white")
     plt.close(fig)
 
 
