@@ -1,9 +1,11 @@
 # Kalshi decision-tuning v1
 
-Reproduce the **Decision Model Tuning** Muse Glimmer setup: public Kalshi event
-rows, `recipes/decision_loop.py`, calibrated LoRA, and the final study numbers
-below. Charts in `media/` are the study figures (accuracy, calibration,
-confidence filtering, paper-trading equity).
+Decision-tune Muse Glimmer on public Kalshi events with `recipes/decision_loop.py`.
+
+- **Profitable:** paper trading turned $1,000 into **$1,151** (+15.1%) on unseen
+  topics and **$1,073** (+7.3%) across all test markets.
+- **Fast:** the [`systemone` API](#serve-with-the-systemone-decision-api) answers
+  **2–3x faster** than standard `/chat/completions` serving on the same B200 GPU.
 
 ## What we found
 
@@ -123,7 +125,33 @@ firectl supervised-fine-tuning-job create \
 
 Until that flag ships, the Training API path above is the supported repro.
 
----
+## Serve with the `systemone` decision API
+
+Query the tuned model with `POST /inference/v1/systemone` instead of
+`/chat/completions`. Send one `state` and all of its questions in a single
+request. The gateway reads each answer from the option-letter logits, so it
+decodes no tokens and there is no text to parse. On one B200 GPU, its median
+server time is **2–3x lower** than the standard Glimmer chat deployment.
+
+```bash
+curl https://api.fireworks.ai/inference/v1/systemone \
+  -H "Authorization: Bearer $FIREWORKS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "accounts/<your-account>/models/kalshi-decision-v1-glimmer",
+    "state": "<event title, rules and open date, as in the dataset rows>",
+    "questions": {
+      "yes_market": {"type": "noul", "instructions": "Will this market resolve Yes?"},
+      "winner": {"type": "choice", "instructions": "Which outcome will happen?",
+                 "criteria": {"a": "<outcome A>", "b": "<outcome B>"}}
+    }
+  }'
+```
+
+The response holds `answers` keyed by question ID, with the probability of Yes
+for `noul` questions and per-option `probabilities` for `choice` and `score`
+questions. `POST /inference/v1/decisions` is an OpenAI-compatible alias: it
+takes `input` and an ordered `questions` list.
 
 ## Final results
 
