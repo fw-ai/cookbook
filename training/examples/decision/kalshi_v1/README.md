@@ -13,7 +13,7 @@ Fireworks Training API and K-way cross-entropy.
 **Only tuned Glimmer is calibrated. Base Glimmer and Jev use raw probabilities
 (`T=1`).** Results were recomputed from saved model readouts.
 
-![Test accuracy, accuracy when confident, and historical server latency](media/kalshi-clean-hero.png)
+![Historical paper-allocation value as markets settle](media/kalshi-clean-backtest-equity.png)
 
 ## One test set
 
@@ -106,6 +106,8 @@ historical latency measurements are separate.
 
 The unseen-topic column is a subset of the full test, not an additional test.
 
+![Test accuracy, accuracy when confident, and historical server latency](media/kalshi-clean-hero.png)
+
 | System | Full-test accuracy | Unseen-topic accuracy | Full-test Brier sum ↓ | Full-test ECE ↓ |
 |---|---:|---:|---:|---:|
 | Common-answer reference | 56.3% | 52.9% | — | — |
@@ -128,7 +130,12 @@ confidence bins.
 | 70% | 11,738 → 81.2% | 598 → 78.9% |
 | **80%** | **4,868 → 86.8%** | **219 → 86.8%** |
 
-![Observed accuracy and stated confidence by confidence band](media/kalshi-clean-calibration.png)
+The confidence gap is observed accuracy minus average stated confidence in each
+band. Closer to zero is better; negative values indicate overconfidence and
+positive values indicate underconfidence. Dashed outlines mark bands with fewer
+than 30 answers, for which no gap estimate is displayed.
+
+![Accuracy minus stated confidence by confidence band; closer to zero is better](media/kalshi-clean-calibration.png)
 ![Accuracy as predictions become more selective](media/kalshi-clean-confidence-filter.png)
 
 Raw base Glimmer is frequently very confident: 31,334 full-test answers exceed
