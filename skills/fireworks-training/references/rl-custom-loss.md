@@ -110,8 +110,9 @@ Send ordinary single-target datums with raw advantages, sampler logprobs and
 an explicit response mask; do not use client SC's expanded datums or preapply TIS.
 
 ```python
-from training.utils.rl.sampling_support import attach_top_sampling_references
+from training.utils.rl.sampling_support import attach_sampling_mask_references, attach_top_sampling_references
 
+datums = attach_sampling_mask_references(datums, batch.sampling_mask_references)
 datums = attach_top_sampling_references(datums, batch.top_sampling_references)
 result = policy.forward_backward(datums, "reinforce", loss_fn_config={
     "score_centering": True, "weighting": "tis", "weight_high": 2.0,
@@ -124,12 +125,20 @@ SC needs inline sampler IDs/logprobs or Parquet references (see replay below).
 The example requires complete support captured during rollout. `apply_tis`
 rewrites returned datums, not client SC's `batch.advantages`; use the server
 path for SC combined with TIS/MIS.
-Default `full_vocabulary` allows partial heads; `sampling_support` requires the
-complete recorded support/counts and normalizes both distributions there.
+SC accepts a partial probability head in either normalization mode.
+`sampling_support` requires a complete ID-only replay mask.
 SC, none/TIS/MIS weighting and mask replay are independent options and can be
 combined. v1 uses temperature 1; SC/replay are text-only. Do not preweight
 advantages or add PPO/GSPO clipping. Response-mask tokens count even when their
 advantage is zero.
+
+For replay, capture `sampling_mask="parquet_v1"`. For SC, additionally request
+`top_sampling_logprobs=128` and `top_sampling_format="parquet_v1"`. The SDK carries
+each through its own field: `sampling_mask_references` for replay and
+`top_sampling_references` for SC; replay-only needs no head.
+The complete mask defines normalization; the bounded head uses approximate
+head/tail SC. Replay requires `sampling_mask`; top-k-only files are rejected.
+Keep loss selection in the caller; the async loop retains its default objective.
 
 ## Recompute the anchor
 
@@ -256,23 +265,25 @@ vocabulary:
 
 ```python
 from training.utils.rl.sampling_support import (
-    attach_top_sampling_references, sampling_support_kwargs, sampling_support_loss_fn_config,
+    attach_top_sampling_references, attach_sampling_mask_references,
+    replay_mask_kwargs, sc_head_kwargs, sampling_support_loss_fn_config,
 )
 
-sample_kwargs.update(sampling_support_kwargs(top_p=0.95, support_size=4096))
+sample_kwargs.update(replay_mask_kwargs(top_p=0.95) | sc_head_kwargs(128))
 ...
-datums = attach_top_sampling_references(objective.build_datums(batch, policy_loss), batch.top_sampling_references)
+datums = attach_sampling_mask_references(objective.build_datums(batch, policy_loss), batch.sampling_mask_references)
+datums = attach_top_sampling_references(datums, batch.top_sampling_references)
 result = policy.forward_backward(
     datums, objective.LOSS_FN, loss_fn_config=sampling_support_loss_fn_config(objective.loss_fn_config(policy_loss))
 )
 result.metrics.update(objective.metrics(batch, result, policy_loss))   # skip inference_drift_metrics
 ```
 
-- `support_size` is a storage width, not a top-k filter; it must cover every
-  trained token's support (trainer limit 20,000). Incomplete support at a
-  trained position is rejected.
+- `sampling_mask="parquet_v1"` records the complete support (trainer limit
+  20,000); incomplete masks are rejected. `sc_head_kwargs(128)` requests a separate
+  probability head for SC. Omit `sc_head_kwargs` for replay without SC.
 - Needs a sampler bound to the trainer's shared storage, a serving image that
-  accepts `top_sampling_format="parquet_v1"`, and
+  accepts `sampling_mask="parquet_v1"`, and
   `training_client.supports_target_logprob_support`.
 - Only server-side losses read the support. Drift against full-vocabulary
   serving logprobs is meaningless here, so the fork skips the drift call.

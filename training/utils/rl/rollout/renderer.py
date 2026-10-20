@@ -233,8 +233,16 @@ def _image_placeholder_token_id(
     if callable(convert):
         image_id = convert("<|image_pad|>")
         unknown_id = getattr(tokenizer, "unk_token_id", None)
-        is_unknown = isinstance(unknown_id, int) and not isinstance(unknown_id, bool) and image_id == unknown_id
-        if isinstance(image_id, int) and not isinstance(image_id, bool) and not is_unknown:
+        is_unknown = (
+            isinstance(unknown_id, int)
+            and not isinstance(unknown_id, bool)
+            and image_id == unknown_id
+        )
+        if (
+            isinstance(image_id, int)
+            and not isinstance(image_id, bool)
+            and not is_unknown
+        ):
             return image_id
     return None
 
@@ -282,7 +290,9 @@ def build_multimodal_completions_prompt_token_ids(
             isinstance(chunk, sdk.types.EncodedTextChunk) for chunk in prefill
         ):
             raise ValueError("Sampling ModelInput differs from the renderer trace")
-        return list(trace.token_in_ids) + [t for chunk in prefill for t in chunk.tokens], images
+        return list(trace.token_in_ids) + [
+            t for chunk in prefill for t in chunk.tokens
+        ], images
 
     image_placeholder_id = _image_placeholder_token_id(
         tokenizer,
@@ -290,7 +300,8 @@ def build_multimodal_completions_prompt_token_ids(
     )
     if image_placeholder_id is None:
         raise MultimodalRenderingNotSupported(
-            "multimodal token-in completions require an image placeholder token ID " "to encode renderer image chunks"
+            "multimodal token-in completions require an image placeholder token ID "
+            "to encode renderer image chunks"
         )
 
     prompt_token_ids: List[int] = []
@@ -308,11 +319,14 @@ def build_multimodal_completions_prompt_token_ids(
             image_chunk_count += 1
         else:
             raise MultimodalRenderingNotSupported(
-                "cannot build token-in vision prompt from renderer chunk type " f"{type(chunk).__name__}"
+                "cannot build token-in vision prompt from renderer chunk type "
+                f"{type(chunk).__name__}"
             )
 
     if not prompt_token_ids:
-        raise MultimodalRenderingNotSupported("multimodal completions prompt tokenization produced an empty prompt")
+        raise MultimodalRenderingNotSupported(
+            "multimodal completions prompt tokenization produced an empty prompt"
+        )
 
     if image_chunk_count != len(images):
         raise MultimodalRenderingNotSupported(
@@ -335,7 +349,9 @@ def build_multimodal_completions_prompt_token_ids(
                 or prompt_token_ids[start:position] != prefix
                 or prompt_token_ids[position + 1 : end] != suffix
             ):
-                raise MultimodalRenderingNotSupported("renderer image affixes disagree with its training ModelInput")
+                raise MultimodalRenderingNotSupported(
+                    "renderer image affixes disagree with its training ModelInput"
+                )
             projected.extend(prompt_token_ids[cursor:start])
             projected.append(image_placeholder_id)
             cursor = end
@@ -391,7 +407,9 @@ def build_multimodal_completions_request(
         token_ids, images = build_multimodal_completions_prompt_token_ids(
             messages, model_input, tokenizer, renderer=renderer
         )
-        return tokenizer.decode(token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False), images
+        return tokenizer.decode(
+            token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
+        ), images
 
     images = _collect_base64_images(messages, model_input)
     if not images:
@@ -446,7 +464,9 @@ def _extract_completions_choice_logprobs(choice: dict[str, Any]) -> List[float] 
     )
 
 
-def _parse_vision_completions_payload(payload: dict[str, Any]) -> VisionCompletionsResult:
+def _parse_vision_completions_payload(
+    payload: dict[str, Any],
+) -> VisionCompletionsResult:
     """Parse a ``/v1/completions`` body with ``return_token_ids`` / ``raw_output``."""
     choices = payload.get("choices") or []
     if not choices:
@@ -455,20 +475,32 @@ def _parse_vision_completions_payload(payload: dict[str, Any]) -> VisionCompleti
     choice = choices[0]
     finish_reason = str(choice.get("finish_reason") or "stop")
     text = str(choice.get("text") or "")
-    raw_output = choice.get("raw_output") if isinstance(choice.get("raw_output"), dict) else {}
+    raw_output = (
+        choice.get("raw_output") if isinstance(choice.get("raw_output"), dict) else {}
+    )
 
-    prompt_ids = choice.get("prompt_token_ids") or raw_output.get("prompt_token_ids") or []
+    prompt_ids = (
+        choice.get("prompt_token_ids") or raw_output.get("prompt_token_ids") or []
+    )
     completion_ids = (
-        choice.get("token_ids") or raw_output.get("completion_token_ids") or raw_output.get("token_ids") or []
+        choice.get("token_ids")
+        or raw_output.get("completion_token_ids")
+        or raw_output.get("token_ids")
+        or []
     )
     completion_logprobs = _extract_completions_choice_logprobs(choice)
 
     if not prompt_ids:
-        raise RuntimeError("completions response missing prompt_token_ids; " f"payload keys={list(payload)}")
+        raise RuntimeError(
+            "completions response missing prompt_token_ids; "
+            f"payload keys={list(payload)}"
+        )
     if not completion_ids:
         raise RuntimeError("completions response missing completion token_ids")
     if completion_logprobs is None:
-        raise RuntimeError("completions response missing per-token sampling_logprob; pass logprobs=True")
+        raise RuntimeError(
+            "completions response missing per-token sampling_logprob; pass logprobs=True"
+        )
 
     prompt_token_ids = [int(x) for x in prompt_ids]
     completion_token_ids = [int(x) for x in completion_ids]
@@ -491,7 +523,9 @@ def _parse_vision_completions_payload(payload: dict[str, Any]) -> VisionCompleti
     )
 
 
-def _trim_echoed_prompt(values: List[Any], completion: Any, *, prompt_len: int, completion_len: int) -> List[Any]:
+def _trim_echoed_prompt(
+    values: List[Any], completion: Any, *, prompt_len: int, completion_len: int
+) -> List[Any]:
     """Drop the echoed prompt entries from per-position values of an SDK completion."""
     if bool(getattr(completion, "logprobs_echoed", False)):
         full_len = prompt_len + completion_len
@@ -510,8 +544,12 @@ def _completion_topk_from_sampled_completion(
     logprobs = getattr(completion, "inference_topk_logprobs", None)
     if not ids or not logprobs:
         return None
-    ids = _trim_echoed_prompt(list(ids), completion, prompt_len=prompt_len, completion_len=completion_len)
-    logprobs = _trim_echoed_prompt(list(logprobs), completion, prompt_len=prompt_len, completion_len=completion_len)
+    ids = _trim_echoed_prompt(
+        list(ids), completion, prompt_len=prompt_len, completion_len=completion_len
+    )
+    logprobs = _trim_echoed_prompt(
+        list(logprobs), completion, prompt_len=prompt_len, completion_len=completion_len
+    )
     if len(ids) != completion_len or len(logprobs) != completion_len:
         logger.warning(
             "single_turn_renderer_rollout: dropping sampler top-k with misaligned length "
@@ -521,7 +559,9 @@ def _completion_topk_from_sampled_completion(
             completion_len,
         )
         return None
-    return [[int(v) for v in row] for row in ids], [[float(v) for v in row] for row in logprobs]
+    return [[int(v) for v in row] for row in ids], [
+        [float(v) for v in row] for row in logprobs
+    ]
 
 
 def _completion_logprobs_from_sampled_completion(
@@ -538,12 +578,18 @@ def _completion_logprobs_from_sampled_completion(
     if raw_values is None or not raw_values:
         if required:
             logger.warning(
-                "single_turn_renderer_rollout: dropping completion with no %s. " "Configure logprobs=True.",
+                "single_turn_renderer_rollout: dropping completion with no %s. "
+                "Configure logprobs=True.",
                 source,
             )
         return None
 
-    values = _trim_echoed_prompt(list(raw_values), completion, prompt_len=prompt_len, completion_len=completion_len)
+    values = _trim_echoed_prompt(
+        list(raw_values),
+        completion,
+        prompt_len=prompt_len,
+        completion_len=completion_len,
+    )
     if len(values) != completion_len:
         logger.warning(
             "single_turn_renderer_rollout: dropping %s logprobs with "
@@ -555,7 +601,8 @@ def _completion_logprobs_from_sampled_completion(
         return None
     if any(v is None for v in values):
         logger.warning(
-            "single_turn_renderer_rollout: dropping completion with null %s " "for generated tokens.",
+            "single_turn_renderer_rollout: dropping completion with null %s "
+            "for generated tokens.",
             source,
         )
         return None
@@ -578,7 +625,10 @@ async def sample_vision_completion(
 
     Each entry in ``images`` must be a base64 data URL.
     """
-    validated_images = [_validate_base64_image_payload(img, source=f"images[{idx}]") for idx, img in enumerate(images)]
+    validated_images = [
+        _validate_base64_image_payload(img, source=f"images[{idx}]")
+        for idx, img in enumerate(images)
+    ]
     url = f"{_normalize_completions_api_base(inference_base_url)}/completions"
     payload: dict[str, Any] = {
         "model": deployment_model,
@@ -614,6 +664,7 @@ def _build_text_only_rollout_sample(
     raw_completion_logprobs: List[float] | None = None,
     routing_matrices: List[str] | None = None,
     top_sampling_references: RoutingReferences | None = None,
+    sampling_mask_references: RoutingReferences | None = None,
     completion_topk: tuple[List[List[int]], List[List[float]]] | None = None,
     logprobs_echoed: bool,
     reward: float,
@@ -621,7 +672,9 @@ def _build_text_only_rollout_sample(
     text: str,
 ) -> RolloutRun:
     out_logprobs = list(completion_logprobs)
-    if logprobs_echoed and len(out_logprobs) == len(prompt_token_ids) + len(completion_tokens):
+    if logprobs_echoed and len(out_logprobs) == len(prompt_token_ids) + len(
+        completion_tokens
+    ):
         out_logprobs = out_logprobs[len(prompt_token_ids) :]
     sample = RolloutSample(
         tokens=list(prompt_token_ids) + completion_tokens,
@@ -630,17 +683,38 @@ def _build_text_only_rollout_sample(
         reward=float(reward),
         finish_reason=finish_reason,
         text=text,
-        routing_matrices=(copy_routing(routing_matrices) if routing_matrices is not None else None),
+        routing_matrices=(
+            copy_routing(routing_matrices) if routing_matrices is not None else None
+        ),
         top_sampling_references=(
-            concat_routing([""] * max(0, len(prompt_token_ids) - 1), top_sampling_references)
+            concat_routing(
+                [""] * max(0, len(prompt_token_ids) - 1), top_sampling_references
+            )
             if top_sampling_references is not None
             else None
         ),
-        raw_logprobs=(
-            [0.0] * len(prompt_token_ids) + raw_completion_logprobs if raw_completion_logprobs is not None else None
+        sampling_mask_references=(
+            concat_routing(
+                [""] * max(0, len(prompt_token_ids) - 1), sampling_mask_references
+            )
+            if sampling_mask_references is not None
+            else None
         ),
-        inference_topk_token_ids=([[] for _ in prompt_token_ids] + completion_topk[0] if completion_topk else None),
-        inference_topk_logprobs=([[] for _ in prompt_token_ids] + completion_topk[1] if completion_topk else None),
+        raw_logprobs=(
+            [0.0] * len(prompt_token_ids) + raw_completion_logprobs
+            if raw_completion_logprobs is not None
+            else None
+        ),
+        inference_topk_token_ids=(
+            [[] for _ in prompt_token_ids] + completion_topk[0]
+            if completion_topk
+            else None
+        ),
+        inference_topk_logprobs=(
+            [[] for _ in prompt_token_ids] + completion_topk[1]
+            if completion_topk
+            else None
+        ),
     )
     return RolloutRun(segments=[sample])
 
@@ -683,7 +757,12 @@ def sampled_completion_to_rollout_run(
             completion_logprobs=completion_logprobs,
             raw_completion_logprobs=raw_completion_logprobs,
             routing_matrices=getattr(completion, "routing_matrices", None),
-            top_sampling_references=getattr(completion, "top_sampling_references", None),
+            top_sampling_references=getattr(
+                completion, "top_sampling_references", None
+            ),
+            sampling_mask_references=getattr(
+                completion, "sampling_mask_references", None
+            ),
             reward=reward,
             finish_reason=getattr(completion, "finish_reason", "stop"),
             text=getattr(completion, "text", ""),
@@ -695,6 +774,7 @@ def sampled_completion_to_rollout_run(
         raw_completion_logprobs=raw_completion_logprobs,
         routing_matrices=getattr(completion, "routing_matrices", None),
         top_sampling_references=getattr(completion, "top_sampling_references", None),
+        sampling_mask_references=getattr(completion, "sampling_mask_references", None),
         completion_topk=_completion_topk_from_sampled_completion(
             completion, prompt_len=prompt_len, completion_len=len(completion_tokens)
         ),
@@ -713,6 +793,7 @@ def _build_multimodal_rollout_sample(
     raw_completion_logprobs: List[float] | None = None,
     routing_matrices: List[str] | None = None,
     top_sampling_references: RoutingReferences | None = None,
+    sampling_mask_references: RoutingReferences | None = None,
     reward: float,
     finish_reason: str,
     text: str,
@@ -725,7 +806,9 @@ def _build_multimodal_rollout_sample(
             "multimodal completion logprobs misaligned "
             f"(got {len(completion_logprobs)}, expected {len(completion)})"
         )
-    if raw_completion_logprobs is not None and len(raw_completion_logprobs) != len(completion):
+    if raw_completion_logprobs is not None and len(raw_completion_logprobs) != len(
+        completion
+    ):
         raise ValueError(
             "multimodal raw completion logprobs misaligned "
             f"(got {len(raw_completion_logprobs)}, expected {len(completion)})"
@@ -739,11 +822,22 @@ def _build_multimodal_rollout_sample(
         text=text,
         prompt_model_input=prompt_model_input,
         top_sampling_references=(
-            concat_routing([""] * max(0, prompt_model_input.length - 1), top_sampling_references)
+            concat_routing(
+                [""] * max(0, prompt_model_input.length - 1), top_sampling_references
+            )
             if top_sampling_references is not None
             else None
         ),
-        routing_matrices=(copy_routing(routing_matrices) if routing_matrices is not None else None),
+        sampling_mask_references=(
+            concat_routing(
+                [""] * max(0, prompt_model_input.length - 1), sampling_mask_references
+            )
+            if sampling_mask_references is not None
+            else None
+        ),
+        routing_matrices=(
+            copy_routing(routing_matrices) if routing_matrices is not None else None
+        ),
         raw_logprobs=(
             [0.0] * len(prompt_text_ids) + list(raw_completion_logprobs)
             if raw_completion_logprobs is not None
@@ -758,7 +852,9 @@ def _build_multimodal_rollout_sample(
 # subclassing the heavy upstream class.  We do not export this — the helper
 # accepts any object that responds to these methods.
 class _RendererLike(Protocol):
-    def build_generation_prompt(self, messages: List[Any], **kwargs: Any) -> sdk.ModelInput: ...
+    def build_generation_prompt(
+        self, messages: List[Any], **kwargs: Any
+    ) -> sdk.ModelInput: ...
     def parse_response(self, tokens: List[int]) -> Any: ...
     def get_stop_sequences(self) -> List[Any]: ...
 
@@ -774,7 +870,9 @@ MessageBuilder = Callable[[Any], Union[List[Any], Awaitable[List[Any]]]]
 """``(row) -> messages`` — builds the seed conversation (sync or async)."""
 
 
-RewardFn = Callable[[Any, Any, bool], Union[Optional[float], Awaitable[Optional[float]]]]
+RewardFn = Callable[
+    [Any, Any, bool], Union[Optional[float], Awaitable[Optional[float]]]
+]
 """``async (row, parsed_message, parse_success) -> float | None``.
 
 Return ``None`` to drop the completion (no sample emitted).  Return a float
@@ -831,9 +929,12 @@ async def single_turn_renderer_rollout(
         if all(isinstance(s, int) for s in stop):
             if tokenizer is None:
                 raise ValueError(
-                    "Renderer returned integer stop token IDs but no tokenizer " "was passed to decode them."
+                    "Renderer returned integer stop token IDs but no tokenizer "
+                    "was passed to decode them."
                 )
-            stop_strings = [tokenizer.decode([s], skip_special_tokens=False) for s in stop]
+            stop_strings = [
+                tokenizer.decode([s], skip_special_tokens=False) for s in stop
+            ]
         else:
             stop_strings = [str(s) for s in stop]
 
@@ -844,13 +945,20 @@ async def single_turn_renderer_rollout(
 
     if multimodal:
         if tokenizer is None:
-            raise ValueError("Multimodal renderer-backed RL requires a tokenizer to " "build the completions prompt.")
+            raise ValueError(
+                "Multimodal renderer-backed RL requires a tokenizer to "
+                "build the completions prompt."
+            )
 
         if sample_with_vision is not None:
             prompt_text, images = build_multimodal_completions_request(
                 messages, model_input, tokenizer, renderer=renderer
             )
-            extra = {k: v for k, v in sk.items() if k not in {"n", "max_tokens", "temperature", "stop"}}
+            extra = {
+                k: v
+                for k, v in sk.items()
+                if k not in {"n", "max_tokens", "temperature", "stop"}
+            }
             extra.setdefault("logprobs", True)
             vision_result = await sample_with_vision(
                 prompt_text=prompt_text,
@@ -864,7 +972,9 @@ async def single_turn_renderer_rollout(
             if not completion_tokens:
                 return None
             parsed_message, parse_success = renderer.parse_response(completion_tokens)
-            reward = await _maybe_await(reward_fn(row, parsed_message, bool(parse_success)))
+            reward = await _maybe_await(
+                reward_fn(row, parsed_message, bool(parse_success))
+            )
             if reward is None:
                 return None
             return _build_multimodal_rollout_sample(
@@ -927,6 +1037,7 @@ async def single_turn_renderer_rollout(
             raw_completion_logprobs=raw_out_logprobs,
             routing_matrices=getattr(c, "routing_matrices", None),
             top_sampling_references=getattr(c, "top_sampling_references", None),
+            sampling_mask_references=getattr(c, "sampling_mask_references", None),
             reward=reward,
             finish_reason=getattr(c, "finish_reason", "stop"),
             text=getattr(c, "text", ""),
@@ -975,6 +1086,7 @@ async def single_turn_renderer_rollout(
         raw_completion_logprobs=raw_out_logprobs,
         routing_matrices=getattr(c, "routing_matrices", None),
         top_sampling_references=getattr(c, "top_sampling_references", None),
+        sampling_mask_references=getattr(c, "sampling_mask_references", None),
         completion_topk=_completion_topk_from_sampled_completion(
             c, prompt_len=prompt_len, completion_len=len(out_tokens)
         ),

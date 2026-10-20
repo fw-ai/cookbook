@@ -12,7 +12,10 @@ from fireworks.training.sdk.routing import (
     routing_has_gaps,
 )
 
-from training.utils.rl.async_rl.errors import DiscardTrajectoryError, trajectory_discard_error
+from training.utils.rl.async_rl.errors import (
+    DiscardTrajectoryError,
+    trajectory_discard_error,
+)
 from training.utils.rl.rollout.types import RolloutRun, RolloutSample
 
 if TYPE_CHECKING:
@@ -96,6 +99,7 @@ class _SampleBuilder:
     initial_routes: list[str] | RoutingReferences | None = None
     # Completion-only like response_routes: prompt and tool-suffix positions are gaps.
     response_top_sampling: list[str] | RoutingReferences | None = None
+    response_sampling_mask: list[str] | RoutingReferences | None = None
     turns: list[TITOTurn] = field(default_factory=list)
     masked_fail_closed_turns: int = 0
     realigned_masked_tokens: int = 0
@@ -134,7 +138,14 @@ class _SampleBuilder:
             response_routes=[] if turn.routing_matrices is not None else None,
             completion_origin=[False] * len(prompt),
             response_top_sampling=(
-                [] if getattr(turn, "top_sampling_references", None) is not None else None
+                []
+                if getattr(turn, "top_sampling_references", None) is not None
+                else None
+            ),
+            response_sampling_mask=(
+                []
+                if getattr(turn, "sampling_mask_references", None) is not None
+                else None
             ),
         )
 
@@ -165,9 +176,14 @@ class _SampleBuilder:
         if not self.can_realign(turn):
             raise ValueError("turn has invalid bounded realignment evidence")
         top_sampling = getattr(turn, "top_sampling_references", None)
+        sampling_mask = getattr(turn, "sampling_mask_references", None)
         if (self.response_top_sampling is None) != (top_sampling is None):
             raise ValueError(
                 "top-K sampling references must be present for every turn in one TITO segment"
+            )
+        if (self.response_sampling_mask is None) != (sampling_mask is None):
+            raise ValueError(
+                "mask sampling references must be present for every turn in one TITO segment"
             )
         start = turn.realign_from_token
         assert start is not None
@@ -178,7 +194,8 @@ class _SampleBuilder:
         overwritten_mask = self.loss_mask[start:]
         self.realign_overwritten_tokens += sum(overwritten_origin)
         self.realign_overwritten_masked_tokens += sum(
-            1 for origin, mask in zip(overwritten_origin, overwritten_mask)
+            1
+            for origin, mask in zip(overwritten_origin, overwritten_mask)
             if origin and mask == 0
         )
         prompt = list(turn.exact_prompt_ids)
@@ -194,7 +211,11 @@ class _SampleBuilder:
         if self.raw_logprobs is not None:
             self.raw_logprobs[start:] = [0.0] * len(replacement)
         route_start = start - len(self.prompt_ids)
-        if route_start < 0 and (self.response_routes is not None or self.response_top_sampling is not None):
+        if route_start < 0 and (
+            self.response_routes is not None
+            or self.response_top_sampling is not None
+            or self.response_sampling_mask is not None
+        ):
             raise ValueError("realignment cannot replace the initial prompt")
         if self.response_routes is not None:
             self.response_routes = concat_routing(
@@ -203,6 +224,10 @@ class _SampleBuilder:
         if self.response_top_sampling is not None:
             self.response_top_sampling = concat_routing(
                 self.response_top_sampling[:route_start], [""] * len(replacement)
+            )
+        if self.response_sampling_mask is not None:
+            self.response_sampling_mask = concat_routing(
+                self.response_sampling_mask[:route_start], [""] * len(replacement)
             )
         self.realigned_masked_tokens += turn.realigned_masked_tokens
         self._append_completion(turn, trainable=trainable)
@@ -226,7 +251,8 @@ class _SampleBuilder:
             trimmed_mask = self.loss_mask[retained:]
             self.trimmed_sampled_tokens += sum(trimmed_origin)
             self.trimmed_masked_tokens += sum(
-                1 for origin, mask in zip(trimmed_origin, trimmed_mask)
+                1
+                for origin, mask in zip(trimmed_origin, trimmed_mask)
                 if origin and mask == 0
             )
             del self.tokens[retained:]
@@ -247,6 +273,8 @@ class _SampleBuilder:
                 self.response_routes = self.response_routes[:-trim_tokens]
             if self.response_top_sampling is not None:
                 self.response_top_sampling = self.response_top_sampling[:-trim_tokens]
+            if self.response_sampling_mask is not None:
+                self.response_sampling_mask = self.response_sampling_mask[:-trim_tokens]
             self.incremental_checkpoint_trimmed_tokens += trim_tokens
         suffix = prompt[len(self.tokens) :]
         self.tokens.extend(suffix)
@@ -273,15 +301,30 @@ class _SampleBuilder:
         elif turn.routing_matrices is not None:
             raise ValueError("R3 cannot begin partway through one TITO segment")
         top_sampling = getattr(turn, "top_sampling_references", None)
+        sampling_mask = getattr(turn, "sampling_mask_references", None)
         if self.response_top_sampling is not None:
             if top_sampling is None:
                 raise ValueError(
                     "top-K sampling references must be present for every turn in one TITO segment"
                 )
-            self.response_top_sampling = concat_routing(self.response_top_sampling, [""] * len(suffix))
+            self.response_top_sampling = concat_routing(
+                self.response_top_sampling, [""] * len(suffix)
+            )
         elif top_sampling is not None:
             raise ValueError(
                 "top-K sampling references cannot begin partway through one TITO segment"
+            )
+        if self.response_sampling_mask is not None:
+            if sampling_mask is None:
+                raise ValueError(
+                    "mask sampling references must be present for every turn in one TITO segment"
+                )
+            self.response_sampling_mask = concat_routing(
+                self.response_sampling_mask, [""] * len(suffix)
+            )
+        elif sampling_mask is not None:
+            raise ValueError(
+                "mask sampling references cannot begin partway through one TITO segment"
             )
 
         self._append_completion(turn, trainable=trainable)
@@ -357,7 +400,18 @@ class _SampleBuilder:
                 raise ValueError(
                     f"turn {turn.turn_id} has completion-misaligned top-K sampling references"
                 )
-            self.response_top_sampling = concat_routing(self.response_top_sampling, references)
+            self.response_top_sampling = concat_routing(
+                self.response_top_sampling, references
+            )
+        if self.response_sampling_mask is not None:
+            references = getattr(turn, "sampling_mask_references", None)
+            if references is None or len(references) != len(completion):
+                raise ValueError(
+                    f"turn {turn.turn_id} has completion-misaligned mask sampling references"
+                )
+            self.response_sampling_mask = concat_routing(
+                self.response_sampling_mask, references
+            )
         self.turns.append(turn)
 
     def build(self, reward: float) -> RolloutSample:
@@ -379,6 +433,7 @@ class _SampleBuilder:
                     "materialized R3 does not align with model-input positions"
                 )
         top_sampling = None
+        sampling_mask = None
         if self.response_top_sampling is not None:
             top_sampling = concat_routing(
                 [""] * (len(self.prompt_ids) - 1), self.response_top_sampling
@@ -386,6 +441,14 @@ class _SampleBuilder:
             if len(top_sampling) != len(self.tokens) - 1:
                 raise ValueError(
                     "materialized top-K sampling references do not align with model-input positions"
+                )
+        if self.response_sampling_mask is not None:
+            sampling_mask = concat_routing(
+                [""] * (len(self.prompt_ids) - 1), self.response_sampling_mask
+            )
+            if len(sampling_mask) != len(self.tokens) - 1:
+                raise ValueError(
+                    "materialized mask sampling references do not align with model-input positions"
                 )
         return RolloutSample(
             tokens=list(self.tokens),
@@ -406,6 +469,7 @@ class _SampleBuilder:
             ),
             routing_matrices=routing,
             top_sampling_references=top_sampling,
+            sampling_mask_references=sampling_mask,
             reward=reward,
             finish_reason=self.turns[-1].finish_reason,
             text="\n".join(_assistant_text(turn) for turn in self.turns),
@@ -728,7 +792,9 @@ def materialize_tito_trajectory(
             debug_enabled=debug_enabled,
         )
     except (ValueError, TypeError, AssertionError) as exc:
-        trace_path = dump_tito_failure_trace(result, exc, code="tito_cookbook_parse_error")
+        trace_path = dump_tito_failure_trace(
+            result, exc, code="tito_cookbook_parse_error"
+        )
         raise DiscardTrajectoryError(
             f"Local cookbook trajectory validation failed ({type(exc).__name__}); trace_path={trace_path}",
             "tito_cookbook_parse_error",

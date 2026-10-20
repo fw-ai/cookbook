@@ -105,6 +105,11 @@ def token_segment_to_sample(
         and len(segment.top_sampling_references) != response_len
     ):
         raise ValueError("agent segment top-K sampling references are misaligned")
+    if (
+        segment.sampling_mask_references is not None
+        and len(segment.sampling_mask_references) != response_len
+    ):
+        raise ValueError("agent segment mask sampling references are misaligned")
 
     prompt_len = len(segment.prompt_ids)
     raw_logprobs = (
@@ -122,6 +127,11 @@ def token_segment_to_sample(
         if isinstance(segment.top_sampling_references, RoutingReferences)
         else None
     )
+    sampling_mask = (
+        concat_routing([""] * max(0, prompt_len - 1), segment.sampling_mask_references)
+        if isinstance(segment.sampling_mask_references, RoutingReferences)
+        else None
+    )
     return RolloutSample(
         tokens=[*segment.prompt_ids, *segment.response_ids],
         logprobs=[0.0] * prompt_len + segment.rollout_log_probs,
@@ -135,6 +145,7 @@ def token_segment_to_sample(
         # a short response rewrite masks an earlier generated span.
         routing_matrices=routing_matrices,
         top_sampling_references=top_sampling,
+        sampling_mask_references=sampling_mask,
     )
 
 

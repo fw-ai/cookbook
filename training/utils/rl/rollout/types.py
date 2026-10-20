@@ -102,6 +102,7 @@ class RolloutSample:
     inference_topk_logprobs: List[List[float]] | None = None
     """Sampler top-k logprobs aligned with ``inference_topk_token_ids``."""
     top_sampling_references: RoutingReferences | None = None
+    sampling_mask_references: RoutingReferences | None = None
     """Parquet references to the sampler's top-K distribution over model-input
     positions (``tokens[:-1]``): position ``t`` holds the distribution that
     produced ``tokens[t + 1]``; positions without a sampled token are gaps."""
@@ -132,7 +133,12 @@ class Rollout:
 
 def count_trainable_tokens(run: RolloutRun) -> int:
     """Count loss-bearing tokens across every segment of one trajectory."""
-    return sum(1 for segment in run.segments for mask_value in segment.loss_mask if mask_value > 0)
+    return sum(
+        1
+        for segment in run.segments
+        for mask_value in segment.loss_mask
+        if mask_value > 0
+    )
 
 
 def validate_rollout_run_routing(run: RolloutRun) -> None:
@@ -163,7 +169,9 @@ def validate_rollout_run_routing(run: RolloutRun) -> None:
             prompt_len = segment.prompt_model_input.length
             model_input_len = prompt_len + completion_len - 1
         else:
-            prompt_len = next(i for i, mask_value in enumerate(segment.loss_mask) if mask_value > 0)
+            prompt_len = next(
+                i for i, mask_value in enumerate(segment.loss_mask) if mask_value > 0
+            )
             model_input_len = n - 1
 
         try:
@@ -280,9 +288,16 @@ def _validate_segment(
                 )
 
     top_sampling = segment.top_sampling_references
+    sampling_mask = segment.sampling_mask_references
     if top_sampling is not None and not isinstance(top_sampling, RoutingReferences):
         raise ValueError(
-            f"Run {run_index} segment {segment_index}: top_sampling_references " "must be Parquet RoutingReferences."
+            f"Run {run_index} segment {segment_index}: top_sampling_references "
+            "must be Parquet RoutingReferences."
+        )
+    if sampling_mask is not None and not isinstance(sampling_mask, RoutingReferences):
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: sampling_mask_references "
+            "must be Parquet RoutingReferences."
         )
 
     if segment.prompt_model_input is not None:
@@ -305,19 +320,34 @@ def _validate_segment(
                     f"Run {run_index} segment {segment_index}: top-K sampling "
                     f"references must cover multimodal model-input positions ({len(top_sampling)} / {expected})."
                 )
+        if sampling_mask is not None:
+            prompt_text_len = sum(
+                len(chunk.tokens)
+                for chunk in segment.prompt_model_input.chunks
+                if isinstance(chunk, sdk.types.EncodedTextChunk)
+            )
+            expected = segment.prompt_model_input.length + n - prompt_text_len - 1
+            if len(sampling_mask) != expected:
+                raise ValueError(
+                    f"Run {run_index} segment {segment_index}: mask sampling "
+                    f"references must cover multimodal model-input positions ({len(sampling_mask)} / {expected})."
+                )
         _validate_optional_logprobs(segment.raw_logprobs, n=n)
         _validate_topk(n=n)
         if n < 2:
             raise ValueError(
-                f"Run {run_index} segment {segment_index}: tokens must have " "length >= 2.",
+                f"Run {run_index} segment {segment_index}: tokens must have "
+                "length >= 2.",
             )
         if not any(m > 0 for m in segment.loss_mask):
             raise ValueError(
-                f"Run {run_index} segment {segment_index}: loss_mask is all " "zeros for multimodal segment.",
+                f"Run {run_index} segment {segment_index}: loss_mask is all "
+                "zeros for multimodal segment.",
             )
         if not _completion_tokens_from_sample(segment):
             raise ValueError(
-                f"Run {run_index} segment {segment_index}: multimodal segment " "has no completion tokens.",
+                f"Run {run_index} segment {segment_index}: multimodal segment "
+                "has no completion tokens.",
             )
         return
 
@@ -339,6 +369,11 @@ def _validate_segment(
         raise ValueError(
             f"Run {run_index} segment {segment_index}: top-K sampling references "
             f"must cover model-input positions ({len(top_sampling)} / {n - 1})."
+        )
+    if sampling_mask is not None and len(sampling_mask) != n - 1:
+        raise ValueError(
+            f"Run {run_index} segment {segment_index}: mask sampling references "
+            f"must cover model-input positions ({len(sampling_mask)} / {n - 1})."
         )
     if not any(mask_value > 0 for mask_value in segment.loss_mask):
         raise ValueError(
@@ -374,7 +409,9 @@ def rollout_to_prompt_group(
     """
     _validate(rollout)
 
-    rewards = [_run_reward(run, run_index) for run_index, run in enumerate(rollout.runs)]
+    rewards = [
+        _run_reward(run, run_index) for run_index, run in enumerate(rollout.runs)
+    ]
     advantages = list(advantage_fn(list(rewards)))
     if len(advantages) != len(rewards):
         raise ValueError(
@@ -405,6 +442,7 @@ def rollout_to_prompt_group(
     inference_topk_token_ids_aligned: List[List[List[int]]] = []
     inference_topk_logprobs_aligned: List[List[List[float]]] = []
     top_sampling_references: List[RoutingReferences | None] = []
+    sampling_mask_references: List[RoutingReferences | None] = []
     completion_lens: List[int] = []
     truncated: List[bool] = []
     per_sample_prompt_lens: List[int] = []
@@ -418,13 +456,18 @@ def rollout_to_prompt_group(
 
             if s.prompt_model_input is not None:
                 if s.inference_topk_token_ids is not None:
-                    raise ValueError("sampler top-k policy data is not supported for multimodal " "rollout segments")
+                    raise ValueError(
+                        "sampler top-k policy data is not supported for multimodal "
+                        "rollout segments"
+                    )
                 completion_tokens = _completion_tokens_from_sample(s)
                 datum = build_multimodal_policy_datum(
                     s.prompt_model_input,
                     completion_tokens,
                 )
-                target_tokens = [int(x) for x in datum.loss_fn_inputs["target_tokens"].data]
+                target_tokens = [
+                    int(x) for x in datum.loss_fn_inputs["target_tokens"].data
+                ]
                 target_len = len(target_tokens)
                 target_mask = [float(x) for x in datum.loss_fn_inputs["weights"].data]
                 if not (target_len == len(target_mask) == datum.model_input.length):
@@ -464,7 +507,9 @@ def rollout_to_prompt_group(
                         completion_only=router_replay_completion_only,
                     )
                     datum = sdk.Datum(
-                        model_input=datum.model_input.model_copy(update=routing_model_input_kwargs(rm)),
+                        model_input=datum.model_input.model_copy(
+                            update=routing_model_input_kwargs(rm)
+                        ),
                         loss_fn_inputs=datum.loss_fn_inputs,
                     )
 
@@ -475,6 +520,7 @@ def rollout_to_prompt_group(
                 inference_topk_token_ids_aligned.append([])
                 inference_topk_logprobs_aligned.append([])
                 top_sampling_references.append(s.top_sampling_references)
+                sampling_mask_references.append(s.sampling_mask_references)
                 completion_lens.append(sum(1 for w in target_mask if w > 0))
                 truncated.append(s.finish_reason == "length")
                 continue
@@ -485,12 +531,18 @@ def rollout_to_prompt_group(
             target_tokens = s.tokens[1:]
             target_mask = s.loss_mask[1:]
             target_logprobs = s.logprobs[1:]
-            target_raw_logprobs = s.raw_logprobs[1:] if s.raw_logprobs is not None else []
+            target_raw_logprobs = (
+                s.raw_logprobs[1:] if s.raw_logprobs is not None else []
+            )
             target_topk_token_ids = (
-                [list(row) for row in s.inference_topk_token_ids[1:]] if s.inference_topk_token_ids is not None else []
+                [list(row) for row in s.inference_topk_token_ids[1:]]
+                if s.inference_topk_token_ids is not None
+                else []
             )
             target_topk_logprobs = (
-                [list(row) for row in s.inference_topk_logprobs[1:]] if s.inference_topk_logprobs is not None else []
+                [list(row) for row in s.inference_topk_logprobs[1:]]
+                if s.inference_topk_logprobs is not None
+                else []
             )
 
             # Per-segment prompt boundary: index of the first assistant
@@ -538,6 +590,7 @@ def rollout_to_prompt_group(
             inference_topk_token_ids_aligned.append(target_topk_token_ids)
             inference_topk_logprobs_aligned.append(target_topk_logprobs)
             top_sampling_references.append(s.top_sampling_references)
+            sampling_mask_references.append(s.sampling_mask_references)
             completion_lens.append(sum(1 for m in s.loss_mask if m > 0))
             truncated.append(s.finish_reason == "length")
 
@@ -553,6 +606,7 @@ def rollout_to_prompt_group(
         inference_topk_token_ids=inference_topk_token_ids_aligned,
         inference_topk_logprobs=inference_topk_logprobs_aligned,
         top_sampling_references=top_sampling_references,
+        sampling_mask_references=sampling_mask_references,
         completion_lens=completion_lens,
         truncated=truncated,
         prompt=None,

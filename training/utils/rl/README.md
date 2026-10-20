@@ -43,7 +43,7 @@ these modules to change the objective; see
 | `algorithm/` | One module per objective with the same surface (`Config`, `LOSS_FN`, `loss_fn_config`, `build_datums`, `metrics`, `make_loss_fn`, `NORMALIZATION`). No registry. `igpo` sets turn-level advantages. |
 | `anchor.py` | `recompute_anchor(policy, batch)` (clip against a trainer snapshot), `anchor_drift_metrics`. |
 | `tis.py` | `apply_tis`: truncated importance weights between the recomputed anchor and the rollout. |
-| `sampling_support.py` | Top-p support replay: `sampling_support_kwargs`, `attach_top_sampling_references`, `sampling_support_loss_fn_config`. |
+| `sampling_support.py` | Top-p support replay: `replay_mask_kwargs`, `sc_head_kwargs`, `attach_sampling_mask_references`, `attach_top_sampling_references`, `sampling_support_loss_fn_config`. |
 | `heldout.py` | `make_heldout_evaluation` (a recipe `evaluation_fn` over fixed held-out rows) and `run_evaluation`. |
 | `common.py` | Shared client loss loop, trust-region metrics and `inference_drift_metrics`. |
 

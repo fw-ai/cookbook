@@ -39,6 +39,7 @@ class TurnRecord:
     text: str = ""
     metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
     output_top_sampling_references: RoutingReferences | None = None
+    output_sampling_mask_references: RoutingReferences | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -54,6 +55,7 @@ class TokenSegment:
     metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
     trainable_turn_indices: list[int] = dataclasses.field(default_factory=list)
     top_sampling_references: RoutingReferences | list[str] | None = None
+    sampling_mask_references: RoutingReferences | list[str] | None = None
     """Top-K sampling references aligned with ``response_ids``."""
 
 
@@ -259,6 +261,7 @@ class _MergeState:
     keep_raw_log_probs: bool
     keep_routing: bool
     keep_top_sampling: bool
+    keep_sampling_mask: bool
     split_reason: str | None = None
     response_ids: list[int] = dataclasses.field(default_factory=list)
     loss_mask: list[int] = dataclasses.field(default_factory=list)
@@ -266,6 +269,7 @@ class _MergeState:
     rollout_raw_log_probs: list[float] | None = None
     routing_matrices: list[str] | None = None
     top_sampling_references: RoutingReferences | list[str] | None = None
+    sampling_mask_references: RoutingReferences | list[str] | None = None
     output_spans: list[tuple[int, int, int]] = dataclasses.field(default_factory=list)
     num_turns: int = 0
     finish_reason: str = ""
@@ -278,6 +282,7 @@ class _MergeState:
         keep_raw_log_probs: bool,
         keep_routing: bool,
         keep_top_sampling: bool,
+        keep_sampling_mask: bool,
         split_reason: str | None = None,
     ) -> _MergeState:
         return cls(
@@ -285,10 +290,12 @@ class _MergeState:
             keep_raw_log_probs=keep_raw_log_probs,
             keep_routing=keep_routing,
             keep_top_sampling=keep_top_sampling,
+            keep_sampling_mask=keep_sampling_mask,
             split_reason=split_reason,
             rollout_raw_log_probs=[] if keep_raw_log_probs else None,
             routing_matrices=[] if keep_routing else None,
             top_sampling_references=[] if keep_top_sampling else None,
+            sampling_mask_references=[] if keep_sampling_mask else None,
         )
 
     def prompt_mismatch(self, prompt_ids: list[int]) -> str | None:
@@ -312,9 +319,17 @@ class _MergeState:
         if self.rollout_raw_log_probs is not None:
             self.rollout_raw_log_probs.extend([0.0] * len(token_ids))
         if self.routing_matrices is not None:
-            self.routing_matrices = concat_routing(self.routing_matrices, [""] * len(token_ids))
+            self.routing_matrices = concat_routing(
+                self.routing_matrices, [""] * len(token_ids)
+            )
         if self.top_sampling_references is not None:
-            self.top_sampling_references = concat_routing(self.top_sampling_references, [""] * len(token_ids))
+            self.top_sampling_references = concat_routing(
+                self.top_sampling_references, [""] * len(token_ids)
+            )
+        if self.sampling_mask_references is not None:
+            self.sampling_mask_references = concat_routing(
+                self.sampling_mask_references, [""] * len(token_ids)
+            )
 
     def append_output(
         self,
@@ -342,10 +357,19 @@ class _MergeState:
                 "output_routing_matrices",
             )
             self.routing_matrices = concat_routing(
-                self.routing_matrices, routing_matrices if train_output else [""] * len(turn.output_ids)
+                self.routing_matrices,
+                routing_matrices if train_output else [""] * len(turn.output_ids),
             )
-        if self.top_sampling_references is None and turn.output_top_sampling_references is not None:
+        if (
+            self.top_sampling_references is None
+            and turn.output_top_sampling_references is not None
+        ):
             self.top_sampling_references = [""] * output_start
+        if (
+            self.sampling_mask_references is None
+            and turn.output_sampling_mask_references is not None
+        ):
+            self.sampling_mask_references = [""] * output_start
         if self.top_sampling_references is not None:
             # Missing support stays an explicit gap; weighted SC rejects active gaps.
             top_sampling = (
@@ -354,7 +378,19 @@ class _MergeState:
                 else [""] * len(turn.output_ids)
             )
             self.top_sampling_references = concat_routing(
-                self.top_sampling_references, top_sampling if train_output else [""] * len(turn.output_ids)
+                self.top_sampling_references,
+                top_sampling if train_output else [""] * len(turn.output_ids),
+            )
+        if self.sampling_mask_references is not None:
+            # Missing support stays an explicit gap; weighted SC rejects active gaps.
+            sampling_mask = (
+                _required_output_values(turn, "output_sampling_mask_references")
+                if turn.output_sampling_mask_references is not None
+                else [""] * len(turn.output_ids)
+            )
+            self.sampling_mask_references = concat_routing(
+                self.sampling_mask_references,
+                sampling_mask if train_output else [""] * len(turn.output_ids),
             )
         self.output_spans.append((turn_index, output_start, len(self.response_ids)))
         self.num_turns += 1
@@ -411,7 +447,12 @@ class _MergeState:
                 else None
             ),
             routing_matrices=mask_routing(self.routing_matrices, self.loss_mask),
-            top_sampling_references=mask_routing(self.top_sampling_references, self.loss_mask),
+            top_sampling_references=mask_routing(
+                self.top_sampling_references, self.loss_mask
+            ),
+            sampling_mask_references=mask_routing(
+                self.sampling_mask_references, self.loss_mask
+            ),
             metadata=segment_metadata,
             trainable_turn_indices=sorted(
                 turn_index
@@ -435,6 +476,7 @@ def _assemble_turns(
         keep_raw_log_probs=keep_raw_log_probs,
         keep_routing=keep_routing,
         keep_top_sampling=turns[0].output_top_sampling_references is not None,
+        keep_sampling_mask=turns[0].output_sampling_mask_references is not None,
     )
     states: list[_MergeState] = []
     for index, (turn, train_output, turn_index) in enumerate(
@@ -451,6 +493,7 @@ def _assemble_turns(
                     keep_raw_log_probs=keep_raw_log_probs,
                     keep_routing=keep_routing,
                     keep_top_sampling=turn.output_top_sampling_references is not None,
+                    keep_sampling_mask=turn.output_sampling_mask_references is not None,
                     split_reason=mismatch,
                 )
         state.append_output(
