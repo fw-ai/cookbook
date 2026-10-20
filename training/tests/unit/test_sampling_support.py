@@ -19,7 +19,12 @@ def _datum():
 def test_references_attach_without_changing_loss_inputs(advantage):
     references = RoutingReferences(2, (), ({"input_token_start": 0, "count": 2},))
     built = build_policy_datums(
-        PolicyBatch(data=[_datum()], advantages=[advantage], prompt_lens=[1], rollout_logprobs=[[0.0, -0.2]])
+        PolicyBatch(
+            data=[_datum()],
+            advantages=[advantage],
+            prompt_lens=[1],
+            rollout_logprobs=[[0.0, -0.2]],
+        )
     )
 
     (result,) = attach_top_sampling_references(built, [references])
@@ -59,14 +64,20 @@ def test_older_sdk_rejects_replay(monkeypatch):
 
 def test_sampling_support_kwargs_and_loss_config():
     from training.utils.rl.sampling_support import (
-        sampling_support_kwargs,
+        replay_mask_kwargs,
+        sc_head_kwargs,
         sampling_support_loss_fn_config,
     )
 
-    assert sampling_support_kwargs(top_p=0.95, support_size=64) == {
+    assert (replay_mask_kwargs(top_p=0.95) | sc_head_kwargs(64)) == {
         "top_p": 0.95,
+        "sampling_mask": "parquet_v1",
         "top_sampling_logprobs": 64,
         "top_sampling_format": "parquet_v1",
+    }
+    assert replay_mask_kwargs(top_p=0.95) == {
+        "top_p": 0.95,
+        "sampling_mask": "parquet_v1",
     }
     config = {"clip_low_threshold": 0.8}
     assert sampling_support_loss_fn_config(config) == {
@@ -75,6 +86,45 @@ def test_sampling_support_kwargs_and_loss_config():
     }
     assert config == {"clip_low_threshold": 0.8}
     with pytest.raises(ValueError, match="top_p"):
-        sampling_support_kwargs(top_p=0.0, support_size=64)
-    with pytest.raises(ValueError, match="support_size"):
-        sampling_support_kwargs(top_p=0.9, support_size=0)
+        replay_mask_kwargs(top_p=0.0)
+    with pytest.raises(ValueError, match="k"):
+        sc_head_kwargs(0)
+
+
+@pytest.mark.parametrize("value", [0, -1, 20001, True, 1.5])
+def test_invalid_sc_head_width(value):
+    from training.utils.rl.sampling_support import sc_head_kwargs
+
+    with pytest.raises(ValueError, match="k"):
+        sc_head_kwargs(value)
+
+
+def test_sc_only_capture_and_width_match_trainer():
+    from training.utils.rl.sampling_support import sc_head_kwargs
+
+    assert sc_head_kwargs(20000) == {
+        "top_sampling_logprobs": 20000,
+        "top_sampling_format": "parquet_v1",
+    }
+    assert "sampling_mask" not in sc_head_kwargs(128)
+
+
+def test_attach_mask_preserves_independent_head():
+    from training.utils.rl.sampling_support import attach_sampling_mask_references
+    from fireworks.training.sdk.routing import RoutingReferences
+
+    head = RoutingReferences(3, (), ({"input_token_start": 0, "count": 3},))
+    datum = _datum()
+    # Keep the head unchanged when attaching mask references.
+    from dataclasses import replace
+
+    datum = replace(
+        datum,
+        model_input=datum.model_input.model_copy(
+            update={"top_sampling_references": head.to_dict()}
+        ),
+    )
+    (result,) = attach_sampling_mask_references([datum], [None])
+    assert result.model_input.top_sampling_references == head.to_dict()
+    assert result.model_input.sampling_mask_references is not None
+    assert datum.model_input.sampling_mask_references is None

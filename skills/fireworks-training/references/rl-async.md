@@ -40,6 +40,9 @@ metrics, checkpointing, and cleanup. It has no loss, anchor or KL options; to
 change the objective, fork `train_group` as described in
 [`rl-custom-loss.md`](rl-custom-loss.md).
 
+For complete replay masks with a bounded SC head, see
+[score-centering paths](rl-custom-loss.md#score-centering-paths).
+
 Keep custom environment logic in the rollout function. Do not put scheduler or
 trainer lifecycle state in the rollout.
 

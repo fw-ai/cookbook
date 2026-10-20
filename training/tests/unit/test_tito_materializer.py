@@ -23,7 +23,10 @@ from training.utils.rl.rollout.tito import materialize_tito_trajectory
 from training.utils.rl.async_rl.errors import DiscardTrajectoryError
 from training.utils.rl.rollout.types import Rollout, rollout_to_prompt_group
 from training.utils.rl.losses import build_policy_datums
-from training.utils.rl.sampling_support import attach_top_sampling_references
+from training.utils.rl.sampling_support import (
+    attach_top_sampling_references,
+    attach_sampling_mask_references,
+)
 
 
 def _distribution(values: list[float]) -> TITODistribution:
@@ -73,10 +76,7 @@ def _turn(
             else None
         ),
         inference_topk_logprobs=(
-            tuple(
-                tuple(-0.1 - offset for offset in range(top_k))
-                for _ in completion
-            )
+            tuple(tuple(-0.1 - offset for offset in range(top_k)) for _ in completion)
             if top_k is not None
             else None
         ),
@@ -185,9 +185,7 @@ def _attempt(turn_id: str, emission: str = "completed") -> TITOResponseAttempt:
 def _assert_coverage_conserved(run) -> None:
     metrics = run.metadata["tito_metrics"]
     lost = sum(
-        value
-        for key, value in metrics.items()
-        if key.startswith("tito/coverage/lost_")
+        value for key, value in metrics.items() if key.startswith("tito/coverage/lost_")
     )
     assert metrics["tito/coverage/sampled_completion_tokens"] == (
         metrics["tito/coverage/trained_tokens"] + lost
@@ -231,7 +229,7 @@ def test_materializes_older_sdk_turns_without_sampling_support() -> None:
                 field.name: getattr(turn, field.name)
                 for field in fields(turn)
                 if field.name != "top_sampling_references"
-            }
+            },
         )
         for turn in (first, second)
     )
@@ -283,9 +281,7 @@ def test_materializes_and_packs_sampler_topk_in_target_coordinates() -> None:
         advantage_fn=lambda rewards: rewards,
     )
     assert group is not None
-    assert group.inference_topk_token_ids == [
-        [[], [3, 4], [4, 5], [], [6, 7]]
-    ]
+    assert group.inference_topk_token_ids == [[[], [3, 4], [4, 5], [], [6, 7]]]
     assert group.inference_topk_logprobs == [
         [[], [-0.1, -1.1], [-0.1, -1.1], [], [-0.1, -1.1]]
     ]
@@ -620,7 +616,10 @@ def test_realign_across_a_prompt_suffix_charges_only_completions() -> None:
         realigned_masked_tokens=1,
     )
     run = materialize_tito_trajectory(
-        _result((first, second, third), (_attempt("one"), _attempt("two"), _attempt("three"))),
+        _result(
+            (first, second, third),
+            (_attempt("one"), _attempt("two"), _attempt("three")),
+        ),
         reward=1.0,
     )
 
@@ -651,7 +650,10 @@ def test_checkpoint_trim_across_a_prompt_suffix_charges_only_completions() -> No
         incremental_checkpoint_trim_tokens=3,  # trims [5, 6, 7]: suffix + completion
     )
     run = materialize_tito_trajectory(
-        _result((first, second, third), (_attempt("one"), _attempt("two"), _attempt("three"))),
+        _result(
+            (first, second, third),
+            (_attempt("one"), _attempt("two"), _attempt("three")),
+        ),
         reward=1.0,
     )
 
@@ -835,7 +837,12 @@ def _top_sampling_refs(length: int, file: int = 1):
                 }
             ],
             "spans": [
-                {"input_token_start": 0, "file_index": 0, "file_row_start": 0, "count": length}
+                {
+                    "input_token_start": 0,
+                    "file_index": 0,
+                    "file_row_start": 0,
+                    "count": length,
+                }
             ],
         }
     )
@@ -848,7 +855,9 @@ def _top_sampling_rows(references) -> list[int | None]:
         if span.get("file_index") is None:
             rows.extend([None] * span["count"])
         else:
-            file = int(references.files[span["file_index"]]["file_id"].rsplit("-", 1)[1])
+            file = int(
+                references.files[span["file_index"]]["file_id"].rsplit("-", 1)[1]
+            )
             start = 100 * file + span["file_row_start"]
             rows.extend(range(start, start + span["count"]))
     return rows
@@ -858,7 +867,11 @@ def _top_sampling_rows(references) -> list[int | None]:
     ("second_kwargs", "tokens", "rows"),
     [
         (
-            {"prompt": (1, 2, 3, 4, 5), "disposition": "append", "prefix_match_tokens": 4},
+            {
+                "prompt": (1, 2, 3, 4, 5),
+                "disposition": "append",
+                "prefix_match_tokens": 4,
+            },
             [1, 2, 3, 4, 5, 6, 7],
             [None, 100, 101, None, 200, 201],
         ),
@@ -890,8 +903,9 @@ def test_top_sampling_references_follow_completion_only_route_operations(
 ) -> None:
     from dataclasses import replace
 
-
-    first = replace(_turn("one", (1, 2), (3, 4)), top_sampling_references=_top_sampling_refs(2, 1))
+    first = replace(
+        _turn("one", (1, 2), (3, 4)), top_sampling_references=_top_sampling_refs(2, 1)
+    )
     options = dict(second_kwargs)
     second = replace(
         _turn("two", options.pop("prompt"), (6, 7), **options),
@@ -905,14 +919,19 @@ def test_top_sampling_references_follow_completion_only_route_operations(
     assert sample.tokens == tokens
     assert _top_sampling_rows(sample.top_sampling_references) == rows
     assert sample.routing_matrices is None
-    group = rollout_to_prompt_group(Rollout(runs=[run]), advantage_fn=lambda rewards: rewards)
+    group = rollout_to_prompt_group(
+        Rollout(runs=[run]), advantage_fn=lambda rewards: rewards
+    )
     assert group is not None
     assert group.top_sampling_references == [sample.top_sampling_references]
     batch = combine_prompt_groups([group])
     (datum,) = attach_top_sampling_references(
         build_policy_datums(batch), batch.top_sampling_references
     )
-    assert datum.model_input.top_sampling_references == sample.top_sampling_references.to_dict()
+    assert (
+        datum.model_input.top_sampling_references
+        == sample.top_sampling_references.to_dict()
+    )
     assert any(datum.loss_fn_inputs["advantages"].data)
 
 
@@ -920,13 +939,20 @@ def test_top_sampling_references_follow_completion_only_route_operations(
 def test_top_sampling_references_must_cover_every_turn_in_a_segment(realign) -> None:
     from dataclasses import replace
 
-    with_refs = replace(_turn("one", (1, 2), (3, 4)), top_sampling_references=_top_sampling_refs(2))
-    without_refs = _turn("two", (1, 2, 3, 4, 5), (6, 7), disposition="append", prefix_match_tokens=4)
+    with_refs = replace(
+        _turn("one", (1, 2), (3, 4)), top_sampling_references=_top_sampling_refs(2)
+    )
+    without_refs = _turn(
+        "two", (1, 2, 3, 4, 5), (6, 7), disposition="append", prefix_match_tokens=4
+    )
     if realign:
         without_refs = replace(
-            without_refs, exact_prompt_ids=(1, 2, 3, 9, 5),
-            prompt_disposition="realign", prefix_match_tokens=3,
-            realign_from_token=2, realigned_masked_tokens=3,
+            without_refs,
+            exact_prompt_ids=(1, 2, 3, 9, 5),
+            prompt_disposition="realign",
+            prefix_match_tokens=3,
+            realign_from_token=2,
+            realigned_masked_tokens=3,
         )
     late_refs = (
         replace(with_refs, top_sampling_references=None),
@@ -1007,16 +1033,30 @@ def test_full_prompt_parquet_routes_cover_tools_and_survive_materialization():
         ("tito_model_malformed_output", "completed", {}, False),
         ("tito_model_malformed_output", "failed", {}, True),
         ("tito_sdk_parse_error", "completed", {}, True),
-        ("tito_model_malformed_output", "completed", {"tito_failure": {"code": "tito_model_malformed_output"}}, True),
+        (
+            "tito_model_malformed_output",
+            "completed",
+            {"tito_failure": {"code": "tito_model_malformed_output"}},
+            True,
+        ),
     ],
 )
-def test_recovered_legacy_artifact_uses_terminal_disposition(code, status, metadata, discard):
+def test_recovered_legacy_artifact_uses_terminal_disposition(
+    code, status, metadata, discard
+):
     from dataclasses import replace
 
     turn = _turn("one", (1, 2), (3, 4))
     artifact = _result((turn,), (_attempt("one"),), status=status)
-    failed_call = replace(artifact.calls[0], call_id="earlier-failure", outcome="model_malformed", error_code=code)
-    artifact = replace(artifact, calls=(failed_call, *artifact.calls), metadata=metadata)
+    failed_call = replace(
+        artifact.calls[0],
+        call_id="earlier-failure",
+        outcome="model_malformed",
+        error_code=code,
+    )
+    artifact = replace(
+        artifact, calls=(failed_call, *artifact.calls), metadata=metadata
+    )
     if discard:
         with pytest.raises(DiscardTrajectoryError) as failure:
             materialize_tito_trajectory(artifact, reward=1.0)
@@ -1024,3 +1064,107 @@ def test_recovered_legacy_artifact_uses_terminal_disposition(code, status, metad
     else:
         run = materialize_tito_trajectory(artifact, reward=1.0)
         assert len(run.segments) == 1
+
+
+@pytest.mark.parametrize(
+    ("second_kwargs", "tokens", "rows"),
+    [
+        (
+            {
+                "prompt": (1, 2, 3, 4, 5),
+                "disposition": "append",
+                "prefix_match_tokens": 4,
+            },
+            [1, 2, 3, 4, 5, 6, 7],
+            [None, 100, 101, None, 200, 201],
+        ),
+        (
+            {
+                "prompt": (1, 2, 3, 9, 5),
+                "disposition": "realign",
+                "prefix_match_tokens": 3,
+                "realign_from_token": 2,
+                "realigned_masked_tokens": 3,
+            },
+            [1, 2, 3, 9, 5, 6, 7],
+            [None, None, None, None, 200, 201],
+        ),
+        (
+            {
+                "prompt": (1, 2, 3, 9, 5),
+                "disposition": "append",
+                "prefix_match_tokens": 3,
+                "incremental_checkpoint_trim_tokens": 1,
+            },
+            [1, 2, 3, 9, 5, 6, 7],
+            [None, 100, None, None, 200, 201],
+        ),
+    ],
+)
+def test_sampling_mask_references_follow_completion_only_route_operations(
+    second_kwargs: dict[str, Any], tokens: list[int], rows: list[int | None]
+) -> None:
+    from dataclasses import replace
+
+    first = replace(
+        _turn("one", (1, 2), (3, 4)), sampling_mask_references=_top_sampling_refs(2, 1)
+    )
+    options = dict(second_kwargs)
+    second = replace(
+        _turn("two", options.pop("prompt"), (6, 7), **options),
+        sampling_mask_references=_top_sampling_refs(2, 2),
+    )
+    run = materialize_tito_trajectory(
+        _result((first, second), (_attempt("one"), _attempt("two"))), reward=1.0
+    )
+
+    sample = run.segments[0]
+    assert sample.tokens == tokens
+    assert _top_sampling_rows(sample.sampling_mask_references) == rows
+    assert sample.routing_matrices is None
+    group = rollout_to_prompt_group(
+        Rollout(runs=[run]), advantage_fn=lambda rewards: rewards
+    )
+    assert group is not None
+    assert group.sampling_mask_references == [sample.sampling_mask_references]
+    batch = combine_prompt_groups([group])
+    (datum,) = attach_sampling_mask_references(
+        build_policy_datums(batch), batch.sampling_mask_references
+    )
+    assert (
+        datum.model_input.sampling_mask_references
+        == sample.sampling_mask_references.to_dict()
+    )
+    assert any(datum.loss_fn_inputs["advantages"].data)
+
+
+@pytest.mark.parametrize("realign", [False, True])
+def test_sampling_mask_references_must_cover_every_turn_in_a_segment(realign) -> None:
+    from dataclasses import replace
+
+    with_refs = replace(
+        _turn("one", (1, 2), (3, 4)), sampling_mask_references=_top_sampling_refs(2)
+    )
+    without_refs = _turn(
+        "two", (1, 2, 3, 4, 5), (6, 7), disposition="append", prefix_match_tokens=4
+    )
+    if realign:
+        without_refs = replace(
+            without_refs,
+            exact_prompt_ids=(1, 2, 3, 9, 5),
+            prompt_disposition="realign",
+            prefix_match_tokens=3,
+            realign_from_token=2,
+            realigned_masked_tokens=3,
+        )
+    late_refs = (
+        replace(with_refs, sampling_mask_references=None),
+        replace(without_refs, sampling_mask_references=_top_sampling_refs(2)),
+    )
+    for turns in ((with_refs, without_refs), late_refs):
+        with pytest.raises(DiscardTrajectoryError) as failure:
+            materialize_tito_trajectory(
+                _result(turns, (_attempt("one"), _attempt("two"))), reward=1.0
+            )
+        assert "mask sampling references" in str(failure.value.__cause__)
+        assert failure.value.trace_path is not None
