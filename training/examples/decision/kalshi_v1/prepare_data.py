@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download the pinned kalshi-decision-v1 public Fireworks datasets.
+"""Download the pinned kalshi-decision-v1 datasets from Hugging Face.
 
 Splits (row counts and sha256 are pinned in SPLITS below):
 
@@ -11,7 +11,6 @@ Splits (row counts and sha256 are pinned in SPLITS below):
 
 Usage (from ``training/``)::
 
-    export FIREWORKS_API_KEY=fw_...
     python -m training.examples.decision.kalshi_v1.prepare_data
     python -m training.examples.decision.kalshi_v1.prepare_data --splits train,dev
 """
@@ -24,9 +23,9 @@ import sys
 from pathlib import Path
 
 import requests
-from fireworks import Fireworks
 
-ACCOUNT = "fireworks"
+HF_REPO_ID = "fireworks-ai/kalshi-decision-v1"
+HF_REVISION = "f5cfca40e6b2187ac62ddb3a6bf18a1c224c26de"
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
 # Pins for the public accounts/fireworks/datasets/kalshi-decision-v1-* uploads.
@@ -63,23 +62,8 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _pick_signed_url(filename_to_urls: dict[str, str], split: str) -> tuple[str, str]:
-    """Return (remote_filename, signed_url) for this split's JSONL."""
-    preferred = f"{split}.jsonl"
-    if preferred in filename_to_urls:
-        return preferred, filename_to_urls[preferred]
-    jsonl_names = [name for name in filename_to_urls if name.endswith(".jsonl")]
-    if len(jsonl_names) == 1:
-        return jsonl_names[0], filename_to_urls[jsonl_names[0]]
-    raise RuntimeError(
-        f"dataset for {split} has unexpected files: {sorted(filename_to_urls)}; "
-        f"expected a single .jsonl (preferably {preferred})"
-    )
-
-
-def download_split(client: Fireworks, split: str, force: bool) -> Path:
+def download_split(split: str, force: bool) -> Path:
     meta = SPLITS[split]
-    dataset_id = str(meta["dataset_id"])
     expect_sha = str(meta["sha256"])
     expect_rows = int(meta["rows"])
     out_path = DATA_DIR / f"{split}.jsonl"
@@ -91,17 +75,10 @@ def download_split(client: Fireworks, split: str, force: bool) -> Path:
             return out_path
         print(f"{split}: local file hash mismatch; re-downloading")
 
-    endpoint = client.datasets.get_download_endpoint(
-        dataset_id=dataset_id,
-        account_id=ACCOUNT,
+    url = (
+        f"https://huggingface.co/datasets/{HF_REPO_ID}/resolve/"
+        f"{HF_REVISION}/{split}.jsonl"
     )
-    urls = endpoint.filename_to_signed_urls or {}
-    if not urls:
-        raise RuntimeError(
-            f"no signed URLs for accounts/{ACCOUNT}/datasets/{dataset_id}; "
-            "confirm the dataset is READY and PUBLIC"
-        )
-    _remote_name, url = _pick_signed_url(urls, split)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(".jsonl.partial")
@@ -115,7 +92,8 @@ def download_split(client: Fireworks, split: str, force: bool) -> Path:
 
         # Verify the partial file before replacing any existing good copy.
         got_sha = _sha256_file(tmp_path)
-        got_rows = sum(1 for line in tmp_path.open() if line.strip())
+        with tmp_path.open(encoding="utf-8") as handle:
+            got_rows = sum(1 for line in handle if line.strip())
         if got_sha != expect_sha:
             raise RuntimeError(f"{split}: sha256 {got_sha} != pinned {expect_sha}")
         if got_rows != expect_rows:
@@ -149,14 +127,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"unknown splits: {unknown}; choose from {list(SPLITS)}", file=sys.stderr)
         return 2
 
-    client = Fireworks()
     for split in wanted:
-        download_split(client, split, force=args.force)
+        download_split(split, force=args.force)
 
-    print("pinned resources:")
-    for split in wanted:
-        dataset_id = SPLITS[split]["dataset_id"]
-        print(f"  {split}: accounts/{ACCOUNT}/datasets/{dataset_id}")
+    print(f"source: https://huggingface.co/datasets/{HF_REPO_ID}/tree/{HF_REVISION}")
     return 0
 
 

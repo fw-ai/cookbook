@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reproduce Muse Glimmer decision tuning on kalshi-decision-v1.
 
-Downloads (via ``prepare_data.py``) the public Fireworks datasets, then runs
+Downloads (via ``prepare_data.py``) the public Hugging Face datasets, then runs
 ``recipes.decision_loop`` on serverless Muse Glimmer with the same defaults as
 the published training run (LoRA r64, 1 epoch, batch 64, lr 1e-4, seed 0).
 ``dev`` is the calibration split for fit-T; the promoted checkpoint is
@@ -26,8 +26,6 @@ import logging
 import shutil
 import time
 from pathlib import Path
-
-from fireworks import Fireworks
 
 import training.recipes.decision_loop as decision_loop
 from training.utils import WandBConfig
@@ -68,10 +66,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _materialize_split(client: Fireworks, split: str, dest: Path) -> None:
+def _materialize_split(split: str, dest: Path) -> None:
     """Download the pinned split into DATA_DIR, then copy to ``dest`` if needed."""
     default = DATA_DIR / f"{split}.jsonl"
-    download_split(client, split, force=False)
+    download_split(split, force=False)
     dest = dest.expanduser().resolve()
     default = default.resolve()
     if dest == default:
@@ -90,9 +88,8 @@ def ensure_local_splits(train_path: Path, dev_path: Path, skip_download: bool) -
                 "run prepare_data.py first"
             )
         return
-    client = Fireworks()
-    _materialize_split(client, "train", train_path)
-    _materialize_split(client, "dev", dev_path)
+    _materialize_split("train", train_path)
+    _materialize_split("dev", dev_path)
     if not train_path.is_file() or not dev_path.is_file():
         raise FileNotFoundError(
             f"expected dataset files at {train_path} and {dev_path} after download"

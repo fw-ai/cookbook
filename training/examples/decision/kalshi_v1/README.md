@@ -17,21 +17,25 @@ Fireworks Training API and K-way cross-entropy.
 
 ## One test set
 
-| Split | Public Fireworks resource | Events | Questions |
+The dataset is public on [Hugging Face](https://huggingface.co/datasets/fireworks-ai/kalshi-decision-v1).
+
+| Split | File | Events | Questions |
 |---|---|---:|---:|
-| Training | `accounts/fireworks/datasets/kalshi-decision-v1-train` | 6,461 | 20,051 |
-| Calibration (dev) | `accounts/fireworks/datasets/kalshi-decision-v1-dev` | 2,000 | 6,232 |
-| **Test** | `accounts/fireworks/datasets/kalshi-decision-v1-test` | **8,765** | **33,712** |
+| Training | `train.jsonl` | 6,461 | 20,051 |
+| Calibration (dev) | `dev.jsonl` | 2,000 | 6,232 |
+| **Test** | `test.jsonl` | **8,765** | **33,712** |
 
 The test file consolidates the original 2,000-event evaluation, the later
 6,000-event expansion and 765 unseen-topic events. We evaluate each event once.
 **Unseen topics is a slice of this test set**, with 3,567 questions from 113
 families excluded from training and calibration. It is also available separately
-as `accounts/fireworks/datasets/kalshi-decision-v1-unseen-family` for convenience;
+as `unseen_family.jsonl` for convenience;
 do not append that download to the test file.
 
-`prepare_data.py` downloads the datasets from Fireworks through the SDK and
-checks their SHA-256 hashes and row counts against the pins in `SPLITS`.
+`prepare_data.py` downloads the original JSONL files from an immutable Hugging
+Face revision and checks their SHA-256 hashes and row counts against the pins in
+`SPLITS`. The files are byte-for-byte copies of the original public
+`accounts/fireworks/datasets/kalshi-decision-v1-*` uploads.
 
 - Training events settled **before January 4, 2026**; Sports is capped at 18.6%.
 - Calibration events opened **January 11, 2026 or later** and settled **before
@@ -72,9 +76,11 @@ cd cookbook/training
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-export FIREWORKS_API_KEY=...  # create a key in your Fireworks account
-
+# Download the training and calibration splits.
 python -m training.examples.decision.kalshi_v1.prepare_data --splits train,dev
+
+# A Fireworks key is needed for training and inference.
+export FIREWORKS_API_KEY=...
 python -m training.examples.decision.kalshi_v1.train_kalshi_decision \
   --output-model-id kalshi-decision-v1-glimmer
 ```
@@ -90,7 +96,7 @@ use the managed SFT CLI.
 
 ## Test data and evaluation
 
-Download the consolidated test set from Fireworks:
+Download the consolidated test set from Hugging Face:
 
 ```bash
 python -m training.examples.decision.kalshi_v1.prepare_data --splits test
