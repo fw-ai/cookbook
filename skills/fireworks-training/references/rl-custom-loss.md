@@ -260,6 +260,8 @@ keep their fixed GRPO objective and do not provision or score references.
 
 ## Replay the sampling support (top-p)
 
+Independent mask/head capture requires `fireworks-ai>=1.2.28` and a compatible trainer.
+
 With `top_p < 1`, train over the recorded sampling support instead of the full
 vocabulary:
 
