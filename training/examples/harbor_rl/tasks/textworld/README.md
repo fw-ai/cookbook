@@ -18,7 +18,7 @@ From `training/`:
 ```bash
 uv sync
 uv pip install --python .venv/bin/python \
-  'harbor[e2b]==0.21.0'
+  'harbor[e2b]==0.21.0' 'e2b==2.55.0'
 ```
 
 Generate and freeze a suite:

@@ -533,6 +533,50 @@ def test_context_limit_is_shared_by_inference_and_training_retention(
     assert runner._context_limit == 4096
 
 
+@pytest.mark.parametrize("configured,expected", [(None, "1.1"), ("", "1.1"), ("1.1", "1.1"), ("2", "2")])
+def test_e2b_transport_default_and_explicit_override(monkeypatch, tmp_path, configured, expected) -> None:
+    monkeypatch.setattr(tito_rollout.importlib, "import_module", lambda _: SimpleNamespace(
+        resolve_http_version=lambda: os.environ["E2B_HTTP_VERSION"]
+    ))
+    monkeypatch.delenv("E2B_HTTP_VERSION", raising=False)
+    if configured is not None:
+        monkeypatch.setenv("E2B_HTTP_VERSION", configured)
+    _patch_runner(monkeypatch, tmp_path)
+    runner = rollout.make_rollout_fn(_setup(tmp_path), harbor=_harbor(tmp_path, environment="e2b"))
+    assert runner._e2b_http_version == expected
+    assert os.environ["E2B_HTTP_VERSION"] == expected
+
+
+def test_docker_does_not_configure_e2b_transport(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("E2B_HTTP_VERSION", raising=False)
+    _patch_runner(monkeypatch, tmp_path)
+    runner = rollout.make_rollout_fn(_setup(tmp_path), harbor=_harbor(tmp_path))
+    assert runner._e2b_http_version is None
+    assert "E2B_HTTP_VERSION" not in os.environ
+
+
+def test_invalid_e2b_transport_fails_before_bundle_or_sandbox_io(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("E2B_HTTP_VERSION", "invalid")
+    with pytest.raises(tito_rollout.UserConfigError, match="E2B_HTTP_VERSION"):
+        rollout.make_rollout_fn(_setup(tmp_path), harbor=_harbor(tmp_path, environment="e2b"))
+
+
+def test_unsupported_e2b_sdk_does_not_claim_transport_selection(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(tito_rollout.importlib, "import_module", lambda _: SimpleNamespace())
+    monkeypatch.delenv("E2B_HTTP_VERSION", raising=False)
+    with pytest.raises(tito_rollout.UserConfigError, match="does not support E2B_HTTP_VERSION"):
+        rollout.make_rollout_fn(_setup(tmp_path), harbor=_harbor(tmp_path, environment="e2b"))
+    assert "E2B_HTTP_VERSION" not in os.environ
+
+
+def test_installed_e2b_sdk_reads_the_selected_environment(monkeypatch) -> None:
+    config = pytest.importorskip("e2b.connection_config")
+    if not hasattr(config, "resolve_http_version"):
+        pytest.skip("installed e2b SDK predates HTTP version selection")
+    monkeypatch.setenv("E2B_HTTP_VERSION", "1.1")
+    assert config.resolve_http_version() == "1.1"
+
+
 def test_full_sequence_router_replay_enables_incremental_prompt_capture(monkeypatch, tmp_path) -> None:
     setup = _setup(tmp_path)
     setup.sample_kwargs["echo"] = True

@@ -32,9 +32,9 @@ only when using the remote backend:
 cd training
 uv sync
 uv pip install --python .venv/bin/python 'harbor==0.21.0' 'dirhash>=0.5,<1'
-# E2B only. Pin e2b below 2.35: newer e2b requires pyqwest>=0.7, which
-# conflicts with the training SDK's pyqwest==0.6.2 pin:
-uv pip install --python .venv/bin/python 'harbor[e2b]==0.21.0' 'e2b<2.35'
+# E2B only. This pin supports HTTP version selection and the cookbook's
+# pyqwest==0.10.0; do not independently upgrade to e2b 2.56 (pyqwest>=0.12).
+uv pip install --python .venv/bin/python 'harbor[e2b]==0.21.0' 'e2b==2.55.0'
 ```
 
 `dirhash` is used only to verify the pinned DABstep task manifest. Use a

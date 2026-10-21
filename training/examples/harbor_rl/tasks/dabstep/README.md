@@ -20,14 +20,15 @@ so `-2.18` can match a `+2.18` reference. Both recipes make the copied scorer
 sign-sensitive and fail closed if the upstream scorer no longer has the known
 form.
 
-Install Harbor plus the example-only hash dependency (add `harbor[e2b]` and
-`'e2b<2.35'` for the Pi recipe; newer e2b conflicts with the SDK's pyqwest pin):
+Install Harbor plus the example-only hash dependency. The E2B pin supports HTTP
+version selection and the cookbook's `pyqwest==0.10.0`; E2B 2.56 requires a
+different pyqwest version and must not be upgraded independently:
 
 ```bash
 cd training
 uv sync
 uv pip install --python .venv/bin/python \
-  'harbor[e2b]==0.21.0' 'e2b<2.35' 'dirhash>=0.5,<1'
+  'harbor[e2b]==0.21.0' 'e2b==2.55.0' 'dirhash>=0.5,<1'
 ```
 
 ## OpenCode serverless recipe
