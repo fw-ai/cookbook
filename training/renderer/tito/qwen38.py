@@ -9,19 +9,19 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fireworks.training.sdk import (
-    TITOParseError,
     TITOChatRequest,
     TITOIncrementalPrompt,
     TITOParsedAssistant,
 )
 
+from training.renderer.tito._errors import renderer_parse_error
 from training.renderer.tito.shared import (
+    TITORendererCertification,
     _ensure_tool_call_ids,
     _normalize_template_messages,
     _normalize_template_tools,
     parse_xml_tool_argument,
     validate_no_dynamic_template_fields,
-    TITORendererCertification,
 )
 
 QWEN38_RENDERER_NAME = "qwen3_8"
@@ -160,7 +160,10 @@ class Qwen38TITORenderer:
         reasoning: str | None = None
         if "</think>" in content:
             if not content.startswith("<think>"):
-                raise TITOParseError(f"{self._label} reasoning close has no opening boundary")
+                raise renderer_parse_error(
+                    f"{self._label} reasoning close has no opening boundary",
+                    reason_code="reasoning_close_without_open",
+                )
             reasoning, content = content[len("<think>") :].split("</think>", 1)
             content = content.lstrip("\n")
         elif finish_reason == "length":
@@ -175,7 +178,10 @@ class Qwen38TITORenderer:
         elif content.startswith("<think>"):
             # A clean stop before the prompt-opened reasoning boundary closes
             # is malformed structured output, not visible assistant text.
-            raise TITOParseError(f"{self._label} reasoning open has no closing boundary")
+            raise renderer_parse_error(
+                f"{self._label} reasoning open has no closing boundary",
+                reason_code="reasoning_missing_close",
+            )
 
         # Tool markup is protocol only after the reasoning boundary. Malformed
         # model output is classified by the engine; the renderer must not
@@ -188,7 +194,10 @@ class Qwen38TITORenderer:
             name = match.group(1).strip()
             body = match.group(2)
             if not name:
-                raise TITOParseError(f"{self._label} tool call is missing a function name")
+                raise renderer_parse_error(
+                    f"{self._label} tool call is missing a function name",
+                    reason_code="tool_missing_name",
+                )
             arguments = {
                 item.group(1).strip(): parse_xml_tool_argument(
                     item.group(2),
@@ -200,7 +209,10 @@ class Qwen38TITORenderer:
             }
             residue = _QWEN_TOOL_ARG_RE.sub("", body).strip()
             if residue:
-                raise TITOParseError(f"unparsed {self._label} tool-call content: {residue!r}")
+                raise renderer_parse_error(
+                    f"unparsed {self._label} tool-call content: {residue!r}",
+                    reason_code="tool_unparsed_content",
+                )
             calls.append(
                 {
                     "type": "function",
@@ -212,11 +224,17 @@ class Qwen38TITORenderer:
             )
             position = match.end()
         if calls and finish_reason == "length" and content[position:].strip():
-            raise TITOParseError(f"{self._label} length-stopped tool calls have trailing content")
+            raise renderer_parse_error(
+                f"{self._label} length-stopped tool calls have trailing content",
+                reason_code="length_tool_trailing_content",
+            )
         cleaned.append(content[position:])
         content = "".join(cleaned)
         if "<tool_call>" in content or "</tool_call>" in content:
-            raise TITOParseError(f"unparsed {self._label} tool-call boundary")
+            raise renderer_parse_error(
+                f"unparsed {self._label} tool-call boundary",
+                reason_code="tool_unparsed_boundary",
+            )
 
         allowed_tool_names = {
             str((tool.get("function") or {}).get("name"))
@@ -226,7 +244,10 @@ class Qwen38TITORenderer:
         if calls and (
             not allowed_tool_names or any(str(call["function"]["name"]) not in allowed_tool_names for call in calls)
         ):
-            raise TITOParseError(f"{self._label} tool call names are absent from the request")
+            raise renderer_parse_error(
+                f"{self._label} tool call names are absent from the request",
+                reason_code="tool_unknown_name",
+            )
 
         message: dict[str, Any] = {"role": "assistant", "content": content}
         if reasoning is not None:
@@ -251,7 +272,9 @@ class Qwen38TITORenderer:
                 finish_reason,
             )
         if not clean and finish_reason != "length":
-            raise TITOParseError(f"unclean {self._label} renderer parse")
+            raise renderer_parse_error(
+                f"unclean {self._label} renderer parse", reason_code="unclean_parse"
+            )
         message = _ensure_tool_call_ids(message, completion_ids)
         tool_calls = message.get("tool_calls") or []
         output_kind = (

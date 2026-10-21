@@ -700,10 +700,13 @@ def test_raw_rewards_include_filtered_groups_but_not_failed_rollouts() -> None:
     _run(scenario())
 
 
-def test_recoverable_rollout_error_drops_and_continues() -> None:
+def test_recoverable_rollout_error_drops_and_continues(caplog: pytest.LogCaptureFixture) -> None:
     async def scenario() -> None:
         async def timeout(_sub_index: int) -> RolloutRun:
-            raise TimeoutError("transient deployment timeout")
+            raise RecoverableRolloutError(
+                "private tool payload", reason="whole_trial_bound", trace_paths=("/local/trace",),
+                diagnostics={"code": "tito_transport_error", "request_id": "request-1"},
+            )
 
         telemetry = _telemetry()
         coordinator = _coordinator(
@@ -722,6 +725,13 @@ def test_recoverable_rollout_error_drops_and_continues() -> None:
             assert final["sample_fails"] == 1
 
     _run(scenario())
+
+    record = next(record for record in caplog.records if hasattr(record, "rollout_error"))
+    assert record.rollout_error["reason"] == "whole_trial_bound"
+    assert record.rollout_error["request_id"] == "request-1"
+    assert record.rollout_error["trace_paths"] == ("/local/trace",)
+    assert "request-1" in record.getMessage()
+    assert "private tool payload" not in record.getMessage()
 
 
 def test_parser_failures_discard_without_tripping_infrastructure_breaker() -> None:

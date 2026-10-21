@@ -442,9 +442,9 @@ wheels = [
 name = "certifi"
 version = "2026.10.19"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a6/bd/1436c50cc46699de0230fbaacc1d1de7bfec413176099949e9d5112e88f2/certifi-2026.10.19.tar.gz", hash = "sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae", size = 137598, upload-time = "2026-10-20T02:24:16.604828Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/bd/1436c50cc46699de0230fbaacc1d1de7bfec413176099949e9d5112e88f2/certifi-2026.10.19.tar.gz", hash = "sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae", size = 137598, upload-time = "2026-10-20T02:24:16.604Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl", hash = "sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b", size = 136464, upload-time = "2026-10-20T02:24:15.072385Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl", hash = "sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b", size = 136464, upload-time = "2026-10-20T02:24:15.072Z" },
 ]
 
 [[package]]
@@ -1067,11 +1067,12 @@ wheels = [
 
 [[package]]
 name = "fireworks-ai"
-version = "1.2.28"
+version = "1.2.30"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "anyio" },
+    { name = "certifi" },
     { name = "distro" },
     { name = "httpx" },
     { name = "httpx-aiohttp" },
@@ -1079,9 +1080,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f5/40/7b155a80cee06738850162ea6af27d5e582d70caaa23b1486722635d60a5/fireworks_ai-1.2.28.tar.gz", hash = "sha256:a447feeda64ed7c56a32e4928274c6207dc373cfa90507d4a8a30249d0d5f6a9", size = 803076, upload-time = "2026-10-20T20:33:18.333766Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b1/8a/ed123fefbb4a037ef91f3c86b6ce762c9832992cdadcc3b3985398a0ea42/fireworks_ai-1.2.30.tar.gz", hash = "sha256:1f58f97a2c8ab7bc649e46983e4a2172111ab3add5cb98a87350daa4c1d035ad", size = 822207, upload-time = "2026-10-21T21:12:33.976Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/12/fa/06e38d195575588758fc19c6502db7e455098ac2b734bec244aa133405ce/fireworks_ai-1.2.28-py3-none-any.whl", hash = "sha256:7dabbb535894d9a22b1a1d1ddc1e81a7eacdf7d742a22470659d06050ecff96c", size = 779573, upload-time = "2026-10-20T20:33:16.298649Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/c7/254f127021ace506ac8f4f9df7f415641ccb8480604f2a1a72184fbd8fde/fireworks_ai-1.2.30-py3-none-any.whl", hash = "sha256:ec2f289e16ce9c39d1d176a96d7b0f76c26e7b3d5c6a70ea3df4d5af693aae68", size = 787551, upload-time = "2026-10-21T21:12:32.006Z" },
 ]
 
 [[package]]
@@ -1132,7 +1133,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "datasets", specifier = ">=5.0.1" },
     { name = "eval-protocol", marker = "extra == 'eval'", git = "https://github.com/eval-protocol/python-sdk.git?rev=9b642d9401b05ab96b73fc18922d1279f8ac617b" },
-    { name = "fireworks-ai", specifier = ">=1.2.28,<2" },
+    { name = "fireworks-ai", specifier = ">=1.2.30,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.23.0,<1" },
     { name = "huggingface-hub", specifier = ">=1.5.0,<2.0" },

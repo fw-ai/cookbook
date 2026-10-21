@@ -8,7 +8,6 @@ from collections.abc import Awaitable, Callable, Hashable, Iterable
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
-from training.utils.rl.rollout.setup import DynamicFilterFn
 from training.utils.rl.async_rl.batch import (
     OptimizerBatch,
     TrainingGroup,
@@ -25,6 +24,7 @@ from training.utils.rl.rollout.group_assembler import (
     GroupAssembler,
     RowResolution,
 )
+from training.utils.rl.rollout.setup import DynamicFilterFn
 from training.utils.rl.rollout.types import (
     RolloutRun,
     validate_rollout_run_routing,
@@ -428,29 +428,48 @@ class RolloutProducer:
         error = task.exception()
         if error is not None:
             classification = self._error_classifier(error)
+            error_record = classification.as_log_record()
             if classification.disposition is ErrorDisposition.FATAL:
+                logger.error(
+                    "Async RL fatal rollout failure row=%s diagnostics=%s",
+                    draw.sequence,
+                    error_record,
+                    extra={"rollout_error": error_record},
+                )
                 self._fail(error)
                 return
             if classification.disposition is ErrorDisposition.DISCARD:
                 self._stats.discard_errors += 1
                 logger.error(
-                    "Discarding trajectory row=%s code=%s trace_path=%s",
+                    "Discarding trajectory row=%s code=%s trace_path=%s diagnostics=%s",
                     draw.sequence,
                     classification.reason,
                     classification.trace_path,
+                    error_record,
+                    extra={"rollout_error": error_record},
                 )
             else:
                 self._stats.recoverable_errors += 1
                 try:
                     self._breaker.record_failure(error, classification)
                 except CircuitBreakerTripped as breaker_error:
+                    logger.error(
+                        "Async RL rollout circuit breaker tripped diagnostics=%s",
+                        error_record,
+                        extra={"rollout_error": error_record},
+                    )
                     self._fail(breaker_error)
                     return
-                if self._stats.recoverable_errors == 1 or self._stats.recoverable_errors % 10 == 0:
+                if (
+                    self._stats.recoverable_errors == 1
+                    or self._stats.recoverable_errors % 10 == 0
+                ):
                     logger.warning(
-                        "Async RL recoverable rollout errors: total=%d reason=%s",
+                        "Async RL recoverable rollout errors: total=%d reason=%s diagnostics=%s",
                         self._stats.recoverable_errors,
                         classification.reason,
+                        error_record,
+                        extra={"rollout_error": error_record},
                     )
             resolution = self._note_trajectory_dropped(draw.sequence)
         else:

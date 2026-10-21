@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from fireworks.training.sdk import TITOSidecar
+
+
+def test_sidecar_supports_scoped_failure_trace_retention() -> None:
+    assert callable(TITOSidecar.dump_failure_trace)
 
 
 @pytest.mark.parametrize("head,mask", [(True, False), (False, True), (True, True)])

@@ -13,20 +13,20 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fireworks.training.sdk import (
-    TITOParseError,
     TITOChatRequest,
     TITOIncrementalPrompt,
     TITOParsedAssistant,
 )
 
+from training.renderer.tito._errors import renderer_parse_error
 from training.renderer.tito.shared import (
+    TITORendererCertification,
     _ensure_tool_call_ids,
     _normalize_template_messages,
     _normalize_template_tools,
     _plain,
     parse_xml_tool_argument,
     validate_no_dynamic_template_fields,
-    TITORendererCertification,
 )
 
 GLM52_RENDERER_NAME = "glm_moe_dsa_preserve_thinking"
@@ -250,7 +250,10 @@ class GLM52TITORenderer:
         reasoning: str | None = None
         if "</think>" in content:
             if not content.startswith("<think>"):
-                raise TITOParseError("GLM-5.2 reasoning close has no opening boundary")
+                raise renderer_parse_error(
+                    "GLM-5.2 reasoning close has no opening boundary",
+                    reason_code="reasoning_close_without_open",
+                )
             reasoning, content = content[len("<think>") :].split("</think>", 1)
             content = content.lstrip("\n")
         elif finish_reason == "length":
@@ -266,7 +269,10 @@ class GLM52TITORenderer:
             # A clean stop before the prompt-opened reasoning boundary closes
             # is malformed structured output, not visible assistant text.
             # Reject it before tool parsing can reinterpret reasoning.
-            raise TITOParseError("GLM-5.2 reasoning open has no closing boundary")
+            raise renderer_parse_error(
+                "GLM-5.2 reasoning open has no closing boundary",
+                reason_code="reasoning_missing_close",
+            )
 
         # Tool markup is protocol only after the reasoning boundary. Malformed
         # model output is classified by the engine; the renderer must not
@@ -280,7 +286,10 @@ class GLM52TITORenderer:
             first_arg = body.find("<arg_key>")
             name = body[:first_arg].strip() if first_arg >= 0 else body.strip()
             if not name:
-                raise TITOParseError("GLM-5.2 tool call is missing a function name")
+                raise renderer_parse_error(
+                    "GLM-5.2 tool call is missing a function name",
+                    reason_code="tool_missing_name",
+                )
             arguments = {
                 item.group(1): parse_xml_tool_argument(
                     item.group(2),
@@ -292,7 +301,10 @@ class GLM52TITORenderer:
             }
             residue = _GLM_TOOL_ARG_RE.sub("", body).strip().removeprefix(name).strip()
             if residue:
-                raise TITOParseError(f"unparsed GLM-5.2 tool-call content: {residue!r}")
+                raise renderer_parse_error(
+                    f"unparsed GLM-5.2 tool-call content: {residue!r}",
+                    reason_code="tool_unparsed_content",
+                )
             calls.append(
                 {
                     "type": "function",
@@ -304,11 +316,17 @@ class GLM52TITORenderer:
             )
             position = match.end()
         if calls and finish_reason == "length" and content[position:].strip():
-            raise TITOParseError("GLM-5.2 length-stopped tool calls have trailing content")
+            raise renderer_parse_error(
+                "GLM-5.2 length-stopped tool calls have trailing content",
+                reason_code="length_tool_trailing_content",
+            )
         cleaned.append(content[position:])
         content = "".join(cleaned)
         if "<tool_call>" in content or "</tool_call>" in content:
-            raise TITOParseError("unparsed GLM-5.2 tool-call boundary")
+            raise renderer_parse_error(
+                "unparsed GLM-5.2 tool-call boundary",
+                reason_code="tool_unparsed_boundary",
+            )
 
         allowed_tool_names = {
             str((tool.get("function") or {}).get("name"))
@@ -318,7 +336,10 @@ class GLM52TITORenderer:
         if calls and (
             not allowed_tool_names or any(str(call["function"]["name"]) not in allowed_tool_names for call in calls)
         ):
-            raise TITOParseError("GLM-5.2 tool call names are absent from the request")
+            raise renderer_parse_error(
+                "GLM-5.2 tool call names are absent from the request",
+                reason_code="tool_unknown_name",
+            )
 
         message: dict[str, Any] = {"role": "assistant", "content": content}
         if reasoning is not None:
@@ -343,7 +364,9 @@ class GLM52TITORenderer:
                 finish_reason,
             )
         if not clean and finish_reason != "length":
-            raise TITOParseError("unclean GLM-5.2 renderer parse")
+            raise renderer_parse_error(
+                "unclean GLM-5.2 renderer parse", reason_code="unclean_parse"
+            )
         message = _ensure_tool_call_ids(message, completion_ids)
         tool_calls = message.get("tool_calls") or []
         output_kind = (

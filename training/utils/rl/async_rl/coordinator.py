@@ -194,7 +194,7 @@ class AsyncRLCoordinator:
             step_time=step_time,
         )
 
-    def snapshot(self) -> dict[str, int | float | bool | None]:
+    def snapshot(self) -> dict[str, int | float | bool | dict[str, int] | None]:
         """Return an observation-only coordinator snapshot."""
 
         return self._producer.snapshot()
