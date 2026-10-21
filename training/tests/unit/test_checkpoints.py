@@ -625,7 +625,7 @@ class TestSave:
         ckpt.save("step-1", resumable=False, promotable=True)
         client.save_state.assert_not_called()
         client.save_weights_for_sampler.assert_called_once_with(
-            "step-1", checkpoint_type="base"
+            "step-1-base", checkpoint_type="base"
         )
         assert not os.path.exists(os.path.join(log_dir, DATALOADER_BASE_NAME))
 
@@ -642,7 +642,7 @@ class TestSave:
 
         client.save_state.assert_called_once_with("step-60")
         client.save_weights_for_sampler.assert_called_once_with(
-            "step-60", checkpoint_type="base"
+            "step-60-base", checkpoint_type="base"
         )
         assert _read_checkpoint_states(log_dir) == {
             "step-60": {"step": 60, "data_consumed": 120}
@@ -657,6 +657,53 @@ class TestSave:
         assert _read_checkpoint_states(log_dir) == {
             "step-0": {"step": 5, "data_consumed": 55}
         }
+
+    def test_final_base_preserves_live_delta_and_is_deduplicated(self, log_dir: str) -> None:
+        delta_name = "step-10-ab1ec699"
+        delta = os.path.join(log_dir, delta_name)
+        os.mkdir(delta)
+        payload = os.path.join(delta, "model.safetensors")
+        with open(payload, "wb") as stream:
+            stream.write(b"published compressed delta")
+        ckpt, client, fw = _make(
+            log_dir,
+            fw_rows=[
+                _row(
+                    delta_name,
+                    ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+                    promotable=False,
+                    create_time="2099-01-01T00:00:00Z",
+                ),
+            ],
+        )
+
+        def save_base(name: str, *, checkpoint_type: str) -> None:
+            assert name == "step-10-base" and checkpoint_type == "base"
+            target = os.path.join(log_dir, name + "-ab1ec699")
+            os.mkdir(target)
+            with open(os.path.join(target, "model.safetensors"), "wb") as stream:
+                stream.write(b"new full base")
+            fw._rows.append(
+                _row(
+                    name + "-ab1ec699",
+                    ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+                    promotable=True,
+                    create_time="2099-01-01T00:00:02Z",
+                )
+            )
+
+        client.save_weights_for_sampler.side_effect = save_base
+        ckpt.save("step-10", resumable=True, promotable=True, data_consumed=323)
+        ckpt.save("step-10", resumable=True, promotable=True, data_consumed=323)
+
+        client.save_state.assert_called_once_with("step-10")
+        client.save_weights_for_sampler.assert_called_once_with("step-10-base", checkpoint_type="base")
+        assert ckpt.has_promotable("step-10") is True
+        assert _read_checkpoint_states(log_dir) == {"step-10": {"step": 10, "data_consumed": 323}}
+        with open(payload, "rb") as stream:
+            assert stream.read() == b"published compressed delta"
+        ckpt.promote_latest("output", "base", checkpoint_name="step-10")
+        assert fw.promote_checkpoint.call_args.kwargs["name"].endswith("/step-10-base-ab1ec699")
 
     def test_neither_raises(self, log_dir):
         ckpt, _, _ = _make(log_dir)
@@ -912,6 +959,88 @@ class TestPromoteLatest:
     """``promote_latest`` hands the row's 4-segment ``name`` to the SDK
     verbatim. The cookbook does not disassemble into
     ``(job_id, checkpoint_id)``."""
+
+    @pytest.mark.parametrize("checkpoint_name", ["step-10", "step-10-cal", "step-99999999-cal"])
+    @pytest.mark.parametrize("serverless", [False, True])
+    @pytest.mark.parametrize("legacy_name", [False, True])
+    def test_full_parameter_promotion_resolves_export_name(
+        self, log_dir: str, checkpoint_name: str, serverless: bool, legacy_name: bool
+    ) -> None:
+        run_id = "run-0123456789abcdef0123456789abcdef"
+        prefix = f"{run_id}-" if serverless else ""
+        export_name = checkpoint_name if legacy_name else f"{checkpoint_name}-base"
+        target = _row(
+            f"{prefix}{export_name}-abcd1234",
+            ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+            promotable=True,
+            create_time="2026-04-01T00:00:00Z",
+        )
+        rows = [
+            target,
+            _row(
+                f"{prefix}step-11-base-abcd1234",
+                ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+                promotable=True,
+                create_time="2026-04-02T00:00:00Z",
+            ),
+        ]
+        if serverless:
+            rows.append(
+                _row(
+                    f"run-ffffffffffffffffffffffffffffffff-{export_name}-abcd1234",
+                    ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+                    promotable=True,
+                    create_time="2026-04-03T00:00:00Z",
+                )
+            )
+        ckpt, _, fw = _make(
+            log_dir,
+            fw_rows=rows,
+            lora_rank=0,
+            serverless=serverless,
+            current_run_id=run_id if serverless else None,
+        )
+
+        assert ckpt.has_promotable(checkpoint_name) is True
+        ckpt.promote_latest("output", "base", checkpoint_name=checkpoint_name)
+
+        fw.promote_checkpoint.assert_called_once_with(
+            name=target["name"], output_model_id="output", base_model="base", hot_load_deployment_id=None
+        )
+
+    @pytest.mark.parametrize("serverless", [False, True])
+    @pytest.mark.parametrize("lora_rank", [0, 8])
+    def test_requested_promotion_does_not_select_unrelated_names(
+        self, log_dir: str, serverless: bool, lora_rank: int
+    ) -> None:
+        run_id = "run-0123456789abcdef0123456789abcdef"
+        prefix = f"{run_id}-" if serverless else ""
+        names = [f"{prefix}step-9-base-abcd1234", f"{prefix}step-10-cal-base-abcd1234"]
+        if lora_rank:
+            names.append(f"{prefix}step-10-base-abcd1234")
+        if serverless:
+            names.append("run-ffffffffffffffffffffffffffffffff-step-10-base-abcd1234")
+        rows = [
+            _row(
+                name,
+                ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+                promotable=True,
+                create_time="2026-04-01T00:00:00Z",
+            )
+            for name in names
+        ]
+        ckpt, _, fw = _make(
+            log_dir,
+            fw_rows=rows,
+            lora_rank=lora_rank,
+            serverless=serverless,
+            current_run_id=run_id if serverless else None,
+        )
+
+        assert ckpt.has_promotable("step-10") is False
+        with pytest.raises(RuntimeError, match="No promotable checkpoints"):
+            ckpt.promote_latest("output", "base", checkpoint_name="step-10")
+        fw.promote_checkpoint.assert_not_called()
 
     def test_picks_newest_promotable_and_passes_full_name(self, log_dir):
         rows = [
