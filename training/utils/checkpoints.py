@@ -498,7 +498,10 @@ class TrainingCheckpoints:
                     )
 
         if promotable:
-            if self._promotable_exists(name):
+            # A hotload delta may already use name. Preserve its published
+            # bytes when exporting the full-parameter promotable BASE.
+            sampler_name = f"{name}-base" if self._lora_rank == 0 else name
+            if self.has_promotable(name):
                 if sampler_metadata is not None:
                     raise RuntimeError(
                         f"Sampler checkpoint '{name}' already exists; a save that carries "
@@ -512,16 +515,16 @@ class TrainingCheckpoints:
             else:
                 t1 = time.time()
                 sampler_save_started = datetime.now(timezone.utc)
-                logger.info("Saving sampler checkpoint '%s'...", name)
+                logger.info("Saving sampler checkpoint '%s'...", sampler_name)
                 if sampler_metadata is None:
-                    self._client.save_weights_for_sampler(name, checkpoint_type="base")
+                    self._client.save_weights_for_sampler(sampler_name, checkpoint_type="base")
                 else:
-                    self._client.save_weights_for_sampler(name, checkpoint_type="base", metadata=sampler_metadata)
+                    self._client.save_weights_for_sampler(sampler_name, checkpoint_type="base", metadata=sampler_metadata)
                 logger.info(
-                    "Sampler checkpoint '%s' saved (%.1fs)", name, time.time() - t1
+                    "Sampler checkpoint '%s' saved (%.1fs)", sampler_name, time.time() - t1
                 )
                 actual_name = self._wait_for_promotable_after_save(
-                    name=name,
+                    name=sampler_name,
                     save_started=sampler_save_started,
                     appear_timeout_s=self._save_appear_timeout_s,
                     poll_s=self._save_poll_s,
@@ -717,9 +720,10 @@ class TrainingCheckpoints:
     ) -> dict:
         """Promote the newest promotable row on the control plane.
 
-        When checkpoint_name is supplied, only that logical checkpoint in the
-        current run is eligible; missing final exports must not fall back to an
-        earlier snapshot (for example a frozen DPO reference).
+        When checkpoint_name is supplied, only that logical checkpoint or its
+        full-parameter BASE export (``{name}-base``) in the current run is
+        eligible. Missing final exports must not fall back to an earlier
+        snapshot (for example a frozen DPO reference).
 
         No local lookup. Works identically for full and LoRA runs; in LoRA
         runs this transparently picks up the most recent
@@ -734,7 +738,10 @@ class TrainingCheckpoints:
             ]
         )
         if checkpoint_name is not None:
-            rows = [r for r in rows if self._trainer_logical_name(_short_name(r["name"])) == checkpoint_name]
+            names = {checkpoint_name}
+            if self._lora_rank == 0:
+                names.add(f"{checkpoint_name}-base")
+            rows = [r for r in rows if self._trainer_logical_name(_short_name(r["name"])) in names]
         if not rows:
             raise RuntimeError(
                 f"No promotable checkpoints found for trainer job '{self._trainer_id}'"
@@ -945,13 +952,15 @@ class TrainingCheckpoints:
 
     def has_promotable(self, name: str) -> bool:
         """Whether ``name`` is already a promotable checkpoint of this run on the control plane."""
-        return self._promotable_exists(name)
+        return self._promotable_exists(name) or (
+            self._lora_rank == 0 and self._promotable_exists(f"{name}-base")
+        )
 
     def _promotable_exists(self, name: str) -> bool:
         """Check if ``name`` is already on the control plane as promotable.
 
-        Failures are non-fatal: on error we proceed with the save (GCS
-        overwrite is safe), trading dedup for forward progress.
+        Failures are non-fatal: on error we proceed with the save. Save names
+        must stay distinct from snapshots currently referenced by hotload.
         """
         try:
             row = self._promotable_row(name)
