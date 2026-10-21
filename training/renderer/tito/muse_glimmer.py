@@ -26,18 +26,18 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from fireworks.training.sdk import (
-    TITOParseError,
     TITOChatRequest,
     TITOIncrementalPrompt,
     TITOParsedAssistant,
 )
 
+from training.renderer.tito._errors import renderer_parse_error
 from training.renderer.tito.shared import (
+    TITORendererCertification,
     _ensure_tool_call_ids,
     _normalize_template_messages,
     _normalize_template_tools,
     validate_no_dynamic_template_fields,
-    TITORendererCertification,
 )
 
 MUSE_GLIMMER_RENDERER_NAME = "muse_glimmer"
@@ -168,11 +168,17 @@ class MuseGlimmerTITORenderer:
         for segment in text.split(_SEGMENT_SEPARATOR):
             if _MESSAGE not in segment:
                 if segment.strip():
-                    raise TITOParseError("Muse Glimmer segment has no message boundary")
+                    raise renderer_parse_error(
+                        "Muse Glimmer segment has no message boundary",
+                        reason_code="message_missing_boundary",
+                    )
                 continue
             recipient, payload = segment.split(_MESSAGE, 1)
             if not recipient.startswith(" to="):
-                raise TITOParseError("Muse Glimmer segment is missing its recipient")
+                raise renderer_parse_error(
+                    "Muse Glimmer segment is missing its recipient",
+                    reason_code="message_missing_recipient",
+                )
             recipient = recipient[len(" to=") :]
             if recipient == "self":
                 reasoning_parts.append(payload)
@@ -187,14 +193,20 @@ class MuseGlimmerTITORenderer:
                 for match in matches:
                     name = match.group("name")
                     if not name:
-                        raise TITOParseError("Muse Glimmer tool call is missing a name")
+                        raise renderer_parse_error(
+                            "Muse Glimmer tool call is missing a name",
+                            reason_code="tool_missing_name",
+                        )
                     arguments = {
                         item.group("name"): self._parse_argument(item.group("value"))
                         for item in _ATEM_ARG_RE.finditer(match.group("body"))
                     }
                     residue = _ATEM_ARG_RE.sub("", match.group("body")).strip()
                     if residue:
-                        raise TITOParseError(f"unparsed Muse Glimmer tool-call content: {residue!r}")
+                        raise renderer_parse_error(
+                            f"unparsed Muse Glimmer tool-call content: {residue!r}",
+                            reason_code="tool_unparsed_content",
+                        )
                     calls.append(
                         {
                             "type": "function",
@@ -208,7 +220,10 @@ class MuseGlimmerTITORenderer:
             if recipient == "user":
                 visible_parts.append(payload)
                 continue
-            raise TITOParseError(f"unknown Muse Glimmer recipient {recipient!r}")
+            raise renderer_parse_error(
+                f"unknown Muse Glimmer recipient {recipient!r}",
+                reason_code="message_unknown_recipient",
+            )
 
         allowed_tool_names = {
             str((tool.get("function") or {}).get("name"))
@@ -218,7 +233,10 @@ class MuseGlimmerTITORenderer:
         if calls and (
             not allowed_tool_names or any(str(call["function"]["name"]) not in allowed_tool_names for call in calls)
         ):
-            raise TITOParseError("Muse Glimmer tool call names are absent from the request")
+            raise renderer_parse_error(
+                "Muse Glimmer tool call names are absent from the request",
+                reason_code="tool_unknown_name",
+            )
 
         content = "".join(visible_parts)
         message: dict[str, Any] = {"role": "assistant", "content": content}
@@ -251,11 +269,16 @@ class MuseGlimmerTITORenderer:
                 finish_reason,
             )
         if not clean and finish_reason != "length":
-            raise TITOParseError("unclean Muse Glimmer renderer parse")
+            raise renderer_parse_error(
+                "unclean Muse Glimmer renderer parse", reason_code="unclean_parse"
+            )
         message = _ensure_tool_call_ids(message, completion_ids)
         tool_calls = message.get("tool_calls") or []
         if finish_reason == "length" and tool_calls:
-            raise TITOParseError("truncated structured tool call is not protocol-safe")
+            raise renderer_parse_error(
+                "truncated structured tool call is not protocol-safe",
+                reason_code="tool_truncated",
+            )
         output_kind = (
             "tool_calls"
             if tool_calls

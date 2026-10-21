@@ -37,7 +37,11 @@ from training.examples.harbor_rl.tito.sidecar import (
     SIDECAR_STDOUT_PATH,
 )
 from training.utils.rl import trial_events
-from training.utils.rl.async_rl.errors import RecoverableRolloutError, DiscardTrajectoryError, trajectory_discard_error
+from training.utils.rl.async_rl.errors import (
+    DiscardTrajectoryError,
+    RecoverableRolloutError,
+    trajectory_discard_error,
+)
 
 if TYPE_CHECKING:
     from training.utils.rl.rollout import RolloutRun
@@ -1091,6 +1095,7 @@ def _finish_harbor_trial(
                 f"Discarding Harbor trajectory: code={error.code} trace_path={trace_path}",
                 error.code,
                 trace_path,
+                diagnostics=error.diagnostics,
             )
     if retryable_e2b_timeout:
         raise RecoverableRolloutError(

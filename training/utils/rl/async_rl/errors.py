@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import errno
-from collections import deque
-from dataclasses import dataclass
+import re
+from collections import Counter, deque
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Callable, TypeAlias
 
 import aiohttp
 import httpx
 import requests
+from fireworks.training.sdk.sampling_observability import SamplingRequestError, extract_request_id
 
 if TYPE_CHECKING:
     from fireworks.training.sdk import TITOTrajectoryArtifact
@@ -31,23 +33,40 @@ class RecoverableRolloutError(RuntimeError):
     """
 
     def __init__(
-        self, *args: object, reason: str | None = None, trace_paths: tuple[str, ...] = ()
+        self,
+        *args: object,
+        reason: str | None = None,
+        trace_paths: tuple[str, ...] = (),
+        diagnostics: dict | None = None,
     ) -> None:
         super().__init__(*args)
         self.reason = reason
         self.trace_paths = trace_paths
+        self.diagnostics = _safe_diagnostics(diagnostics or {})
 
 
 class DiscardTrajectoryError(RuntimeError):
     """A diagnosed trajectory-local failure; never retry it as infrastructure."""
 
-    def __init__(self, message: str, code: str = "tito_cookbook_parse_error", trace_path: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        code: str = "tito_cookbook_parse_error",
+        trace_path: str | None = None,
+        *,
+        diagnostics: dict | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.trace_path = trace_path
+        self.diagnostics = _safe_diagnostics(diagnostics or {})
 
     def __reduce__(self) -> tuple:
-        return (type(self), (str(self), self.code, self.trace_path))
+        return (
+            type(self),
+            (str(self), self.code, self.trace_path),
+            {"diagnostics": self.diagnostics},
+        )
 
 
 _TITO_DISCARD_CODES = frozenset(
@@ -74,14 +93,85 @@ def _tito_failure_details(error: BaseException) -> dict:
             body = None
     if isinstance(body, dict):
         details = body.get("error", body)
-        if isinstance(details, dict) and details.get("code") in _TITO_DISCARD_CODES:
+        if isinstance(details, dict):
             return details
-    if getattr(error, "code", None) in _TITO_DISCARD_CODES:
-        return {"code": error.code, **dict(getattr(error, "context", {}) or {})}
+    context = getattr(error, "context", None)
+    if isinstance(context, dict) or isinstance(getattr(error, "code", None), str):
+        details = dict(context) if isinstance(context, dict) else {}
+        for key in ("code", "origin"):
+            value = getattr(error, key, None)
+            if value is not None:
+                details[key] = value
+        return details
     return {}
 
 
-def trajectory_discard_error(artifact: TITOTrajectoryArtifact) -> DiscardTrajectoryError | None:
+def _safe_tag(value: object, fallback: str = "other") -> str:
+    return (
+        value
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value)
+        else fallback
+    )
+
+
+def _safe_diagnostics(details: dict) -> dict:
+    selected = {}
+    for key in (
+        "code",
+        "origin",
+        "parser_reason_code",
+        "finish_reason",
+        "renderer_id",
+        "renderer_certification_id",
+        "logical_request_id",
+        "request_id",
+        "upstream_request_id",
+        "upstream_response_id",
+        "upstream_error_code",
+        "upstream_error_type",
+        "upstream_finish_reason",
+        "final_error_kind",
+        "wire_status",
+        "final_status",
+        "upstream_status",
+        "attempts",
+        "retry_budget_exhausted",
+        "should_retry",
+        "discard_trajectory",
+        "retry_scope",
+        "phase",
+        "transport_hop",
+        "prompt_tokens",
+        "completion_tokens",
+        "requested_max_tokens",
+        "max_output_tokens",
+        "termination_phase",
+        "terminal_action",
+        "requested_terminal_status",
+        "terminal_status",
+        "terminal_reason",
+        "terminal_started_at",
+        "terminal_at",
+        "cause_error_code",
+        "cause_origin",
+        "trajectory_id",
+        "call_id",
+    ):
+        value = details.get(key)
+        if isinstance(value, (bool, int, float)):
+            selected[key] = value
+        elif (
+            isinstance(value, str)
+            and len(value) <= 256
+            and all(ord(character) >= 32 for character in value)
+        ):
+            selected[key] = value
+    return selected
+
+
+def trajectory_discard_error(
+    artifact: TITOTrajectoryArtifact,
+) -> DiscardTrajectoryError | None:
     """A failed trajectory may never contribute its successful prefix to training."""
     failure = artifact.metadata.get("tito_failure") or {}
     code = failure.get("code")
@@ -98,7 +188,10 @@ def trajectory_discard_error(artifact: TITOTrajectoryArtifact) -> DiscardTraject
     if code is None:
         return None
     return DiscardTrajectoryError(
-        f"Discarding TITO trajectory {artifact.trajectory_id}: {code}", code, failure.get("trace_path")
+        f"Discarding TITO trajectory {artifact.trajectory_id}: {code}",
+        code,
+        failure.get("trace_path"),
+        diagnostics=failure,
     )
 
 
@@ -108,10 +201,21 @@ class ErrorClassification:
     reason: str
     status_code: int | None = None
     trace_path: str | None = None
+    trace_paths: tuple[str, ...] = ()
+    diagnostics: dict = field(default_factory=dict)
 
     @property
     def recoverable(self) -> bool:
         return self.disposition is ErrorDisposition.RECOVERABLE
+
+    def as_log_record(self) -> dict:
+        return {
+            **_safe_diagnostics(self.diagnostics),
+            "disposition": self.disposition.value,
+            "reason": _safe_tag(self.reason),
+            "status_code": self.status_code,
+            "trace_paths": self.trace_paths,
+        }
 
 
 RolloutErrorClassifier: TypeAlias = Callable[[BaseException], ErrorClassification]
@@ -147,18 +251,88 @@ _KNOWN_CLIENT_MODULES = ("fireworks", "tinker", "openai")
 def classify_rollout_error(error: BaseException) -> ErrorClassification:
     """Return a narrow disposition; unknown and contract errors are fatal."""
 
+    details = _tito_failure_details(error)
+    if isinstance(error, SamplingRequestError):
+        details.update(error.as_error_record())
+        details["origin"] = "server" if error.final_status is not None or error.final_error_kind == "upstream_stream" else "transport"
+    classification = _classify_rollout_error(error, details)
+    diagnostics = getattr(error, "diagnostics", None)
+    details = {
+        **(diagnostics if isinstance(diagnostics, dict) else {}),
+        **details,
+    }
+    response = getattr(error, "response", None)
+    if details.get("wire_status") is None:
+        wire_status = getattr(error, "_fireworks_wire_status", None)
+        if wire_status is None:
+            wire_status = getattr(error, "_fireworks_http_status", None)
+        if wire_status is None:
+            wire_status = getattr(response, "status_code", None)
+        if wire_status is not None:
+            details["wire_status"] = wire_status
+    if details.get("request_id") is None:
+        request_id = getattr(error, "_fireworks_response_request_id", None) or extract_request_id(
+            getattr(response, "headers", None)
+        )
+        if request_id is not None:
+            details["request_id"] = request_id
+    trace_paths = getattr(error, "trace_paths", ())
+    trace_paths = trace_paths[:16] if isinstance(trace_paths, (list, tuple)) else ()
+    paths = tuple(
+        dict.fromkeys(
+            path
+            for path in (classification.trace_path, details.get("trace_path"), *trace_paths)
+            if isinstance(path, str) and 0 < len(path) <= 4096
+        )
+    )[:16]
+    return replace(
+        classification,
+        status_code=classification.status_code if classification.status_code is not None else _http_status_code(error),
+        trace_path=paths[0] if paths else None,
+        trace_paths=paths,
+        diagnostics=_safe_diagnostics(details),
+    )
+
+
+def _classify_rollout_error(error: BaseException, details: dict) -> ErrorClassification:
+
     if isinstance(error, asyncio.CancelledError):
         return ErrorClassification(ErrorDisposition.FATAL, "unexpected_cancellation")
     if isinstance(error, DiscardTrajectoryError):
         return ErrorClassification(ErrorDisposition.DISCARD, error.code, trace_path=error.trace_path)
-    details = _tito_failure_details(error)
-    if details:
-        return ErrorClassification(ErrorDisposition.DISCARD, details["code"], trace_path=details.get("trace_path"))
+    if isinstance(details.get("code"), str) and details["code"] in _TITO_DISCARD_CODES:
+        return ErrorClassification(
+            ErrorDisposition.DISCARD,
+            details["code"],
+            trace_path=details.get("trace_path"),
+        )
     if isinstance(error, RecoverableRolloutError):
         return ErrorClassification(
             ErrorDisposition.RECOVERABLE,
-            "explicit_rollout_infrastructure",
+            _safe_tag(error.reason, "explicit_rollout_infrastructure"),
         )
+    code = details.get("code")
+    origin = details.get("origin")
+    stream_error = code == "tito_server_stream_error" or (
+        isinstance(error, SamplingRequestError) and error.final_error_kind == "upstream_stream"
+    )
+    if stream_error and origin in {None, "server", "unknown"}:
+        semantic_status = details.get("upstream_status") or details.get("final_status")
+        if semantic_status is None:
+            outward_status = _http_status_code(error)
+            if outward_status is not None and 400 <= outward_status < 500:
+                semantic_status = outward_status
+        if semantic_status is None:
+            return ErrorClassification(ErrorDisposition.FATAL, "upstream_stream_rejected")
+        if semantic_status in {408, 429, 500, 502, 503, 504}:
+            return ErrorClassification(ErrorDisposition.RECOVERABLE, "upstream_stream_transient", semantic_status)
+        return ErrorClassification(ErrorDisposition.FATAL, "upstream_stream_rejected", semantic_status)
+    if origin in {"sdk", "sdk_parser", "adapter", "environment"} or (
+        origin == "unknown" and details.get("transport_hop") != "nemo_proxy_to_tito"
+    ):
+        return ErrorClassification(ErrorDisposition.FATAL, _safe_tag(code, "local_rollout_failure"))
+    if origin == "transport":
+        return ErrorClassification(ErrorDisposition.RECOVERABLE, "network_transport")
     if isinstance(error, (AssertionError, TypeError, ValueError)):
         return ErrorClassification(
             ErrorDisposition.FATAL,
@@ -208,6 +382,8 @@ def _http_status_code(error: BaseException) -> int | None:
     if status_code is None:
         status_code = getattr(error, "final_status", None)
     if status_code is None:
+        if isinstance(error, httpx.RequestError):
+            return None
         response = getattr(error, "response", None)
         status_code = getattr(response, "status_code", None)
         if status_code is None:
@@ -263,6 +439,8 @@ class CircuitBreakerSnapshot:
     total_successes: int
     total_recoverable_failures: int
     tripped: bool
+    reasons_in_window: dict[str, int] = field(default_factory=dict)
+    codes_in_window: dict[str, int] = field(default_factory=dict)
 
 
 class CircuitBreakerTripped(RuntimeError):
@@ -280,7 +458,8 @@ class CircuitBreakerTripped(RuntimeError):
             "rollout circuit breaker tripped "
             f"({reason}; consecutive={snapshot.consecutive_failures}, "
             f"rolling={snapshot.failures_in_window}/{snapshot.observations_in_window}, "
-            f"last={type(last_error).__name__}: {last_error})"
+            f"reasons={snapshot.reasons_in_window}, codes={snapshot.codes_in_window}, "
+            f"last_type={type(last_error).__name__})"
         )
 
 
@@ -289,7 +468,9 @@ class RecoverableCircuitBreaker:
 
     def __init__(self, config: CircuitBreakerConfig | None = None) -> None:
         self.config = config or CircuitBreakerConfig()
-        self._observations: deque[bool] = deque(maxlen=self.config.rolling_window_size)
+        self._observations: deque[tuple[str, str | None] | None] = deque(
+            maxlen=self.config.rolling_window_size
+        )
         self._consecutive_failures = 0
         self._total_successes = 0
         self._total_recoverable_failures = 0
@@ -299,7 +480,7 @@ class RecoverableCircuitBreaker:
 
     @property
     def snapshot(self) -> CircuitBreakerSnapshot:
-        failures = sum(self._observations)
+        failures = sum(observation is not None for observation in self._observations)
         observations = len(self._observations)
         return CircuitBreakerSnapshot(
             consecutive_failures=self._consecutive_failures,
@@ -309,11 +490,21 @@ class RecoverableCircuitBreaker:
             total_successes=self._total_successes,
             total_recoverable_failures=self._total_recoverable_failures,
             tripped=self._tripped,
+            reasons_in_window=dict(
+                Counter(item[0] for item in self._observations if item is not None)
+            ),
+            codes_in_window=dict(
+                Counter(
+                    item[1]
+                    for item in self._observations
+                    if item is not None and item[1] is not None
+                )
+            ),
         )
 
     def record_success(self) -> None:
         self._raise_if_tripped()
-        self._observations.append(False)
+        self._observations.append(None)
         self._consecutive_failures = 0
         self._total_successes += 1
 
@@ -325,7 +516,13 @@ class RecoverableCircuitBreaker:
         self._raise_if_tripped()
         if not classification.recoverable:
             raise ValueError("fatal errors cannot enter recoverable-failure accounting")
-        self._observations.append(True)
+        code = classification.diagnostics.get("code")
+        self._observations.append(
+            (
+                _safe_tag(classification.reason),
+                _safe_tag(code) if code is not None else None,
+            )
+        )
         self._consecutive_failures += 1
         self._total_recoverable_failures += 1
         self._last_error = error

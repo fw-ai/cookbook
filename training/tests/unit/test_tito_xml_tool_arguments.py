@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from fireworks.training.sdk import TITOChatRequest, TITOParseError
 from training.renderer.tito import (
     GLM53FlashTITORenderer,
@@ -25,7 +24,11 @@ from training.tests.unit.test_tito_renderer import _Tokenizer
 )
 def renderer(request: pytest.FixtureRequest) -> Any:
     renderer_class = request.param
-    tokenizer = _QwenTokenizer() if issubclass(renderer_class, Qwen38TITORenderer) else _Tokenizer()
+    tokenizer = (
+        _QwenTokenizer()
+        if issubclass(renderer_class, Qwen38TITORenderer)
+        else _Tokenizer()
+    )
     certification = TITORendererCertification(
         certification_id="test",
         renderer_names=frozenset({"test"}),
@@ -56,6 +59,18 @@ def _completion(renderer: Any, value: str) -> str:
     if isinstance(renderer, Qwen38TITORenderer):
         return f"reason</think><tool_call><function=write_file><parameter=content>{value}</parameter></function></tool_call>"
     return f"reason</think><tool_call>write_file<arg_key>content</arg_key><arg_value>{value}</arg_value></tool_call>"
+
+
+def test_renderer_rejection_exposes_a_stable_reason(renderer: Any) -> None:
+    text = _completion(renderer, "hello") + "<tool_cal"
+    with pytest.raises(TITOParseError) as failure:
+        renderer.parse_assistant(
+            _request({"type": "string"}),
+            renderer.tokenizer.encode(text),
+            text,
+            "length",
+        )
+    assert failure.value.reason_code == "length_tool_trailing_content"
 
 
 @pytest.mark.parametrize(
@@ -138,7 +153,11 @@ def test_incomplete_tool_call_at_length_limit_is_rejected(renderer: Any) -> None
 
 def test_length_stop_with_complete_and_incomplete_calls_is_rejected(renderer: Any) -> None:
     text = _completion(renderer, "hello")
-    text += _completion(renderer, "world").split("</think>", 1)[1].removesuffix("</tool_call>")
+    text += (
+        _completion(renderer, "world")
+        .split("</think>", 1)[1]
+        .removesuffix("</tool_call>")
+    )
     with pytest.raises(TITOParseError):
         renderer.parse_assistant(_request({"type": "string"}), renderer.tokenizer.encode(text), text, "length")
 

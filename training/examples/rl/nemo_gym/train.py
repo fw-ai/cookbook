@@ -39,7 +39,9 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
+import signal
 import subprocess
 import threading
 import time
@@ -51,13 +53,15 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+from fireworks.training.sdk import TITOError
 from training.renderer.model_info import get_recommended_renderer_name
-from training.renderer.tokenizer import get_tokenizer
 
 from training.examples.rl.nemo_gym.proxy import RecordingChatProxy, RolloutSession
 from training.recipes.async_rl_loop import Config, RolloutSetup, main
 from training.utils import DeployConfig, TrainerConfig, WandBConfig
 from training.utils.rl.rollout import RolloutRun
+from training.utils.rl.async_rl.errors import RecoverableRolloutError, trajectory_discard_error
+from training.utils.tokenizers import load_tokenizer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -204,12 +208,18 @@ def write_nemo_gym_config(*, proxy_port: int) -> None:
     logger.info("wrote env.yaml pointing at the proxy (port %d)", proxy_port)
 
 
+def _check_gym_head_available() -> None:
+    if _http_up(GYM_HEAD_SERVER_URL):
+        raise RuntimeError(f"NeMo head address is already in use: {GYM_HEAD_SERVER_URL}; refusing to reuse another run")
+
+
 def start_gym_env(
     *, resources_server: str, agent_name: str, timeout_s: float, log_dir: Path
 ) -> tuple[subprocess.Popen, str]:
     """Launch `gym env start` and return (process, agent_base_url)."""
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "gym_env_start.log"
+    _check_gym_head_available()
     with log_path.open("w") as log_file:
         proc = _launch_gym_env(resources_server, log_file)
     logger.info("gym env start launched (pid=%d, log=%s), waiting for readiness...", proc.pid, log_path)
@@ -241,6 +251,7 @@ def _launch_gym_env(resources_server: str, log_file: Any) -> subprocess.Popen:
         env={**os.environ, "FIREWORKS_API_KEY": "unused-proxy-handles-auth"},
         stdout=log_file,
         stderr=subprocess.STDOUT,
+        start_new_session=True,
     )
 
 
@@ -289,12 +300,22 @@ def _wait_for_gym_env(
 
 
 def stop_gym_env(proc: subprocess.Popen) -> None:
-    if proc.poll() is None:
-        proc.terminate()
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        logger.error("NeMo Gym process did not exit after SIGKILL pid=%s", proc.pid)
 
 
 def build_rollout_fn_factory(
@@ -335,6 +356,8 @@ def build_rollout_fn_factory(
             }
             t0 = time.monotonic()
             succeeded = False
+            failure = None
+            reward_failure = False
             try:
                 await proxy_thread.open_session(rollout_id)
                 async with aiohttp.ClientSession() as http:
@@ -344,11 +367,59 @@ def build_rollout_fn_factory(
                         timeout=aiohttp.ClientTimeout(total=run_timeout_s),
                     ) as resp:
                         resp.raise_for_status()
-                        result = await resp.json()
-                        reward = float(result["reward"])
+                        try:
+                            result = await resp.json()
+                            reward = float(result["reward"])
+                            if not math.isfinite(reward):
+                                raise ValueError("NeMo reward must be finite")
+                        except (KeyError, TypeError, ValueError, OverflowError, aiohttp.ContentTypeError):
+                            reward_failure = True
+                            raise
                         succeeded = True
+            except (aiohttp.ClientError, TimeoutError, KeyError, TypeError, ValueError, OverflowError) as error:
+                failure = error
             finally:
                 session = await proxy_thread.finish_session(rollout_id, abandon=not succeeded)
+            if session is not None and session.artifact is not None:
+                discard = trajectory_discard_error(session.artifact)
+                if discard is not None:
+                    raise discard
+            if session is not None and session.failure is not None:
+                session.raise_if_rejected()
+                if failure is not None and not reward_failure:
+                    raise session.failure from failure
+            if failure is not None:
+                reason = (
+                    "nemo_reward_invalid" if reward_failure
+                    else "nemo_run_timeout" if isinstance(failure, TimeoutError)
+                    else "nemo_run_http" if isinstance(failure, aiohttp.ClientError)
+                    else "nemo_reward_invalid"
+                )
+                status = getattr(failure, "status", None)
+                diagnosis = TITOError(
+                    reason, status or 500, "NeMo native rollout failed", origin="environment",
+                    context={
+                        "phase": "reward" if reward_failure else "nemo_run",
+                        "final_status": status,
+                    },
+                )
+                trace_path = (
+                    await session.retain_failure_trace(diagnosis)
+                    if session is not None and session.artifact is not None else None
+                )
+                failure.diagnostics = diagnosis.as_error_record()
+                failure.trace_paths = (trace_path,) if trace_path is not None else ()
+                if reward_failure or not isinstance(failure, (aiohttp.ClientError, TimeoutError)):
+                    logger.error("NeMo rollout failed origin=environment phase=reward rollout_id=%s", rollout_id)
+                    raise failure
+                if status is not None and status not in {408, 429} and not 500 <= status <= 599:
+                    raise failure
+                raise RecoverableRolloutError(
+                    "NeMo native /run failed",
+                    reason=reason,
+                    trace_paths=(trace_path,) if trace_path is not None else (),
+                    diagnostics={"origin": "environment", "phase": "nemo_run", "final_status": status},
+                ) from failure
             if session is None:
                 logger.warning("no proxy session recorded for rollout_id=%s", rollout_id)
                 return None
@@ -373,6 +444,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="NeMo Gym multi-step async RL (Dedicated deployment)")
     p.add_argument("--base-model", required=True)
     p.add_argument("--tokenizer-model", required=True)
+    p.add_argument("--tokenizer-revision", default=None)
+    p.add_argument("--deployment-shape", default=None)
+    p.add_argument("--trainer-job-id", default=None)
+    p.add_argument("--deployment-id", default=None)
+    p.add_argument("--max-seq-len", type=int, default=None)
+    p.add_argument("--max-head-offpolicy-versions", type=int, default=0)
     p.add_argument("--renderer-name", default="")
     p.add_argument(
         "--resources-server",
@@ -445,6 +522,7 @@ def run() -> None:
     if "FIREWORKS_API_KEY" not in os.environ:
         raise SystemExit("FIREWORKS_API_KEY is required")
     args = parse_args()
+    _check_gym_head_available()
     dataset_path = Path(args.dataset_path) if args.dataset_path else _default_dataset_path(args.resources_server)
 
     rows = _load_rows(dataset_path)[: args.max_rows]
@@ -452,7 +530,7 @@ def run() -> None:
         raise SystemExit(f"dataset is empty: {dataset_path}")
     logger.info("loaded %d NeMo Gym rows from %s", len(rows), dataset_path)
 
-    tokenizer = get_tokenizer(args.tokenizer_model)
+    tokenizer = load_tokenizer(args.tokenizer_model, args.tokenizer_revision)
     renderer_name = args.renderer_name or get_recommended_renderer_name(args.tokenizer_model)
 
     proxy = RecordingChatProxy(
@@ -461,6 +539,7 @@ def run() -> None:
         max_sample_tokens=args.max_completion_tokens,
         temperature=args.temperature,
         exclude_user_simulator=args.exclude_user_simulator,
+        failure_trace_dir=Path(args.log_path).resolve() / "tito-failures",
     )
     proxy_thread = ProxyThread(proxy)
     gym_proc = None
@@ -489,13 +568,18 @@ def run() -> None:
             temperature=args.temperature,
             epochs=args.epochs,
             max_rows=args.max_rows,
+            max_seq_len=args.max_seq_len,
+            max_head_offpolicy_versions=args.max_head_offpolicy_versions,
             lora_rank=args.lora_rank,
             prompt_groups_per_step=args.prompt_groups_per_step,
             max_concurrency_rollout_sample=args.max_concurrency_rollout_sample,
             output_model_id=args.output_model_id,
-            trainer=TrainerConfig(training_shape_id=args.training_shape_id),
+            trainer=TrainerConfig(training_shape_id=args.training_shape_id, job_id=args.trainer_job_id),
             deployment=DeployConfig(
+                deployment_id=args.deployment_id,
                 tokenizer_model=args.tokenizer_model,
+                tokenizer_revision=args.tokenizer_revision,
+                deployment_shape=args.deployment_shape,
                 replica_count=args.replica_count,
             ),
             wandb=WandBConfig(

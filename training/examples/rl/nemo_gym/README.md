@@ -50,8 +50,14 @@ calls are not trained on as policy actions.
   `RolloutSetup.sample_kwargs` (temperature, `top_p=1.0`, `top_k=0`, ...). A per-request
   `temperature`/`top_p` is ignored, and a request's `max_tokens` can only lower the
   configured `--max-completion-tokens`.
-- **Tool calls:** `parallel_tool_calls=false` is enforced on the returned response;
-  a model response containing multiple calls fails the rollout.
+- **Tool calls:** `parallel_tool_calls=false` is enforced on the returned response.
+  Multiple calls reject the trajectory locally with HTTP 422 and
+  `nemo_parallel_tool_calls` (`origin=adapter`), not a retryable upstream 502.
+  The retained failure artifact contains the exact sampled calls; none are dropped
+  or reparsed. Grammar-free RL generation does not guarantee single-call adherence.
+  Tasks with independent tools may explicitly set `parallel_tool_calls=true` in
+  their native `responses_create_params`; dependent-tool tasks should retain their
+  stricter policy.
 - **Routing replay:** TiTo retains expert routing in trainer coordinates and rejects
   missing or misaligned routing when the recipe requires it.
 - **Sessions admit only active rollouts.** The recipe registers an id before calling
@@ -60,6 +66,22 @@ calls are not trained on as policy actions.
 - **Rollout ids are explicit and unique per call** (`_ng_rollout_id`), so a retry never
   appends onto a stale session.
 - **Logs:** `gym_env_start.log` (NeMo Gym's startup output) is written under `--log-path`.
+
+Pin `--tokenizer-revision` to use the same recipe tokenizer contract in the
+proxy and training loop. `--deployment-shape`, `--max-seq-len`, and
+`--max-head-offpolicy-versions` pass directly into the shared recipe; context
+length and `--max-completion-tokens` are independent limits.
+
+Model-call failures retain TITO's structured origin, request/retry information,
+and parser rejection code even if Gym returns a generic HTTP error from `/run`.
+Recognized parser failures discard only that trajectory. SDK parser traces
+remain under `<log-path>/tito-failures`. Adapter response-policy rejections use
+the SDK's bounded failure-artifact store; always use the logged `trace_path`
+to locate the retained evidence.
+Environment HTTP/timeout failures have separate `nemo_run_http` and
+`nemo_run_timeout` reasons. Non-transient HTTP errors and invalid rewards fail
+without being relabeled as parser failures. Shutdown terminates the owned Gym
+process group, including resource, agent and model servers.
 
 ## Tests
 

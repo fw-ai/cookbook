@@ -8,8 +8,9 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from fireworks.training.sdk import TITOParseError, TITOChatRequest, TITOError, TITOParsedAssistant
+from fireworks.training.sdk import TITOChatRequest, TITOError, TITOParsedAssistant
 
+from training.renderer.tito._errors import renderer_parse_error
 from training.renderer.tito.shared import (
     TITORendererCertification,
     _ensure_tool_call_ids,
@@ -163,18 +164,30 @@ class DeepSeekV4TITORenderer:
                     text + self._encoder.eos_token, thinking_mode="thinking"
                 )
             except (AssertionError, ValueError) as exc:
-                raise TITOParseError("malformed DeepSeek V4 assistant output") from exc
+                raise renderer_parse_error(
+                    "malformed DeepSeek V4 assistant output",
+                    reason_code="native_parse_rejected",
+                ) from exc
         calls = message.get("tool_calls") or []
         allowed = {str((tool.get("function") or {}).get("name")) for tool in request.tools}
         if any(call.get("namespace") or str(call["function"]["name"]) not in allowed for call in calls):
-            raise TITOParseError("DeepSeek V4 tool call names are absent from the request")
+            raise renderer_parse_error(
+                "DeepSeek V4 tool call names are absent from the request",
+                reason_code="tool_unknown_name",
+            )
         for call in calls:
             try:
                 arguments = json.loads(call["function"]["arguments"])
             except json.JSONDecodeError as exc:
-                raise TITOParseError("DeepSeek V4 tool arguments are invalid JSON") from exc
+                raise renderer_parse_error(
+                    "DeepSeek V4 tool arguments are invalid JSON",
+                    reason_code="tool_arguments_invalid_json",
+                ) from exc
             if not isinstance(arguments, dict):
-                raise TITOParseError("DeepSeek V4 tool arguments must be a JSON object")
+                raise renderer_parse_error(
+                    "DeepSeek V4 tool arguments must be a JSON object",
+                    reason_code="tool_arguments_not_object",
+                )
         if not calls:
             message.pop("tool_calls", None)
         message = _ensure_tool_call_ids(message, completion_ids)

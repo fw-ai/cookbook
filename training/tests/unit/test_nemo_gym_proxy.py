@@ -7,6 +7,7 @@ import asyncio
 import inspect
 import threading
 from types import SimpleNamespace
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -18,6 +19,7 @@ from fireworks.training.sdk.sampling import SampledCompletion, SampledRequestRes
 
 from training.examples.rl.nemo_gym.proxy import RecordingChatProxy, _is_user_simulator_call
 from training.examples.rl.nemo_gym import train as nemo_train
+from training.utils.rl.async_rl.errors import DiscardTrajectoryError, RecoverableRolloutError, classify_rollout_error
 from training.utils.rl.rollout.types import Rollout, RolloutRun, rollout_to_prompt_group
 
 
@@ -108,7 +110,12 @@ def test_admission_defaults_and_segments(monkeypatch: Any) -> None:
                 assert session is not None and session.turn_count == 2
                 samples = session.to_run(reward=1.0).segments
                 assert len(samples) == 2 and all(any(s.loss_mask) and s.reward == 1 for s in samples)
-                assert (await http.post(url, json=body(user="rollout"))).status == 410
+                late = await http.post(url, json=body(user="rollout"))
+                assert late.status == 410
+                terminal = (await late.json())["error"]
+                assert terminal["termination_phase"] == "closed"
+                assert terminal["terminal_action"] == "finish"
+                assert terminal["terminal_status"] == "completed"
                 assert proxy.active_rollout_ids() == []
                 assert await proxy.finish_session("rollout") is None
                 assert sampler.calls[0]["temperature"] == 0.7
@@ -167,8 +174,12 @@ def test_abandon_cancels_sampling_and_rejects_late_requests(monkeypatch: Any) ->
                 await asyncio.wait_for(sampler.started.wait(), timeout=2)
                 await asyncio.wait_for(proxy.finish_session("timeout", abandon=True), timeout=2)
                 await asyncio.wait_for(sampler.cancelled.wait(), timeout=2)
-                assert (await http.post(url, json=body(user="timeout"))).status == 410
-                await asyncio.gather(pending, return_exceptions=True)
+                late = await http.post(url, json=body(user="timeout"))
+                assert late.status == 410
+                assert (await late.json())["error"]["terminal_action"] == "abandon"
+                closed = await asyncio.wait_for(pending, timeout=2)
+                assert closed.status == 410
+                assert (await closed.json())["error"]["terminal_action"] == "abandon"
                 assert proxy.active_rollout_ids() == []
         finally:
             await proxy.close()
@@ -206,7 +217,7 @@ def test_rollout_factory_closes_session_on_gym_failure(failure: bool) -> None:
 
     async def finished(rollout_id: str, *, abandon: bool) -> Any:
         events.append(("finish", rollout_id, abandon))
-        return SimpleNamespace(to_run=lambda **kw: RolloutRun(segments=[]), turn_count=0)
+        return SimpleNamespace(to_run=lambda **kw: RolloutRun(segments=[]), turn_count=0, artifact=None, failure=None)
 
     async def run() -> None:
         app = web.Application()
@@ -240,6 +251,12 @@ def test_recipe_startup_and_main_contract(monkeypatch, failure):
         "dataset_path": "rows.jsonl",
         "max_rows": 1,
         "tokenizer_model": "fake",
+        "tokenizer_revision": "pinned-tokenizer-revision",
+        "deployment_shape": "accounts/test-account/deploymentShapes/test/versions/pinned",
+        "trainer_job_id": "trainer",
+        "deployment_id": "deployment",
+        "max_seq_len": 262144,
+        "max_head_offpolicy_versions": 10,
         "renderer_name": "fake",
         "max_completion_tokens": 2,
         "temperature": 1.0,
@@ -266,8 +283,14 @@ def test_recipe_startup_and_main_contract(monkeypatch, failure):
     }
     monkeypatch.setenv("FIREWORKS_API_KEY", "unused-test-credential")
     monkeypatch.setattr(nemo_train, "parse_args", lambda: argparse.Namespace(**args))
+    monkeypatch.setattr(nemo_train, "_http_up", lambda _: False)
     monkeypatch.setattr(nemo_train, "_load_rows", lambda _: [{"id": "row"}])
-    monkeypatch.setattr(nemo_train, "get_tokenizer", lambda _: object())
+    def load_tokenizer(model: str, revision: str) -> object:
+        assert model == "fake"
+        assert revision == "pinned-tokenizer-revision"
+        return object()
+
+    monkeypatch.setattr(nemo_train, "load_tokenizer", load_tokenizer)
     monkeypatch.setattr(nemo_train, "RecordingChatProxy", lambda **kw: object())
     thread = SimpleNamespace(start=lambda _: 1234, stop=lambda: events.append("proxy-stop"))
     monkeypatch.setattr(nemo_train, "ProxyThread", lambda _: thread)
@@ -290,6 +313,14 @@ def test_recipe_startup_and_main_contract(monkeypatch, failure):
 
     def main(*args, **kwargs):
         signature.bind(*args, **kwargs)
+        config = args[0]
+        assert config.max_seq_len == 262144
+        assert config.max_head_offpolicy_versions == 10
+        assert config.deployment.tokenizer_revision == "pinned-tokenizer-revision"
+        assert config.deployment.deployment_shape == "accounts/test-account/deploymentShapes/test/versions/pinned"
+        assert config.trainer.training_shape_id == "shape"
+        assert config.trainer.job_id == "trainer"
+        assert config.deployment.deployment_id == "deployment"
         events.append("main")
 
     monkeypatch.setattr(nemo_train, "write_nemo_gym_config", configure)
@@ -347,11 +378,14 @@ def test_real_proxy_thread_rollout_cleanup(monkeypatch: Any, mode: str) -> None:
                 assert result.metadata["tito_metrics"]["tito/coverage/trained_tokens"] == 2.0
                 assert result.metadata["tito_segment_count"] == 1
             else:
-                expected = {"http_error": aiohttp.ClientResponseError, "timeout": TimeoutError, "no_reward": KeyError}[
+                expected = {"http_error": RecoverableRolloutError, "timeout": RecoverableRolloutError, "no_reward": KeyError}[
                     mode
                 ]
-                with pytest.raises(expected):
+                with pytest.raises(expected) as failure:
                     await rollout({"id": 0}, cursor_index=0, rollout_idx=0)
+                classification = classify_rollout_error(failure.value)
+                assert classification.diagnostics["origin"] == "environment"
+                assert classification.trace_path and Path(classification.trace_path).is_file()
             async with aiohttp.ClientSession() as http:
                 response = await http.post(
                     f"http://127.0.0.1:{proxy.port}/v1/chat/completions", json=body(user=bodies[0]["_ng_rollout_id"])
@@ -391,8 +425,21 @@ def test_single_tool_policy_is_enforced(monkeypatch: Any) -> None:
                     f"http://127.0.0.1:{proxy.port}/v1/chat/completions",
                     json=body(user="single-tool", parallel_tool_calls=False),
                 )
-                assert response.status == 502
-            await proxy.finish_session("single-tool", abandon=True)
+                assert response.status == 422
+                assert (await response.json())["error"]["origin"] == "adapter"
+                sampler_calls = len(proxy._initial_sampler.calls)
+                retry = await http.post(
+                    f"http://127.0.0.1:{proxy.port}/v1/chat/completions",
+                    json=body(user="single-tool", parallel_tool_calls=True),
+                )
+                assert retry.status == 422
+                assert (await retry.json())["error"]["code"] == "nemo_parallel_tool_calls"
+                assert len(proxy._initial_sampler.calls) == sampler_calls
+            session = await proxy.finish_session("single-tool", abandon=True)
+            assert session.artifact.status == "failed"
+            assert session.failure.context["trace_path"]
+            with pytest.raises(DiscardTrajectoryError, match="response validation"):
+                session.to_run(reward=1)
         finally:
             await proxy.close()
 
