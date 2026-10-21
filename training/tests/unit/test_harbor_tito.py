@@ -1101,6 +1101,13 @@ def test_only_local_docker_trial_starts_are_paced(
     monkeypatch, tmp_path, environment, expected_pace_calls
 ) -> None:
     setup = _setup(tmp_path)
+    if environment == "e2b":
+        monkeypatch.setenv("E2B_HTTP_VERSION", "1.1")
+        monkeypatch.setitem(
+            sys.modules,
+            "e2b.connection_config",
+            SimpleNamespace(resolve_http_version=lambda: "1.1"),
+        )
 
     async def run_trial(**_kwargs):
         return _outcome(environment_type=environment)
