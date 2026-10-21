@@ -1,8 +1,26 @@
 # TITO failure debugging
 
+The Harbor E2B transport default requires an E2B SDK that implements
+`E2B_HTTP_VERSION` (use the example pin, 2.55.0, compatible with the cookbook's
+`pyqwest==0.10.0`; E2B 2.56 instead requires pyqwest 0.12). Unsupported SDKs fail before sandbox
+creation rather than recording an unverified HTTP version. An empty variable
+uses the HTTP/1.1 default, just like an unset variable.
+
 Read `error.code` and `error.origin` before investigating. HTTP status alone
 does not identify a backend failure. Streaming can return HTTP 200 followed by
 an `event: error` with the same structured diagnosis as a JSON error.
+
+Harbor E2B command/file streams are a separate transport from Tito-to-inference
+HTTP. The shared Harbor runner defaults E2B SDK requests to HTTP/1.1 to avoid
+observed HTTP/2 command-stream resets under sustained agent output. Set
+`E2B_HTTP_VERSION=2` explicitly to opt into HTTP/2; invalid values fail before
+trial setup. This is process-level E2B SDK configuration and is inherited by
+worker processes; Docker and inference HTTP transports are unchanged.
+Sidecar launch metadata and successful rollouts record
+`harbor_e2b_http_version`. There is no
+automatic replay/fallback after a command-stream read failure: the command may
+already have executed, so replay could duplicate side effects. This workaround
+does not establish the cause of a separate customer socket-closure report.
 
 | Code | Origin | First check |
 |---|---|---|
