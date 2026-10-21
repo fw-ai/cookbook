@@ -93,7 +93,15 @@ def test_text_blocks_match_joined_native_text(native: tuple[Any, DeepSeekV4TITOR
 def native(request: pytest.FixtureRequest) -> tuple[Any, DeepSeekV4TITORenderer]:
     transformers = pytest.importorskip("transformers")
     repository, revision, name = request.param
-    tokenizer = transformers.TokenizersBackend.from_pretrained(repository, revision=revision, trust_remote_code=False)
+    if name == DEEPSEEK_V41_RENDERER_NAME:
+        # lazy: tokenizer loading requires the optional transformers dependency.
+        from training.utils.tokenizers import load_tokenizer
+
+        tokenizer = load_tokenizer(repository, tokenizer_revision=revision, trust_remote_code=False)
+    else:
+        tokenizer = transformers.TokenizersBackend.from_pretrained(
+            repository, revision=revision, trust_remote_code=False
+        )
     renderer = build_sidecar_tito_renderer(tokenizer, name)
     assert renderer.renderer_id == name
     assert renderer.certification_id.startswith(repository.rsplit("/", 1)[-1].lower())
@@ -360,9 +368,12 @@ def test_native_bundle_loads_offline_and_rejects_missing_or_modified_encoder(
 
 @pytest.fixture(scope="module")
 def v41() -> DeepSeekV4TITORenderer:
-    transformers = pytest.importorskip("transformers")
-    tokenizer = transformers.TokenizersBackend.from_pretrained(
-        DEEPSEEK_V41_REPOSITORY, revision=DEEPSEEK_V41_REVISION, trust_remote_code=False
+    pytest.importorskip("transformers")
+    # lazy: tokenizer loading requires the optional transformers dependency.
+    from training.utils.tokenizers import load_tokenizer
+
+    tokenizer = load_tokenizer(
+        DEEPSEEK_V41_REPOSITORY, tokenizer_revision=DEEPSEEK_V41_REVISION, trust_remote_code=False
     )
     return build_sidecar_tito_renderer(tokenizer, DEEPSEEK_V41_RENDERER_NAME)
 
