@@ -126,7 +126,7 @@ def _build_deepseek_v41_tito_renderer(tokenizer: Any, certification: TITORendere
 
 _TITO_RENDERER_CERTIFICATIONS = (
     TITORendererCertification(
-        certification_id="deepseek-v4.1-flash@2cba9e42-full-history-v1",
+        certification_id="deepseek-v4.1-flash@2cba9e42-full-history-v2",
         renderer_names=frozenset({DEEPSEEK_V41_RENDERER_NAME}),
         tokenizer_fingerprint=DEEPSEEK_V41_TOKENIZER_FINGERPRINT,
         renderer_factory=_build_deepseek_v41_tito_renderer,

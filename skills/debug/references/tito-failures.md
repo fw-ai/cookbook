@@ -43,6 +43,14 @@ persistent discards can leave no usable training samples.
 Replay offline with the recorded renderer/certification/tokenizer fingerprint,
 exact request, completion token IDs, and finish reason. The primary parser is
 the only entry point; legacy artifact `parser_fallback` fields remain readable.
+For DeepSeek V4.1, use the recipe tokenizer loader with the certification's
+pinned revision. Its declared BOS/EOS post-processor is part of the fingerprint;
+loading the raw backend without those settings produces a different contract.
+The recipe loader's Transformers tokenizer class and model type can affect
+that contract, but the hash covers only serialized backend, template and
+special-token map, not class/model-type identity. After a Transformers bump,
+rerun the pinned recipe-loader fingerprint and behavior tests before
+recertification; a raw backend tokenizer is not an equivalent test input.
 A length stop during reasoning can be valid. A parser rejection alone does not
 establish whether the model, tokenizer contract, or parser caused the failure.
 

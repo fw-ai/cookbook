@@ -13,7 +13,8 @@ from training.renderer.tito.deepseek_v4 import DeepSeekV4TITORenderer
 DEEPSEEK_V41_RENDERER_NAME = "deepseek_v41_flash"
 DEEPSEEK_V41_REPOSITORY = "deepseek-ai/DeepSeek-V4.1-Flash"
 DEEPSEEK_V41_REVISION = "2cba9e42aa026125f3ed06c6d98c1db82f7ca027"
-DEEPSEEK_V41_TOKENIZER_FINGERPRINT = "b43febf2f9bcb83a7dd85e0edcb51be219cb495a4e5f5b57f6c85cdb04c73bad"
+# Include the declared BOS/EOS post-processor used by serving and recipe loading.
+DEEPSEEK_V41_TOKENIZER_FINGERPRINT = "e3736d43b24b355ca5552875d19cf04524d5ea6b424a362a112692e61189ce75"
 DEEPSEEK_V41_ENCODER_FILE = "encoding/encoding.py"
 DEEPSEEK_V41_ENCODER_SHA256 = "502bdaec8a3fd88ebc24c4721a7038fbe42f2063c664638127056107920035c1"
 
