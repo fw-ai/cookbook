@@ -24,17 +24,58 @@ trajectory is unusable).
 """
 
 import json
+import logging
 import os
+import stat
 import sys
 from pathlib import Path
 
 sys.path.insert(0, "/opt/mimoagent-mcp")  # flat copies: mcp_client.py, mcp_tools.py
 
-from mimoagent.environments.local import LocalEnvironment
+from mimoagent.environments.local import LocalEnvironment as _LocalEnvironment
 from mimoagent.models.openai_chat import OpenAIChatModel
 
 _MESSAGES_PATH = Path("/logs/agent/mimoagent-messages.json")
 _RESULT_PATH = Path("/logs/agent/mimoagent-result.json")
+_LOGGER = logging.getLogger(__name__)
+
+
+class LocalEnvironment(_LocalEnvironment):
+    """Keep a failed shell command from removing the container's null device."""
+
+    def execute(self, command: str, cwd: str = "", timeout: int | None = None):
+        try:
+            original = os.lstat(os.devnull)
+        except OSError:
+            original = None
+        try:
+            return super().execute(command, cwd=cwd, timeout=timeout)
+        finally:
+            # For example, `go tool compile -o /dev/null` removes its output
+            # after a compile error. Preserve the command's result while
+            # restoring the standard device before the next tool/sidecar call.
+            if original is not None and stat.S_ISCHR(original.st_mode):
+                try:
+                    try:
+                        os.lstat(os.devnull)
+                    except FileNotFoundError:
+                        try:
+                            os.mknod(os.devnull, original.st_mode, original.st_rdev)
+                        except FileExistsError:
+                            pass
+                        else:
+                            os.chmod(os.devnull, stat.S_IMODE(original.st_mode))
+                except OSError as error:
+                    # Restricted containers may allow unlink but deny mknod.
+                    # Report the broken environment without hiding the tool's
+                    # diagnostics or replacing an active timeout exception.
+                    # Traceback chaining can include a timed-out shell command
+                    # and its credentials. Log only the restoration error type.
+                    _LOGGER.error(
+                        "Failed to restore the container null device (%s)",
+                        type(error).__name__,
+                    )
+
 
 _BASH_SYSTEM_TEMPLATE = """You are an agent, your current working directory is {{cwd}}.
 
