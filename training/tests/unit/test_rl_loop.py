@@ -93,7 +93,7 @@ def test_main_threads_checkpoint_resume_options(monkeypatch) -> None:
         module, "ReconnectableClient", SimpleNamespace(from_training_client=lambda client, **_kwargs: client)
     )
     monkeypatch.setattr(module, "TrainingCheckpoints", _Checkpoints)
-    monkeypatch.setattr(module, "make_weight_sync", lambda *_args: lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "make_weight_sync", lambda *_args, **_kwargs: lambda *_a, **_kw: None)
 
     cfg = module.Config(
         log_path="/tmp/rl-test",
@@ -429,6 +429,7 @@ def _run_loop(
 
 class _Policy:
     default_timeout = 3600
+    lora_rank = 0
 
     def __init__(self, events: list[str]):
         self.events = events
@@ -474,7 +475,7 @@ def test_main_collects_trains_and_hotloads_before_next_batch(monkeypatch) -> Non
     )
 
     assert result == {"steps": 2, "policy_job_id": "trainer", "deployment_id": "deployment"}
-    assert events.index("hotload:/step-0") < events.index("sample:0")
+    assert events.index("hotload:/step-0-base") < events.index("sample:0")
     assert events.index("sample:1") < events.index("optim")
     assert events.index("hotload:/step-1") < events.index("sample:2")
     assert events.count("optim") == 2
@@ -588,7 +589,7 @@ def test_main_passes_renderer_name_to_the_default_rollout(monkeypatch):
     monkeypatch.setattr(
         module, "ReconnectableClient", SimpleNamespace(from_training_client=lambda client, **_kwargs: client)
     )
-    monkeypatch.setattr(module, "make_weight_sync", lambda *_args: lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "make_weight_sync", lambda *_args, **_kwargs: lambda *_a, **_kw: None)
     monkeypatch.setattr(
         module, "TrainingCheckpoints", lambda *_args, **_kwargs: SimpleNamespace(resume=lambda **_kw: None)
     )
@@ -681,7 +682,7 @@ def test_default_rollout_preserves_images_and_sdk_routing(
         "ReconnectableClient",
         SimpleNamespace(from_training_client=lambda client, **_kwargs: client),
     )
-    monkeypatch.setattr(module, "make_weight_sync", lambda *_args: lambda *_a, **_kw: None)
+    monkeypatch.setattr(module, "make_weight_sync", lambda *_args, **_kwargs: lambda *_a, **_kw: None)
     monkeypatch.setattr(
         module,
         "TrainingCheckpoints",
@@ -784,7 +785,7 @@ def test_sync_rl_sigterm_stops_before_publication_and_cursor_commit(
 
     with pytest.raises(TerminatedBySignal, match="SIGTERM"):
         _run_loop(monkeypatch, policy=Policy(events), events=events, rows=[{"id": 0}])
-    assert "hotload:/step-0" in events
+    assert "hotload:/step-0-base" in events
     assert "hotload:/step-1" not in events
     assert loaders[0].data_consumed == 0
     assert not any(event.startswith("checkpoint:") for event in events)

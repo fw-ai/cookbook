@@ -17,6 +17,7 @@ from harbor.agents.installed.opencode import OpenCode
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
+from training.examples.harbor_rl.tito.harness_exec import exec_harness
 from training.examples.harbor_rl.tito.sidecar import (
     harness_command,
     install_sidecar,
@@ -235,7 +236,8 @@ class ConfigurableOpenCode(OpenCode):
         cli_flags_arg = f"{cli_flags} " if cli_flags else ""
         resume_flag = "--continue " if self._resume else ""
         await self._write_config(environment, env=env)
-        await self.exec_as_agent(
+        await exec_harness(
+            self.exec_as_agent,
             environment,
             command=harness_command(
                 'if [ -f "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi; '
@@ -247,6 +249,7 @@ class ConfigurableOpenCode(OpenCode):
                 status_path=_AGENT_STATUS_PATH,
                 log_path="/logs/agent/opencode.txt",
             ),
+            log_path="/logs/agent/opencode.txt",
             env=env,
         )
 

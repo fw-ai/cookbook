@@ -15,6 +15,7 @@ from harbor.agents.installed.base import BaseInstalledAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
+from training.examples.harbor_rl.tito.harness_exec import exec_harness
 from training.examples.harbor_rl.tito.sidecar import (
     harness_command,
     install_sidecar,
@@ -110,13 +111,15 @@ class ConfigurableMimoAgent(BaseInstalledAgent):
         await upload_private_text(
             environment, content=instruction, remote_path=_TASK_PATH
         )
-        await self.exec_as_agent(
+        await exec_harness(
+            self.exec_as_agent,
             environment,
             command=harness_command(
                 f"{_VENV_PYTHON} {_DRIVER_PATH}",
                 status_path=_STATUS_PATH,
                 log_path="/logs/agent/mimoagent.txt",
             ),
+            log_path="/logs/agent/mimoagent.txt",
             env={
                 "OPENAI_BASE_URL": self._policy_base_url,
                 "OPENAI_API_KEY": self._policy_api_key,

@@ -12,6 +12,7 @@ from harbor.agents.installed.pi import Pi
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
+from training.examples.harbor_rl.tito.harness_exec import exec_harness
 from training.examples.harbor_rl.tito.sidecar import (
     harness_command,
     install_sidecar,
@@ -186,7 +187,8 @@ class ConfigurablePi(Pi):
         cli_flags_arg = f"{cli_flags} " if cli_flags else ""
         resume_flag = "--continue " if self._resume else ""
         await self._write_config(environment)
-        await self.exec_as_agent(
+        await exec_harness(
+            self.exec_as_agent,
             environment,
             command=harness_command(
                 'if [ -f "$HOME/.nvm/nvm.sh" ]; then . "$HOME/.nvm/nvm.sh"; fi; '
@@ -200,6 +202,7 @@ class ConfigurablePi(Pi):
                 # Streaming deltas would dominate the retained lifecycle log.
                 log_filter='grep -v \'"type":"message_update"\'',
             ),
+            log_path="/logs/agent/pi.txt",
             env={
                 "FIREWORKS_TITO_TOOL_TIMEOUT_SECONDS": str(self._tool_timeout_seconds),
                 "FIREWORKS_TITO_TOOL_PROFILE": self._tool_profile,

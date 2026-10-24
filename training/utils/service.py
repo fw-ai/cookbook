@@ -36,17 +36,34 @@ from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 logger = logging.getLogger(__name__)
 
 
-def make_weight_sync(policy: Any, service: Any, deployment: DeployConfig):
-    """Select publication once, preserving FILE names and initial-base requests."""
+def make_weight_sync(
+    policy: Any,
+    service: Any,
+    deployment: DeployConfig,
+) -> Callable[..., Any]:
+    """Select publication once, keeping full-parameter BASE exports separate."""
     if getattr(policy, "supports_rdma_weight_sync", False) is True:
+
         def publish(name: str, **kwargs: Any) -> Any:
             result = policy.weight_sync()
-            logger.info("Weight sync completed: %s", "RDMA" if result.optimizer_version is not None else "FILE")
+            logger.info(
+                "Weight sync completed: %s",
+                "RDMA" if result.optimizer_version is not None else "FILE",
+            )
             return result
 
         return publish
-    def publish(name, **kwargs):
-        saved = policy.save_weights_for_sampler(name, **kwargs)
+
+    lora_rank = getattr(policy, "lora_rank", None)
+
+    def publish(name: str, **kwargs: Any) -> Any:
+        # Resume can export a BASE at a step whose DELTA is already published.
+        sampler_name = (
+            f"{name}-base"
+            if lora_rank == 0 and kwargs.get("checkpoint_type") == "base"
+            else name
+        )
+        saved = policy.save_weights_for_sampler(sampler_name, **kwargs)
         result = service.hotload_sampler_snapshot(saved.path)
         logger.info("Weight sync completed: FILE")
         return result

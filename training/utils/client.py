@@ -133,6 +133,11 @@ class ReconnectableClient:
         return self._client
 
     @property
+    def lora_rank(self) -> int:
+        """Adapter rank selected when this policy was created; zero means full-parameter."""
+        return self._lora_rank
+
+    @property
     def default_timeout(self) -> float:
         """Result wait budget used by this client's blocking and streaming calls."""
         return self._default_timeout
