@@ -1,13 +1,12 @@
 """Grade an untrusted source patch in a fresh, pinned task workspace."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import List, Optional
 
 MAX_PATCH_BYTES = 16 * 1024 * 1024
 _PROTECTED = (
@@ -40,9 +39,10 @@ def verify(config: dict, candidate: Path, hidden_patch: Path) -> bool:
         "core.fsmonitor=false",
     ]
 
-    def run(args: list[str], *, input: bytes | None = None) -> subprocess.CompletedProcess:
+    def run(args: List[str], *, input: Optional[bytes] = None) -> subprocess.CompletedProcess:
         return subprocess.run(
-            args, cwd=cwd, env=env, input=input, capture_output=True, check=False
+            args, cwd=cwd, env=env, input=input, check=False,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
     base = run([*git, "rev-parse", "HEAD"])
@@ -50,11 +50,13 @@ def verify(config: dict, candidate: Path, hidden_patch: Path) -> bool:
         raise RuntimeError("fresh code verifier base does not match the task manifest")
     if run([*git, "diff", "--quiet", "HEAD"]).returncode:
         raise RuntimeError("fresh code verifier workspace has modified tracked files")
-    if (
-        candidate.is_symlink()
-        or not candidate.is_file()
-        or candidate.stat().st_size > MAX_PATCH_BYTES
-    ):
+    if candidate.is_symlink():
+        return False
+    if not candidate.exists():
+        raise RuntimeError(
+            "candidate patch artifact is missing; collection or transfer failed"
+        )
+    if not candidate.is_file() or candidate.stat().st_size > MAX_PATCH_BYTES:
         return False
     # Hidden test paths are trusted metadata. Git supplies unquoted NUL-delimited
     # names; exclusions keep the candidate from replacing the grading tests.
@@ -117,7 +119,10 @@ def verify(config: dict, candidate: Path, hidden_patch: Path) -> bool:
 
 def _remove_reward_artifact(path: Path) -> None:
     if path.is_symlink() or not path.is_dir():
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
     else:
         shutil.rmtree(path)
 

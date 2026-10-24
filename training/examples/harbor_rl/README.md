@@ -41,5 +41,14 @@ listed dependency directories inside the checkout. Import the output archive
 or unpack it onto a clean OS base; do not layer it over the upstream image.
 Audit retained dependencies and other source copies, then require empty-patch
 failure and reference-patch success in a fresh verifier before freezing tasks.
+Missing candidate artifacts raise a collection/transfer error without a reward;
+an existing empty patch is graded normally.
+Pass the sanitizer's `dependency_dirs` to the fresh-verifier task instance so
+capture omits untracked dependency files while retaining all tracked changes.
 Duplicate archive paths are rejected. These controls require adversarial leak
 and grader-bypass checks; they do not certify the upstream dataset as hack-free.
+
+MiMo, Pi, OpenCode and Mini SWE CLI runs use a detached process and short status polls.
+Transport retries reuse the same invocation; timeout or cancellation stops its
+process group. Full agent output remains in the trial log, with a bounded tail
+used for exit diagnostics.
