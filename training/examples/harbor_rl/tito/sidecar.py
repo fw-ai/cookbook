@@ -778,7 +778,7 @@ def harness_command(
     log_pipe = f"| {log_filter} " if log_filter else ""
     return (
         f"mkdir -p {status_dir}; rm -f {status}; "
-        f"( {command} </dev/null; printf '%s\\n' \"$?\" > {status}; ) 2>&1 "
+        f"( ( {command} ) </dev/null; printf '%s\\n' \"$?\" > {status}; ) 2>&1 "
         f"{log_pipe}| stdbuf -oL tee {shlex.quote(log_path)}; "
         f"test -s {status} || exit 127; "
         f"agent_status=$(cat {status}); "

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 from harbor.agents.installed.mini_swe_agent import MiniSweAgent
@@ -9,6 +10,7 @@ from harbor.agents.model_connection import ResolvedModelConnection
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
+from training.examples.harbor_rl.tito.harness_exec import exec_harness
 from training.examples.harbor_rl.tito.sidecar import (
     install_sidecar,
     run_harness_with_sidecar,
@@ -85,6 +87,28 @@ class ConfigurableMiniSweAgent(MiniSweAgent):
             self._run_mini_swe(instruction, environment, context),
             process_pattern="[m]ini-swe-agent --yolo",
         )
+
+    async def exec_as_agent(
+        self,
+        environment: BaseEnvironment,
+        command: str,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        timeout_sec: int | None = None,
+    ) -> Any:
+        executor = super().exec_as_agent
+        # Harbor generates this CLI pipeline; install/config writes remain
+        # short execs. The upstream-run regression checks this adapter seam.
+        if "mini-swe-agent --yolo " in command and command.endswith("| tee /logs/agent/mini-swe-agent.txt"):
+            return await exec_harness(
+                partial(executor, cwd=cwd),
+                environment,
+                command="set -o pipefail; " + command,
+                log_path="/logs/agent/mini-swe-agent.txt",
+                env=env,
+                timeout_sec=timeout_sec,
+            )
+        return await executor(environment, command=command, env=env, cwd=cwd, timeout_sec=timeout_sec)
 
     async def _run_mini_swe(
         self,

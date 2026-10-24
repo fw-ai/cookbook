@@ -174,7 +174,7 @@ def recipe_step(service, client, batch, output):
         def save(self, name, **kw):
             self.policy.save_state(name)
 
-    def publisher(policy, *a):
+    def publisher(policy, *a, **kwargs):
         return lambda name, **kw: policy.save_weights_for_sampler(name, **kw)
 
     def rollout_factory(setup):
