@@ -350,7 +350,7 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
         "load_deployment_tokenizer": lambda deployment: None,
         "build_service_client": lambda **kwargs: service,
         "resolve_router_replay_enabled": lambda **kwargs: True,
-        "make_weight_sync": lambda *args: (lambda name, **kwargs: calls.append(("sync", name))),
+        "make_weight_sync": lambda *args, **kwargs: (lambda name, **kwargs: calls.append(("sync", name))),
         "TrainingCheckpoints": Checkpoints,
     }.items():
         monkeypatch.setattr(rl_loop, name, value)

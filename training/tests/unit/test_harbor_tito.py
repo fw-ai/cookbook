@@ -1032,10 +1032,14 @@ def test_agent_command_promotes_context_marker_to_nonzero_exit(
         commands.append(command)
         return SimpleNamespace(return_code=0, stdout="", stderr="")
 
+    async def exec_harness(executor, environment, *, command, **kwargs):
+        return await executor(environment, command=command, **kwargs)
+
     async def terminalize(_environment, *, status, reason=None):
         del reason
         terminal_states.append(status)
 
+    monkeypatch.setattr(module, "exec_harness", exec_harness)
     monkeypatch.setattr(agent, "_write_config", write_config)
     monkeypatch.setattr(agent, "exec_as_agent", exec_as_agent)
     monkeypatch.setattr(sidecar_runtime, "terminalize_sidecar", terminalize)

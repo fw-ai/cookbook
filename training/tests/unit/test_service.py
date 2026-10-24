@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -50,6 +52,62 @@ def test_weight_sync_logs_file_when_sdk_falls_back(caplog):
     with caplog.at_level("INFO", logger=service.__name__):
         assert sync("step-1") is result
     assert "Weight sync completed: FILE" in caplog.text
+
+
+def test_resumed_full_parameter_base_preserves_published_delta(tmp_path: Path) -> None:
+    def save(name: str, *, checkpoint_type: str = "delta") -> SimpleNamespace:
+        path = tmp_path / name
+        path.write_text(checkpoint_type)
+        return SimpleNamespace(path=str(path))
+
+    cached_formats: dict[str, str] = {}
+
+    def hotload(path: str) -> None:
+        current = Path(path).read_text()
+        assert cached_formats.setdefault(path, current) == current
+
+    policy = SimpleNamespace(
+        supports_rdma_weight_sync=False, lora_rank=0, save_weights_for_sampler=save
+    )
+    publish = service.make_weight_sync(
+        policy,
+        SimpleNamespace(hotload_sampler_snapshot=hotload),
+        DeployConfig(),
+    )
+    publish("step-19")
+    publish("step-19", checkpoint_type="base")
+
+    assert (tmp_path / "step-19").read_text() == "delta"
+    assert (tmp_path / "step-19-base").read_text() == "base"
+    assert len(cached_formats) == 2
+
+
+@pytest.mark.parametrize("lora_rank", [None, 32])
+def test_initial_base_preserves_legacy_and_lora_names(lora_rank: int | None) -> None:
+    policy = SimpleNamespace(
+        lora_rank=lora_rank,
+        supports_rdma_weight_sync=False,
+        save_weights_for_sampler=Mock(return_value=SimpleNamespace(path="saved")),
+    )
+    publish = service.make_weight_sync(
+        policy,
+        SimpleNamespace(hotload_sampler_snapshot=Mock()),
+        DeployConfig(),
+    )
+    publish("step-19", checkpoint_type="base")
+    policy.save_weights_for_sampler.assert_called_once_with(
+        "step-19", checkpoint_type="base"
+    )
+
+
+def test_full_parameter_base_keeps_sdk_rdma_publication() -> None:
+    result = SimpleNamespace(optimizer_version=19)
+    policy = SimpleNamespace(
+        supports_rdma_weight_sync=True, lora_rank=0, weight_sync=Mock(return_value=result)
+    )
+    publish = service.make_weight_sync(policy, None, DeployConfig())
+    assert publish("step-19", checkpoint_type="base") is result
+    policy.weight_sync.assert_called_once_with()
 
 
 def _trainer_config(**overrides) -> TrainerConfig:

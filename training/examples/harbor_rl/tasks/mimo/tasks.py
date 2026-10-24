@@ -34,6 +34,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
+from .assets.code_collect import validate_dependency_dirs
+
 _ASSETS = Path(__file__).resolve().parent / "assets"
 _COMMON = ("instance_id", "docker_image", "cwd", "problem_statement")
 _TYPES = {
@@ -226,6 +228,8 @@ def _write_fresh_code_verifier(root: Path, instance: Mapping[str, Any]) -> _Task
     base = shlex.quote(str(instance["clean_base_commit"]))
     collector = shlex.quote((_ASSETS / "code_collect.py").read_text())
     collect = f"python3 -I -c {collector} --cwd {cwd} --base {base} --destination {candidate}"
+    for directory in validate_dependency_dirs(instance.get("dependency_dirs", ())):
+        collect += " --dependency-dir=" + shlex.quote(directory)
     return _TaskSpec(
         verifier_lines=['environment_mode = "separate"', 'network_mode = "no-network"'],
         artifacts=[candidate],

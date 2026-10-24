@@ -678,6 +678,8 @@ def test_main_samples_scores_trains_and_hotloads_each_step(monkeypatch) -> None:
     teacher.model = "accounts/test/deployments/teacher"
 
     class _Policy:
+        lora_rank = 0
+
         def save_weights_for_sampler(self, name, checkpoint_type=None):
             return SimpleNamespace(path=f"/{name}")
 
@@ -758,7 +760,7 @@ def test_main_samples_scores_trains_and_hotloads_each_step(monkeypatch) -> None:
     assert result["eval"] == {"eval/score": 2.0}
     assert eval_steps == [0, 1, 2]
     assert events[0] == "teacher-deployment:distillation-teacher-qwen3p5-9b-unit"
-    assert events.index("hotload:/step-0") < events.index("sample:q0")
+    assert events.index("hotload:/step-0-base") < events.index("sample:q0")
     assert events.index("fwd-bwd:4:importance_sampling:20.0") < events.index("hotload:/step-1")
     assert events.index("hotload:/step-1") < events.index("sample:q2")
     assert events.count("optim") == 2
