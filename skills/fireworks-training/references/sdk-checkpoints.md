@@ -56,6 +56,11 @@ Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has 
 - Managed SFT/DPO/ORPO fixes `dcp_save_interval` at 20 and sets `sampler_save_interval` only when `sampler_checkpoint_save_interval_steps` is positive.
 - End of training → recipe calls `ckpt.save(resumable=True, promotable=True, ...)`.
 - `cfg.output_model_id` set → recipe also calls `ckpt.promote_latest(output_model_id, base_model)`.
+  It promotes the newest promotable row of the current run. The row confirmed by
+  the most recent promotable `save()` in the same process stays eligible even if
+  the promote-time list omits it, including a save skipped because the row
+  already existed. If that save timed out waiting for its row, there is no such
+  fallback. An empty or failed list is retried twice before it raises.
 
 Standalone recipes default both intervals to `0`, so periodic saves are opt-in outside managed SFT/DPO/ORPO.
 
