@@ -114,6 +114,16 @@ The two scopes are mutually exclusive for the same trainer ↔ deployment pair.
 | `dcp_timeout` | `2700` | 45 min default for `save_state` / `load_state_with_optimizer`. |
 | `hot_load_transition_type` | unset (server picks `ASYNC`) | How the deployment treats requests that are mid-generation when the swap lands. See [Inference transition](#inference-transition-async-vs-sync). |
 
+## Rollout speculator (SDK only)
+
+The rollout deployment uses the base model's default speculator. `DeployConfig`
+only exposes `disable_speculative_decoding` to turn it off. To pick a speculator,
+pass `draft_model` (`"mtp"`, `"dspark"`, or a draft model resource name) together
+with a positive `draft_token_count` to `FiretitanServiceClient.from_firetitan_config(...)`
+directly. `draft_token_count` is required whenever `draft_model` is set. They
+apply when the deployment is created, are not reconciled on reattach, and cannot
+be combined with `disable_speculative_decoding`.
+
 ## On-policy vs off-policy (weight-sync timing)
 
 - `rl_loop` collects one batch, applies one optimizer step, hotloads, and only
