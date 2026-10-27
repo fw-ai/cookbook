@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from contextlib import ExitStack
 from typing import Any
 
@@ -20,6 +21,7 @@ from training.utils.supervised import (
 
 logger = logging.getLogger(__name__)
 GENERATION_EVAL_MAX_TOKENS = 1024
+GENERATION_EVAL_MAX_CONCURRENCY_PER_SAMPLER = 4
 
 
 def _sampling_prompt(prompt, record, renderer, tokenizer) -> tuple[Any, list[str] | None]:
@@ -103,6 +105,33 @@ def prepare_generation_eval(
     return examples
 
 
+def _store_generation_response(cell, response, tokenizer) -> None:
+    sequence = response.sequences[0]
+    cell.update(
+        output=tokenizer.decode(sequence.tokens),
+        tokens=list(sequence.tokens),
+        stop_reason=sequence.stop_reason,
+    )
+
+
+def _collect_completed_generation_futures(pending_samples, tokenizer) -> bool:
+    """Keep completed answers after the deadline and cancel only pending work."""
+    sample_failed = False
+    for cell, future in pending_samples:
+        if future is None:
+            sample_failed = True
+        elif future.done():
+            try:
+                _store_generation_response(cell, future.result(timeout=0), tokenizer)
+            except Exception:
+                logger.exception("Generation evaluation failed for sample")
+                sample_failed = True
+        else:
+            future.cancel()
+            sample_failed = True
+    return sample_failed
+
+
 def run_generation_eval(
     *,
     cfg,
@@ -129,10 +158,19 @@ def run_generation_eval(
         sampler_path = client.save_weights_for_sampler(f"eval-step-{step}").path
         result["trained_checkpoint"] = sampler_path
         with ExitStack() as stack:
-            baseline = service.create_sampling_client(base_model=cfg.base_model, tokenizer=tokenizer)
+            baseline = service.create_sampling_client(
+                base_model=cfg.base_model,
+                tokenizer=tokenizer,
+                concurrency_controller=sdk.FixedConcurrencyController(GENERATION_EVAL_MAX_CONCURRENCY_PER_SAMPLER),
+            )
             stack.callback(baseline.close)
-            trained = service.create_sampling_client(model_path=sampler_path, tokenizer=tokenizer)
+            trained = service.create_sampling_client(
+                model_path=sampler_path,
+                tokenizer=tokenizer,
+                concurrency_controller=sdk.FixedConcurrencyController(GENERATION_EVAL_MAX_CONCURRENCY_PER_SAMPLER),
+            )
             stack.callback(trained.close)
+            pending_samples = []
             for prompt, record in examples:
                 sampling_prompt, images = _sampling_prompt(prompt, record, renderer, tokenizer)
                 record = {
@@ -148,24 +186,53 @@ def run_generation_eval(
                 )
                 sample_kwargs = {"images": images} if images else {}
                 for cell, sampler in zip(record["cells"], (baseline, trained)):
-                    response = sampler.sample(
-                        sampling_prompt,
-                        num_samples=1,
-                        sampling_params=params,
-                        **sample_kwargs,
-                    ).result(
-                        timeout=cfg.step_timeout or 600,
-                    )
-                    sequence = response.sequences[0]
-                    cell.update(
-                        output=tokenizer.decode(sequence.tokens),
-                        tokens=list(sequence.tokens),
-                        stop_reason=sequence.stop_reason,
-                    )
-        result["status"] = "completed"
+                    try:
+                        future = sampler.sample(
+                            sampling_prompt,
+                            num_samples=1,
+                            sampling_params=params,
+                            **sample_kwargs,
+                        )
+                    except Exception:
+                        logger.exception("Generation evaluation sample failed")
+                        pending_samples.append((cell, None))
+                        continue
+                    pending_samples.append((cell, future))
+            sample_failed = False
+            # One budget for every sample. A per-future timeout would wait that
+            # long again for each request still queued behind a hung sampler.
+            deadline = time.monotonic() + (cfg.step_timeout or 600)
+            for index, (cell, future) in enumerate(pending_samples):
+                if future is None:
+                    sample_failed = True
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.error("Generation evaluation exceeded its deadline; collecting completed samples")
+                    sample_failed = True
+                    sample_failed |= _collect_completed_generation_futures(pending_samples[index:], tokenizer)
+                    break
+                try:
+                    response = future.result(timeout=remaining)
+                except TimeoutError:
+                    logger.exception("Generation evaluation timed out")
+                    sample_failed = True
+                    sample_failed |= _collect_completed_generation_futures(pending_samples[index:], tokenizer)
+                    break
+                except Exception:
+                    # A 401/403 from the managed training credential is an eval
+                    # result, not a training failure. Keep the samples that worked.
+                    logger.exception("Generation evaluation failed for sample")
+                    sample_failed = True
+                    continue
+                _store_generation_response(cell, response, tokenizer)
+        if sample_failed:
+            result.update(status="failed", error="Generation evaluation failed. The trained model is still available.")
+        else:
+            result["status"] = "completed"
     except Exception:
-        # Training and its exported model remain usable if optional inference
-        # fails. Persist partial responses and make the failure visible.
+        # Setup failures, including authentication on the sampler checkpoint,
+        # stay in the eval artifact. Cancellation is BaseException and propagates.
         logger.exception("Generation evaluation failed")
         result.update(status="failed", error="Generation evaluation failed. The trained model is still available.")
     try:
