@@ -23,6 +23,8 @@ from __future__ import annotations
 import array
 import asyncio
 import json
+import logging
+import math
 import time
 from concurrent.futures import Future
 from types import SimpleNamespace
@@ -737,6 +739,97 @@ class TestTrainLoop:
             ("step-1", {"resumable": False, "promotable": True, "data_consumed": 2}),
             ("step-2", {"resumable": True, "promotable": True, "data_consumed": 4}),
         ]
+
+    @pytest.mark.parametrize("save_final_checkpoint", [True, False])
+    def test_checkpoint_schedule_saves_at_epoch_end_and_replaces_dcp_interval(
+        self, tmp_path, monkeypatch, caplog, save_final_checkpoint
+    ):
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+
+        class FakeCheckpoints:
+            def __init__(self):
+                self.saves = []
+
+            def save(self, name, **kwargs):
+                self.saves.append((name, kwargs))
+
+        ds = _make_pair_dataset(tmp_path, n=4)
+        ref_cache = AppendOnlyPickleLog(str(tmp_path / "ref_cache.pkl"))
+        cfg = module.Config(
+            log_path=str(tmp_path),
+            epochs=2,
+            batch_size=2,
+            dcp_save_interval=1,
+            checkpoint_interval_minutes=30,
+            save_final_checkpoint=save_final_checkpoint,
+            render_workers=0,
+        )
+        ckpt = FakeCheckpoints()
+        try:
+            with caplog.at_level(logging.WARNING, logger=module.logger.name):
+                step = asyncio.run(
+                    module._train_loop(
+                        ds,
+                        ref_cache,
+                        _FakeReference(),
+                        _FakePolicy(),
+                        adam_params=_adam_params(),
+                        cfg=cfg,
+                        step_offset=0,
+                        cursor=_new_cursor(max_rows=8),
+                        ckpt=ckpt,
+                    )
+                )
+        finally:
+            ref_cache.close()
+
+        assert step == 4
+        assert "dcp_save_interval=1 is ignored" in caplog.text
+        expected = [("step-2", {"resumable": True, "promotable": True, "data_consumed": 4})]
+        if not save_final_checkpoint:
+            # Without main()'s final checkpoint, the last epoch end is a save point itself.
+            expected.append(("step-4", {"resumable": True, "promotable": True, "data_consumed": 8}))
+        assert ckpt.saves == expected
+
+    def test_checkpoint_schedule_timed_point(self, tmp_path, monkeypatch):
+        events: dict = {}
+        _stub_train_step_deps(monkeypatch, events)
+        monkeypatch.setattr(module, "timed_checkpoint_due", lambda **kwargs: kwargs["steps_done"] == 1)
+
+        class FakeCheckpoints:
+            def __init__(self):
+                self.saves = []
+
+            def save(self, name, **kwargs):
+                self.saves.append((name, kwargs))
+
+        ds = _make_pair_dataset(tmp_path, n=4)
+        cfg = module.Config(
+            log_path=str(tmp_path),
+            epochs=1,
+            batch_size=2,
+            checkpoint_interval_minutes=30,
+            render_workers=0,
+        )
+        ckpt = FakeCheckpoints()
+
+        step = asyncio.run(
+            module._train_loop(
+                ds,
+                None,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=4),
+                ckpt=ckpt,
+            )
+        )
+
+        assert step == 2
+        assert ckpt.saves == [("step-1", {"resumable": True, "promotable": True, "data_consumed": 2})]
 
     def test_multi_epoch_uses_ref_cache_log(self, tmp_path, monkeypatch):
         events: dict = {}
@@ -1719,3 +1812,415 @@ def test_dpo_resume_skips_committed_batches_across_epochs(tmp_path, monkeypatch,
     expected = ([["c0", "c1"], ["c2", "c3"]] * epochs)[step_offset:]
     assert trained == expected
     assert cursor.value == 4 * epochs
+
+
+# ---------------------------------------------------------------------------
+# Held-out eval
+# ---------------------------------------------------------------------------
+
+
+def _eval_pair(idx: int) -> dict:
+    return {
+        **_make_pair(idx),
+        "response_start": 1,
+        "ref_chosen": array.array("f", [-1.5, -1.5]),
+        "ref_rejected": array.array("f", [-1.5, -1.5]),
+    }
+
+
+def test_run_eval_reports_pair_weighted_dpo_metrics():
+    policy_logprobs = {"c0": [-1.0, -1.0], "r0": [-2.0, -2.0], "c1": [-2.0, -2.0], "r1": [-1.0, -1.0]}
+
+    class Policy:
+        def forward(self, datums, loss_fn):
+            assert loss_fn == "cross_entropy"
+            return SimpleNamespace(
+                loss_fn_outputs=[{"logprobs": SimpleNamespace(data=policy_logprobs[d["id"]])} for d in datums]
+            )
+
+    metrics = module.run_eval([_eval_pair(0), _eval_pair(1)], Policy(), beta=0.1, batch_size=1)
+
+    # Pair 0 prefers chosen by a log-ratio margin of 2; pair 1 by -2.
+    assert metrics["loss"] == pytest.approx((math.log1p(math.exp(-0.2)) + math.log1p(math.exp(0.2))) / 2)
+    assert metrics["accuracy"] == pytest.approx(0.5)
+    assert metrics["margin"] == pytest.approx(0.0, abs=1e-6)
+    # Chosen changes by +1 vs the reference on pair 0 and -1 on pair 1.
+    assert metrics["chosen_logprob_delta"] == pytest.approx(0.0, abs=1e-6)
+    single = module.run_eval([_eval_pair(0)], Policy(), beta=0.1, batch_size=1)
+    # Margin is the unscaled log-ratio margin, matching train/margin.
+    assert single["margin"] == pytest.approx(2.0)
+    assert single["chosen_logprob_delta"] == pytest.approx(1.0)
+    assert metrics["chosen_logprob"] == pytest.approx(-3.0)
+    assert metrics["rejected_logprob"] == pytest.approx(-3.0)
+    assert module.run_eval([], Policy(), beta=0.1, batch_size=1) is None
+
+
+def test_prepare_eval_pairs_uses_explicit_dataset(tmp_path, monkeypatch):
+    monkeypatch.setattr(module, "_render_pair_worker", _test_render_pair)
+    train_ds = _make_pair_dataset(tmp_path, n=4)
+    eval_path = tmp_path / "eval.jsonl"
+    eval_path.write_text("\n".join(json.dumps({"i": i}) for i in (100, 101)))
+    cfg = module.Config(log_path=str(tmp_path), evaluation_dataset=str(eval_path))
+
+    training_ds, eval_pairs = module._prepare_eval_pairs(cfg, train_ds)
+
+    assert training_ds is train_ds
+    assert [p["chosen_datum"]["id"] for p in eval_pairs] == ["c100", "c101"]
+
+
+def test_prepare_eval_pairs_caps_explicit_dataset(tmp_path, monkeypatch):
+    monkeypatch.setattr(module, "_render_pair_worker", _test_render_pair)
+    monkeypatch.setattr(module, "MAX_EVAL_PAIRS", 2)
+    eval_path = tmp_path / "eval.jsonl"
+    eval_path.write_text("\n".join(json.dumps({"i": i}) for i in (100, 101, 102)))
+    cfg = module.Config(log_path=str(tmp_path), evaluation_dataset=str(eval_path))
+
+    _, eval_pairs = module._prepare_eval_pairs(cfg, _make_pair_dataset(tmp_path, n=4))
+
+    assert [p["chosen_datum"]["id"] for p in eval_pairs] == ["c100", "c101"]
+
+
+def test_prepare_eval_pairs_rejects_both_options(tmp_path):
+    cfg = module.Config(log_path=str(tmp_path), evaluation_dataset="held_out.jsonl", eval_auto_carveout=True)
+
+    with pytest.raises(ValueError, match="only one of evaluation_dataset or eval_auto_carveout"):
+        module._prepare_eval_pairs(cfg, _make_pair_dataset(tmp_path, n=4))
+
+
+def test_prepare_eval_pairs_carves_out_a_stable_held_out_subset(tmp_path):
+    train_ds = _make_pair_dataset(tmp_path, n=50)
+    cfg = module.Config(log_path=str(tmp_path), eval_auto_carveout=True, seed=7)
+
+    training_ds, eval_pairs = module._prepare_eval_pairs(cfg, train_ds)
+    _, eval_pairs_again = module._prepare_eval_pairs(cfg, train_ds)
+
+    eval_ids = {p["chosen_datum"]["id"] for p in eval_pairs}
+    training_ids = {training_ds[i]["chosen_datum"]["id"] for i in range(len(training_ds))}
+    assert len(eval_ids) == 5  # 10% of 50, below the 20-pair cap
+    assert len(training_ds) == 45
+    assert eval_ids.isdisjoint(training_ids)
+    assert eval_pairs == eval_pairs_again
+
+
+def test_prepare_eval_pairs_skips_carve_out_for_tiny_dataset(tmp_path):
+    train_ds = _make_pair_dataset(tmp_path, n=1)
+    cfg = module.Config(log_path=str(tmp_path), eval_auto_carveout=True)
+
+    training_ds, eval_pairs = module._prepare_eval_pairs(cfg, train_ds)
+
+    assert training_ds is train_ds
+    assert eval_pairs == []
+
+
+class _RecordingCheckpoints:
+    def __init__(self, events: list):
+        self.events = events
+        self.saves = []
+
+    def save(self, name, **kwargs):
+        self.events.append(f"save({name})")
+        self.saves.append((name, kwargs))
+
+
+class _RecordingRunner(module.RunnerIO):
+    """Records eval metric rows; ``run_eval`` is stubbed to report the pair count as the loss."""
+
+    def __init__(self, events: list):
+        super().__init__()
+        self.events = events
+
+    def append_metrics(self, step, metrics, **kwargs):
+        prefixes = sorted({key.split("/")[0] for key in metrics if key.endswith("/loss") and "eval" in key})
+        if prefixes:
+            n = int(metrics[f"{prefixes[0]}/loss"])
+            self.events.append(f"eval(step={step}, {'+'.join(prefixes)}, n={n})")
+        super().append_metrics(step, metrics, **kwargs)
+
+
+def _stub_run_eval(monkeypatch):
+    monkeypatch.setattr(
+        module,
+        "run_eval",
+        lambda pairs, policy, beta, batch_size: {
+            "loss": float(len(pairs)),
+            "accuracy": 1.0,
+            "margin": 0.0,
+            "chosen_logprob": -1.0,
+            "rejected_logprob": -2.0,
+            "chosen_logprob_delta": 0.5,
+        },
+    )
+
+
+def test_checkpoint_schedule_scores_every_save_point_including_final(tmp_path, monkeypatch):
+    _stub_train_step_deps(monkeypatch, {})
+    _stub_run_eval(monkeypatch)
+    events: list = []
+    ckpt = _RecordingCheckpoints(events)
+    ds = _make_pair_dataset(tmp_path, n=4)
+    ref_cache = AppendOnlyPickleLog(str(tmp_path / "ref_cache.pkl"))
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        epochs=2,
+        batch_size=2,
+        dcp_save_interval=1,
+        checkpoint_interval_minutes=30,
+        render_workers=0,
+    )
+    try:
+        step = asyncio.run(
+            module._train_loop(
+                ds,
+                ref_cache,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=8),
+                ckpt=ckpt,
+                runner=_RecordingRunner(events),
+                eval_pairs=[_eval_pair(0)],
+            )
+        )
+    finally:
+        ref_cache.close()
+
+    # A <=128-pair eval set is the ranking subset, so one pass logs both keys.
+    # The last epoch end is the step of main()'s final checkpoint.
+    assert step == 4
+    assert events == [
+        "eval(step=2, checkpoint_eval+eval, n=1)",
+        "save(step-2)",
+        "eval(step=4, checkpoint_eval+eval, n=1)",
+    ]
+
+
+def test_checkpoint_eval_logs_ranking_metrics_at_save_points(tmp_path, monkeypatch):
+    _stub_train_step_deps(monkeypatch, {})
+    _stub_run_eval(monkeypatch)
+    rows: list = []
+
+    class MetricsRunner(module.RunnerIO):
+        def append_metrics(self, step, metrics, **kwargs):
+            if any(key.startswith("checkpoint_eval/") for key in metrics):
+                rows.append((step, metrics))
+            super().append_metrics(step, metrics, **kwargs)
+
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        epochs=1,
+        batch_size=2,
+        sampler_save_interval=1,
+        checkpoint_interval_minutes=30,
+        render_workers=0,
+    )
+    asyncio.run(
+        module._train_loop(
+            _make_pair_dataset(tmp_path, n=4),
+            None,
+            _FakeReference(),
+            _FakePolicy(),
+            adam_params=_adam_params(),
+            cfg=cfg,
+            step_offset=0,
+            cursor=_new_cursor(max_rows=4),
+            ckpt=_RecordingCheckpoints([]),
+            runner=MetricsRunner(),
+            eval_pairs=[_eval_pair(0)],
+        )
+    )
+
+    # Ranking: checkpoint_eval/loss (lower is better); the rest is monitoring.
+    assert [step for step, _ in rows] == [1, 2]
+    for _, metrics in rows:
+        assert metrics["checkpoint_eval/loss"] == 1.0
+        assert metrics["checkpoint_eval/accuracy"] == 1.0
+        assert metrics["checkpoint_eval/chosen_logprob"] == -1.0
+        assert metrics["checkpoint_eval/chosen_logprob_delta"] == 0.5
+
+
+def test_checkpoint_schedule_sampler_interval_replaces_timed_points(tmp_path, monkeypatch):
+    _stub_train_step_deps(monkeypatch, {})
+    _stub_run_eval(monkeypatch)
+
+    def fail_if_called(**kwargs):
+        raise AssertionError("timed interval must not be consulted when sampler_save_interval is set")
+
+    monkeypatch.setattr(module, "timed_checkpoint_due", fail_if_called)
+    events: list = []
+    ckpt = _RecordingCheckpoints(events)
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        epochs=1,
+        batch_size=2,
+        sampler_save_interval=1,
+        checkpoint_interval_minutes=30,
+        render_workers=0,
+    )
+
+    asyncio.run(
+        module._train_loop(
+            _make_pair_dataset(tmp_path, n=4),
+            None,
+            _FakeReference(),
+            _FakePolicy(),
+            adam_params=_adam_params(),
+            cfg=cfg,
+            step_offset=0,
+            cursor=_new_cursor(max_rows=4),
+            ckpt=ckpt,
+            runner=_RecordingRunner(events),
+            eval_pairs=[_eval_pair(i) for i in range(130)],
+        )
+    )
+
+    # Override-driven points rank on the fixed first 128 pairs; the epoch end
+    # at an already-scored step only adds the full-set eval.
+    assert events == [
+        "eval(step=1, checkpoint_eval, n=128)",
+        "save(step-1)",
+        "eval(step=2, checkpoint_eval, n=128)",
+        "save(step-2)",
+        "eval(step=2, eval, n=130)",
+    ]
+    assert all(kwargs["resumable"] and kwargs["promotable"] for _, kwargs in ckpt.saves)
+
+
+@pytest.mark.parametrize(
+    "checkpoint_interval_minutes, save_final_checkpoint, expected",
+    [
+        # Without main()'s final save, the scheduled last epoch end saves and is scored.
+        (
+            30,
+            False,
+            [
+                "eval(step=2, checkpoint_eval+eval, n=1)",
+                "save(step-2)",
+                "eval(step=4, checkpoint_eval+eval, n=1)",
+                "save(step-4)",
+            ],
+        ),
+        # No schedule and no final save: no checkpoint, so no ranking score.
+        (0, False, ["eval(step=2, eval, n=1)", "eval(step=4, eval, n=1)"]),
+        # No schedule: only the step of main()'s final checkpoint is scored.
+        (0, True, ["eval(step=2, eval, n=1)", "eval(step=4, checkpoint_eval+eval, n=1)"]),
+    ],
+)
+def test_checkpoint_eval_only_at_saved_steps(
+    tmp_path, monkeypatch, checkpoint_interval_minutes, save_final_checkpoint, expected
+):
+    _stub_train_step_deps(monkeypatch, {})
+    _stub_run_eval(monkeypatch)
+    events: list = []
+    ref_cache = AppendOnlyPickleLog(str(tmp_path / "ref_cache.pkl"))
+    cfg = module.Config(
+        log_path=str(tmp_path),
+        epochs=2,
+        batch_size=2,
+        checkpoint_interval_minutes=checkpoint_interval_minutes,
+        save_final_checkpoint=save_final_checkpoint,
+        render_workers=0,
+    )
+    try:
+        asyncio.run(
+            module._train_loop(
+                _make_pair_dataset(tmp_path, n=4),
+                ref_cache,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=0,
+                cursor=_new_cursor(max_rows=8),
+                ckpt=_RecordingCheckpoints(events),
+                runner=_RecordingRunner(events),
+                eval_pairs=[_eval_pair(0)],
+            )
+        )
+    finally:
+        ref_cache.close()
+
+    assert events == expected
+
+
+def test_epoch_end_without_new_steps_skips_eval(tmp_path, monkeypatch):
+    _stub_train_step_deps(monkeypatch, {})
+    _stub_run_eval(monkeypatch)
+    events: list = []
+    ref_cache = AppendOnlyPickleLog(str(tmp_path / "resume-cache.pkl"))
+    cfg = module.Config(log_path=str(tmp_path), epochs=2, batch_size=2, render_workers=0)
+    try:
+        asyncio.run(
+            module._train_loop(
+                _make_pair_dataset(tmp_path, n=4),
+                ref_cache,
+                _FakeReference(),
+                _FakePolicy(),
+                adam_params=_adam_params(),
+                cfg=cfg,
+                step_offset=2,
+                cursor=_new_cursor(max_rows=8, persisted=4),
+                runner=_RecordingRunner(events),
+                eval_pairs=[_eval_pair(0)],
+            )
+        )
+    finally:
+        ref_cache.close()
+
+    # Resumed at the end of epoch 0: only the epoch trained on this attempt is
+    # evaluated. Without the schedule, the last epoch end still scores the step
+    # of main()'s final checkpoint.
+    assert events == ["eval(step=4, checkpoint_eval+eval, n=1)"]
+
+
+def test_main_caches_eval_reference_logprobs_before_training(monkeypatch, tmp_path):
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    for name in ["setup_wandb", "wandb_log", "wandb_finish", "validate_config", "validate_warm_start_config"]:
+        monkeypatch.setattr(module, name, Mock())
+    monkeypatch.setattr(module, "_init_pair_worker", Mock())
+    monkeypatch.setattr(module, "resolve_renderer_snapshot", lambda **kwargs: "qwen3")
+    service, policy, ckpt, sampler = Mock(), Mock(), Mock(), Mock()
+    policy.save_weights_for_sampler.return_value = SimpleNamespace(path="snapshot://initial-reference")
+    service.create_sampling_client.return_value = sampler
+    monkeypatch.setattr(
+        module, "setup_serverless_training", lambda *args, **kwargs: (service, policy, ckpt, "ts-policy", 512)
+    )
+    monkeypatch.setattr(module, "JsonlRenderDataset", lambda *args: ["pair"])
+    held_out = _make_pair(9)
+    monkeypatch.setattr(module, "_prepare_eval_pairs", lambda cfg, ds: (ds, [held_out]))
+    order: list = []
+
+    async def fake_ref_forward_batch(pairs, reference, semaphore, ref_batch_size):
+        order.append("eval-reference")
+        assert isinstance(reference, module.SamplerReference)
+        return [{**pair, "ref_chosen": [-1.0], "ref_rejected": [-2.0]} for pair in pairs]
+
+    monkeypatch.setattr(module, "_ref_forward_batch", fake_ref_forward_batch)
+    ckpt.resume.return_value = None
+    runner = Mock()
+    runner.persisted_reference_checkpoint.return_value = None
+    runner.__enter__ = Mock(return_value=runner)
+    runner.__exit__ = Mock(return_value=False)
+    monkeypatch.setattr(module, "RunnerIO", lambda *args: runner)
+
+    async def train(*args, **kwargs):
+        order.append("train")
+        assert kwargs["eval_pairs"] == [{**held_out, "ref_chosen": [-1.0], "ref_rejected": [-2.0]}]
+        return 1
+
+    monkeypatch.setattr(module, "_train_loop", train)
+    module.main(
+        module.Config(
+            log_path=str(tmp_path),
+            dataset="preferences.jsonl",
+            evaluation_dataset="held_out.jsonl",
+            tokenizer_model="Qwen/Qwen3-8B",
+            serverless=True,
+            lora_rank=8,
+            max_seq_len=512,
+            render_workers=0,
+        )
+    )
+
+    assert order == ["eval-reference", "train"]
