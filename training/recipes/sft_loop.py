@@ -1597,16 +1597,19 @@ def main(
                 )
 
         if cfg.generation_eval:
-            run_generation_eval(
-                cfg=cfg,
-                examples=generation_examples,
-                renderer=_worker_state["renderer"],
-                tokenizer=_worker_state["tokenizer"],
-                service=service,
-                client=client,
-                runner=runner,
-                step=step,
-            )
+            try:
+                run_generation_eval(
+                    cfg=cfg,
+                    examples=generation_examples,
+                    renderer=_worker_state["renderer"],
+                    tokenizer=_worker_state["tokenizer"],
+                    service=service,
+                    client=client,
+                    runner=runner,
+                    step=step,
+                )
+            except Exception:
+                logger.exception("Generation evaluation failed; the trained model is still available")
 
         write_completed(runner, step=step, total_steps=step)
         logger.info("Training complete: %d optimizer steps", step)

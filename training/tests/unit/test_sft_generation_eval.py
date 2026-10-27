@@ -1,6 +1,8 @@
+import asyncio
 import base64
 import json
 import logging
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -134,23 +136,304 @@ def test_paired_answers_persist_with_shared_prompts_and_partial_failures(tmp_pat
     assert all("isCorrect" not in cell and "reason" not in cell for cell in example["cells"])
     answer = {"output": "answer", "tokens": [8, 9], "stop_reason": "stop"}
     assert example["cells"][0] == ({"output": ""} if failed_sampler == "baseline" else answer)
-    assert example["cells"][1] == ({"output": ""} if failed_sampler else answer)
+    assert example["cells"][1] == ({"output": ""} if failed_sampler == "trained" else answer)
     if failed_sampler:
         assert "Generation evaluation failed" in result["error"]
-    if failed_sampler != "baseline":
-        assert baseline.sample.call_args == trained.sample.call_args
-    else:
-        trained.sample.assert_not_called()
+    assert baseline.sample.call_args == trained.sample.call_args
     params = baseline.sample.call_args.kwargs["sampling_params"]
     assert params.max_tokens == 2
     assert params.temperature == 0
     assert params.stop == [99]
     assert service.create_sampling_client.call_args_list[0].kwargs["base_model"] == cfg.base_model
     assert service.create_sampling_client.call_args_list[1].kwargs["model_path"] == "account/run/eval-step-2"
+    controllers = [call.kwargs["concurrency_controller"] for call in service.create_sampling_client.call_args_list]
+    assert len(controllers) == 2
+    assert controllers[0] is not controllers[1]
+    assert all(controller.window_size == 4 for controller in controllers)
     baseline.close.assert_called_once()
     trained.close.assert_called_once()
     runner.write_status(RunStatus.COMPLETED, step=2, total_steps=2)
     assert json.loads(status_path.read_text())["details"][0]["state"] == "JOB_STATE_EVALUATION"
+
+
+def test_each_sampler_controller_waits_on_its_own_loop():
+    """Each sampler loop waits on its own semaphore. One shared semaphore cannot."""
+
+    async def wait_on_full_window(controller, waiting):
+        await controller.acquire()
+        waiter = asyncio.create_task(controller.acquire())
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        waiting.set()
+        controller.release()
+        await asyncio.wait_for(waiter, timeout=5)
+        controller.release()
+
+    errors = []
+
+    def run(controller, waiting):
+        try:
+            asyncio.run(wait_on_full_window(controller, waiting))
+        except Exception as exc:
+            errors.append(exc)
+
+    waiting = [threading.Event(), threading.Event()]
+    threads = [
+        threading.Thread(target=run, args=(sdk.FixedConcurrencyController(1), event)) for event in waiting
+    ]
+    for thread in threads:
+        thread.start()
+    assert all(event.wait(timeout=5) for event in waiting)
+    for thread in threads:
+        thread.join(timeout=5)
+    assert errors == []
+    assert not any(thread.is_alive() for thread in threads)
+
+
+def test_shared_fixed_controller_rejects_the_other_sampler_loop():
+    shared = sdk.FixedConcurrencyController(1)
+    bound = threading.Event()
+    release_holder = threading.Event()
+    holder_errors = []
+
+    async def bind_on_holder_loop():
+        await shared.acquire()
+        waiter = asyncio.create_task(shared.acquire())
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        bound.set()
+        # Stay bound until the other loop has attempted acquire. A fixed sleep
+        # can release first and let that acquire succeed without a loop check.
+        await asyncio.to_thread(release_holder.wait)
+        shared.release()
+        await waiter
+        shared.release()
+
+    def hold():
+        try:
+            asyncio.run(bind_on_holder_loop())
+        except Exception as exc:
+            holder_errors.append(exc)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert bound.wait(timeout=5)
+
+        async def wait_on_other_loop():
+            await shared.acquire()
+
+        with pytest.raises(RuntimeError, match="different event loop"):
+            asyncio.run(wait_on_other_loop())
+    finally:
+        release_holder.set()
+    holder.join(timeout=5)
+    assert holder_errors == []
+    assert not holder.is_alive()
+
+
+def test_generation_eval_submits_all_samples_before_waiting(tmp_path):
+    cfg = Config(log_path=str(tmp_path), serverless=True, generation_eval=True, max_seq_len=10)
+    baseline, trained, service, client = Mock(), Mock(), Mock(), Mock()
+    service.create_sampling_client.side_effect = [baseline, trained]
+    client.save_weights_for_sampler.return_value.path = "account/run/eval-step-2"
+    sequence = SimpleNamespace(tokens=[8], stop_reason="stop")
+    submitted = []
+
+    def submit(name):
+        def _sample(*_args, **_kwargs):
+            submitted.append(name)
+            future = Mock()
+
+            def result(**_kwargs):
+                assert len(submitted) == 4
+                return SimpleNamespace(sequences=[sequence])
+
+            future.result.side_effect = result
+            return future
+
+        return _sample
+
+    baseline.sample.side_effect = submit("baseline")
+    trained.sample.side_effect = submit("trained")
+    tokenizer, renderer = Mock(), Mock()
+    tokenizer.decode.return_value = "answer"
+    renderer.get_stop_sequences.return_value = []
+    examples = [
+        (sdk.ModelInput.from_ints([1]), {"prompt": "user: first", "reference": "first"}),
+        (sdk.ModelInput.from_ints([2]), {"prompt": "user: second", "reference": "second"}),
+    ]
+    run_generation_eval(
+        cfg=cfg,
+        examples=examples,
+        renderer=renderer,
+        tokenizer=tokenizer,
+        service=service,
+        client=client,
+        runner=RunnerIO(RunnerConfig()),
+        step=2,
+    )
+    assert submitted == ["baseline", "trained", "baseline", "trained"]
+
+
+def test_generation_eval_uses_one_deadline_and_cancels_the_rest(tmp_path, monkeypatch):
+    cfg = Config(log_path=str(tmp_path), serverless=True, generation_eval=True, max_seq_len=10, step_timeout=30)
+    baseline, trained, service, client = Mock(), Mock(), Mock(), Mock()
+    service.create_sampling_client.side_effect = [baseline, trained]
+    client.save_weights_for_sampler.return_value.path = "account/run/eval-step-2"
+    clock = {"now": 100.0}
+    monkeypatch.setattr(generation_eval_module.time, "monotonic", lambda: clock["now"])
+    timeouts = []
+    hung = Mock()
+
+    def hung_result(timeout):
+        timeouts.append(timeout)
+        clock["now"] = 130.0
+        raise TimeoutError("sampler hung")
+
+    hung.result.side_effect = hung_result
+    hung.done.return_value = False
+    later = Mock()
+    later.done.return_value = False
+    baseline.sample.return_value = hung
+    trained.sample.return_value = later
+    tokenizer, renderer = Mock(), Mock()
+    renderer.get_stop_sequences.return_value = []
+    run_generation_eval(
+        cfg=cfg,
+        examples=[(sdk.ModelInput.from_ints([1]), {"prompt": "user: question", "reference": "reference"})],
+        renderer=renderer,
+        tokenizer=tokenizer,
+        service=service,
+        client=client,
+        runner=RunnerIO(RunnerConfig()),
+        step=2,
+    )
+    result = json.loads((tmp_path / "generation_eval.json").read_text())
+    assert timeouts == [30]
+    assert result["status"] == "failed"
+    assert result["examples"][0]["cells"] == [{"output": ""}, {"output": ""}]
+    hung.cancel.assert_called_once()
+    later.cancel.assert_called_once()
+    later.result.assert_not_called()
+
+
+def test_generation_eval_keeps_completed_future_after_timeout(tmp_path, monkeypatch):
+    cfg = Config(log_path=str(tmp_path), serverless=True, generation_eval=True, max_seq_len=10, step_timeout=30)
+    baseline, trained, service, client = Mock(), Mock(), Mock(), Mock()
+    service.create_sampling_client.side_effect = [baseline, trained]
+    client.save_weights_for_sampler.return_value.path = "account/run/eval-step-2"
+    clock = {"now": 100.0}
+    monkeypatch.setattr(generation_eval_module.time, "monotonic", lambda: clock["now"])
+    hung = Mock()
+    completed = Mock()
+    sequence = SimpleNamespace(tokens=[8], stop_reason="stop")
+
+    def hung_result(timeout):
+        assert timeout == 30
+        clock["now"] = 130.0
+        raise TimeoutError("sampler hung")
+
+    hung.result.side_effect = hung_result
+    hung.done.return_value = False
+    completed.done.return_value = True
+    completed.result.return_value = SimpleNamespace(sequences=[sequence])
+    baseline.sample.return_value = hung
+    trained.sample.return_value = completed
+    tokenizer, renderer = Mock(), Mock()
+    tokenizer.decode.return_value = "trained answer"
+    renderer.get_stop_sequences.return_value = []
+    run_generation_eval(
+        cfg=cfg,
+        examples=[(sdk.ModelInput.from_ints([1]), {"prompt": "user: question", "reference": "reference"})],
+        renderer=renderer,
+        tokenizer=tokenizer,
+        service=service,
+        client=client,
+        runner=RunnerIO(RunnerConfig()),
+        step=2,
+    )
+    result = json.loads((tmp_path / "generation_eval.json").read_text())
+    assert result["status"] == "failed"
+    assert result["examples"][0]["cells"][0] == {"output": ""}
+    assert result["examples"][0]["cells"][1]["output"] == "trained answer"
+    hung.cancel.assert_called_once()
+    completed.cancel.assert_not_called()
+    completed.result.assert_called_once_with(timeout=0)
+
+
+def test_finished_sample_does_not_grant_the_next_sample_a_new_timeout(tmp_path, monkeypatch):
+    cfg = Config(log_path=str(tmp_path), serverless=True, generation_eval=True, max_seq_len=10, step_timeout=30)
+    baseline, trained, service, client = Mock(), Mock(), Mock(), Mock()
+    service.create_sampling_client.side_effect = [baseline, trained]
+    client.save_weights_for_sampler.return_value.path = "account/run/eval-step-2"
+    clock = {"now": 100.0}
+    monkeypatch.setattr(generation_eval_module.time, "monotonic", lambda: clock["now"])
+    sequence = SimpleNamespace(tokens=[8], stop_reason="stop")
+    finished = Mock()
+
+    def finished_result(timeout):
+        assert timeout == 30
+        clock["now"] = 130.0
+        return SimpleNamespace(sequences=[sequence])
+
+    finished.result.side_effect = finished_result
+    later = Mock()
+    later.done.return_value = False
+    baseline.sample.return_value = finished
+    trained.sample.return_value = later
+    tokenizer, renderer = Mock(), Mock()
+    tokenizer.decode.return_value = "answer"
+    renderer.get_stop_sequences.return_value = []
+    run_generation_eval(
+        cfg=cfg,
+        examples=[(sdk.ModelInput.from_ints([1]), {"prompt": "user: question", "reference": "reference"})],
+        renderer=renderer,
+        tokenizer=tokenizer,
+        service=service,
+        client=client,
+        runner=RunnerIO(RunnerConfig()),
+        step=2,
+    )
+    result = json.loads((tmp_path / "generation_eval.json").read_text())
+    assert result["examples"][0]["cells"][0]["output"] == "answer"
+    assert result["examples"][0]["cells"][1] == {"output": ""}
+    assert result["status"] == "failed"
+    finished.cancel.assert_not_called()
+    later.cancel.assert_called_once()
+    later.result.assert_not_called()
+
+
+def test_authentication_failure_keeps_successful_samples_and_does_not_raise(tmp_path, caplog):
+    cfg = Config(log_path=str(tmp_path), serverless=True, generation_eval=True, max_seq_len=10)
+    baseline, trained, service, client = Mock(), Mock(), Mock(), Mock()
+    service.create_sampling_client.side_effect = [baseline, trained]
+    client.save_weights_for_sampler.return_value.path = "account/run/eval-step-2"
+    sequence = SimpleNamespace(tokens=[8], stop_reason="stop")
+    baseline.sample.return_value.result.side_effect = PermissionError(
+        "403 credential is limited to its managed training session"
+    )
+    trained.sample.return_value.result.return_value = SimpleNamespace(sequences=[sequence])
+    tokenizer, renderer = Mock(), Mock()
+    tokenizer.decode.return_value = "trained answer"
+    renderer.get_stop_sequences.return_value = []
+    with caplog.at_level(logging.ERROR, logger=generation_eval_module.logger.name):
+        run_generation_eval(
+            cfg=cfg,
+            examples=[(sdk.ModelInput.from_ints([1, 2, 3]), {"prompt": "user: question", "reference": "reference"})],
+            renderer=renderer,
+            tokenizer=tokenizer,
+            service=service,
+            client=client,
+            runner=RunnerIO(RunnerConfig()),
+            step=2,
+        )
+    result = json.loads((tmp_path / "generation_eval.json").read_text())
+    assert result["status"] == "failed"
+    assert "trained model is still available" in result["error"]
+    assert result["examples"][0]["cells"][0] == {"output": ""}
+    assert result["examples"][0]["cells"][1]["output"] == "trained answer"
+    assert "credential is limited" in caplog.text
 
 
 def test_cancellation_during_artifact_write_propagates(tmp_path, monkeypatch):
