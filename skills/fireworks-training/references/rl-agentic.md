@@ -359,6 +359,12 @@ affinity, metrics, buffered OpenAI transport, and optional local JSONL debug
 evidence. The compact `.tito` artifact remains authoritative. The SDK contains
 no OpenCode, Pi, Mini-SWE-Agent, Harbor, or model-family switch.
 
+Each chat response reports OpenAI `usage` from the exact prompt and sampled
+token counts, with cached prompt tokens when the server reports them. A
+streamed response adds the final `choices: []` usage chunk when the request sets
+`stream_options.include_usage`. Harness auto-compaction, such as OpenCode's,
+measures context from these counts.
+
 The existing cookbook renderer registry owns tokenizer/message conversion,
 reasoning and tool parsing, the loss-agnostic full-conversation primitive, and
 reviewed TITO certification artifacts. SFT, DPO, and TITO share that primitive
