@@ -83,7 +83,11 @@ from training.utils import (
     wandb_finish,
     wandb_log,
 )
-from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
+from training.utils.checkpoints import (
+    TrainingCheckpoints,
+    timed_checkpoint_due,
+    validate_warm_start_config,
+)
 from training.utils.client import DEFAULT_TIMEOUT_S
 from training.utils.losses import make_batch_weighted_sft_loss_fn, perplexity_from_nll
 from training.utils.metrics import optimizer_metrics
@@ -544,6 +548,8 @@ def _render_one_worker(
 DEFAULT_EVAL_CARVE_RATIO = 0.1
 DEFAULT_MAX_EVAL_SEQS = 20
 GENERATION_EVAL_HOLDOUT_RATIO = 0.2
+CHECKPOINT_EVAL_MAX_EXAMPLES = 128
+CHECKPOINT_EVAL_METRIC_PREFIX = "checkpoint_eval"
 
 
 def compute_eval_carveout(
@@ -797,6 +803,17 @@ class Config:
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
 
+    checkpoint_interval_minutes: float = 0.0
+    """When > 0, save a resumable + promotable checkpoint at every epoch end
+    and every ``max(N minutes, estimated run time / 20)`` within an epoch, or
+    every ``sampler_save_interval`` steps when that is set. When a held-out
+    set exists (``evaluation_dataset`` or ``eval_auto_carveout``), every save
+    point, including the final checkpoint, logs ``checkpoint_eval/loss`` on
+    the same first ``CHECKPOINT_EVAL_MAX_EXAMPLES`` eval examples so points
+    can be ranked, and epoch ends also log the full-set ``eval/loss``; without
+    one, save points are unscored. Replaces ``dcp_save_interval``. 0
+    disables."""
+
     prefer_current_run_checkpoint: bool = False
     """Prefer this run's checkpoints over a previous-attempt reference on resume.
     Opt-in for managed continuation; explicit initialization otherwise wins."""
@@ -928,6 +945,7 @@ def run_eval(
     batch_size: int,
     step: int,
     epoch: int | None,
+    metric_prefixes: tuple[str, ...] = ("eval",),
 ) -> float | None:
     """Run evaluation without affecting model weights or optimizer state.
 
@@ -935,7 +953,8 @@ def run_eval(
     are untouched. Logprobs come back from the server; the training loss
     function is invoked client-side purely to compute metrics, and the
     returned loss tensor is discarded. ``epoch=None`` marks the
-    pre-training baseline eval.
+    pre-training baseline eval. The result is logged once per entry in
+    ``metric_prefixes`` (``<prefix>/loss``, ``<prefix>/ppl``).
     """
     if not eval_data:
         return None
@@ -980,11 +999,12 @@ def run_eval(
         eval_ppl,
         eval_resp_tokens,
     )
-    log_metrics_json(step, eval_loss=eval_loss, eval_ppl=eval_ppl)
-    wandb_log(
-        {"eval/loss": eval_loss, "eval/ppl": eval_ppl, "eval/tokens": eval_resp_tokens},
-        step,
-    )
+    for prefix in metric_prefixes:
+        log_metrics_json(step, **{f"{prefix}_loss": eval_loss, f"{prefix}_ppl": eval_ppl})
+        wandb_log(
+            {f"{prefix}/loss": eval_loss, f"{prefix}/ppl": eval_ppl, f"{prefix}/tokens": eval_resp_tokens},
+            step,
+        )
 
     return eval_loss
 
@@ -1259,21 +1279,38 @@ def main(
         start_batch = rows_into_current_epoch // effective_batch_size
         remaining_raw_rows = max(0, total_raw_rows - cursor.value)
         total_steps_estimate = step + ((remaining_raw_rows + effective_batch_size - 1) // effective_batch_size)
+        schedule_on = cfg.checkpoint_interval_minutes > 0
+        if schedule_on and cfg.dcp_save_interval > 0:
+            logger.warning(
+                "dcp_save_interval=%d is ignored because checkpoint_interval_minutes=%s is set",
+                cfg.dcp_save_interval,
+                cfg.checkpoint_interval_minutes,
+            )
+        dcp_save_interval = 0 if schedule_on else cfg.dcp_save_interval
+        sampler_save_interval = 0 if schedule_on else cfg.sampler_save_interval
+        checkpoint_eval_data = eval_data[:CHECKPOINT_EVAL_MAX_EXAMPLES]
 
-        def _eval_and_record(step: int, epoch: int | None) -> None:
+        def _eval_and_record(
+            step: int,
+            epoch: int | None,
+            data: List[sdk.Datum],
+            metric_prefixes: tuple[str, ...] = ("eval",),
+        ) -> None:
             try:
                 eval_loss = run_eval(
-                    eval_data=eval_data,
+                    eval_data=data,
                     client=client,
                     batch_size=cfg.batch_size,
                     step=step,
                     epoch=epoch,
+                    metric_prefixes=metric_prefixes,
                 )
                 if eval_loss is not None:
-                    runner.append_metrics(
-                        step,
-                        {"eval/loss": eval_loss, "eval/ppl": perplexity_from_nll(eval_loss)},
-                    )
+                    metrics = {}
+                    for prefix in metric_prefixes:
+                        metrics[f"{prefix}/loss"] = eval_loss
+                        metrics[f"{prefix}/ppl"] = perplexity_from_nll(eval_loss)
+                    runner.append_metrics(step, metrics)
             except Exception as e:
                 phase = "pre-training" if epoch is None else f"epoch {epoch + 1}"
                 logger.warning("Eval failed at %s, continuing: %s", phase, e)
@@ -1283,7 +1320,24 @@ def main(
         # Pre-training baseline (skipped on resume). Must run before
         # pipe_started so it does not dilute train/tokens_per_sec.
         if eval_data and step == 0:
-            _eval_and_record(step=step, epoch=None)
+            _eval_and_record(step=step, epoch=None, data=eval_data)
+
+        schedule_start_step = step
+        schedule_started_at = time.monotonic()
+        last_save_at = schedule_started_at
+        last_save_step = step
+
+        def _save_scheduled_checkpoint() -> None:
+            nonlocal last_save_at, last_save_step
+            with timer("checkpoint_save"):
+                ckpt.save(
+                    f"step-{step}",
+                    resumable=True,
+                    promotable=True,
+                    data_consumed=cursor.value,
+                )
+            last_save_at = time.monotonic()
+            last_save_step = step
 
         # Always-on intra-step async + optional inter-step pipelining
         in_flight: deque = deque()
@@ -1342,8 +1396,8 @@ def main(
             pipe_total_tokens += tokens
             tps = pipe_total_tokens / max(1e-9, time.time() - pipe_started)
 
-            dcp_due = cfg.dcp_save_interval > 0 and s % cfg.dcp_save_interval == 0
-            sampler_due = cfg.sampler_save_interval > 0 and s % cfg.sampler_save_interval == 0
+            dcp_due = dcp_save_interval > 0 and s % dcp_save_interval == 0
+            sampler_due = sampler_save_interval > 0 and s % sampler_save_interval == 0
             if dcp_due or sampler_due:
                 with timer("checkpoint_save"):
                     logger.info(
@@ -1444,17 +1498,37 @@ def main(
                         continue  # entire batch was filtered (None render); skip
                     epoch_valid_examples += len(batch)
                     step = _pipe_submit(batch, step, cursor.value)
-                    checkpoint_step = (cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0) or (
-                        cfg.sampler_save_interval > 0 and step % cfg.sampler_save_interval == 0
+                    checkpoint_step = (dcp_save_interval > 0 and step % dcp_save_interval == 0) or (
+                        sampler_save_interval > 0 and step % sampler_save_interval == 0
                     )
-                    if len(in_flight) >= cfg.pipeline_depth or checkpoint_step:
+                    if schedule_on and cfg.sampler_save_interval > 0:
+                        save_point_due = step % cfg.sampler_save_interval == 0
+                    else:
+                        now = time.monotonic()
+                        save_point_due = timed_checkpoint_due(
+                            min_interval_s=cfg.checkpoint_interval_minutes * 60,
+                            since_last_save_s=now - last_save_at,
+                            elapsed_s=now - schedule_started_at,
+                            steps_done=step - schedule_start_step,
+                            total_steps=total_steps_estimate - schedule_start_step,
+                        )
+                    if len(in_flight) >= cfg.pipeline_depth or checkpoint_step or save_point_due:
                         _pipe_collect()
-                    if checkpoint_step:
+                    if checkpoint_step or save_point_due:
                         # Do not submit later optimizer steps ahead of a DCP
                         # save: the checkpoint and its data cursor must describe
                         # the same completed step.
                         while in_flight:
                             _pipe_collect()
+                    if save_point_due:
+                        if checkpoint_eval_data:
+                            _eval_and_record(
+                                step=step,
+                                epoch=epoch,
+                                data=checkpoint_eval_data,
+                                metric_prefixes=(CHECKPOINT_EVAL_METRIC_PREFIX,),
+                            )
+                        _save_scheduled_checkpoint()
 
                 # Drain in-flight ops so eval sees fully-applied gradients.
                 while in_flight:
@@ -1475,9 +1549,29 @@ def main(
                     if epoch_valid_examples == 0:
                         raise DatasetError(NO_VALID_TRAINING_EXAMPLES_MESSAGE)
 
-                # Run eval after each epoch
-                if eval_data:
-                    _eval_and_record(step=step, epoch=epoch)
+                # Run eval after each epoch. An epoch end not yet saved at this
+                # step also needs the ranking score: it is either a save point
+                # below or, for the last epoch, the final checkpoint's step.
+                needs_checkpoint_eval = schedule_on and step > last_save_step
+                if eval_data and needs_checkpoint_eval and len(eval_data) <= CHECKPOINT_EVAL_MAX_EXAMPLES:
+                    _eval_and_record(
+                        step=step,
+                        epoch=epoch,
+                        data=eval_data,
+                        metric_prefixes=("eval", CHECKPOINT_EVAL_METRIC_PREFIX),
+                    )
+                elif eval_data:
+                    _eval_and_record(step=step, epoch=epoch, data=eval_data)
+                    if needs_checkpoint_eval:
+                        _eval_and_record(
+                            step=step,
+                            epoch=epoch,
+                            data=checkpoint_eval_data,
+                            metric_prefixes=(CHECKPOINT_EVAL_METRIC_PREFIX,),
+                        )
+                is_final_save_epoch = epoch == cfg.epochs - 1 and cfg.save_final_checkpoint
+                if schedule_on and not is_final_save_epoch and step > last_save_step:
+                    _save_scheduled_checkpoint()
         finally:
             # Drain in-flight ops on exit (incl. SIGTERM) to avoid leaking partial batches.
             _pipe_drain_safe()

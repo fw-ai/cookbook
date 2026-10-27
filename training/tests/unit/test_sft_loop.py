@@ -574,18 +574,30 @@ class _ResolvedFuture:
         return self._value
 
 
-def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generation_eval=False, generation_eval_fails=False):
+def _run_main_with_fake_trainer(
+    tmp_path,
+    monkeypatch,
+    *,
+    resume_info,
+    generation_eval=False,
+    generation_eval_fails=False,
+    saves=None,
+    eval_rows=1,
+    **config_overrides,
+):
     """Run ``main`` for one epoch of 4 rows (batch_size=2) against a fake trainer.
 
     Returns the ordered train/eval events and the eval rows of metrics.jsonl.
+    ``saves`` collects ``(name, kwargs)`` for every checkpoint save.
     """
     events = []
+    saves = [] if saves is None else saves
     rows = [
         {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": "a"}]} for i in range(4)
     ]
     dataset_path = _write_dataset(tmp_path, rows)
     eval_path = tmp_path / "eval.jsonl"
-    eval_path.write_text(json.dumps(rows[0]))
+    eval_path.write_text("\n".join(json.dumps(rows[0]) for _ in range(eval_rows)))
     metrics_path = tmp_path / "metrics.jsonl"
     status_path = tmp_path / "status.json"
 
@@ -626,11 +638,15 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
         def resume(self, **kwargs):
             return resume_info
 
-        def save(self, *args, **kwargs):
+        def save(self, name, **kwargs):
             events.append("save")
+            saves.append((name, kwargs))
 
-    def fake_run_eval(*, eval_data, client, batch_size, step, epoch):
-        events.append(f"eval(step={step}, epoch={epoch})")
+    def fake_run_eval(*, eval_data, client, batch_size, step, epoch, metric_prefixes=("eval",)):
+        if metric_prefixes == ("eval",):
+            events.append(f"eval(step={step}, epoch={epoch})")
+        else:
+            events.append(f"eval(step={step}, epoch={epoch}, {'+'.join(metric_prefixes)}, n={len(eval_data)})")
         return 0.5
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
@@ -678,25 +694,28 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
 
         monkeypatch.setattr(module, "write_completed", record_completed)
 
-    result = module.main(
-        module.Config(
-            log_path=str(tmp_path / "logs"),
-            dataset=str(dataset_path),
-            evaluation_dataset=str(eval_path),
-            tokenizer_model="Qwen/Qwen3-1.7B",
-            max_seq_len=32,
-            epochs=1,
-            batch_size=2,
-            render_workers=1,
-            save_final_checkpoint=generation_eval,
-            serverless=generation_eval,
-            generation_eval=generation_eval,
-            runner=RunnerConfig(metrics_file=str(metrics_path), status_file=str(status_path)),
-        )
-    )
+    config_kwargs = {
+        "log_path": str(tmp_path / "logs"),
+        "dataset": str(dataset_path),
+        "evaluation_dataset": str(eval_path),
+        "tokenizer_model": "Qwen/Qwen3-1.7B",
+        "max_seq_len": 32,
+        "epochs": 1,
+        "batch_size": 2,
+        "render_workers": 1,
+        "save_final_checkpoint": generation_eval,
+        "serverless": generation_eval,
+        "generation_eval": generation_eval,
+        "runner": RunnerConfig(metrics_file=str(metrics_path), status_file=str(status_path)),
+    }
+    result = module.main(module.Config(**{**config_kwargs, **config_overrides}))
 
     records = [json.loads(line) for line in metrics_path.read_text().splitlines()] if metrics_path.exists() else []
-    return events, [record for record in records if "eval/loss" in record], result
+    return (
+        events,
+        [record for record in records if "eval/loss" in record or "checkpoint_eval/loss" in record],
+        result,
+    )
 
 
 @pytest.mark.parametrize("resumed", [False, True])
@@ -759,6 +778,149 @@ def test_main_skips_baseline_eval_on_mid_run_resume(tmp_path, monkeypatch):
 
     assert events == ["train", "eval(step=2, epoch=0)"]
     assert [record["step"] for record in eval_records] == [2]
+
+
+def test_run_eval_logs_once_per_metric_prefix(monkeypatch):
+    logged = []
+    monkeypatch.setattr(module, "make_batch_weighted_sft_loss_fn", lambda: lambda b, lp: (None, {"ce_loss_sum": 1.0}))
+    monkeypatch.setattr(module, "log_metrics_json", lambda step, **kw: logged.append((step, kw)))
+    monkeypatch.setattr(module, "wandb_log", lambda metrics, step: logged.append((step, metrics)))
+    client = SimpleNamespace(
+        forward=lambda batch, loss_fn: SimpleNamespace(
+            loss_fn_outputs=[{"logprobs": SimpleNamespace(to_torch=lambda: None)} for _ in batch]
+        )
+    )
+
+    loss = module.run_eval(
+        eval_data=[_test_datum("e")],
+        client=client,
+        batch_size=4,
+        step=3,
+        epoch=0,
+        metric_prefixes=("eval", "checkpoint_eval"),
+    )
+
+    assert loss == pytest.approx(0.5)
+    keys = {key for _, metrics in logged for key in metrics}
+    assert {"eval_loss", "eval/loss", "checkpoint_eval_loss", "checkpoint_eval/loss"} <= keys
+    assert {step for step, _ in logged} == {3}
+
+
+def _save(step: int, data_consumed: int) -> tuple:
+    return (f"step-{step}", {"resumable": True, "promotable": True, "data_consumed": data_consumed})
+
+
+def test_checkpoint_schedule_scores_every_save_point_including_final(tmp_path, monkeypatch, caplog):
+    saves = []
+    with caplog.at_level(logging.WARNING, logger=module.logger.name):
+        events, eval_records, _ = _run_main_with_fake_trainer(
+            tmp_path,
+            monkeypatch,
+            resume_info=None,
+            saves=saves,
+            epochs=2,
+            dcp_save_interval=1,
+            checkpoint_interval_minutes=30,
+            save_final_checkpoint=True,
+        )
+
+    assert "dcp_save_interval=1 is ignored" in caplog.text
+    # A <=128-example eval set is the ranking subset, so one pass logs both keys.
+    assert events == [
+        "eval(step=0, epoch=None)",
+        "train",
+        "train",
+        "eval(step=2, epoch=0, eval+checkpoint_eval, n=1)",
+        "save",
+        "train",
+        "train",
+        "eval(step=4, epoch=1, eval+checkpoint_eval, n=1)",
+        "save",
+    ]
+    assert saves == [_save(2, 4), _save(4, 8)]
+    assert [r["step"] for r in eval_records if "checkpoint_eval/loss" in r] == [2, 4]
+
+
+def test_checkpoint_schedule_timed_point_scores_then_saves(tmp_path, monkeypatch):
+    monkeypatch.setattr(module, "timed_checkpoint_due", lambda **kwargs: kwargs["steps_done"] == 1)
+    saves = []
+    events, _, _ = _run_main_with_fake_trainer(
+        tmp_path,
+        monkeypatch,
+        resume_info=None,
+        saves=saves,
+        epochs=2,
+        checkpoint_interval_minutes=30,
+    )
+
+    assert events == [
+        "eval(step=0, epoch=None)",
+        "train",
+        "eval(step=1, epoch=0, checkpoint_eval, n=1)",
+        "save",
+        "train",
+        "eval(step=2, epoch=0, eval+checkpoint_eval, n=1)",
+        "save",
+        "train",
+        "train",
+        "eval(step=4, epoch=1, eval+checkpoint_eval, n=1)",
+        # save_final_checkpoint=False: the last epoch end is a save point itself.
+        "save",
+    ]
+    assert saves == [_save(1, 2), _save(2, 4), _save(4, 8)]
+
+
+def test_checkpoint_schedule_sampler_interval_replaces_timed_points(tmp_path, monkeypatch):
+    def fail_if_called(**kwargs):
+        raise AssertionError("timed interval must not be consulted when sampler_save_interval is set")
+
+    monkeypatch.setattr(module, "timed_checkpoint_due", fail_if_called)
+    saves = []
+    events, _, _ = _run_main_with_fake_trainer(
+        tmp_path,
+        monkeypatch,
+        resume_info=None,
+        saves=saves,
+        sampler_save_interval=1,
+        checkpoint_interval_minutes=30,
+    )
+
+    # Override-driven points are full save points with a ranking score; the
+    # epoch end at an already-scored step only adds the full-set eval.
+    assert events == [
+        "eval(step=0, epoch=None)",
+        "train",
+        "eval(step=1, epoch=0, checkpoint_eval, n=1)",
+        "save",
+        "train",
+        "eval(step=2, epoch=0, checkpoint_eval, n=1)",
+        "save",
+        "eval(step=2, epoch=0)",
+    ]
+    assert saves == [_save(1, 2), _save(2, 4)]
+
+
+def test_checkpoint_schedule_ranks_on_fixed_subset_of_large_eval_set(tmp_path, monkeypatch):
+    saves = []
+    events, _, _ = _run_main_with_fake_trainer(
+        tmp_path,
+        monkeypatch,
+        resume_info=None,
+        saves=saves,
+        eval_rows=130,
+        checkpoint_interval_minutes=30,
+        save_final_checkpoint=True,
+    )
+
+    assert events == [
+        "eval(step=0, epoch=None)",
+        "train",
+        "train",
+        "eval(step=2, epoch=0)",
+        "eval(step=2, epoch=0, checkpoint_eval, n=128)",
+        "save",
+    ]
+    assert saves == [_save(2, 4)]
 
 
 def test_render_one_worker_uses_per_example_mean_reduction(monkeypatch):

@@ -17,8 +17,45 @@ from training.utils.checkpoints import (
     _newest_first,
     _logical_name_for_run,
     _public_logical_name,
+    timed_checkpoint_due,
     validate_warm_start_config,
 )
+
+
+@pytest.mark.parametrize(
+    "since_last_save_s, elapsed_s, steps_done, total_steps, expected",
+    [
+        # Short run: the 30-minute floor applies.
+        (1799, 1800, 100, 200, False),
+        (1800, 1800, 100, 200, True),
+        # 20-hour run: run / 20 = 1 hour stretches the interval.
+        (1800, 3600, 100, 2000, False),
+        (3600, 3600, 100, 2000, True),
+        # No completed step yet: nothing to extrapolate from.
+        (7200, 7200, 0, 2000, False),
+    ],
+)
+def test_timed_checkpoint_due(since_last_save_s, elapsed_s, steps_done, total_steps, expected):
+    assert (
+        timed_checkpoint_due(
+            min_interval_s=1800,
+            since_last_save_s=since_last_save_s,
+            elapsed_s=elapsed_s,
+            steps_done=steps_done,
+            total_steps=total_steps,
+        )
+        is expected
+    )
+
+
+def test_timed_checkpoint_due_disabled_without_interval():
+    assert not timed_checkpoint_due(
+        min_interval_s=0,
+        since_last_save_s=1e9,
+        elapsed_s=1e9,
+        steps_done=10,
+        total_steps=10,
+    )
 
 
 @pytest.fixture

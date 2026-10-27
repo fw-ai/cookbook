@@ -38,12 +38,13 @@ import asyncio
 import functools
 import logging
 import os
+import random
 import signal
 import tempfile
 import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import torch
 from fireworks.training import sdk
@@ -54,6 +55,13 @@ from fireworks.training.sdk.training_spec import (
     normalize_lr_scheduler_spec,
 )
 from tqdm import tqdm
+from training.recipes.sft_loop import (
+    CHECKPOINT_EVAL_MAX_EXAMPLES,
+    CHECKPOINT_EVAL_METRIC_PREFIX,
+    DEFAULT_EVAL_CARVE_RATIO,
+    DEFAULT_MAX_EVAL_SEQS,
+    compute_eval_carveout,
+)
 from training.utils import (
     DEFAULT_ADAM,
     NO_VALID_PREFERENCE_PAIRS_MESSAGE,
@@ -83,7 +91,11 @@ from training.utils import (
     wandb_finish,
     wandb_log,
 )
-from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
+from training.utils.checkpoints import (
+    TrainingCheckpoints,
+    timed_checkpoint_due,
+    validate_warm_start_config,
+)
 from training.utils.resource_autosizing import select_render_worker_count
 from training.utils.rl.reference import SamplerReference
 from training.utils.runner import UserConfigError
@@ -104,6 +116,8 @@ logger = logging.getLogger(__name__)
 # constant seed keeps the grouped order deterministic across runs/resume while
 # still de-correlating batch length from training step.
 _DPO_LENGTH_GROUP_SEED = 0
+# Held-out pairs and their reference logprobs stay in memory for the whole run.
+MAX_EVAL_PAIRS = 1000
 DATASET_LOADING_MODE_STAGE = "stage"
 DATASET_LOADING_MODE_STREAM = "stream"
 SUPPORTED_DATASET_LOADING_MODES = {
@@ -199,6 +213,29 @@ class Config:
     """Save DCP checkpoints every N steps. 0 disables."""
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
+    checkpoint_interval_minutes: float = 0.0
+    """When > 0, save a resumable + promotable checkpoint at every epoch end
+    and every ``max(N minutes, estimated run time / 20)`` within an epoch, or
+    every ``sampler_save_interval`` steps when that is set. With held-out
+    pairs, every save point, including the final checkpoint, logs
+    ``checkpoint_eval/*`` on the same first ``CHECKPOINT_EVAL_MAX_EXAMPLES``
+    pairs. Rank checkpoints by ``checkpoint_eval/loss``, the held-out DPO loss
+    (lower is better), as SFT does; accuracy, margin, chosen/rejected logprob
+    and chosen logprob delta are logged for monitoring. Epoch ends also log the
+    full-set ``eval/*``. Replaces ``dcp_save_interval``. 0 disables."""
+    evaluation_dataset: str = ""
+    """Path to an explicit held-out preference dataset (JSONL file or directory
+    of .jsonl shards). Only its first ``MAX_EVAL_PAIRS`` valid pairs are used.
+    Mutually exclusive with ``eval_auto_carveout``."""
+    eval_auto_carveout: bool = False
+    """When True and no evaluation_dataset is provided, hold out a seeded random
+    subset of training rows as the eval set."""
+    eval_carve_ratio: float = DEFAULT_EVAL_CARVE_RATIO
+    """Max fraction of training rows to use for eval carve-out."""
+    max_eval_seqs: int = DEFAULT_MAX_EVAL_SEQS
+    """Max number of preference pairs for eval carve-out."""
+    seed: int = 0
+    """Seed for eval carve-out membership, so a resumed run holds out the same rows."""
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
     prefer_current_run_checkpoint: bool = False
     """Prefer this run's checkpoints over a previous-attempt reference on resume.
@@ -393,15 +430,119 @@ def _normalize_dataset_loading_mode(mode: str) -> str:
 
 def _make_pair_dataset(
     cfg: Config,
+    path: str | None = None,
 ) -> JsonlRenderDataset | GcsJsonlRenderDataset:
+    path = cfg.dataset if path is None else path
     mode = _normalize_dataset_loading_mode(cfg.dataset_loading_mode)
     if mode == DATASET_LOADING_MODE_STAGE:
-        return JsonlRenderDataset(cfg.dataset, _render_pair_worker)
-    if not cfg.dataset.startswith("gs://"):
-        raise DatasetError("dataset_loading_mode='stream' requires a gs:// dataset path; " f"got {cfg.dataset!r}.")
+        return JsonlRenderDataset(path, _render_pair_worker)
+    if not path.startswith("gs://"):
+        raise DatasetError("dataset_loading_mode='stream' requires a gs:// dataset path; " f"got {path!r}.")
     if cfg.group_by_length:
         raise DatasetError("dataset_loading_mode='stream' does not support group_by_length yet.")
-    return GcsJsonlRenderDataset(cfg.dataset, _render_pair_worker)
+    return GcsJsonlRenderDataset(path, _render_pair_worker)
+
+
+def _render_pairs_eagerly(
+    ds: JsonlRenderDataset | GcsJsonlRenderDataset,
+    max_pairs: int | None = None,
+) -> list[dict[str, Any]]:
+    """Render rows of ``ds`` in-process, dropping filtered rows, up to ``max_pairs`` pairs."""
+    pairs: list[dict[str, Any]] = []
+    for i in range(len(ds)):
+        if max_pairs is not None and len(pairs) >= max_pairs:
+            logger.warning("Eval set capped at the first %d valid pairs; ignoring rows from %d on", max_pairs, i)
+            break
+        item = ds[i]
+        if item is None:
+            continue
+        raise_rendered_dataset_errors([item])
+        pairs.append(item)
+    return pairs
+
+
+def _prepare_eval_pairs(
+    cfg: Config,
+    pair_dataset: JsonlRenderDataset | GcsJsonlRenderDataset,
+) -> tuple[JsonlRenderDataset | GcsJsonlRenderDataset, list[dict[str, Any]]]:
+    """Return the training dataset and the rendered held-out pairs.
+
+    An explicit ``evaluation_dataset`` keeps its first ``MAX_EVAL_PAIRS`` valid
+    pairs, which bounds memory. ``eval_auto_carveout`` removes a
+    seeded random subset of training rows, so a resumed run holds out the same
+    rows.
+    """
+    if cfg.evaluation_dataset and cfg.eval_auto_carveout:
+        raise ValueError("only one of evaluation_dataset or eval_auto_carveout may be specified")
+    if cfg.evaluation_dataset:
+        eval_pairs = _render_pairs_eagerly(
+            _make_pair_dataset(cfg, path=cfg.evaluation_dataset),
+            max_pairs=MAX_EVAL_PAIRS,
+        )
+        logger.info("Loaded %d eval preference pairs from %s", len(eval_pairs), cfg.evaluation_dataset)
+        return pair_dataset, eval_pairs
+    if not cfg.eval_auto_carveout:
+        return pair_dataset, []
+    n = compute_eval_carveout(len(pair_dataset), cfg.eval_carve_ratio, cfg.max_eval_seqs)
+    if n == 0:
+        logger.warning("Dataset too small for auto carve-out, skipping eval")
+        return pair_dataset, []
+    shuffled_indices = list(range(len(pair_dataset)))
+    random.Random(cfg.seed).shuffle(shuffled_indices)
+    eval_index_set = set(shuffled_indices[:n])
+    eval_pairs = _render_pairs_eagerly(pair_dataset.with_indices(shuffled_indices[:n]))
+    training_dataset = pair_dataset.with_indices([i for i in range(len(pair_dataset)) if i not in eval_index_set])
+    logger.info(
+        "Auto carve-out: %d eval preference pairs, %d training rows (seed=%d)",
+        len(eval_pairs),
+        len(training_dataset),
+        cfg.seed,
+    )
+    return training_dataset, eval_pairs
+
+
+def run_eval(
+    eval_pairs: Sequence[dict[str, Any]],
+    policy: ReconnectableClient,
+    beta: float,
+    batch_size: int,
+) -> dict[str, float] | None:
+    """Forward-only DPO eval on held-out pairs with cached reference logprobs.
+
+    Weights and optimizer state are untouched. Returns pair-weighted means of
+    the DPO loss, preference accuracy, log-ratio margin (as ``train/margin``),
+    summed response logprobs of the chosen and rejected completions, and the
+    chosen logprob change versus the reference (negative means the chosen
+    completion became less likely).
+    """
+    if not eval_pairs:
+        return None
+    totals = dict.fromkeys(
+        ("loss", "accuracy", "margin", "chosen_logprob", "rejected_logprob", "chosen_logprob_delta"), 0.0
+    )
+    for start in range(0, len(eval_pairs), batch_size):
+        batch = eval_pairs[start : start + batch_size]
+        datums = [datum for pair in batch for datum in (pair["chosen_datum"], pair["rejected_datum"])]
+        fwd = policy.forward(datums, "cross_entropy")
+        logprobs = [torch.tensor(out["logprobs"].data, dtype=torch.float32) for out in fwd.loss_fn_outputs]
+        loss_fn = make_batch_dpo_loss_fn(
+            [pair["ref_chosen"] for pair in batch],
+            [pair["ref_rejected"] for pair in batch],
+            [pair["response_start"] for pair in batch],
+            beta,
+        )
+        _, metrics = loss_fn(datums, logprobs)
+        totals["loss"] += metrics["dpo_loss"] * len(batch)
+        totals["accuracy"] += metrics["accuracy"] * len(batch)
+        totals["margin"] += metrics["margin"] * len(batch)
+        for i, pair in enumerate(batch):
+            # Same response slice as the DPO loss: logprobs[j] predicts token j + 1.
+            response_start = max(0, pair["response_start"] - 1)
+            chosen_logprob = float(logprobs[2 * i][response_start:].sum())
+            totals["chosen_logprob"] += chosen_logprob
+            totals["rejected_logprob"] += float(logprobs[2 * i + 1][response_start:].sum())
+            totals["chosen_logprob_delta"] += chosen_logprob - sum(pair["ref_chosen"][response_start:])
+    return {name: total / len(eval_pairs) for name, total in totals.items()}
 
 
 async def _train_loop(
@@ -419,8 +560,12 @@ async def _train_loop(
     on_ref_done: Callable[[], None] | None = None,
     runner: RunnerIO | None = None,
     training_shape_id: str | None = None,
+    eval_pairs: Sequence[dict[str, Any]] = (),
 ) -> int:
     """Pipelined DPO training -- streaming render + ref forward overlap policy.
+
+    ``eval_pairs`` are held-out pairs that already carry reference logprobs;
+    see :func:`run_eval`.
 
     Epoch 0 runs a producer/consumer pipeline with an unbounded queue:
     a DataLoader streams rendered preference batches; the producer
@@ -463,13 +608,79 @@ async def _train_loop(
     pipe: asyncio.Queue = asyncio.Queue()
     sem = asyncio.Semaphore(cfg.ref_cache_concurrency)
 
+    schedule_on = cfg.checkpoint_interval_minutes > 0
+    if schedule_on and cfg.dcp_save_interval > 0:
+        logger.warning(
+            "dcp_save_interval=%d is ignored because checkpoint_interval_minutes=%s is set",
+            cfg.dcp_save_interval,
+            cfg.checkpoint_interval_minutes,
+        )
+    dcp_save_interval = 0 if schedule_on else cfg.dcp_save_interval
+    sampler_save_interval = 0 if schedule_on else cfg.sampler_save_interval
+    checkpoint_eval_pairs = eval_pairs[:CHECKPOINT_EVAL_MAX_EXAMPLES]
+    schedule_started_at = time.monotonic()
+    last_save_at = schedule_started_at
+    last_save_step = step_offset
+    last_data_consumed = cursor.value
+
+    def _eval_and_record(pairs: Sequence[dict[str, Any]], metric_prefixes: tuple[str, ...] = ("eval",)) -> None:
+        try:
+            metrics = run_eval(pairs, policy, cfg.beta, batch_size)
+        except Exception as e:
+            logger.warning("Eval failed at step %d, continuing: %s", step, e)
+            return
+        if metrics is None:
+            return
+        logger.info(
+            "[Eval] Step %d (%d pairs) | Loss: %.4f | Acc: %.1f%% | Margin: %+.4f",
+            step,
+            len(pairs),
+            metrics["loss"],
+            metrics["accuracy"] * 100,
+            metrics["margin"],
+        )
+        recorded = {f"{prefix}/{name}": value for prefix in metric_prefixes for name, value in metrics.items()}
+        log_metrics_json(step, **{key.replace("/", "_"): value for key, value in recorded.items()})
+        wandb_log(recorded, step)
+        runner.append_metrics(step, recorded)
+
+    def _save_scheduled_checkpoint() -> None:
+        nonlocal last_save_at, last_save_step
+        with timer("checkpoint_save"):
+            ckpt.save(
+                f"step-{step}",
+                resumable=True,
+                promotable=True,
+                data_consumed=last_data_consumed,
+            )
+        last_save_at = time.monotonic()
+        last_save_step = step
+
+    def _end_epoch(epoch: int, epoch_start_step: int) -> None:
+        if step == epoch_start_step:
+            return  # nothing was trained in this epoch on this attempt
+        # checkpoint_eval/* is logged only at a step that gets a checkpoint: an
+        # epoch-end save below, or the caller's final checkpoint. A step already
+        # saved (and scored) by a save point is not scored again.
+        final_saved_by_caller = epoch == cfg.epochs - 1 and cfg.save_final_checkpoint
+        save_here = schedule_on and not final_saved_by_caller and step > last_save_step
+        needs_checkpoint_eval = (save_here or final_saved_by_caller) and step > last_save_step
+        if eval_pairs and needs_checkpoint_eval and len(eval_pairs) <= CHECKPOINT_EVAL_MAX_EXAMPLES:
+            _eval_and_record(eval_pairs, ("eval", CHECKPOINT_EVAL_METRIC_PREFIX))
+        elif eval_pairs:
+            _eval_and_record(eval_pairs)
+            if needs_checkpoint_eval:
+                _eval_and_record(checkpoint_eval_pairs, (CHECKPOINT_EVAL_METRIC_PREFIX,))
+        if save_here:
+            _save_scheduled_checkpoint()
+
     def _run_train_step(
         epoch: int,
         step_pairs: list[dict[str, Any]],
         *,
         data_consumed: int | None = None,
     ) -> None:
-        nonlocal step
+        nonlocal step, last_data_consumed
         step_t0 = time.monotonic()
         step_tokens = sum(p["chosen_tokens_len"] + p["rejected_tokens_len"] for p in step_pairs)
         # Epoch 0: ref model processed these same sequences; epochs 1+ use cached ref logprobs.
@@ -487,14 +698,15 @@ async def _train_loop(
         step_adam_params = sdk.AdamParams(learning_rate=step_lr, **adam_kwargs)
         optim_result = policy.optim_step(step_adam_params)
         step += 1
+        last_data_consumed = cursor.value if data_consumed is None else data_consumed
 
         step_metrics: dict[str, Any] = {}
         if optim_result and hasattr(optim_result, "metrics") and optim_result.metrics:
             for k, v in optim_result.metrics.items():
                 step_metrics[f"train/{k}"] = v
 
-        dcp_due = cfg.dcp_save_interval > 0 and step % cfg.dcp_save_interval == 0
-        sampler_due = cfg.sampler_save_interval > 0 and step % cfg.sampler_save_interval == 0
+        dcp_due = dcp_save_interval > 0 and step % dcp_save_interval == 0
+        sampler_due = sampler_save_interval > 0 and step % sampler_save_interval == 0
         if dcp_due or sampler_due:
             with timer("checkpoint_save"):
                 logger.info(
@@ -507,8 +719,23 @@ async def _train_loop(
                     f"step-{step}",
                     resumable=dcp_due,
                     promotable=sampler_due,
-                    data_consumed=(cursor.value if data_consumed is None else data_consumed),
+                    data_consumed=last_data_consumed,
                 )
+        if schedule_on and cfg.sampler_save_interval > 0:
+            save_point_due = step % cfg.sampler_save_interval == 0
+        else:
+            now = time.monotonic()
+            save_point_due = timed_checkpoint_due(
+                min_interval_s=cfg.checkpoint_interval_minutes * 60,
+                since_last_save_s=now - last_save_at,
+                elapsed_s=now - schedule_started_at,
+                steps_done=step - step_offset,
+                total_steps=total_steps - step_offset,
+            )
+        if save_point_due:
+            if checkpoint_eval_pairs:
+                _eval_and_record(checkpoint_eval_pairs, (CHECKPOINT_EVAL_METRIC_PREFIX,))
+            _save_scheduled_checkpoint()
 
         step_elapsed = time.monotonic() - step_t0
         tokens_per_sec = step_tokens / step_elapsed if step_elapsed > 0 else 0.0
@@ -695,6 +922,7 @@ async def _train_loop(
     total_steps = ((pairs_per_epoch + batch_size - 1) // batch_size) * cfg.epochs
     pbar.total = total_steps
     pbar.refresh()
+    _end_epoch(0, epoch_start_step=step_offset)
 
     # -- Epochs 1+: stream cached ref logprobs from disk -----------------------
 
@@ -707,6 +935,7 @@ async def _train_loop(
             ref_cache_log.disk_size_bytes() / (1024**3),
         )
         for epoch in range(1, cfg.epochs):
+            epoch_start_step = step
             chunk: list[dict[str, Any]] = []
             for pair in ref_cache_log:
                 chunk.append(pair)
@@ -729,6 +958,7 @@ async def _train_loop(
                     pbar.update(1)
             # Replay re-consumes source rows; cache holds only post-filter pairs.
             cursor.resume(max(cursor.value, (epoch + 1) * total_raw_rows))
+            _end_epoch(epoch, epoch_start_step=epoch_start_step)
 
     pbar.close()
     return step
@@ -934,6 +1164,18 @@ def main(
         pair_dataset = _make_pair_dataset(cfg)
         if len(pair_dataset) == 0:
             raise DatasetError(f"No data found in {cfg.dataset}")
+        pair_dataset, eval_pairs = _prepare_eval_pairs(cfg, pair_dataset)
+        if eval_pairs:
+            # Cache eval reference logprobs before training can release a
+            # separate reference trainer or sampler.
+            eval_pairs = asyncio.run(
+                _ref_forward_batch(
+                    eval_pairs,
+                    reference,
+                    asyncio.Semaphore(cfg.ref_cache_concurrency),
+                    cfg.ref_cache_batch_size,
+                )
+            )
 
         num_workers = (
             cfg.render_workers
@@ -987,6 +1229,7 @@ def main(
                 on_ref_done=_on_ref_done,
                 runner=runner,
                 training_shape_id=cfg.trainer.training_shape_id,
+                eval_pairs=eval_pairs,
             )
         )
 
