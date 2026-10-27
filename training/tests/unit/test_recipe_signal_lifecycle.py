@@ -187,7 +187,7 @@ def _run_case(recipe: str, phase: str) -> None:
             patch.setattr(
                 module, "ReconnectableClient", SimpleNamespace(from_training_client=lambda *a, **k: Policy())
             )
-            patch.setattr(module, "make_weight_sync", lambda *args: lambda *a, **k: operation("sync"))
+            patch.setattr(module, "make_weight_sync", lambda *args, **kwargs: lambda *a, **k: operation("sync"))
             sampler = SimpleNamespace(
                 base_url="https://api.example",
                 model="model",

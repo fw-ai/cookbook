@@ -17,8 +17,45 @@ from training.utils.checkpoints import (
     _newest_first,
     _logical_name_for_run,
     _public_logical_name,
+    timed_checkpoint_due,
     validate_warm_start_config,
 )
+
+
+@pytest.mark.parametrize(
+    "since_last_save_s, elapsed_s, steps_done, total_steps, expected",
+    [
+        # Short run: the 30-minute floor applies.
+        (1799, 1800, 100, 200, False),
+        (1800, 1800, 100, 200, True),
+        # 20-hour run: run / 20 = 1 hour stretches the interval.
+        (1800, 3600, 100, 2000, False),
+        (3600, 3600, 100, 2000, True),
+        # No completed step yet: nothing to extrapolate from.
+        (7200, 7200, 0, 2000, False),
+    ],
+)
+def test_timed_checkpoint_due(since_last_save_s, elapsed_s, steps_done, total_steps, expected):
+    assert (
+        timed_checkpoint_due(
+            min_interval_s=1800,
+            since_last_save_s=since_last_save_s,
+            elapsed_s=elapsed_s,
+            steps_done=steps_done,
+            total_steps=total_steps,
+        )
+        is expected
+    )
+
+
+def test_timed_checkpoint_due_disabled_without_interval():
+    assert not timed_checkpoint_due(
+        min_interval_s=0,
+        since_last_save_s=1e9,
+        elapsed_s=1e9,
+        steps_done=10,
+        total_steps=10,
+    )
 
 
 @pytest.fixture
@@ -1146,9 +1183,103 @@ class TestPromoteLatest:
                 create_time="2026-04-01T00:00:00Z",
             ),
         ]
-        ckpt, _, _ = _make(log_dir, fw_rows=rows)
+        ckpt, _, fw = _make(log_dir, fw_rows=rows)
         with pytest.raises(RuntimeError, match="No promotable"):
             ckpt.promote_latest("out", "base")
+        assert fw.list_checkpoints.call_count == 3
+
+    def test_promotes_confirmed_sampler_row_missing_from_later_list(self, log_dir):
+        run_id = "run-current"
+        older = _row(
+            f"{run_id}-step-4-abcd1234",
+            ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+            promotable=True,
+            create_time="2099-01-01T00:00:00Z",
+        )
+        final = _row(
+            f"{run_id}-step-8-abcd1234",
+            ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+            promotable=True,
+            create_time="2099-01-01T00:00:08Z",
+        )
+        ckpt, client, fw = _make(
+            log_dir, fw_rows=[older], lora_rank=8, serverless=True, current_run_id=run_id
+        )
+        client.save_weights_for_sampler.side_effect = lambda *a, **kw: fw._rows.append(final)
+
+        ckpt.save("step-8", resumable=False, promotable=True)
+        fw._rows.remove(final)
+        ckpt.promote_latest("out", "base")
+
+        assert fw.promote_checkpoint.call_args.kwargs["name"] == final["name"]
+
+    def test_unconfirmed_later_save_drops_earlier_confirmed_row(self, log_dir):
+        run_id = "run-current"
+        periodic = _row(
+            f"{run_id}-step-4-abcd1234",
+            ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+            promotable=True,
+            create_time="2099-01-01T00:00:04Z",
+        )
+        ckpt, client, fw = _make(log_dir, lora_rank=8, serverless=True, current_run_id=run_id)
+        ckpt._save_appear_timeout_s = 0.05
+        client.save_weights_for_sampler.side_effect = lambda *a, **kw: fw._rows.append(periodic)
+        ckpt.save("step-4", resumable=False, promotable=True)
+        client.save_weights_for_sampler.side_effect = None
+        fw._rows.clear()
+
+        ckpt.save("step-8", resumable=False, promotable=True)
+        with pytest.raises(RuntimeError, match="No promotable"):
+            ckpt.promote_latest("out", "base")
+        fw.promote_checkpoint.assert_not_called()
+
+    def test_skipped_save_keeps_existing_row_as_fallback(self, log_dir):
+        run_id = "run-current"
+        final = _row(
+            f"{run_id}-step-8-abcd1234",
+            ctype="CHECKPOINT_TYPE_INFERENCE_LORA",
+            promotable=True,
+            create_time="2099-01-01T00:00:08Z",
+        )
+        ckpt, client, fw = _make(
+            log_dir, fw_rows=[final], lora_rank=8, serverless=True, current_run_id=run_id
+        )
+
+        ckpt.save("step-8", resumable=False, promotable=True)
+        client.save_weights_for_sampler.assert_not_called()
+        fw._rows.clear()
+        ckpt.promote_latest("out", "base")
+
+        assert fw.promote_checkpoint.call_args.kwargs["name"] == final["name"]
+
+    def test_retries_empty_list_before_promoting(self, log_dir):
+        row = _row(
+            "step-5",
+            ctype="CHECKPOINT_TYPE_INFERENCE_BASE",
+            promotable=True,
+            create_time="2026-04-01T00:00:00Z",
+        )
+        ckpt, _, fw = _make(log_dir)
+        responses = [[], RuntimeError("HTTP 503"), [row]]
+
+        def _list(job_id, **kwargs):
+            response = responses.pop(0)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        fw.list_checkpoints.side_effect = _list
+        ckpt.promote_latest("out", "base")
+
+        assert fw.promote_checkpoint.call_args.kwargs["name"] == row["name"]
+
+    def test_raises_list_error_after_retries(self, log_dir):
+        ckpt, _, fw = _make(log_dir)
+        fw.list_checkpoints.side_effect = RuntimeError("HTTP 503")
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            ckpt.promote_latest("out", "base")
+        assert fw.list_checkpoints.call_count == 3
+        fw.promote_checkpoint.assert_not_called()
 
 
 # -- dataloader.json bookkeeping -----------------------------------------------

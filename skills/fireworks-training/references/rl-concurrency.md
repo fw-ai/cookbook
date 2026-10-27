@@ -42,6 +42,14 @@ window, while an interval of successful responses additively increases it.
 Other HTTP failures do not cause the window to grow. Congestion reduces the
 window immediately; a short cooldown avoids repeated reductions from one burst.
 
+Dedicated controllers use fresh attempt-admission timestamps to ignore pre-cut
+feedback after reducing their request window. They adjust after at most one
+current window of fresh queue observations; status-only responses and missing
+metrics do not count. They clear an old congested average when fresh
+feedback becomes healthy. This recovery runs inside a rollout; it does not
+require an optimizer boundary. Transport-driven cuts also discard buffered
+pre-cut feedback, including cuts clamped at the minimum window. Explicit `adjustment_interval=0` stays step-only.
+
 ## Deployment sizing
 
 Every Harbor harness (`tito.rollout.HarborRollout`) materializes TITO

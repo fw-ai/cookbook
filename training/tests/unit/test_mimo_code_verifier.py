@@ -78,6 +78,210 @@ def test_fixed_source_passes_in_fresh_workspace(task: tuple, tmp_path: Path) -> 
     assert verify(config, candidate, hidden)
 
 
+def test_missing_patch_is_not_a_failed_solution(task: tuple, tmp_path: Path) -> None:
+    _, config, hidden = task
+    with pytest.raises(RuntimeError, match="candidate patch artifact is missing"):
+        verify(config, tmp_path / "missing.patch", hidden)
+
+
+def test_empty_patch_remains_a_failed_solution(task: tuple, tmp_path: Path) -> None:
+    _, config, hidden = task
+    candidate = tmp_path / "empty.patch"
+    candidate.write_text("")
+    assert not verify(config, candidate, hidden)
+
+
+@pytest.mark.parametrize("mode", ["empty", "reference", "missing"])
+def test_standalone_assets_on_task_python(task: tuple, tmp_path: Path, mode: str) -> None:
+    """MIMO_ASSET_TEST_PYTHON also runs this real Git workflow on original task Python."""
+    root, config, hidden = task
+    python = os.environ.get("MIMO_ASSET_TEST_PYTHON", sys.executable)
+    candidate = tmp_path / "candidate.patch"
+    if mode == "reference":
+        (root / "widget.py").write_text("value = 1\n")
+    if mode != "missing":
+        subprocess.run(
+            [
+                python,
+                str(Path(code_collect.__file__)),
+                "--cwd",
+                str(root),
+                "--base",
+                config["base_commit"],
+                "--destination",
+                str(candidate),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    _git(root, "reset", "--hard", config["base_commit"])
+    _git(root, "clean", "-fd")
+    program = """
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('task_verifier', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    verdict = module.verify(json.loads(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]))
+except RuntimeError as error:
+    assert 'candidate patch artifact is missing' in str(error)
+    print('missing')
+else:
+    print('pass' if verdict else 'fail')
+"""
+    result = subprocess.run(
+        [
+            python,
+            "-c",
+            program,
+            str(Path(code_verify.__file__)),
+            json.dumps(config),
+            str(candidate),
+            str(hidden),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip().splitlines()[-1] == {"empty": "fail", "reference": "pass", "missing": "missing"}[mode]
+
+
+def test_missing_patch_leaves_no_reward(
+    task: tuple, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, config, hidden = task
+    config_file = tmp_path / "verifier.json"
+    config_file.write_text(json.dumps(config))
+    reward = tmp_path / "reward.txt"
+    reward.write_text("1\n")
+    reward.with_suffix(".json").write_text('{"reward": 1}')
+    monkeypatch.setattr(
+        code_verify,
+        "Path",
+        lambda value: (
+            reward if str(value) == "/logs/verifier/reward.txt" else Path(value)
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "code_verify",
+            "--config",
+            str(config_file),
+            "--candidate",
+            str(tmp_path / "missing.patch"),
+            "--hidden-patch",
+            str(hidden),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="candidate patch artifact is missing"):
+        code_verify.main()
+    assert not reward.exists()
+    assert not reward.with_suffix(".json").exists()
+
+
+def test_artifact_cleanup_supports_task_python_before_38(
+    task: tuple, tmp_path: Path
+) -> None:
+    class TaskPath(type(tmp_path)):
+        def unlink(self) -> None:
+            super().unlink()
+
+    root, config, _ = task
+    (root / "widget.py").write_text("value = 1\n")
+    candidate = TaskPath(tmp_path / "candidate.patch")
+    collect(root, config["base_commit"], candidate)
+    assert "+value = 1" in candidate.read_text()
+    collect(root, config["base_commit"], candidate)
+    assert "+value = 1" in candidate.read_text()
+
+    reward = TaskPath(tmp_path / "reward.txt")
+    code_verify._remove_reward_artifact(reward)
+    reward.write_text("1\n")
+    code_verify._remove_reward_artifact(reward)
+    assert not reward.exists()
+    victim = tmp_path / "unrelated.txt"
+    victim.write_text("keep\n")
+    reward.symlink_to(victim)
+    code_verify._remove_reward_artifact(reward)
+    assert not reward.is_symlink()
+    assert victim.read_text() == "keep\n"
+    reward.mkdir()
+    (reward / "nested").write_text("stale\n")
+    code_verify._remove_reward_artifact(reward)
+    assert not reward.exists()
+
+
+def test_capture_skips_untracked_dependencies_but_keeps_tracked_changes(
+    task: tuple, tmp_path: Path
+) -> None:
+    root, config, _ = task
+    dependency = root / ".venv"
+    dependency.mkdir()
+    (dependency / "tracked.py").write_text("old = True\n")
+    _git(root, "add", ".venv/tracked.py")
+    _git(root, "commit", "-m", "tracked dependency source")
+    base = _git(root, "rev-parse", "HEAD").strip()
+    (dependency / "tracked.py").write_text("old = False\n")
+    (dependency / "untracked.bin").write_bytes(b"dependency" * 10000)
+    (root / "widget.py").write_text("value = 1\n")
+    (root / "new_source.py").write_text("new = True\n")
+    candidate = tmp_path / "candidate.patch"
+    collect(root, base, candidate, dependency_dirs=(".venv",))
+    patch_text = candidate.read_text()
+    assert ".venv/untracked.bin" not in patch_text
+    assert ".venv/tracked.py" in patch_text
+    assert "+old = False" in patch_text
+    assert "+value = 1" in patch_text
+    assert "new_source.py" in patch_text
+
+
+@pytest.mark.parametrize("name", ["node_modules", "dependency with spaces"])
+@pytest.mark.parametrize("tracked_edit", [False, True])
+def test_capture_ignored_dependencies_preserves_tracked_edits(
+    task: tuple, tmp_path: Path, name: str, tracked_edit: bool
+) -> None:
+    root, config, _ = task
+    dependency = root / name
+    dependency.mkdir()
+    (dependency / "tracked.py").write_text("old = True\n")
+    _git(root, "add", ".")
+    (root / ".gitignore").write_text(f"/{name}/\n")
+    _git(root, "add", ".gitignore")
+    _git(root, "commit", "-m", "ignored dependency with tracked source")
+    base = _git(root, "rev-parse", "HEAD").strip()
+    (dependency / "untracked.bin").write_bytes(b"dependency" * 10000)
+    if tracked_edit:
+        (dependency / "tracked.py").write_text("old = False\n")
+    candidate = tmp_path / "ignored-dependency.patch"
+    collect(root, base, candidate, dependency_dirs=(name,))
+    patch = candidate.read_text()
+    assert "untracked.bin" not in patch
+    if tracked_edit:
+        assert "+old = False" in patch
+    else:
+        assert patch == ""
+
+
+def test_unchanged_workspace_with_dependencies_has_empty_patch(task: tuple, tmp_path: Path) -> None:
+    root, config, _ = task
+    (root / ".venv").mkdir()
+    (root / ".venv" / "runtime.py").write_text("dependency = True\n")
+    candidate = tmp_path / "candidate.patch"
+    collect(root, config["base_commit"], candidate, dependency_dirs=(".venv",))
+    assert candidate.read_bytes() == b""
+
+
+@pytest.mark.parametrize("directory", [".", "..", "../outside", "/tmp/dep", ".git", "dep/../src", "dep/.git", "a\\b"])
+def test_capture_rejects_invalid_dependency_directory(task: tuple, tmp_path: Path, directory: str) -> None:
+    root, config, _ = task
+    with pytest.raises(ValueError, match="dependency_dirs"):
+        collect(root, config["base_commit"], tmp_path / "candidate.patch", dependency_dirs=(directory,))
+
+
 def test_trusted_test_command_preserves_image_git_identity(
     task: tuple, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -93,8 +297,9 @@ def test_trusted_test_command_preserves_image_git_identity(
     assert verify(config, candidate, hidden)
 
 
+@pytest.mark.parametrize("dependency_dir", ["dependency with spaces", "-runtime"])
 def test_generated_task_executes_its_bundled_capture_command(
-    task: tuple, tmp_path: Path
+    task: tuple, tmp_path: Path, dependency_dir: str
 ) -> None:
     root, config, hidden = task
     task_dir = write_harbor_task(
@@ -107,11 +312,14 @@ def test_generated_task_executes_its_bundled_capture_command(
             "clean_base_commit": config["base_commit"],
             "test_patch": hidden.read_text(),
             "test_command": config["test_command"],
+            "dependency_dirs": [dependency_dir],
         },
         tmp_path / "tasks",
         fresh_verifier=True,
     )
     (root / "widget.py").write_text("value = 1\n")
+    (root / dependency_dir).mkdir()
+    (root / dependency_dir / "untracked.py").write_text("dependency = True\n")
     candidate = tmp_path / "generated.patch"
     document = tomllib.loads((task_dir / "task.toml").read_text())
     command = document["verifier"]["collect"][0]["command"].replace(
@@ -125,6 +333,7 @@ def test_generated_task_executes_its_bundled_capture_command(
     }
     subprocess.run(["bash", "-c", command], check=True, env=env)
     assert "+value = 1" in candidate.read_text()
+    assert "untracked.py" not in candidate.read_text()
 
 
 @pytest.mark.parametrize("configuration", ["filter", "fsmonitor", "environment"])

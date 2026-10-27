@@ -154,6 +154,29 @@ def validate_warm_start_config(
         )
 
 
+TIMED_CHECKPOINTS_PER_RUN = 20
+
+
+def timed_checkpoint_due(
+    *,
+    min_interval_s: float,
+    since_last_save_s: float,
+    elapsed_s: float,
+    steps_done: int,
+    total_steps: int,
+) -> bool:
+    """Whether a timed save point is due.
+
+    Save points are spaced ``max(min_interval_s, estimated run time / 20)``
+    apart, so long runs keep about 20 timed points. The run time is
+    extrapolated from the observed time per step.
+    """
+    if min_interval_s <= 0 or steps_done <= 0:
+        return False
+    estimated_run_s = elapsed_s / steps_done * max(total_steps, steps_done)
+    return since_last_save_s >= max(min_interval_s, estimated_run_s / TIMED_CHECKPOINTS_PER_RUN)
+
+
 def _short_name(resource_name: str) -> str:
     """Extract the trailing checkpoint id from a full resource name."""
     return resource_name.rstrip("/").rsplit("/", 1)[-1]
@@ -162,6 +185,7 @@ def _short_name(resource_name: str) -> str:
 _SESSION_SUFFIX_RE = re.compile(r"-[0-9a-f]{8}$")
 _RUN_SCOPED_NAME_RE = re.compile(r"^run-[0-9a-f]{32}[:-](.+)$")
 _PROMOTABLE_FRESHNESS_TOLERANCE_S = 10.0
+_PROMOTE_LIST_ATTEMPTS = 3
 
 
 def _logical_name(short: str) -> str:
@@ -408,6 +432,7 @@ class TrainingCheckpoints:
         self._save_poll_s = save_poll_s
         # Caller DCP name -> name keyed in dataloader.json.
         self._saved_dcp_names: dict[str, str] = {}
+        self._confirmed_promotable: dict | None = None
 
     # -- Save --------------------------------------------------------------
 
@@ -501,7 +526,8 @@ class TrainingCheckpoints:
             # A hotload delta may already use name. Preserve its published
             # bytes when exporting the full-parameter promotable BASE.
             sampler_name = f"{name}-base" if self._lora_rank == 0 else name
-            if self.has_promotable(name):
+            self._confirmed_promotable = self._existing_promotable(name)
+            if self._confirmed_promotable is not None:
                 if sampler_metadata is not None:
                     raise RuntimeError(
                         f"Sampler checkpoint '{name}' already exists; a save that carries "
@@ -729,20 +755,29 @@ class TrainingCheckpoints:
         runs this transparently picks up the most recent
         weight-sync sampler row without requiring an explicit final
         sampler save.
+
+        The sampler row confirmed by this instance's most recent promotable
+        ``save()`` (written or skipped as already present) stays eligible even
+        if a later list omits it; an unconfirmed save clears it. An empty list
+        is retried before raising.
         """
-        rows = _newest_first(
-            [
-                r
-                for r in self._list_checkpoints()
-                if r.get("promotable") and self._row_matches_current_run(r)
-            ]
-        )
-        if checkpoint_name is not None:
-            names = {checkpoint_name}
-            if self._lora_rank == 0:
-                names.add(f"{checkpoint_name}-base")
-            rows = [r for r in rows if self._trainer_logical_name(_short_name(r["name"])) in names]
+        rows: list[dict] = []
+        list_error: Exception | None = None
+        for attempt in range(_PROMOTE_LIST_ATTEMPTS):
+            if attempt:
+                time.sleep(self._save_poll_s)
+            try:
+                listed = self._list_checkpoints()
+                list_error = None
+            except Exception as e:
+                logger.warning("list_checkpoints before promote failed: %s", e)
+                listed, list_error = [], e
+            rows = self._promotable_candidates(listed, checkpoint_name)
+            if rows:
+                break
         if not rows:
+            if list_error is not None:
+                raise list_error
             raise RuntimeError(
                 f"No promotable checkpoints found for trainer job '{self._trainer_id}'"
                 + (f" matching {checkpoint_name!r}" if checkpoint_name is not None else "")
@@ -771,6 +806,22 @@ class TrainingCheckpoints:
 
     def _list_checkpoints(self) -> list[dict]:
         return self._fw_client.list_checkpoints(self._trainer_id)
+
+    def _promotable_candidates(
+        self, listed: list[dict], checkpoint_name: str | None
+    ) -> list[dict]:
+        rows = [
+            r for r in listed if r.get("promotable") and self._row_matches_current_run(r)
+        ]
+        confirmed = self._confirmed_promotable
+        if confirmed is not None and all(r.get("name") != confirmed["name"] for r in rows):
+            rows.append(confirmed)
+        if checkpoint_name is not None:
+            names = {checkpoint_name}
+            if self._lora_rank == 0:
+                names.add(f"{checkpoint_name}-base")
+            rows = [r for r in rows if self._trainer_logical_name(_short_name(r["name"])) in names]
+        return _newest_first(rows)
 
     def _resolve_cp_name_after_save(
         self,
@@ -887,6 +938,7 @@ class TrainingCheckpoints:
                 time.sleep(poll_s)
                 continue
             if row:
+                self._confirmed_promotable = row
                 return _short_name(row["name"])
             time.sleep(poll_s)
 
@@ -952,12 +1004,16 @@ class TrainingCheckpoints:
 
     def has_promotable(self, name: str) -> bool:
         """Whether ``name`` is already a promotable checkpoint of this run on the control plane."""
-        return self._promotable_exists(name) or (
-            self._lora_rank == 0 and self._promotable_exists(f"{name}-base")
-        )
+        return self._existing_promotable(name) is not None
 
-    def _promotable_exists(self, name: str) -> bool:
-        """Check if ``name`` is already on the control plane as promotable.
+    def _existing_promotable(self, name: str) -> dict | None:
+        row = self._existing_promotable_row(name)
+        if row is None and self._lora_rank == 0:
+            row = self._existing_promotable_row(f"{name}-base")
+        return row
+
+    def _existing_promotable_row(self, name: str) -> dict | None:
+        """Return ``name``'s promotable control-plane row, if any.
 
         Failures are non-fatal: on error we proceed with the save. Save names
         must stay distinct from snapshots currently referenced by hotload.
@@ -970,8 +1026,8 @@ class TrainingCheckpoints:
                 "proceeding with sampler write.",
                 e,
             )
-            return False
-        return row is not None
+            return None
+        return row
 
     def _promotable_row(
         self,

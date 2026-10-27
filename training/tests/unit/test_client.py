@@ -96,6 +96,14 @@ def _make_client(inner: _FakeInnerClient) -> ReconnectableClient:
     return client
 
 
+@pytest.mark.parametrize("lora_rank", [0, 32])
+def test_policy_retains_training_mode(lora_rank: int) -> None:
+    client = ReconnectableClient.from_training_client(
+        _FakeInnerClient(), base_model="base", lora_rank=lora_rank, job_id="job-test"
+    )
+    assert client.lora_rank == lora_rank
+
+
 def test_weight_sync_waits_without_checkpoint_options():
     inner = _FakeInnerClient()
     client = _make_client(inner)

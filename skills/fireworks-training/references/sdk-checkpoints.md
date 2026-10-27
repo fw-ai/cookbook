@@ -53,11 +53,21 @@ Bounded to the newest 20 entries. There is no `checkpoints.jsonl` — never has 
 
 - `cfg.dcp_save_interval` > 0 → recipe writes resumable DCP checkpoints every N steps.
 - `cfg.sampler_save_interval` > 0 → recipe writes promotable sampler checkpoints every N steps.
-- Managed SFT/DPO/ORPO fixes `dcp_save_interval` at 20 and sets `sampler_save_interval` only when `sampler_checkpoint_save_interval_steps` is positive.
+- `cfg.checkpoint_interval_minutes` > 0 (SFT and DPO recipes) → recipe writes a resumable + promotable checkpoint at every epoch end and every `max(N minutes, estimated run time / 20)` within an epoch. The last epoch end is covered by the final checkpoint, or saved by the schedule when `save_final_checkpoint=False`. This replaces `dcp_save_interval`; setting both logs a warning.
+  - A set `sampler_save_interval` replaces the timed interval, so those saves are full save points too.
+  - With a held-out set (`evaluation_dataset`, or `eval_auto_carveout`), every save point, including the final checkpoint, logs `checkpoint_eval/*` at its step, always on the same first 128 held-out examples (the whole set when it has 128 or fewer). Epoch ends also log the full-set `eval/*`. Without a held-out set, save points are unscored.
+  - SFT: rank checkpoints by `checkpoint_eval/loss` (lower is better), the token-weighted cross-entropy; `/ppl` is logged alongside.
+  - DPO: rank checkpoints by `checkpoint_eval/loss`, the held-out DPO loss (lower is better), as SFT does. `/accuracy` (preference accuracy), `/margin` (log-ratio margin, as `train/margin`), `/chosen_logprob`, `/rejected_logprob`, and `/chosen_logprob_delta` (chosen logprob minus the reference's; negative means likelihood displacement) are logged for monitoring. The reference is the same frozen reference DPO training uses, and its held-out logprobs are computed once before training. An explicit DPO eval set uses its first 1,000 valid pairs. DPO logs `checkpoint_eval/*` only at steps that get a checkpoint, including the final checkpoint without the schedule. ORPO has no held-out eval.
+- Managed LoRA SFT/DPO set `checkpoint_interval_minutes` to 30. Managed ORPO and full-parameter SFT/DPO keep `dcp_save_interval` at 20. All managed SFT/DPO/ORPO set `sampler_save_interval` only when `sampler_checkpoint_save_interval_steps` is positive.
 - End of training → recipe calls `ckpt.save(resumable=True, promotable=True, ...)`.
 - `cfg.output_model_id` set → recipe also calls `ckpt.promote_latest(output_model_id, base_model)`.
+  It promotes the newest promotable row of the current run. The row confirmed by
+  the most recent promotable `save()` in the same process stays eligible even if
+  the promote-time list omits it, including a save skipped because the row
+  already existed. If that save timed out waiting for its row, there is no such
+  fallback. An empty or failed list is retried twice before it raises.
 
-Standalone recipes default both intervals to `0`, so periodic saves are opt-in outside managed SFT/DPO/ORPO.
+Standalone recipes default all three to `0`, so periodic saves are opt-in outside managed SFT/DPO/ORPO.
 
 Managed job checkpoints are listed through the control-plane parent job APIs:
 
@@ -74,7 +84,7 @@ Filter on `promotable` before promoting, as with `list_checkpoints(job_id)`.
 
 ## Delta chain (sampler `checkpoint_type`)
 
-This is an SDK-level detail, surfaced when you call `save_weights_for_sampler_ext` directly. For full-parameter training, only `base` sampler saves are promotable; `delta` saves are not. LoRA always saves the full adapter, so every LoRA sampler checkpoint is promotable. The SDK-managed sampler backend records the base-then-delta chain for recipe hotload; recipe-level `ckpt.save(promotable=True)` always saves `base`. Full-parameter recipe saves keep the resumable name `step-N` and export the promotable sampler as `step-N-base`, preserving any live hotload delta named `step-N`. Promotion by the original logical name, including `step-N-cal`, also accepts its full-parameter `-base` export in the current run.
+This is an SDK-level detail, surfaced when you call `save_weights_for_sampler_ext` directly. For full-parameter training, only `base` sampler saves are promotable; `delta` saves are not. LoRA always saves the full adapter, so every LoRA sampler checkpoint is promotable. The SDK-managed sampler backend records the base-then-delta chain for recipe hotload; recipe-level `ckpt.save(promotable=True)` always saves `base`. Full-parameter recipe saves keep the resumable name `step-N` and export the promotable sampler as `step-N-base`, preserving any live hotload delta named `step-N`. Promotion by the original logical name, including `step-N-cal`, also accepts its full-parameter `-base` export in the current run. Initial FILE publication after full-parameter resume also uses `step-N-base`, so it preserves the previously published `step-N` delta. LoRA and RDMA publication are unchanged.
 
 `checkpoint_type="merged_base"` is a third, LoRA-only value. Instead of saving the standalone adapter, the trainer folds the active adapter into the base weights (`W <- W + scaling*(B@A)`), strips the adapter metadata, and exports a full base checkpoint that promotes as `INFERENCE_BASE` / `HF_BASE_MODEL`. The session must have a non-trivial adapter — either trained in this run, or loaded via `load_adapter` / the recipe `warm_start_from_adapter`; a fresh LoRA session has zero-delta weights, so the save fails with a user error instead of producing a checkpoint. A successful merged-base save is a full standalone checkpoint, so — like `base` — it never participates in the delta chain. Note this client-side adapter load is the supported path; control-plane `warmStartFrom` of a LoRA addon is **not** effective and is rejected for service-mode RLOR jobs.
 
