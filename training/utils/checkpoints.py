@@ -154,6 +154,29 @@ def validate_warm_start_config(
         )
 
 
+TIMED_CHECKPOINTS_PER_RUN = 20
+
+
+def timed_checkpoint_due(
+    *,
+    min_interval_s: float,
+    since_last_save_s: float,
+    elapsed_s: float,
+    steps_done: int,
+    total_steps: int,
+) -> bool:
+    """Whether a timed save point is due.
+
+    Save points are spaced ``max(min_interval_s, estimated run time / 20)``
+    apart, so long runs keep about 20 timed points. The run time is
+    extrapolated from the observed time per step.
+    """
+    if min_interval_s <= 0 or steps_done <= 0:
+        return False
+    estimated_run_s = elapsed_s / steps_done * max(total_steps, steps_done)
+    return since_last_save_s >= max(min_interval_s, estimated_run_s / TIMED_CHECKPOINTS_PER_RUN)
+
+
 def _short_name(resource_name: str) -> str:
     """Extract the trailing checkpoint id from a full resource name."""
     return resource_name.rstrip("/").rsplit("/", 1)[-1]
