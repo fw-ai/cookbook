@@ -9,6 +9,8 @@ rewritten, are dropped and listed. Output, in the ``{"messages",
 ``data/eval.jsonl`` and ``data/train_candidates.jsonl``.
 
     python -m training.examples.rl.code_repair.prepare_data
+    python -m training.examples.rl.code_repair.prepare_data \\
+        --splits mbpp_plus_fix mbpp_plus_fix_hard --eval-rows 78
 """
 
 from __future__ import annotations
@@ -79,13 +81,15 @@ async def build_row(split: str, row: dict[str, Any]) -> tuple[dict[str, Any] | N
     }, ""
 
 
-async def build_all(eval_rows: int, seed: int) -> tuple[list[dict], list[dict], list[str]]:
+async def build_all(
+    eval_rows: int, seed: int, splits: tuple[str, ...] = SPLITS
+) -> tuple[list[dict], list[dict], list[str]]:
     from datasets import load_dataset
 
     ds = load_dataset(DATASET)
     built: dict[str, list[dict]] = {}
     dropped: list[str] = []
-    for split in SPLITS:
+    for split in splits:
         results = await asyncio.gather(*(build_row(split, row) for row in ds[split]))
         built[split] = []
         for row, (out, reason) in zip(ds[split], results):
@@ -96,12 +100,14 @@ async def build_all(eval_rows: int, seed: int) -> tuple[list[dict], list[dict], 
     total = sum(len(rows) for rows in built.values())
     rng = random.Random(seed)
     eval_out, train_out = [], []
-    for split in SPLITS:
+    for split in splits:
         rows = built[split]
         rng.shuffle(rows)
         k = round(eval_rows * len(rows) / total)
         eval_out += rows[:k]
         train_out += rows[k:]
+    # Mixed order, so a leading slice (--sample-rows) covers every split.
+    rng.shuffle(eval_out)
     rng.shuffle(train_out)
     return eval_out, train_out, dropped
 
@@ -111,9 +117,10 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--eval-rows", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--splits", nargs="+", choices=SPLITS, default=list(SPLITS))
     args = parser.parse_args()
 
-    eval_rows, train_rows, dropped = asyncio.run(build_all(args.eval_rows, args.seed))
+    eval_rows, train_rows, dropped = asyncio.run(build_all(args.eval_rows, args.seed, tuple(args.splits)))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     for name, rows in (("eval.jsonl", eval_rows), ("train_candidates.jsonl", train_rows)):
         with (args.output_dir / name).open("w") as f:

@@ -29,15 +29,22 @@ def keep(sampled: dict) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--sampled-rows", type=Path, required=True)
+    parser.add_argument(
+        "--sampled-rows", type=Path, default=None, help="Omit to keep every candidate (no difficulty filter)."
+    )
     parser.add_argument("--candidates", type=Path, default=DATA_DIR / "train_candidates.jsonl")
     parser.add_argument("--eval", type=Path, default=DATA_DIR / "eval.jsonl")
     parser.add_argument("--output", type=Path, default=DATA_DIR / "dataset.jsonl")
     args = parser.parse_args()
 
-    sampled = {r["id"]: r for r in map(json.loads, args.sampled_rows.open()) if r.get("id")}
     candidates = [json.loads(line) for line in args.candidates.open() if line.strip()]
     eval_rows = [json.loads(line) for line in args.eval.open() if line.strip()]
+    if args.sampled_rows is None:
+        with args.output.open("w") as f:
+            f.writelines(json.dumps(row, ensure_ascii=False) + "\n" for row in eval_rows + candidates)
+        print(f"candidates={len(candidates)} kept=all eval={len(eval_rows)} -> {args.output}")
+        return
+    sampled = {r["id"]: r for r in map(json.loads, args.sampled_rows.open()) if r.get("id")}
     missing = [row["id"] for row in candidates if row["id"] not in sampled]
     if missing:
         raise SystemExit(f"{len(missing)} candidates have no samples, e.g. {missing[:3]}")
