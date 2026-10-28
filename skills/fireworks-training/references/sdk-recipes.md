@@ -105,8 +105,12 @@ the prompts, references, answers and status. Its `checkpoints` are
 message content is JSON-encoded. Cells without a generated answer have only
 `output: ""`. There is no automatic scoring: `isCorrect` and `reason` are omitted,
 so consumers must treat them as optional and hide correctness badges when absent.
-Generation prompts are validated before training. Invalid prompts fail
-validation before training. After the final checkpoint, an inference failure
+Rows that cannot be sampled are logged without their message content and
+skipped; they do not count toward `max_eval_seqs`. An empty 20% holdout skips
+generation and still applies the loss-eval carveout when that is enabled. If
+generation was requested and no row is usable, `generation_eval.json` is
+rewritten with status `skipped` so a resumed run does not keep an older
+comparison. After the final checkpoint, an inference failure
 or a failure to write `generation_eval.json` is logged and does not fail the
 training job. A requested cancellation still stops the job.
 Managed jobs enter `JOB_STATE_EVALUATION` during generation and complete only

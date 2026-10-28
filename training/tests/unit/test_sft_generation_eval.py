@@ -10,10 +10,11 @@ import pytest
 from fireworks.training import sdk
 from training.recipes.sft_loop import Config
 from training.utils import fileio
-from training.utils.runner import DatasetError, RunnerConfig, RunnerIO, RunStatus
+from training.utils.runner import RunnerConfig, RunnerIO, RunStatus
 from training.utils.sft_generation_eval import (
     prepare_generation_eval,
     run_generation_eval,
+    write_skipped_generation_eval,
 )
 from training.utils import sft_generation_eval as generation_eval_module
 from training.utils.streaming import JsonlRenderDataset
@@ -68,7 +69,7 @@ def test_display_preserves_multiturn_context_and_tool_reference(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["last_assistant_message", "last_assistant_turn", "all_user_and_system_messages"])
-def test_generation_reference_must_be_selected_by_training_mode(tmp_path, mode):
+def test_generation_reference_must_be_selected_by_training_mode(tmp_path, mode, caplog):
     path = tmp_path / "eval.jsonl"
     path.write_text(
         json.dumps(
@@ -81,14 +82,99 @@ def test_generation_reference_must_be_selected_by_training_mode(tmp_path, mode):
             }
         )
     )
-    with pytest.raises(DatasetError, match="assistant reference"):
-        prepare_generation_eval(
+    with caplog.at_level(logging.WARNING, logger=generation_eval_module.logger.name):
+        examples = prepare_generation_eval(
             JsonlRenderDataset(str(path), lambda row: row),
             renderer=Mock(),
             max_examples=10,
             max_seq_len=10,
             train_on_what=mode,
         )
+    assert examples == []
+    assert "no prompt before a trainable assistant reference" in caplog.text
+
+
+def test_generation_eval_skips_overlong_and_unreadable_rows(tmp_path, caplog):
+    path = tmp_path / "eval.jsonl"
+    path.write_text(
+        "\n".join(
+            json.dumps({"messages": [{"role": "user", "content": text}, {"role": "assistant", "content": "answer"}]})
+            for text in ("too long", "unreadable", "ok")
+        )
+    )
+    renderer = Mock()
+    renderer.build_generation_prompt.side_effect = [
+        SimpleNamespace(length=10),
+        OSError("unrecognized image"),
+        sdk.ModelInput.from_ints([1, 2]),
+    ]
+    with caplog.at_level(logging.WARNING, logger=generation_eval_module.logger.name):
+        examples = prepare_generation_eval(
+            JsonlRenderDataset(str(path), lambda row: row),
+            renderer=renderer,
+            max_examples=10,
+            max_seq_len=10,
+        )
+    assert len(examples) == 1
+    assert examples[0][1]["reference"] == "answer"
+    assert "prompt length 10 leaves no room within max_seq_len 10" in caplog.text
+    assert "Skipping generation eval row 1: OSError" in caplog.text
+    assert "unrecognized image" not in caplog.text
+
+
+def test_generation_eval_limit_counts_only_usable_rows(tmp_path):
+    path = tmp_path / "eval.jsonl"
+    path.write_text(
+        "\n".join(
+            json.dumps({"messages": [{"role": "user", "content": text}, {"role": "assistant", "content": text}]})
+            for text in ("skip-a", "skip-b", "keep", "unused")
+        )
+    )
+    renderer = Mock()
+    renderer.build_generation_prompt.side_effect = [
+        SimpleNamespace(length=10),
+        OSError("bad image"),
+        sdk.ModelInput.from_ints([1]),
+        sdk.ModelInput.from_ints([2]),
+    ]
+    examples = prepare_generation_eval(
+        JsonlRenderDataset(str(path), lambda row: row),
+        renderer=renderer,
+        max_examples=1,
+        max_seq_len=10,
+    )
+    assert [example[1]["reference"] for example in examples] == ["keep"]
+    assert renderer.build_generation_prompt.call_count == 3
+
+
+def test_skipped_row_log_omits_message_content(tmp_path, caplog):
+    secret = "customer-secret-payload"
+    path = tmp_path / "eval.jsonl"
+    path.write_text(
+        json.dumps({"messages": [{"role": None, "content": secret}, {"role": "assistant", "content": "answer"}]})
+    )
+    with caplog.at_level(logging.WARNING, logger=generation_eval_module.logger.name):
+        examples = prepare_generation_eval(
+            JsonlRenderDataset(str(path), lambda row: row),
+            renderer=Mock(),
+            max_examples=1,
+            max_seq_len=10,
+        )
+    assert examples == []
+    assert secret not in caplog.text
+    assert "ValueError" in caplog.text
+
+
+def test_skipped_generation_eval_replaces_previous_artifact(tmp_path):
+    cfg = Config(log_path=str(tmp_path), base_model="accounts/fireworks/models/qwen3-8b")
+    artifact = tmp_path / "generation_eval.json"
+    artifact.write_text('{"status":"completed","examples":[{"prompt":"old"}]}')
+    write_skipped_generation_eval(cfg, "Generation evaluation skipped: no usable rows.")
+    result = json.loads(artifact.read_text())
+    assert result["status"] == "skipped"
+    assert result["examples"] == []
+    assert result["error"] == "Generation evaluation skipped: no usable rows."
+    assert "old" not in artifact.read_text()
 
 
 @pytest.mark.parametrize("failed_sampler", [None, "baseline", "trained"])
