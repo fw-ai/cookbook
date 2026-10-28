@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import math
 import os
+import queue
 import threading
+from collections.abc import Callable
 from numbers import Integral, Real
 from typing import Any
 
@@ -19,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 _MetricSteps = dict[str, str | None]
 _METRIC_LOCK = threading.Lock()
+_metrics_reporter: Callable[[dict[str, Any]], None] | None = None
+_reporting_from_log_metrics: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "reporting_from_log_metrics",
+    default=False,
+)
+_report_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+_report_worker_lock = threading.Lock()
+_report_worker_started = False
 
 _DEFAULT_WANDB_METRIC_STEPS: _MetricSteps = {
     "train/step": None,
@@ -134,6 +145,26 @@ def setup_wandb(
     return True
 
 
+def bind_metrics_reporter(reporter: Callable[[dict[str, Any]], None]) -> bool:
+    """Register the Fireworks sink for this process.
+
+    The first trainer created in the process wins, so a recipe that creates
+    a second trainer (an actor and a critic) keeps the first job as the
+    chart. Returns True when this call installed the reporter.
+    """
+    global _metrics_reporter
+    if _metrics_reporter is not None:
+        return False
+    _metrics_reporter = reporter
+    return True
+
+
+def clear_metrics_reporter() -> None:
+    """Drop the process reporter. Tests use this between cases."""
+    global _metrics_reporter
+    _metrics_reporter = None
+
+
 def wandb_log(metrics: dict[str, Any], step: int | None = None) -> None:
     """Log metrics to WandB if available.
 
@@ -153,6 +184,11 @@ def wandb_log(metrics: dict[str, Any], step: int | None = None) -> None:
                 wandb.log(metrics, step=step, commit=True)
     except ImportError:
         pass
+    except Exception:
+        logger.warning("Failed to log metrics to W&B", exc_info=True)
+    if not _reporting_from_log_metrics.get():
+        _submit_metric_report(_metrics_report_payload(metrics, step))
+        _wait_for_metric_reports()
 
 
 def _normalize_metric_value(value: Any) -> Any:
@@ -239,7 +275,64 @@ def log_metrics(
 
         # The exact JSONL record is the W&B payload. Its transport axis is
         # intentionally implicit and unique even when business steps repeat.
-        wandb_log(record)
+        # The flag keeps wandb_log from reporting the same record again.
+        token = _reporting_from_log_metrics.set(True)
+        try:
+            wandb_log(record)
+        finally:
+            _reporting_from_log_metrics.reset(token)
+        # Enqueue in the same order as the local record. The worker performs
+        # the control-plane write after this lock is released.
+        _submit_metric_report(record)
+    _wait_for_metric_reports()
+
+
+def _metrics_report_payload(metrics: dict[str, Any], step: int | None) -> dict[str, Any]:
+    payload = dict(metrics)
+    if step is not None:
+        payload["step"] = step
+    return payload
+
+
+def _ensure_report_worker() -> None:
+    global _report_worker_started
+    with _report_worker_lock:
+        if _report_worker_started:
+            return
+        threading.Thread(
+            target=_drain_metric_reports,
+            name="training-metrics-report",
+            daemon=True,
+        ).start()
+        _report_worker_started = True
+
+
+def _drain_metric_reports() -> None:
+    while True:
+        record = _report_queue.get()
+        try:
+            _report_metrics(record)
+        finally:
+            _report_queue.task_done()
+
+
+def _submit_metric_report(record: dict[str, Any]) -> None:
+    _ensure_report_worker()
+    _report_queue.put(record)
+
+
+def _wait_for_metric_reports() -> None:
+    _report_queue.join()
+
+
+def _report_metrics(record: dict[str, Any]) -> None:
+    reporter = _metrics_reporter
+    if reporter is None:
+        return
+    try:
+        reporter(record)
+    except Exception:
+        logger.warning("Failed to report training metrics", exc_info=True)
 
 
 _RUN_RESOURCE_ATTRIBUTES = (

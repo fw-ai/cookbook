@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import types
 
 import pytest
@@ -280,3 +281,93 @@ def test_async_producer_metrics_use_their_own_event_axis():
 def test_async_eval_metrics_use_the_rollout_step_axis():
     assert logging_utils.ASYNC_RL_WANDB_METRIC_STEPS["eval/*"] == "rollout/step"
     assert logging_utils.ASYNC_RL_WANDB_METRIC_STEPS["checkpoint/*"] == "rollout/step"
+
+
+def test_log_metrics_reports_to_fireworks_once(monkeypatch):
+    logging_utils.clear_metrics_reporter()
+    calls: list[dict] = []
+    assert logging_utils.bind_metrics_reporter(calls.append)
+    assert logging_utils.bind_metrics_reporter(lambda _record: calls.append({"duplicate": True})) is False
+    monkeypatch.setattr(logging_utils, "wandb_log", lambda *_args, **_kwargs: None)
+    try:
+        log_metrics({"train/loss": 0.5, "train/step": 2}, step=2)
+    finally:
+        logging_utils.clear_metrics_reporter()
+    assert calls == [{"step": 2, "train/step": 2, "train/loss": 0.5}]
+
+
+def test_wandb_log_reports_its_step(monkeypatch):
+    logging_utils.clear_metrics_reporter()
+    calls: list[dict] = []
+    logging_utils.bind_metrics_reporter(calls.append)
+    _install_fake_wandb(monkeypatch)
+    try:
+        logging_utils.wandb_log({"train/loss": 0.25}, 4)
+    finally:
+        logging_utils.clear_metrics_reporter()
+    assert calls == [{"train/loss": 0.25, "step": 4}]
+
+
+def test_wandb_failure_still_reports_to_fireworks(monkeypatch):
+    logging_utils.clear_metrics_reporter()
+    calls: list[dict] = []
+    logging_utils.bind_metrics_reporter(calls.append)
+    fake = _install_fake_wandb(monkeypatch)
+    fake.run = object()
+
+    def fail_log(*_args, **_kwargs):
+        raise RuntimeError("wandb down")
+
+    fake.log = fail_log
+    try:
+        log_metrics({"train/loss": 0.2}, step=4)
+    finally:
+        logging_utils.clear_metrics_reporter()
+    assert calls == [{"step": 4, "train/loss": 0.2}]
+
+
+def test_concurrent_log_metrics_reports_in_record_order(monkeypatch):
+    logging_utils.clear_metrics_reporter()
+    monkeypatch.setattr(logging_utils, "wandb_log", lambda *_args, **_kwargs: None)
+    started = threading.Event()
+    release = threading.Event()
+    order: list[int] = []
+
+    def reporter(record: dict) -> None:
+        if record["step"] == 1:
+            started.set()
+            release.wait()
+        order.append(record["step"])
+
+    logging_utils.bind_metrics_reporter(reporter)
+    first = threading.Thread(target=lambda: log_metrics({"train/loss": 1.0}, step=1))
+    second = threading.Thread(target=lambda: log_metrics({"train/loss": 2.0}, step=2))
+    try:
+        first.start()
+        assert started.wait(2)
+        second.start()
+        second.join(0.2)
+        assert second.is_alive()
+        release.set()
+        first.join(2)
+        second.join(2)
+        assert order == [1, 2]
+    finally:
+        release.set()
+        first.join(2)
+        second.join(2)
+        logging_utils.clear_metrics_reporter()
+
+
+def test_metrics_reporter_failure_does_not_raise(monkeypatch):
+    logging_utils.clear_metrics_reporter()
+
+    def fail(_record: dict) -> None:
+        raise RuntimeError("control plane down")
+
+    logging_utils.bind_metrics_reporter(fail)
+    monkeypatch.setattr(logging_utils, "wandb_log", lambda *_args, **_kwargs: None)
+    try:
+        log_metrics({"train/loss": 0.1}, step=1)
+    finally:
+        logging_utils.clear_metrics_reporter()
