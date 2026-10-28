@@ -94,6 +94,17 @@ def test_reward_is_share_of_cases():
     assert run(code_repair_reward(FIXED, TRUTH)) == 0.0
 
 
+def test_truncated_reply_scores_zero():
+    from training.examples.rl.code_repair.train_code_repair_serverless import zero_truncated
+
+    def run_with(finish_reason):
+        return SimpleNamespace(segments=[SimpleNamespace(reward=1.0, finish_reason=finish_reason)])
+
+    assert zero_truncated(run_with("length")).segments[0].reward == 0.0
+    assert zero_truncated(run_with("stop")).segments[0].reward == 1.0
+    assert zero_truncated(None) is None
+
+
 def test_metrics_and_keep_rule(tmp_path):
     import json
 

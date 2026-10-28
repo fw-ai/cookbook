@@ -50,7 +50,7 @@ def make_rollout_fn(setup: RolloutSetup, *, renderer_name: str = "") -> RolloutF
         return await code_repair_reward(get_text_content(message), row["ground_truth"])
 
     async def rollout_fn(row: dict):
-        return await single_turn_renderer_rollout(
+        run = await single_turn_renderer_rollout(
             row,
             renderer=renderer,
             sample_with_prompt_tokens=setup.sampler.sample_with_prompt_tokens,
@@ -59,8 +59,21 @@ def make_rollout_fn(setup: RolloutSetup, *, renderer_name: str = "") -> RolloutF
             sample_kwargs=setup.sample_kwargs,
             tokenizer=setup.tokenizer,
         )
+        return zero_truncated(run)
 
     return rollout_fn
+
+
+def zero_truncated(run: Any) -> Any:
+    """A reply cut off at the token cap scores 0.
+
+    Truncated text is still parsed as the answer (unclosed reasoning included),
+    so draft code inside the reasoning would otherwise earn reward.
+    """
+    if run is not None and any(s.finish_reason == "length" for s in run.segments):
+        for segment in run.segments:
+            segment.reward = 0.0
+    return run
 
 
 def summarize_row(row: Mapping[str, Any], row_runs: Sequence[Any]) -> dict[str, Any]:
