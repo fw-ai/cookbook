@@ -101,6 +101,7 @@ from training.utils.serverless import setup_serverless_training
 from training.utils.sft_generation_eval import (
     prepare_generation_eval,
     run_generation_eval,
+    write_skipped_generation_eval,
 )
 from training.utils.streaming import (
     dataset_error_for_rendered_row,
@@ -671,18 +672,20 @@ def _prepare_datasets(
         # shuffle, so loss eval (if enabled) keeps the rows it would use anyway.
         n = int(len(training_ds) * GENERATION_EVAL_HOLDOUT_RATIO)
         if n == 0:
-            raise DatasetError(
-                "Generation evaluation needs at least 5 rows for a 20% holdout, " "or an explicit evaluation_dataset."
+            logger.warning(
+                "Skipping generation evaluation: %d rows leave an empty 20%% holdout",
+                len(training_ds),
             )
-        carveout = (
-            min(int(len(training_ds) * cfg.eval_carve_ratio), cfg.max_eval_seqs) if cfg.eval_auto_carveout else 0
-        )
-        shuffled_indices = list(range(len(training_ds)))
-        random.Random(cfg.seed).shuffle(shuffled_indices)
-        generation_ds = training_ds.with_indices(shuffled_indices[:n])
-        training_ds = training_ds.with_indices(sorted(shuffled_indices[n:]))
-        logger.info("Generation holdout: %d rows, %d training examples (seed=%d)", n, len(training_ds), cfg.seed)
-        return training_ds, _render_eagerly(generation_ds, min(carveout, n)), generation_ds
+        else:
+            carveout = (
+                min(int(len(training_ds) * cfg.eval_carve_ratio), cfg.max_eval_seqs) if cfg.eval_auto_carveout else 0
+            )
+            shuffled_indices = list(range(len(training_ds)))
+            random.Random(cfg.seed).shuffle(shuffled_indices)
+            generation_ds = training_ds.with_indices(shuffled_indices[:n])
+            training_ds = training_ds.with_indices(sorted(shuffled_indices[n:]))
+            logger.info("Generation holdout: %d rows, %d training examples (seed=%d)", n, len(training_ds), cfg.seed)
+            return training_ds, _render_eagerly(generation_ds, min(carveout, n)), generation_ds
 
     if cfg.eval_auto_carveout:
         n = compute_eval_carveout(
@@ -899,8 +902,9 @@ class Config:
     """Save base/LoRA answers before completing a serverless SFT job. Uses an
     explicit evaluation_dataset or holds out 20% of rows (seeded, excluded from
     training). Samples up to max_eval_seqs conversations, including image
-    prompts, without scoring. A failed sample or artifact write is logged and
-    does not fail the trained model."""
+    prompts, without scoring. Rows that cannot be sampled, an empty holdout,
+    a failed sample, and a failed artifact write are logged and do not fail
+    the trained model."""
 
     render_workers: int | None = None
     """Number of worker processes for streaming dataset rendering. ``None``
@@ -1166,9 +1170,19 @@ def main(
                 max_seq_len=max_seq_len,
                 train_on_what=cfg.train_on_what,
             )
-            if cfg.generation_eval
+            if cfg.generation_eval and generation_dataset is not None
             else []
         )
+        if cfg.generation_eval and not generation_examples:
+            reason = (
+                "Generation evaluation skipped: no usable rows."
+                if generation_dataset is not None
+                else "Generation evaluation skipped: the dataset leaves an empty 20% holdout."
+            )
+            try:
+                write_skipped_generation_eval(cfg, reason)
+            except Exception:
+                logger.exception("Failed to write skipped generation_eval.json")
         num_workers = (
             cfg.render_workers
             if cfg.render_workers is not None
@@ -1596,7 +1610,7 @@ def main(
                     job_id=job_id,
                 )
 
-        if cfg.generation_eval:
+        if generation_examples:
             try:
                 run_generation_eval(
                     cfg=cfg,

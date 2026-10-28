@@ -12,7 +12,7 @@ from fireworks.training import sdk
 
 from training.renderer.message_weights import _mode_targets
 from training.utils import fileio
-from training.utils.runner import DatasetError, RunStatus
+from training.utils.runner import RunStatus
 from training.utils.supervised import (
     build_tool_prefixed_messages,
     normalize_messages,
@@ -63,46 +63,81 @@ def prepare_generation_eval(
 
     Earlier turns remain context; the reference and subsequent turns never
     enter the generation prompt. Text and image prompts are both sampled.
+    A row that cannot be sampled is logged and skipped.
     """
     examples = []
-    for i in range(min(len(dataset), max_examples)):
-        row = dataset.raw_row(i)
-        messages = row.get("messages", [])
-        normalized = normalize_messages(messages)
-        targets = _mode_targets(normalized, parse_train_on_what(train_on_what))
-        target = next(
-            (
-                j
-                for j in reversed(range(len(messages)))
-                if j in targets and normalized[j]["role"] == "assistant" and normalized[j].get("trainable", True)
-            ),
-            None,
-        )
-        if target is None or target == 0:
-            raise DatasetError("Generation evaluation requires a prompt and an assistant reference in each row.")
-        context = messages[:target]
-        generation_messages = build_tool_prefixed_messages(context, renderer=renderer, tools=row.get("tools"))
-        prompt = renderer.build_generation_prompt(generation_messages)
-        # Image chunks have no token ids. Their length is the visual-token
-        # budget training already uses, so the same prompt can be sampled.
-        prompt_length = prompt.length
-        if prompt_length <= 0 or prompt_length >= max_seq_len:
-            raise DatasetError("Generation evaluation prompts must leave room for a completion within max_seq_len.")
-        examples.append(
-            (
-                prompt,
-                {
-                    "messages": context,
-                    "generation_messages": generation_messages,
-                    "tools": row.get("tools", []),
-                    "prompt": "\n\n".join(f"{message['role']}: {_message_text(message)}" for message in context),
-                    "reference": _message_text(messages[target]),
-                },
+    examined = 0
+    for i in range(len(dataset)):
+        if len(examples) >= max_examples:
+            break
+        examined += 1
+        try:
+            example = _generation_eval_example(
+                dataset.raw_row(i),
+                renderer=renderer,
+                max_seq_len=max_seq_len,
+                train_on_what=train_on_what,
             )
-        )
+        except Exception as exc:
+            # Exception text can include the customer message. Keep the type only.
+            logger.warning("Skipping generation eval row %d: %s", i, type(exc).__name__)
+            continue
+        if isinstance(example, str):
+            logger.warning("Skipping generation eval row %d: %s", i, example)
+            continue
+        examples.append(example)
     if not examples:
-        raise DatasetError("Generation evaluation needs a nonempty evaluation dataset.")
+        logger.warning("Generation evaluation has no usable rows out of %d", examined)
     return examples
+
+
+def _generation_eval_example(row, *, renderer, max_seq_len: int, train_on_what: str):
+    """Return one ``(prompt, record)`` example, or a skip reason."""
+    messages = row.get("messages", [])
+    normalized = normalize_messages(messages)
+    targets = _mode_targets(normalized, parse_train_on_what(train_on_what))
+    target = next(
+        (
+            j
+            for j in reversed(range(len(messages)))
+            if j in targets and normalized[j]["role"] == "assistant" and normalized[j].get("trainable", True)
+        ),
+        None,
+    )
+    if target is None or target == 0:
+        return "no prompt before a trainable assistant reference"
+    context = messages[:target]
+    generation_messages = build_tool_prefixed_messages(context, renderer=renderer, tools=row.get("tools"))
+    prompt = renderer.build_generation_prompt(generation_messages)
+    # Image chunks have no token ids. Their length is the visual-token
+    # budget training already uses, so the same prompt can be sampled.
+    prompt_length = prompt.length
+    if prompt_length <= 0 or prompt_length >= max_seq_len:
+        return f"prompt length {prompt_length} leaves no room within max_seq_len {max_seq_len}"
+    return (
+        prompt,
+        {
+            "messages": context,
+            "generation_messages": generation_messages,
+            "tools": row.get("tools", []),
+            "prompt": "\n\n".join(f"{message['role']}: {_message_text(message)}" for message in context),
+            "reference": _message_text(messages[target]),
+        },
+    )
+
+
+def write_skipped_generation_eval(cfg, reason: str) -> None:
+    """Replace any previous comparison so a resumed run cannot show stale answers."""
+    fileio.write_json(
+        fileio.join(cfg.log_path, "generation_eval.json"),
+        {
+            "base_model": cfg.base_model,
+            "status": "skipped",
+            "error": reason,
+            "checkpoints": ["Original", "Your model"],
+            "examples": [],
+        },
+    )
 
 
 def _store_generation_response(cell, response, tokenizer) -> None:

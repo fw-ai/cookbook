@@ -1084,10 +1084,39 @@ class TestPrepareDatasets:
         _, _, repeated = module._prepare_datasets(cfg)
         assert list(repeated) == list(generation_ds)
 
-    def test_generation_holdout_rejects_too_small_dataset(self, tmp_path):
+    def test_generation_holdout_skips_when_too_small(self, tmp_path, caplog):
         path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(4)])
-        with pytest.raises(DatasetError, match="at least 5"):
-            module._prepare_datasets(self._cfg(tmp_path, path, generation_eval=True))
+        with caplog.at_level(logging.WARNING, logger=module.logger.name):
+            train_ds, eval_data, generation_ds = module._prepare_datasets(
+                self._cfg(tmp_path, path, generation_eval=True)
+            )
+        assert len(train_ds) == 4
+        assert eval_data == []
+        assert generation_ds is None
+        assert "empty 20% holdout" in caplog.text
+
+    def test_empty_generation_holdout_keeps_loss_eval_carveout(self, tmp_path, monkeypatch, caplog):
+        path = _write_jsonl_at(tmp_path / "train.jsonl", [_row(i) for i in range(4)])
+        monkeypatch.setattr(module, "_render_one_worker", lambda row: row["messages"][0]["content"])
+        with caplog.at_level(logging.WARNING, logger=module.logger.name):
+            train_ds, eval_data, generation_ds = module._prepare_datasets(
+                self._cfg(
+                    tmp_path,
+                    path,
+                    generation_eval=True,
+                    eval_auto_carveout=True,
+                    eval_carve_ratio=0.5,
+                    max_eval_seqs=20,
+                    seed=7,
+                )
+            )
+        expected = _expected_eval_indices(4, 2, 7)
+        assert generation_ds is None
+        assert eval_data == [f"u{index}" for index in expected]
+        assert [train_ds.raw_row(i)["messages"][0]["content"] for i in range(len(train_ds))] == [
+            f"u{index}" for index in range(4) if index not in set(expected)
+        ]
+        assert "empty 20% holdout" in caplog.text
 
     def test_raises_on_empty_dataset(self, tmp_path, monkeypatch):
         path = _write_jsonl_at(tmp_path / "empty.jsonl", [])
