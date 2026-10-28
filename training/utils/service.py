@@ -298,13 +298,15 @@ def build_service_client(
         reference_required=reference_required,
     )
     if provisioning_job_id is None:
-        return FiretitanServiceClient.from_firetitan_config(
+        service = FiretitanServiceClient.from_firetitan_config(
             api_key=api_key,
             base_url=base_url,
             inference_url=inference_url,
             additional_headers=additional_headers,
             **service_kwargs,
         )
+        _bind_training_metrics(service)
+        return service
 
     def delete_trainer() -> None:
         try:
@@ -350,7 +352,41 @@ def build_service_client(
         return client
 
     service.create_training_client = create_training_client_or_clean_up
+    _bind_training_metrics(service)
     return service
+
+
+def _bind_training_metrics(service: Any) -> None:
+    """Report recipe metrics for a customer-owned dedicated trainer.
+
+    Recipes keep calling ``log_metrics`` and ``wandb_log``. This wrapper is the
+    only registration, so individual recipes do not each learn about the API.
+    The service decides: serverless sessions and managed child trainers do not
+    report. Callers that are not a service client are left untouched.
+    """
+    original = getattr(service, "create_training_client", None)
+    report = getattr(service, "log_training_metrics", None)
+    if not callable(original) or not callable(report):
+        return
+
+    # lazy: training.utils imports this module and the logger together
+    from training.utils.logging import bind_metrics_reporter
+
+    def create_training_client_and_report(*args: Any, **kwargs: Any) -> Any:
+        client = original(*args, **kwargs)
+        # Only an explicit True installs the reporter. A missing method, a
+        # serverless session, or a managed parent all leave the logger alone.
+        reports = getattr(service, "_reports_client_metrics", None)
+        if not callable(reports) or reports() is not True:
+            return client
+
+        def reporter(record: dict[str, Any]) -> None:
+            report(record)
+
+        bind_metrics_reporter(reporter)
+        return client
+
+    service.create_training_client = create_training_client_and_report
 
 
 # Trainers created by build_service_client that are not handed back yet, keyed by job ID.
