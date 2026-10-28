@@ -111,9 +111,11 @@ def repair_metrics(
     returned = sum(r["returned"] for r in per_row)
     tokens = [t for r in per_row for t in r["completion_tokens"]]
     gains = [reward - r["buggy_pass_rate"] for r in per_row for reward in r["rewards"]]
+    finished = (returned - sum(r["truncated"] for r in per_row)) or 1
     return {
         f"{prefix}/pass_rate": sum(sum(r["rewards"]) for r in per_row) / expected,
         f"{prefix}/fully_fixed": sum(r["exact"] for r in per_row) / expected,
+        f"{prefix}/fully_fixed_when_finished": sum(r["exact"] for r in per_row) / finished,
         f"{prefix}/gain_over_buggy": sum(gains) / len(gains) if gains else 0.0,
         f"{prefix}/regressed": sum(r["regressed"] for r in per_row) / expected,
         f"{prefix}/zero_reward": sum(r["zero"] for r in per_row) / expected,
