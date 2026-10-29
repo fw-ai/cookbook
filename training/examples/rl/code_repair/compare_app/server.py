@@ -35,6 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from training.examples.rl.code_repair.prepare_data import DATA_DIR
+from training.examples.rl.code_repair.replies import split_reply
 from training.examples.rl.code_repair.rewards import extract_code
 from training.examples.rl.code_repair.sandbox import grade
 
@@ -98,20 +99,6 @@ class Models:
                 self._base = self._service.create_sampling_client(base_model=self.base_model, tokenizer=self.tokenizer)
                 self._tuned = self._service.create_sampling_client(model_path=self.tuned_path, tokenizer=self.tokenizer)
             return self._base, self._tuned
-
-
-def split_reply(renderer: Any, tokens: list[int]) -> tuple[str, str]:
-    """``(reasoning, answer)`` from completion tokens."""
-    message, _ = renderer.parse_response(tokens)
-    content = message["content"]
-    if isinstance(content, str):
-        if "</think>" in content:
-            reasoning, answer = content.split("</think>", 1)
-            return reasoning.replace("<think>", "").strip(), answer.strip()
-        return "", content.strip()
-    reasoning = "\n".join(p["thinking"] for p in content if p["type"] == "thinking")
-    answer = "".join(p.get("text", "") for p in content if p["type"] == "text")
-    return reasoning.strip(), answer.strip()
 
 
 def load_rows(path: Path) -> dict[str, dict[str, Any]]:
