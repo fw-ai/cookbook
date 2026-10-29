@@ -16,6 +16,7 @@ notebook, and neither is AST-scored.
 """
 from __future__ import annotations
 
+import copy
 import json
 import urllib.request
 from pathlib import Path
@@ -130,7 +131,7 @@ def _normalize_types(node: Any) -> Any:
     return node
 
 
-def to_openai_tools(functions: list[dict]) -> list[dict]:
+def to_openai_tools(functions: list[dict], category: str | None = None) -> list[dict]:
     """BFCL `function` entries -> an OpenAI `tools` array.
 
     One real gotcha: BFCL writes `"type": "dict"` for the parameter object, which
@@ -138,7 +139,16 @@ def to_openai_tools(functions: list[dict]) -> list[dict]:
     official harness fixes this in `bfcl_eval.model_handler.utils._cast_to_openai_type`;
     we do the same conversion here so the notebook has no hard dependency on the
     harness just to send a request.
+
+    For `simple_java` / `simple_javascript`, pass `category`: the checker expects
+    every value as a string, so the official harness declares those params as
+    `string` and names the native type in the description. Without that, the
+    model is told `Boolean` and is then marked wrong for sending `true`.
     """
+    if category in LANGUAGE:
+        from bfcl_eval.utils import _func_doc_language_specific_pre_processing
+
+        functions = _func_doc_language_specific_pre_processing(copy.deepcopy(functions), category)
     fixed = []
     for fn in functions:
         params = _normalize_types(fn.get("parameters", {}))

@@ -56,7 +56,7 @@ def _call_one(
     An empty list means "no call", which is exactly what the irrelevance
     categories are scored on.
     """
-    tools = to_openai_tools(row.get("function", []))
+    tools = to_openai_tools(row.get("function", []), category=row["id"].rsplit("_", 1)[0])
     # Must match how the model was TRAINED to be prompted. A renderer that
     # prefills a closed `<think></think>` block trains the model to start its
     # answer after one; serve it without and it generates reasoning instead of
@@ -408,6 +408,11 @@ def load_results(project_root: str | Path, label: str, category: str) -> list[di
     Lets a re-run reuse an earlier base-model evaluation instead of paying to
     deploy and re-score the same rows. The base model does not change while you
     iterate on training data, so its scores do not either.
+
+    A result file does not record the tool schema it was generated with.
+    `simple_java` / `simple_javascript` files written before Java/JS params were
+    sent as strings (Oct 2026) answered different prompts; regenerate them
+    instead of reusing them.
     """
     path = Path(project_root) / "result" / label / "non_live" / f"BFCL_v4_{category}_result.json"
     if not path.exists():
