@@ -126,6 +126,16 @@ class RendererError(TinkerCookbookError, ValueError):
     """
 
 
+class ImageURLError(RendererError):
+    """An image URL in a dataset row could not be fetched.
+
+    Its message is fixed public copy that never names the URL, its host or
+    the cause, so it is safe to show the dataset's owner: a signed URL keeps
+    its credentials, and a refusal cannot be told apart from an unreachable
+    host. The cause is chained for local debugging.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Training errors
 # ---------------------------------------------------------------------------

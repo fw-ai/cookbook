@@ -17,6 +17,7 @@ shadows the upstream registration.
 """
 
 from training.renderer.errors import RendererError as RendererError
+from training.renderer.image_fetcher import set_image_fetcher as set_image_fetcher
 from training.renderer._registry import *  # noqa: F403
 
 from training.renderer import deepseek_v4 as _deepseek_v4  # noqa: F401  (registers "deepseek_v4")

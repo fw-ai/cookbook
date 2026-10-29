@@ -45,6 +45,7 @@ from training.renderer import (
     TrainOnWhat,
     get_renderer,
 )
+from training.renderer.errors import ImageURLError
 from training.renderer.image_processing import get_image_processor
 from training.renderer.message_weights import (
     equivalent_builtin_train_on_what,
@@ -1450,7 +1451,7 @@ def render_messages_to_datum(
             effective_train_on_what,
             requested_train_on_what,
         )
-    except ImageGeometryError as exc:
+    except (ImageGeometryError, ImageURLError) as exc:
         raise DatasetError(str(exc)) from exc
     return _build_rendered_supervised_datum(
         rendered_input,
@@ -1647,7 +1648,7 @@ def render_messages_to_datums(
             effective_train_on_what,
             requested_train_on_what,
         )
-    except ImageGeometryError as exc:
+    except (ImageGeometryError, ImageURLError) as exc:
         raise DatasetError(str(exc)) from exc
 
     return [
