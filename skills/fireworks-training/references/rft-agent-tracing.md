@@ -1,5 +1,10 @@
 # Managed RFT remote tracing (deprecated)
 
+> **Deprecated:** The hosted Fireworks tracing gateway (`tracing.fireworks.ai`) was shut
+> down on October 28, 2026. Remote rollouts that depend on it, including
+> `RemoteRolloutProcessor` and `GithubActionRolloutProcessor`, are deprecated and no
+> longer work against the hosted endpoint.
+
 > **Managed RFT is deprecated.** For new multi-turn agent work use `references/rl-agentic.md`
 > and [Cookbook: Agentic Reinforcement Learning](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/agentic-rl.md).
 > This reference covers remote environments attached to jobs that already exist.
