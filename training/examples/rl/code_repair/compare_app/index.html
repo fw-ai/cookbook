@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Base vs tuned: code repair</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#272b35; --text:#e6e8ee; --muted:#8a90a2; --accent:#7aa2ff; --good:#4cc38a; --bad:#ef6b6b; --warn:#e8b04b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:14px 22px; border-bottom:1px solid var(--line); display:flex; gap:18px; align-items:baseline; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  header .meta { color:var(--muted); font-size:12px; font-family:ui-monospace, Menlo, monospace; }
+  main { padding:18px 22px; max-width:1500px; margin:0 auto; }
+  .tabs { display:flex; gap:6px; margin-bottom:14px; }
+  .tabs button { background:var(--panel); color:var(--muted); border:1px solid var(--line); padding:7px 14px; border-radius:6px; cursor:pointer; }
+  .tabs button.active { color:var(--text); border-color:var(--accent); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:14px; }
+  label { color:var(--muted); font-size:12px; display:block; margin-bottom:4px; }
+  textarea, input, select { width:100%; background:#0c0e12; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:8px; font:13px ui-monospace, Menlo, monospace; }
+  textarea { resize:vertical; }
+  .row { display:flex; gap:12px; align-items:end; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:140px; }
+  .row > div.narrow { flex:0 0 130px; }
+  button.go { background:var(--accent); color:#0b0d12; border:0; padding:9px 18px; border-radius:6px; font-weight:600; cursor:pointer; }
+  button.go:disabled { opacity:.5; cursor:wait; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .col h2 { font-size:14px; margin:0 0 8px; display:flex; justify-content:space-between; gap:8px; }
+  .stats { color:var(--muted); font-size:12px; font-family:ui-monospace, Menlo, monospace; margin-bottom:8px; }
+  .badge { padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; }
+  .badge.good { background:rgba(76,195,138,.15); color:var(--good); }
+  .badge.part { background:rgba(232,176,75,.15); color:var(--warn); }
+  .badge.bad { background:rgba(239,107,107,.15); color:var(--bad); }
+  pre { white-space:pre-wrap; word-break:break-word; margin:0; font:12.5px/1.5 ui-monospace, Menlo, monospace; background:#0c0e12; border:1px solid var(--line); border-radius:6px; padding:10px; max-height:520px; overflow:auto; }
+  details { margin-bottom:8px; }
+  summary { cursor:pointer; color:var(--muted); font-size:12px; margin-bottom:6px; }
+  .hidden { display:none; }
+  .err { color:var(--bad); }
+  .muted { color:var(--muted); }
+  #keyModal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; }
+  #keyModal .card { width:440px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Base vs tuned: code repair</h1>
+  <span class="meta" id="metaBase"></span>
+  <span class="meta" id="metaTuned"></span>
+</header>
+<main>
+  <div class="tabs">
+    <button id="tabRepair" class="active">Fix a function</button>
+    <button id="tabAsk">Ask anything</button>
+  </div>
+
+  <section id="paneRepair" class="card">
+    <div class="row">
+      <div><label>Function (eval set, buggy pass rate)</label><select id="fnSelect"></select></div>
+    </div>
+    <div class="cols" style="margin-top:12px">
+      <div><label>Task</label><pre id="fnTask"></pre></div>
+      <div><label>Buggy implementation</label><pre id="fnBuggy"></pre></div>
+    </div>
+  </section>
+
+  <section id="paneAsk" class="card hidden">
+    <label>System prompt (optional)</label>
+    <textarea id="system" rows="2" placeholder="Leave empty for none"></textarea>
+    <label style="margin-top:10px">Question</label>
+    <textarea id="question" rows="5" placeholder="Ask both models the same thing"></textarea>
+  </section>
+
+  <div class="card row">
+    <div class="narrow"><label>Temperature</label><input id="temperature" type="number" step="0.1" min="0" max="2" value="1.0"></div>
+    <div class="narrow"><label>Max tokens</label><input id="maxTokens" type="number" step="512" min="64" max="16384" value="8192"></div>
+    <div class="muted" style="font-size:12px">Training sampled at temperature 1.0 with an 8192-token cap. Both models get the identical prompt and settings.</div>
+    <div class="narrow" style="flex:0 0 auto"><button class="go" id="goBtn">Send to both</button></div>
+  </div>
+
+  <div class="cols">
+    <div class="col card" id="colBase"><h2>Base <span class="meta">qwen3p8-27b</span></h2><div class="body muted">No response yet.</div></div>
+    <div class="col card" id="colTuned"><h2>Tuned <span class="meta">RL step 9</span></h2><div class="body muted">No response yet.</div></div>
+  </div>
+</main>
+
+<div id="keyModal" class="hidden">
+  <div class="card">
+    <h2 style="margin-top:0;font-size:15px">Fireworks API key</h2>
+    <p class="muted" style="font-size:12px">Sent once to the local server on 127.0.0.1 and kept in its memory only. It is not stored in the browser or on disk, and it is gone when the server stops.</p>
+    <input id="keyInput" type="password" placeholder="fw_..." autocomplete="off">
+    <div style="margin-top:10px;text-align:right"><button class="go" id="keyBtn">Use key</button></div>
+  </div>
+</div>
+
+<script>
+const params = new URLSearchParams(location.search);
+if (params.get("token")) {
+  sessionStorage.setItem("appToken", params.get("token"));
+  history.replaceState(null, "", location.pathname);
+}
+const TOKEN = sessionStorage.getItem("appToken") || "";
+const $ = (id) => document.getElementById(id);
+let mode = "repair";
+let functions = [];
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body ? "POST" : "GET",
+    headers: { "x-app-token": TOKEN, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c])); }
+
+function setMode(m) {
+  mode = m;
+  $("tabRepair").classList.toggle("active", m === "repair");
+  $("tabAsk").classList.toggle("active", m === "chat");
+  $("paneRepair").classList.toggle("hidden", m !== "repair");
+  $("paneAsk").classList.toggle("hidden", m !== "chat");
+}
+$("tabRepair").onclick = () => setMode("repair");
+$("tabAsk").onclick = () => setMode("chat");
+
+function showFunction() {
+  const f = functions.find(x => x.id === $("fnSelect").value);
+  $("fnTask").textContent = f ? f.task : "";
+  $("fnBuggy").textContent = f ? f.buggy_code : "";
+}
+$("fnSelect").onchange = showFunction;
+
+function gradeBadge(g) {
+  if (!g) return "";
+  const pct = g.total ? g.passed / g.total : 0;
+  const cls = pct >= 1 ? "good" : pct > 0 ? "part" : "bad";
+  const extra = g.status !== "ok" ? ` · ${esc(g.status)}` : "";
+  return `<span class="badge ${cls}">${g.passed}/${g.total} tests${extra}</span>`;
+}
+
+function render(col, out, baseline) {
+  const body = $(col).querySelector(".body");
+  body.classList.remove("muted");
+  if (out.error) { body.innerHTML = `<div class="err">${esc(out.error)}</div>`; return; }
+  const buggy = baseline != null ? ` · buggy code passes ${Math.round(baseline * 100)}%` : "";
+  body.innerHTML = `
+    <div class="stats">${gradeBadge(out.grade)} ${out.completion_tokens} tokens · ${out.seconds}s · stop: ${esc(out.stop_reason)}${buggy}</div>
+    <details ${out.answer ? "" : "open"}><summary>Reasoning (${out.reasoning ? out.reasoning.length.toLocaleString() + " chars" : "none"})</summary><pre>${esc(out.reasoning || "(no reasoning)")}</pre></details>
+    <label>Answer</label><pre>${esc(out.answer || "(no answer: ran out of tokens?)")}</pre>`;
+}
+
+$("goBtn").onclick = async () => {
+  const body = {
+    mode,
+    temperature: parseFloat($("temperature").value),
+    max_tokens: parseInt($("maxTokens").value, 10),
+  };
+  if (mode === "repair") body.row_id = $("fnSelect").value;
+  else { body.question = $("question").value; body.system = $("system").value; }
+  for (const c of ["colBase", "colTuned"]) {
+    const b = $(c).querySelector(".body"); b.classList.add("muted"); b.textContent = "Sampling… long reasoning can take a few minutes.";
+  }
+  $("goBtn").disabled = true;
+  try {
+    const res = await api("/api/generate", body);
+    const f = mode === "repair" ? functions.find(x => x.id === body.row_id) : null;
+    render("colBase", res.base, f?.buggy_pass_rate);
+    render("colTuned", res.tuned, f?.buggy_pass_rate);
+  } catch (e) {
+    if (String(e.message).includes("API key")) $("keyModal").classList.remove("hidden");
+    for (const c of ["colBase", "colTuned"]) $(c).querySelector(".body").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  } finally {
+    $("goBtn").disabled = false;
+  }
+};
+
+$("keyBtn").onclick = async () => {
+  try {
+    await api("/api/key", { key: $("keyInput").value });
+    $("keyInput").value = "";
+    $("keyModal").classList.add("hidden");
+  } catch (e) { alert(e.message); }
+};
+
+(async () => {
+  if (!TOKEN) { document.body.innerHTML = '<main><p class="err">Open the URL printed in the terminal (it carries the access token).</p></main>'; return; }
+  try {
+    const status = await api("/api/status");
+    $("metaBase").textContent = "base: " + status.base_model;
+    $("metaTuned").textContent = "tuned: " + status.tuned_path;
+    if (!status.has_key) $("keyModal").classList.remove("hidden");
+    functions = await api("/api/functions");
+    $("fnSelect").innerHTML = functions
+      .sort((a, b) => a.buggy_pass_rate - b.buggy_pass_rate)
+      .map(f => `<option value="${esc(f.id)}">${esc(f.entry_point)} · ${esc(f.id)} · buggy ${Math.round(f.buggy_pass_rate * 100)}%</option>`)
+      .join("");
+    showFunction();
+  } catch (e) {
+    document.body.innerHTML = `<main><p class="err">${esc(e.message)}</p></main>`;
+  }
+})();
+</script>
+</body>
+</html>
