@@ -184,6 +184,8 @@ def create_app(models: Models, rows: dict[str, dict[str, Any]], token: str, port
         sequence = response.sequences[0]
         tokens = list(sequence.tokens)
         reasoning, answer = split_reply(models.renderer, tokens)
+        if "length" in str(sequence.stop_reason).lower() and not reasoning:
+            reasoning, answer = answer, ""
         out: dict[str, Any] = {
             "reasoning": reasoning,
             "answer": answer,
