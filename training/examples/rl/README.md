@@ -9,6 +9,7 @@ IGPO example) and `train_*_serverless.py` on the shared pool
 | Example | Modality / shape | Dedicated | Serverless |
 | --- | --- | --- | --- |
 | [`deepmath/`](./deepmath/) | text, single-turn, verifiable reward | `train_deepmath.py` | `train_deepmath_serverless.py` |
+| [`code_repair/`](./code_repair/) | text, single-turn, unit-test reward in a local sandbox (macOS only) | — | `train_code_repair_serverless.py` |
 | [`visual_toolbench/`](./visual_toolbench/) | vision, multi-turn image tools, rubric judge | `train_visual_toolbench.py` | `train_visual_toolbench_serverless.py` |
 | [`frozen_lake/`](./frozen_lake/) | text or image observations, multi-turn tool env (Eval Protocol) | `train_frozen_lake.py` | — |
 | [`multihop_qa/`](./multihop_qa/) | multi-turn search, IGPO turn-level reward (`rl_loop` + `igpo.prepare_batch`) | `train_multihop_qa_igpo.py` | — |
