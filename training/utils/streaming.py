@@ -26,6 +26,7 @@ from __future__ import annotations
 import bisect
 from collections import OrderedDict
 from dataclasses import dataclass
+import functools
 import json
 import logging
 import os
@@ -35,6 +36,7 @@ from typing import Any, Callable, Iterator, List
 import torch
 import torch.utils.data as torch_data
 
+from training.renderer.image_fetcher import ImageFetcher, get_image_fetcher, set_image_fetcher
 from training.utils.runner import DatasetError
 
 logger = logging.getLogger(__name__)
@@ -804,6 +806,16 @@ def raise_rendered_dataset_errors(batch: List[Any]) -> None:
             raise_rendered_dataset_errors(item)
 
 
+def _init_worker_with_image_fetcher(
+    fetcher: ImageFetcher,
+    worker_init_fn: Callable[[int], None] | None,
+    worker_id: int,
+) -> None:
+    set_image_fetcher(fetcher)
+    if worker_init_fn is not None:
+        worker_init_fn(worker_id)
+
+
 def make_render_dataloader(
     dataset: torch_data.Dataset,
     *,
@@ -868,6 +880,10 @@ def make_render_dataloader(
             collate_fn=_drop_none_collate,
         )
 
+    image_fetcher = get_image_fetcher()
+    if image_fetcher is not None:
+        # Spawned workers start with no registered image fetcher of their own.
+        worker_init_fn = functools.partial(_init_worker_with_image_fetcher, image_fetcher, worker_init_fn)
     spawn_kwargs = dict(
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,

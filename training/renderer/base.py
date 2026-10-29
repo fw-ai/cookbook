@@ -8,7 +8,6 @@ import json
 import logging
 import pickle
 import re
-import urllib.request
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -30,6 +29,7 @@ from PIL import Image
 from training.dataset_utils.image_geometry import reject_qwen_vl_aspect_ratio
 from training.renderer._tokenizer_utils import Tokenizer
 from training.renderer.errors import RendererError
+from training.renderer.image_fetcher import read_image_url
 
 logger = logging.getLogger(__name__)
 
@@ -1787,13 +1787,14 @@ def image_to_chunk(image_or_str: Image.Image | str, image_processor: ImageProces
 
     Raises:
         RendererError: If ``image_or_str`` is not a PIL Image, URL, or data
-            URI, or if the image processor does not support token counting.
+            URI, if the URL is refused or cannot be fetched (see
+            ``training.renderer.image_fetcher``), or if the image processor
+            does not support token counting.
     """
 
     # load an image from a data URI or a URL
     if isinstance(image_or_str, str):
-        with urllib.request.urlopen(image_or_str) as response:
-            pil_image = Image.open(io.BytesIO(response.read()))
+        pil_image = Image.open(io.BytesIO(read_image_url(image_or_str)))
 
     # Otherwise the image is a PIL image and can be loaded directly
     elif isinstance(image_or_str, Image.Image):
