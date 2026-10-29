@@ -288,6 +288,10 @@ is pinned to commit `f7cf735`, so scores stay comparable to the published board.
   against the ~60-point jumps on the parallel categories, and they stay the floor of the sub-score.
   `Simple AST` is the unweighted mean of the three, so the non-Python categories cost every model
   ~23 points on that sub-score.
+  The in-notebook Java/JS results above, and the saved notebook outputs, predate sending Java/JS
+  tool params as strings the way BFCL's own harness does (Oct 2026), and under-count both
+  categories. With that fix, base Muse Glimmer 30B scores 58.00% on `simple_java` and 68.00% on
+  `simple_javascript`, against 36.00% and 30.00% before.
 
 ## Replicating before you report
 
