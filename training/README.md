@@ -6,6 +6,14 @@ on [Fireworks](https://fireworks.ai). Full docs: [Training API](https://docs.fir
 New here? The [Muse Glimmer mini cookbook](examples/muse_glimmer/README.md)
 runs a free first fine-tune on preloaded example data in about 10 minutes.
 
+## Versioned installations
+
+Applications can depend on `fireworks-training-cookbook==<version>` from
+[PyPI](https://pypi.org/project/fireworks-training-cookbook/) instead of a Git
+URL once the first release has been published. Imports remain `training.*`.
+GitHub tag `cookbook-v2026.10.26.1` maps to version `2026.10.26.1` (an
+illustrative version; select an available version from PyPI).
+
 ## Layout
 
 The tree is layered so each kind of change has one home:
@@ -94,10 +102,8 @@ export FIREWORKS_API_KEY=...             # or put it in training/.env
 python -m training.examples.sft.train_sft --help
 ```
 
-The `eval` and `dev` extras require Git and install Eval Protocol from a pinned
-upstream commit. Its published 0.3.32 release requires an older LiteLLM than the
-security fixes allow. The pinned source admits the tested LiteLLM 1.105.0 release;
-replace it with a compatible PyPI release when one is available.
+The `eval` and `dev` extras install `eval-protocol==0.3.33` from PyPI,
+which supports the tested LiteLLM 1.105.0 release.
 
 Each recipe's `Config` dataclass documents its fields. Leave `TrainerConfig()`
 empty for SDK-selected defaults, or set `training_shape_id`; deployments resolve
@@ -118,3 +124,18 @@ pytest tests/
 
 SDFT is maintained in the [Fireworks Tinker-Cookbook fork](https://github.com/fw-ai-external/tinker-cookbook).
 See the [customer guide](docs/sdft.md) for where to start.
+
+## Publishing releases
+
+Releases are managed by the maintainers' private CI after the reviewed promotion
+PR merges. Promotion commits the calendar version in `pyproject.toml` and the
+root package entry in `uv.lock` before review. For example,
+`cookbook-v2026.1.2.1` publishes package version `2026.1.2.1`.
+
+The publisher builds the wheel from the source distribution, validates both
+artifacts, publishes to PyPI, and verifies the installed version. This repository
+has no publishing workflow or stored release credentials. Contact a maintainer
+to retry a failed release.
+
+The `eval` extra pins `eval-protocol==0.3.33`. Release builds reject direct URL
+dependencies in all extras so Git pins cannot break PyPI publication.
