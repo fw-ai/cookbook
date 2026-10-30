@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fireworks-training-cookbook"
+# Promotion owns this version; published metadata is synchronized back to staging.
 version = "0.1.0"
+description = "Training recipes and utilities for the Fireworks Training API"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fireworks-ai>=1.2.30,<2",
@@ -41,8 +44,8 @@ dependencies = [
 
 [project.optional-dependencies]
 eval = [
-    # The published release caps LiteLLM below the security fixes.
-    "eval-protocol @ git+https://github.com/eval-protocol/python-sdk.git@9b642d9401b05ab96b73fc18922d1279f8ac617b",
+    # Includes the LiteLLM dependency fix used by the cookbook.
+    "eval-protocol==0.3.33",
     "litellm>=1.96.2,<2",
 ]
 dev = [

@@ -25,13 +25,13 @@ jobs:
             const pull = context.payload.pull_request;
             const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
             const expectedBranch = "autogen/promote-cookbook-from-fireworks-main";
-            const expectedAuthor = "bot-fireworks-ai";
+            const expectedAuthors = new Set(["bot-fireworks-ai", "fw-ci-bot[bot]"]);
             const labels = new Set(pull.labels.map((label) => label.name));
             const allowed =
               pull.base.ref === "main" &&
               pull.head.repo.full_name === expectedRepo &&
               pull.head.ref === expectedBranch &&
-              pull.user.login === expectedAuthor &&
+              expectedAuthors.has(pull.user.login) &&
               labels.has("autorelease: pending");
 
             await github.rest.repos.createCommitStatus({
@@ -50,7 +50,7 @@ jobs:
 
             if (!allowed) {
               core.setFailed(
-                `Expected ${expectedAuthor}'s ${expectedRepo}:${expectedBranch} ` +
+                `Expected ${[...expectedAuthors].join(' or ')}'s ${expectedRepo}:${expectedBranch} ` +
                 `with autorelease: pending; received ${pull.user.login}'s ` +
                 `${pull.head.repo.full_name}:${pull.head.ref}`
               );

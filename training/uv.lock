@@ -952,8 +952,8 @@ wheels = [
 
 [[package]]
 name = "eval-protocol"
-version = "0.3.32+2.g9b642d9"
-source = { git = "https://github.com/eval-protocol/python-sdk.git?rev=9b642d9401b05ab96b73fc18922d1279f8ac617b#9b642d9401b05ab96b73fc18922d1279f8ac617b" }
+version = "0.3.33"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "addict" },
     { name = "aiohttp" },
@@ -986,6 +986,10 @@ dependencies = [
     { name = "uvicorn" },
     { name = "websockets" },
     { name = "zstandard" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a9/a1/476ac57cf95d9baf850f00163e63b2f483903061982b790360f0e5d4ce5b/eval_protocol-0.3.33.tar.gz", hash = "sha256:bd920ed31742803bdde095135fffbb898119c4570548c33328a61b01c635a798", size = 2198060, upload-time = "2026-10-26T23:11:10.664Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/44/50/8b12e34856ebd7d79966288b4614896075d3df4d48f8763c8cb1761e5b39/eval_protocol-0.3.33-py3-none-any.whl", hash = "sha256:63a20d071593efceccda35ff5a1ea8eb4c74f08eedc6fb50edb0e7ff181b1f5a", size = 2170353, upload-time = "2026-10-26T23:11:08.512Z" },
 ]
 
 [[package]]
@@ -1132,7 +1136,7 @@ eval = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.14.3" },
     { name = "datasets", specifier = ">=5.0.1" },
-    { name = "eval-protocol", marker = "extra == 'eval'", git = "https://github.com/eval-protocol/python-sdk.git?rev=9b642d9401b05ab96b73fc18922d1279f8ac617b" },
+    { name = "eval-protocol", marker = "extra == 'eval'", specifier = "==0.3.33" },
     { name = "fireworks-ai", specifier = ">=1.2.30,<2" },
     { name = "fireworks-training-cookbook", extras = ["eval"], marker = "extra == 'dev'" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.23.0,<1" },
