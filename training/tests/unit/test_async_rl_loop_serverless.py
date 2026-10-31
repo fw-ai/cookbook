@@ -848,3 +848,116 @@ def test_failed_training_interrupts_blocked_rollout_without_optimizer(monkeypatc
     assert len(service.training_client.forward_backward_calls) == 1
     assert service.training_client.optim_calls == []
     assert len(service.training_client.saved) == 1
+
+
+def _progress_rollout_factory(_setup):
+    async def rollout(_row, *, sample_index: int, **_context) -> RolloutRun:
+        return RolloutRun(
+            segments=[
+                RolloutSample(
+                    tokens=[10, 11, 12],
+                    logprobs=[0.0, -0.1, -0.2],
+                    raw_logprobs=[0.0, -0.3, -0.4],
+                    loss_mask=[0, 1, 1],
+                    reward=float(sample_index),
+                )
+            ],
+            run_id=f"run-{sample_index}",
+        )
+
+    return rollout
+
+
+def _progress_config() -> loop.Config:
+    return loop.Config(
+        completions_per_prompt=2,
+        prompt_groups_per_step=1,
+        max_completion_tokens=2,
+        max_seq_len=8,
+        max_rows=2,
+        min_group_size=2,
+        max_incomplete_group_retries=0,
+    )
+
+
+async def _progress_evaluate(_step, evaluation_rollout_fn):
+    await evaluation_rollout_fn({"id": "holdout"}, sample_index=0)
+    await evaluation_rollout_fn({"id": "holdout"}, sample_index=1)
+    return {"eval/accuracy": 0.5}
+
+
+def test_progress_fn_reports_session_steps_and_evaluations(monkeypatch) -> None:
+    service = _Service()
+    _patch_runtime(monkeypatch, service)
+    events: list[tuple[str, dict]] = []
+
+    result = loop.main(
+        _progress_config(),
+        rollout_fn_factory=_progress_rollout_factory,
+        evaluation_fn=_progress_evaluate,
+        evaluation_interval=5,
+        rows=[{"id": "a"}, {"id": "b"}],
+        progress_fn=lambda event, **fields: events.append((event, fields)),
+    )
+
+    assert result["steps"] == 2
+    assert events[:2] == [
+        ("session_starting", {"base_model": "accounts/fireworks/models/kimi-k3"}),
+        ("session_started", {"session": "accounts/test/trainingSessions/session-test", "run": "run-test"}),
+    ]
+    step_events = [
+        (event, fields["step"])
+        for event, fields in events
+        if event in {"step_started", "step_training", "sampler_publishing", "step_finished"}
+    ]
+    assert step_events == [
+        ("step_started", 1),
+        ("step_training", 1),
+        ("sampler_publishing", 1),
+        ("step_finished", 1),
+        ("step_started", 2),
+        ("step_training", 2),
+        ("sampler_publishing", 2),
+        ("step_finished", 2),
+    ]
+    assert ("step_started", {"step": 1, "total_steps": 2, "target_groups": 1}) in events
+    assert ("groups_ready", {"step": 2, "count": 1}) in events
+    assert [event for event, _ in events].count("rollout_finished") == 4
+    # Baseline and final evaluation only (interval 5), each with its samples.
+    evaluations = [(event, fields["step"]) for event, fields in events if event.startswith("evaluation_")]
+    assert evaluations == [
+        ("evaluation_started", 0),
+        ("evaluation_rollout_finished", 0),
+        ("evaluation_rollout_finished", 0),
+        ("evaluation_finished", 0),
+        ("evaluation_started", 2),
+        ("evaluation_rollout_finished", 2),
+        ("evaluation_rollout_finished", 2),
+        ("evaluation_finished", 2),
+    ]
+    final_evaluation = next(fields for event, fields in events if event == "evaluation_finished" and fields["step"] == 2)
+    assert final_evaluation["metrics"]["eval/accuracy"] == 0.5
+    assert events[-1] == ("checkpoint_saving", {"step": 2})
+
+
+def test_failing_progress_fn_never_stops_training(monkeypatch, caplog) -> None:
+    service = _Service()
+    _patch_runtime(monkeypatch, service)
+    calls: list[str] = []
+
+    def broken(event, **_fields):
+        calls.append(event)
+        raise RuntimeError("display bug")
+
+    result = loop.main(
+        _progress_config(),
+        rollout_fn_factory=_progress_rollout_factory,
+        evaluation_fn=_progress_evaluate,
+        evaluation_interval=5,
+        rows=[{"id": "a"}, {"id": "b"}],
+        progress_fn=broken,
+    )
+
+    assert result["steps"] == 2
+    assert calls == ["session_starting"]
+    assert "progress reporting is off" in caplog.text

@@ -24,6 +24,7 @@ import math
 import os
 import re
 import time
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
@@ -50,6 +51,7 @@ from training.utils import (
 from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
 from training.utils.phase_tracing import phase_span
+from training.utils.progress import ProgressFn
 from training.utils.rl.algorithm import grpo as objective
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
@@ -339,6 +341,30 @@ def _wandb_config(cfg: Config, *, mode: str) -> dict[str, Any]:
     }
 
 
+def _session_and_run(service: Any, training_client: Any) -> tuple[str | None, str | None]:
+    session = getattr(service, "training_session_name", None) or getattr(service, "training_session_id", None)
+    run = getattr(training_client, "run_name", None) or getattr(training_client, "run_id", None)
+    return session, run
+
+
+def _progress_notifier(progress_fn: ProgressFn | None) -> Callable[..., None]:
+    """Wrap ``progress_fn`` so a display bug never stops a training run."""
+
+    failed = False
+
+    def notify(event: str, **fields: Any) -> None:
+        nonlocal failed
+        if progress_fn is None or failed:
+            return
+        try:
+            progress_fn(event, **fields)
+        except Exception:
+            failed = True
+            logger.warning("progress_fn failed on %r; progress reporting is off", event, exc_info=True)
+
+    return notify
+
+
 def _rollout_setup(
     cfg: Config,
     *,
@@ -461,8 +487,21 @@ async def main(
     evaluation_fn: RolloutEvaluationFn | None = None,
     evaluation_interval: int = 1,
     rows: list[dict[str, Any]] | None = None,
+    progress_fn: ProgressFn | None = None,
 ) -> dict[str, Any]:
-    """Train with shared async scheduling and serverless weight publication."""
+    """Train with shared async scheduling and serverless weight publication.
+
+    ``progress_fn(event, **fields)``, when given, is called on the event loop
+    at each phase boundary so a caller can show what the run is doing (see
+    :class:`training.utils.progress.TerminalProgress`). Events, in order:
+    ``session_starting``, ``session_started``, ``training_started``, then per
+    optimizer step ``step_started``, ``rollout_finished`` and ``groups_ready``
+    (counters), ``step_training``, ``step_waiting_for_evaluation``,
+    ``sampler_publishing``, ``step_finished``; ``evaluation_started``,
+    ``evaluation_rollout_finished`` and ``evaluation_finished`` run beside the
+    steps; ``checkpoint_saving`` precedes each DCP save. A failing
+    ``progress_fn`` is disabled with one warning and never stops training.
+    """
 
     cfg = config
     _validate_config(cfg)
@@ -473,6 +512,7 @@ async def main(
     if rows is None and not cfg.dataset:
         raise ValueError("Provide either cfg.dataset or rows= to main().")
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
+    notify = _progress_notifier(progress_fn)
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     setup_wandb(
@@ -487,12 +527,15 @@ async def main(
         service = _make_service(api_key, base_url)
         stack.push_async_callback(close_in_thread, service.close)
         tokenizer = await run_in_thread(load_tokenizer, cfg.tokenizer_model, cfg.tokenizer_revision)
+        notify("session_starting", base_model=cfg.base_model)
         training_client = await run_in_thread(
             service.create_lora_training_client,
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
             alpha=cfg.lora_alpha,
         )
+        session, run = _session_and_run(service, training_client)
+        notify("session_started", session=session, run=run)
         if cfg.init_from_checkpoint:
             await run_in_thread(lambda: training_client.load_state_with_optimizer(cfg.init_from_checkpoint).result())
         initial_client, initial_snapshot = await run_in_thread(
@@ -548,7 +591,7 @@ async def main(
                 epoch = index // rows_per_epoch
                 row_index = index % rows_per_epoch
 
-                def run_one_rollout(
+                async def run_one_rollout(
                     sample_index: int,
                     sample_prompt=row,
                     cursor_index=index,
@@ -564,7 +607,10 @@ async def main(
                         "end_of_epoch": row_index == rows_per_epoch - 1,
                         "evaluation": False,
                     }
-                    return call_rollout_fn(rollout_fn, sample_prompt, context, context_names)
+                    try:
+                        return await call_rollout_fn(rollout_fn, sample_prompt, context, context_names)
+                    finally:
+                        notify("rollout_finished")
 
                 yield RolloutRow(
                     row_id=index,
@@ -641,9 +687,24 @@ async def main(
             logger.info("[step %d] saved serverless DCP checkpoint: %s", step, path)
             return str(path)
 
+        async def evaluate_with_progress(step: int, evaluation_rollout: Any) -> Any:
+            async def counted_rollout(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    return await evaluation_rollout(*args, **kwargs)
+                finally:
+                    notify("evaluation_rollout_finished", step=step)
+
+            return await evaluation_fn(step, counted_rollout)
+
         async def run_evaluation(step: int) -> None:
-            metrics = await evaluate_rollouts(step, evaluation_fn, rollout_fn)
+            notify("evaluation_started", step=step)
+            metrics = await evaluate_rollouts(
+                step,
+                evaluation_fn if progress_fn is None else evaluate_with_progress,
+                rollout_fn,
+            )
             log_metrics({"rollout/step": step, **metrics}, step=step, metrics_file=cfg.metrics_file)
+            notify("evaluation_finished", step=step, metrics=metrics)
 
         evaluations = OverlappedEvaluation(
             run_evaluation if evaluation_fn is not None else None,
@@ -679,12 +740,22 @@ async def main(
             )
             latest_snapshot = initial_snapshot
             async with coordinator:
+                notify("training_started", step=cfg.step_offset + 1, total_steps=total_steps)
                 telemetry.start(coordinator.snapshot)
                 evaluations.start(cfg.step_offset, force=True)
                 try:
                     while (batch := await coordinator.next_batch()) is not None:
+                        notify(
+                            "step_started",
+                            step=batch.batch_id,
+                            total_steps=total_steps,
+                            target_groups=batch.target_groups,
+                        )
+                        groups_ready = 0
                         async with submission_window() as submissions:
                             async for groups in batch.ready_group_batches():
+                                groups_ready += len(groups)
+                                notify("groups_ready", step=batch.batch_id, count=groups_ready)
                                 coordinator.raise_if_failed(batch)
                                 await retain_submission(
                                     submissions,
@@ -698,6 +769,7 @@ async def main(
                                 )
                                 batch.start_training(at=submissions[-1].submitted_at)
                             coordinator.raise_if_failed(batch)
+                            notify("step_training", step=batch.batch_id)
                             results = await drain_groups(submissions)
                         add_batch_diagnostics(submissions, results, policy_loss, objective)
                         coordinator.raise_if_failed(batch)
@@ -709,6 +781,7 @@ async def main(
                         )
                         evaluation_step = evaluations.active_step
                         if evaluation_step is not None:
+                            notify("step_waiting_for_evaluation", step=batch.batch_id)
                             with wall_timer(
                                 "evaluation_join",
                                 category="evaluation",
@@ -723,6 +796,7 @@ async def main(
                                 step=evaluation_step,
                                 metrics_file=cfg.metrics_file,
                             )
+                        notify("sampler_publishing", step=batch.batch_id)
                         with wall_timer(
                             "weight_update",
                             attributes={"step": batch.batch_id},
@@ -755,10 +829,12 @@ async def main(
                             weight_update_time=update_span.elapsed,
                             learning_rate=optimizer["learning_rate"],
                         )
+                        notify("step_finished", step=batch.batch_id, total_steps=total_steps)
                         evaluations.start(batch.batch_id)
                         interval = cfg.dcp_save_interval
                         completed_steps = batch.batch_id - cfg.step_offset
                         if interval > 0 and completed_steps > 0 and completed_steps % interval == 0:
+                            notify("checkpoint_saving", step=batch.batch_id)
                             with wall_timer(
                                 "checkpoint",
                                 category="checkpoint",
@@ -804,18 +880,15 @@ async def main(
             ):
                 final_checkpoint = periodic_checkpoints[-1]
             else:
+                notify("checkpoint_saving", step=steps)
                 final_checkpoint = await run_in_thread(save_training_state, steps)
-        session = getattr(service, "training_session_name", None) or getattr(
-            service,
-            "training_session_id",
-            None,
-        )
+        session, run = _session_and_run(service, training_client)
         return {
             "steps": steps,
             "accepted_groups": (cfg.step_offset * cfg.prompt_groups_per_step + int(final_stats["total_accepted"])),
             "resolved_rows": resolved_rows,
             "training_session": session,
-            "training_run": getattr(training_client, "run_name", None) or getattr(training_client, "run_id", None),
+            "training_run": run,
             "final_sampler_snapshot": final_snapshot,
             "periodic_training_checkpoints": periodic_checkpoints,
             "final_training_checkpoint": final_checkpoint,
