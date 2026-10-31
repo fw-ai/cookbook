@@ -13,9 +13,12 @@ routes (R3) automatically.
     python -m training.examples.rl.deepmath.train_deepmath_serverless \\
         --base-model accounts/fireworks/models/kimi-k3 --tokenizer-model moonshotai/Kimi-K3
 
-``--run-dir`` receives ``metrics.jsonl`` and ``result.json`` (steps, rows
-consumed and checkpoint paths). Continue in a new process with
-``--init-from-checkpoint``, ``--step-offset`` and ``--resolved-rows-offset``
+The terminal shows a spinner with the current phase (evaluation, rollouts,
+training, weight publication) and prints the training session id once it
+exists, each finished step, each evaluation's accuracy, and a final
+before/after summary. ``--run-dir`` receives ``metrics.jsonl`` and
+``result.json`` (steps, rows consumed and checkpoint paths). Continue in a new
+process with ``--init-from-checkpoint``, ``--step-offset`` and ``--resolved-rows-offset``
 from that file.
 """
 
@@ -33,6 +36,7 @@ from training.examples.rl.deepmath.train_deepmath import DEFAULT_DATASET, make_r
 from training.recipes.experiment import async_rl_loop_serverless
 from training.recipes.experiment.async_rl_loop_serverless import Config
 from training.utils import WandBConfig, load_jsonl_dataset
+from training.utils.progress import TerminalProgress
 from training.utils.rl.heldout import HeldoutRuns, make_heldout_evaluation
 from training.utils.rl.losses import has_reward_variance
 
@@ -54,6 +58,7 @@ def train(
     renderer_name: str = "",
     eval_rows: int = 16,
     evaluation_interval: int = 5,
+    progress: TerminalProgress | None = None,
 ) -> dict[str, Any]:
     """Hold out the first ``eval_rows`` rows, train on the next ``config.max_rows``."""
     if not config.dataset:
@@ -70,6 +75,8 @@ def train(
             metrics_fn=deepmath_eval_metrics,
             max_concurrency=config.max_concurrency_rollout_sample,
         )
+        if progress is not None:
+            progress.evaluation_samples = len(held_out) * config.completions_per_prompt
     return async_rl_loop_serverless.main(
         config,
         rollout_fn_factory=functools.partial(make_rollout_fn, renderer_name=renderer_name),
@@ -77,6 +84,7 @@ def train(
         evaluation_fn=evaluation_fn,
         evaluation_interval=evaluation_interval,
         rows=train_rows,
+        progress_fn=progress,
     )
 
 
@@ -154,14 +162,17 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     args = parse_args(argv)
     run_dir = Path(args.run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    result = train(
-        config_from_args(args),
-        renderer_name=args.renderer_name,
-        eval_rows=args.eval_rows,
-        evaluation_interval=args.evaluation_interval,
-    )
+    with TerminalProgress(accuracy_metric="eval/accuracy") as progress:
+        result = train(
+            config_from_args(args),
+            renderer_name=args.renderer_name,
+            eval_rows=args.eval_rows,
+            evaluation_interval=args.evaluation_interval,
+            progress=progress,
+        )
     (run_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result, indent=2))
+    progress.print_summary(result, run_dir=run_dir)
     return result
 
 

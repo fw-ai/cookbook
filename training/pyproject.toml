@@ -25,6 +25,8 @@ dependencies = [
     # before choosing a backend; range matches transformers==5.10.4's own.
     "huggingface-hub>=1.5.0,<2.0",
     "python-dotenv",
+    # Status line in examples (training.utils.progress).
+    "rich>=13",
     "wandb>=0.28.2",
     "httpx[http2]>=0.23.0,<1",
     "orjson>=3.10.0",
