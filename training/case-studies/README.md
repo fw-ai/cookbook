@@ -4,7 +4,7 @@ Small adapters can change how a model behaves. These studies show the training m
 
 | Study | Behavior | Method |
 |---|---|---|
-| [Caveman](sft_caveman/README.md) | Teach concise answers without dropping the facts. | Supervised fine-tuning |
+| [Caveman](sft_caveman/README.md) · [Read notebook](https://nbviewer.org/github/fw-ai/cookbook/blob/68750d4980cc8798343c67a49ec5c5b92093499f/training/case-studies/sft_caveman/caveman_sft.ipynb) | Teach concise answers without dropping the facts. | Supervised fine-tuning |
 | [Humanizer](sft_humanizer/README.md) | Rewrite naturally while preserving details and leaving good writing alone. | Supervised fine-tuning |
 | [E-vasion](lipogram_data/README.md) | Answer useful questions without the letter e. | Supervised fine-tuning followed by reinforcement learning |
 | [Anti-slop](dpo_antislop/README.md) | See what preference optimization learns, and what a detector score misses. | Direct preference optimization and RL follow-up |

@@ -90,7 +90,7 @@ Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each 
 
 | Study | Focus | Entry point |
 | --- | --- | --- |
-| Caveman | Concision with factual checks | [SFT walkthrough](case-studies/sft_caveman/caveman_sft.ipynb) |
+| Caveman | Concision with factual checks | [Read the walkthrough](https://nbviewer.org/github/fw-ai/cookbook/blob/68750d4980cc8798343c67a49ec5c5b92093499f/training/case-studies/sft_caveman/caveman_sft.ipynb) · [Source](case-studies/sft_caveman/caveman_sft.ipynb) |
 | Humanizer | Preservation and restraint when editing | [SFT walkthrough](case-studies/sft_humanizer/humanizer_walkthrough.ipynb) |
 | E-vasion | Useful answers without the letter e | [SFT + GRPO study](case-studies/lipogram_data/lipogram_demo.ipynb) |
 | Anti-slop | Preference optimization and reward tradeoffs | [DPO walkthrough](case-studies/dpo_antislop/dpo_glm53_flash.ipynb) |

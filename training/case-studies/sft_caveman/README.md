@@ -10,7 +10,9 @@ Teach concise answers without dropping the facts.
 
 **Method:** Supervised fine-tuning.
 
-[Open the notebook](caveman_sft.ipynb) · [All case studies](../README.md)
+[Read the rendered notebook](https://nbviewer.org/github/fw-ai/cookbook/blob/68750d4980cc8798343c67a49ec5c5b92093499f/training/case-studies/sft_caveman/caveman_sft.ipynb) · [Notebook source](caveman_sft.ipynb) · [All case studies](../README.md)
+
+The rendered link is a fixed snapshot at commit `68750d4`. For the current code and setup, use the notebook source in this checkout.
 
 ## What this study shows
 
