@@ -178,3 +178,15 @@ python -m pip install -r ../common/requirements-notebooks.txt
 ```
 
 This installs Python packages only; it does not start training or inference.
+
+## Reward scoring and resume semantics
+
+New runs use one low-temperature judge call per distinct request/answer pair. Earlier recorded experiments averaged two calls; those saved results have not been recomputed. Repeating a temperature-zero call is not independent evidence. Identical completions within one scoring batch share a verdict. Temporary judge failures remain unscored; missing credentials or permanent HTTP configuration failures abort instead of silently dropping every group.
+
+All visible text, including fenced code, is checked for prohibited characters. Truncated answers receive zero reward and do not count toward completed e-free or answered rates; their token and violation counts remain diagnostic.
+
+`--eval-prompt-groups` counts distinct `(family, group_id)` groups, not prompt rows. Every prompt in each selected group is held out to prevent leakage. `dataset_split.json` records both selected group count and actual evaluation row count; sampling cost scales with rows times `eval_group_size`.
+
+For `--reward-phase auto`, each DCP save writes a local `<checkpoint>.reward-state.json` containing the exact checkpoint reference and phase. Keep this file with the run artifacts and pass it with `--resume-reward-state` when using `--resume-from`. Missing or mismatched state stops before creating a training client. Explicit `ramp` or `strict` is an intentional override. Trainer state alone does not restore this Python-side curriculum.
+
+The study-specific serverless loops remain separate from the maintained shared RL recipe. Consolidating them requires parity checks for reward filtering, grouped holdouts, curriculum state and checkpoint behavior; this change does not claim that refactor is complete.

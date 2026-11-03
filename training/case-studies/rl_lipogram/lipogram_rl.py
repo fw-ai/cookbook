@@ -2,8 +2,8 @@
 
 Same serverless loop as the Anti-slop and Short Thinker studies, different task and reward
 (``lipogram_rewards.lipogram_reward``): full credit for a reply the judge accepts as an answer
-that contains no "e"; partial credit, falling with the e-rate, for an accepted answer that
-still slips; nothing for a reply that dodges the question. Fenced code is exempt.
+that contains no "e"; in ramp mode partial credit, falling with the absolute violation count, for an accepted answer that
+still slips; nothing for a reply that dodges the question. All visible text, including fenced code, is scored.
 
 The constraint is checked mechanically, so the only model in the reward is the judge that
 guards against the cheap win (saying nothing). The question this study answers is whether
@@ -57,7 +57,8 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 
 _sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lipogram_rewards import lipogram_reward, llm_judge  # noqa: E402
+from lipogram_rewards import lipogram_reward, llm_judge, require_judge_key
+from reward_state import initial_phase, save_phase_state, completed_score  # noqa: E402
 from training.utils import phase_span, resolve_router_replay_enabled
 from training.utils.rl.router_replay import (
     build_r3_routing_matrices,
@@ -112,8 +113,8 @@ class Config:
     # Cycle through the dataset in a shuffled order (seeded, so reproducible).
     shuffle: bool = True
     seed: int = 0
-    # Deterministically remove this many prompts from the training pool and
-    # reuse that exact held-out slice for every evaluation.
+    # Hold out this many (family, group_id) groups to prevent family leakage.
+    # Each group can contain multiple prompt rows; all its rows are evaluated.
     eval_prompt_groups: int = 16
     eval_seed: int = 1
     eval_effort: str = "low"
@@ -189,6 +190,7 @@ class Config:
     # diversity_penalty * (share of the other group members sharing that opener). 0 disables.
     diversity_penalty: float = 0.0
     resume_from: str = ""
+    resume_reward_state: str = ""
     # Empty keeps the historical behavior (save, but do not promote). Set an id
     # to promote the final sampler checkpoint to a Fireworks LoRA model.
     output_model_id: str = ""
@@ -580,6 +582,8 @@ class ServerlessAntislopRL:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
         _validate_config(cfg)
+        require_judge_key()
+        self.phase = initial_phase(cfg.reward_phase, cfg.resume_from, cfg.resume_reward_state)
         all_rows = _load_rows(Path(cfg.dataset))
         if not all_rows:
             raise SystemExit(f"dataset is empty: {cfg.dataset} (run with --prepare-dataset first)")
@@ -602,7 +606,6 @@ class ServerlessAntislopRL:
             print(f"training prompts rendered with reasoning effort drawn from {sorted(self.effort_renderers)}", flush=True)
         self.eval_renderer = type(self.renderer)(self.tokenizer, reasoning_effort=cfg.eval_effort)
         self._score_cache: dict[tuple[str, str, str], tuple[float, bool, bool, float]] = {}
-        self.phase = "ramp" if cfg.reward_phase == "auto" else cfg.reward_phase
         if self.phase not in ("ramp", "strict"):
             raise SystemExit(f"reward_phase must be auto, ramp or strict (got {cfg.reward_phase!r})")
 
@@ -682,6 +685,7 @@ class ServerlessAntislopRL:
                     "total_rows": len(all_rows),
                     "training_rows": len(self.rows),
                     "eval_rows": len(self.eval_rows),
+                    "eval_source_groups": cfg.eval_prompt_groups,
                     "eval_seed": cfg.eval_seed,
                     "eval_row_indices": self.eval_row_indices,
                 },
@@ -731,8 +735,14 @@ class ServerlessAntislopRL:
         ):
             self.training_client.save_state(name).result(timeout=self.cfg.dcp_timeout_s)
         self.saved_training_checkpoints.append(name)
+        self._save_reward_state(name)
         print(f"saved training checkpoint {name!r} ({time.time() - started:.1f}s)", flush=True)
         return name
+
+    def _save_reward_state(self, name: str) -> Path:
+        path = self.run_dir / f"{name}.reward-state.json"
+        save_phase_state(path, self._resume_reference(name), self.phase)
+        return path
 
     def _resume_reference(self, checkpoint_name: str) -> str:
         if not self.run_id:
@@ -874,7 +884,10 @@ class ServerlessAntislopRL:
                     scorer_failed_samples += 1   # a missing score is not a zero; leave the sample out
                     continue
                 truncated = _is_truncated(seq, cfg.max_sample_tokens)
-                success = correct and answered and not truncated
+                reward, correct, answered, think_tokens, _total = completed_score(
+                    (reward, correct, answered, think_tokens, _total), truncated
+                )
+                success = correct and answered
                 answered_count += int(answered)
                 success_count += int(success)
                 rewards.append(reward)
@@ -971,13 +984,15 @@ class ServerlessAntislopRL:
     def _prescore(self, results: list[Any], rows: list[dict[str, Any]]) -> None:
         """Score every sampled completion concurrently, filling the cache keyed by (source_id, text)."""
         items = []
+        pending = set()
         for row, result in zip(rows, results):
             gt = json.loads(row["ground_truth"])
             for seq in getattr(result, "sequences", []) or []:
                 tokens = list(getattr(seq, "tokens", []) or [])
                 content = get_text_content(self.renderer.parse_response(tokens)[0])
                 key = (gt["source_id"], content, self.phase)
-                if key not in self._score_cache:
+                if key not in self._score_cache and key not in pending:
+                    pending.add(key)
                     items.append((key, content, gt))
         with ThreadPoolExecutor(self.cfg.score_concurrency) as ex:
             for key, score in zip([k for k, _, _ in items], ex.map(lambda it: self._score_one(it[1], it[2]), items)):
@@ -1107,8 +1122,7 @@ class ServerlessAntislopRL:
                     if not tokens or logprobs is None or len(logprobs) != len(tokens):
                         continue
                     score = self._score(tokens, row)
-                    if _is_truncated(seq, cfg.max_sample_tokens):
-                        score = (0.0, *score[1:])
+                    score = completed_score(score, _is_truncated(seq, cfg.max_sample_tokens))
                     scored.append((seq, tokens, logprobs, score))
             except ScorerFailure as e:
                 scorer_failed_groups += 1
@@ -1269,11 +1283,11 @@ class ServerlessAntislopRL:
             for step in range(self.start_step, self.start_step + cfg.steps):
                 records.append(self._step(step))
                 completed_step = step + 1
-                if cfg.dcp_save_interval and completed_step % cfg.dcp_save_interval == 0:
-                    self._save_dcp(completed_step)
                 if cfg.eval_interval and completed_step % cfg.eval_interval == 0:
                     self._evaluate(completed_step)
                     last_eval_step = completed_step
+                if cfg.dcp_save_interval and completed_step % cfg.dcp_save_interval == 0:
+                    self._save_dcp(completed_step)
 
             final_step = self.start_step + cfg.steps
             if cfg.eval_at_end and last_eval_step != final_step:
@@ -1285,8 +1299,9 @@ class ServerlessAntislopRL:
                 final_name = f"{cfg.training_checkpoint_name}-{final_step:04d}"
                 if final_name not in self.saved_training_checkpoints:
                     final_name = self._save_dcp(final_step)
+                state_path = self._save_reward_state(final_name)
                 resume_ref = self._resume_reference(final_name)
-                print(f"resume this run with:\n  --resume-from {resume_ref}", flush=True)
+                print(f"resume this run with:\n  --resume-from {resume_ref} --resume-reward-state {state_path}", flush=True)
                 (self.run_dir / "resume_from.txt").write_text(f"{resume_ref}\n")
 
             with phase_span(
@@ -1381,7 +1396,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--dataset", default=str(DEFAULT_DATASET))
     parser.add_argument("--shuffle", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--eval-prompt-groups", type=int, default=Config.eval_prompt_groups)
+    parser.add_argument("--eval-prompt-groups", type=int, default=Config.eval_prompt_groups,
+                        help="Held-out source families/groups, not individual prompts; all rows in each selected group are evaluated.")
     parser.add_argument("--eval-seed", type=int, default=Config.eval_seed)
     parser.add_argument("--eval-effort", choices=["low", "max"], default=Config.eval_effort)
     parser.add_argument("--steps", type=int, default=Config.steps)
@@ -1442,6 +1458,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--dcp-timeout-s", type=float, default=Config.dcp_timeout_s)
     parser.add_argument("--sampling-timeout-s", type=float, default=Config.sampling_timeout_s)
+    parser.add_argument("--resume-reward-state", default="", help="Checkpoint-bound reward-state JSON; required for auto-mode resume.")
     parser.add_argument("--run-dir", default="")
     parser.add_argument("--plot-reward-curve", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(

@@ -122,12 +122,18 @@ def api_key() -> str:
     return k
 
 
+class ScorerConfigurationError(Exception):
+    """A permanent scorer configuration failure must stop training."""
+
+
 def chat(client: httpx.Client, body: dict, retries: int = 4) -> dict:
     """One chat completion with bounded retries on transport errors and 5xx/429."""
     last = None
     for i in range(retries):
         try:
             r = client.post(CHAT_URL, headers={"Authorization": f"Bearer {api_key()}"}, json=body, timeout=300)
+            if r.status_code in (400, 401, 403, 404):
+                raise ScorerConfigurationError(f"Reward judge rejected the request (HTTP {r.status_code}); check model and credentials.")
             if r.status_code in (429, 500, 502, 503, 504):
                 last = RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
             else:
@@ -285,9 +291,13 @@ def gptzero_human(client: httpx.Client, text: str, key: str) -> tuple[float, str
     Uses the API's own human-class probability, not 1 - P(ai): the classifier
     has a third "mixed" class, so the two are not the same number.
     """
+    if not key or not key.strip():
+        raise ScorerConfigurationError("GPT_ZERO_API_KEY is required for detector scoring.")
     for i in range(3):
         try:
             r = client.post(GPTZERO_URL, headers={"x-api-key": key}, json={"document": text}, timeout=60)
+            if r.status_code in (400, 401, 403, 404):
+                raise ScorerConfigurationError(f"Detector rejected the request (HTTP {r.status_code}); check credentials and request configuration.")
             if r.status_code == 200:
                 j = r.json()
                 return float(j["documents"][0]["class_probabilities"]["human"]), str(j.get("version", ""))

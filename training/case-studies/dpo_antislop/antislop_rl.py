@@ -950,13 +950,15 @@ class ServerlessAntislopRL:
     def _prescore(self, results: list[Any], rows: list[dict[str, Any]]) -> None:
         """Score every sampled completion concurrently, filling the cache keyed by (brief, text)."""
         items = []
+        pending = set()
         for row, result in zip(rows, results):
             gt = json.loads(row["ground_truth"])
             for seq in getattr(result, "sequences", []) or []:
                 tokens = list(getattr(seq, "tokens", []) or [])
                 content = get_text_content(self.renderer.parse_response(tokens)[0])
                 key = (gt["brief_id"], content)
-                if key not in self._score_cache:
+                if key not in self._score_cache and key not in pending:
+                    pending.add(key)
                     items.append((key, content, gt))
         with ThreadPoolExecutor(self.cfg.score_concurrency) as ex:
             for key, score in zip([k for k, _, _ in items], ex.map(lambda it: self._score_one(it[1], it[2]), items)):
