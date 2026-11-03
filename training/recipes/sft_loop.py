@@ -1593,17 +1593,24 @@ def main(
         # -- Final checkpoint --------------------------------------------------
 
         start_step = resume_info.step if resume_info else 0
-        if cfg.save_final_checkpoint and step > start_step:
+        trained_new_steps = step > start_step
+        # Promotion may have failed after the final training checkpoint was saved.
+        # A zero-step resume must still export and promote the loaded weights.
+        needs_model_finalization = resume_info is not None and bool(cfg.output_model_id)
+        if cfg.save_final_checkpoint and (trained_new_steps or needs_model_finalization):
             logger.info("Saving final checkpoint (step %d)...", step)
             cp_name = f"step-{step}"
             ckpt.save(
                 cp_name,
-                resumable=True,
+                resumable=trained_new_steps,
                 promotable=True,
                 data_consumed=cursor.value,
             )
-            if getattr(cfg, "output_model_id", None):
-                ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
+            if cfg.output_model_id:
+                if cfg.serverless:
+                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model, checkpoint_name=cp_name)
+                else:
+                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
                 runner.write_output_model(
                     model_id=cfg.output_model_id,
                     checkpoint=cp_name,

@@ -179,6 +179,12 @@ while a replacement run has not yet bound, and after it moves to another trainer
 Resume also recreates a missing owned output-model placeholder before dispatch;
 it does not overwrite unrelated models that reuse the name.
 
+An SFT resume can restore the final training step with no batches left to train.
+With `save_final_checkpoint=True` and `output_model_id` set, it still exports a
+promotable sampler checkpoint from the loaded weights and retries promotion
+before reporting completion. It does not rewrite the resumable DCP checkpoint
+when no optimizer steps ran. Export or promotion errors fail the attempt.
+
 Serverless DPO stores its fixed reference at a stable job-level
 `runner.reference_checkpoint_file`, separate from per-attempt billing metadata.
 A resumed DPO run with no recoverable reference is rejected rather than
