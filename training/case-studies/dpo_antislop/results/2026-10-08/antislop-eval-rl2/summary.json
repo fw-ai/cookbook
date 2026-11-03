@@ -1,0 +1,104 @@
+{
+  "split": "test",
+  "samples_per_brief": 2,
+  "arms": {
+    "base": {
+      "model": "accounts/fireworks/models/glm-5p3-flash#accounts/pyroworks/deployments/glm53-flash-ml-mnnvl",
+      "variant": ""
+    },
+    "rl_s20": {
+      "model": "accounts/pyroworks/models/glm53-antislop-rl#accounts/pyroworks/deployments/glm53-flash-ml-mnnvl",
+      "variant": ""
+    },
+    "rl_div": {
+      "model": "accounts/pyroworks/models/glm53-antislop-rl-div#accounts/pyroworks/deployments/glm53-flash-ml-mnnvl",
+      "variant": ""
+    }
+  },
+  "detector_versions": [
+    "2026-10-07-base"
+  ],
+  "summary": {
+    "base": {
+      "tweet": {
+        "n": 40,
+        "detector_mean": 0.35838695065621634,
+        "detector_median": 0.0,
+        "detector_ge_0.5": 0.4,
+        "tropes_per_100w": 4.083688187187802,
+        "share_any_trope": 0.975,
+        "share_by_trope": {
+          "em_dash": 0.875,
+          "not_x_but_y": 0.0,
+          "colon_reveal": 0.025,
+          "stock_phrase": 0.0,
+          "rule_of_three_adjectives": 0.0,
+          "rhetorical_hook": 0.0,
+          "emoji": 0.425,
+          "hashtag_pile": 0.0,
+          "heres_the": 0.075
+        },
+        "format_ok": 0.7,
+        "faithful_mean": 0.9153846153846154,
+        "faithful_ge_0.8": 0.9743589743589743,
+        "mean_words": 38.375,
+        "detector_failures": 0,
+        "judge_failures": 1
+      }
+    },
+    "rl_s20": {
+      "tweet": {
+        "n": 40,
+        "detector_mean": 0.8257855700814775,
+        "detector_median": 0.9788590762416972,
+        "detector_ge_0.5": 0.875,
+        "tropes_per_100w": 0.8240860689483939,
+        "share_any_trope": 0.175,
+        "share_by_trope": {
+          "em_dash": 0.175,
+          "not_x_but_y": 0.0,
+          "colon_reveal": 0.0,
+          "stock_phrase": 0.0,
+          "rule_of_three_adjectives": 0.0,
+          "rhetorical_hook": 0.0,
+          "emoji": 0.0,
+          "hashtag_pile": 0.0,
+          "heres_the": 0.0
+        },
+        "format_ok": 0.875,
+        "faithful_mean": 0.995,
+        "faithful_ge_0.8": 1.0,
+        "mean_words": 22.875,
+        "detector_failures": 0,
+        "judge_failures": 0
+      }
+    },
+    "rl_div": {
+      "tweet": {
+        "n": 40,
+        "detector_mean": 0.6666557836931939,
+        "detector_median": 0.9095339557910216,
+        "detector_ge_0.5": 0.7,
+        "tropes_per_100w": 2.2018494641096145,
+        "share_any_trope": 0.5,
+        "share_by_trope": {
+          "em_dash": 0.45,
+          "not_x_but_y": 0.0,
+          "colon_reveal": 0.0,
+          "stock_phrase": 0.0,
+          "rule_of_three_adjectives": 0.0,
+          "rhetorical_hook": 0.0,
+          "emoji": 0.125,
+          "hashtag_pile": 0.0,
+          "heres_the": 0.0
+        },
+        "format_ok": 1.0,
+        "faithful_mean": 0.9625,
+        "faithful_ge_0.8": 0.975,
+        "mean_words": 28.075,
+        "detector_failures": 0,
+        "judge_failures": 0
+      }
+    }
+  }
+}

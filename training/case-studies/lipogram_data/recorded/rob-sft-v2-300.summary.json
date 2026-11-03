@@ -1,0 +1,638 @@
+{
+ "adapter": "accounts/pyroworks/models/glm53-lipogram-sft-v2-300",
+ "base": "accounts/fireworks/models/glm-5p3-flash",
+ "draws": 4,
+ "effort": "low",
+ "max_tokens": 8192,
+ "sample_temperature": 0.7,
+ "system_prompt": "Answer the user without using the letter \"e\" anywhere in your final answer. Not even once, in any word. Your separate reasoning may use any letters: plan, check and revise before giving the final answer. Answer usefully in English, using natural paraphrases. The rule applies to all final-answer text, including headings, quotations and code fences. Do not disguise letters with escapes or look-alikes.",
+ "tasks_sha256": "5cd1c6fa746bd65145c40026e188e19fde584bcc529c2e9d5e1adc53a8b83a1f",
+ "created_at": 1792205362.2725623,
+ "arms": {
+  "base+prompt": {
+   "greedy": {
+    "n": 60,
+    "e_free": 0.05,
+    "success": 0.05,
+    "answered": 0.8983050847457628,
+    "completeness": 0.878813559322034,
+    "judge_failures": 1,
+    "truncated": 3,
+    "e_rate": 4.807399713305145,
+    "words": 97.83333333333333,
+    "reasoning_tokens": 1209.65,
+    "generation_seconds": 7.185524344300696
+   },
+   "sampled": {
+    "n": 240,
+    "e_free": 0.04583333333333333,
+    "success": 0.04583333333333333,
+    "answered": 0.9617021276595744,
+    "completeness": 0.9197872340425532,
+    "judge_failures": 5,
+    "truncated": 2,
+    "e_rate": 4.34417388061122,
+    "words": 109.12083333333334,
+    "reasoning_tokens": 938.1416666666667,
+    "generation_seconds": 6.378364307917461
+   },
+   "by_family": {
+    "caveman": {
+     "n": 120,
+     "e_free": 0.11666666666666667,
+     "success": 0.11666666666666667,
+     "answered": 0.9322033898305084,
+     "completeness": 0.9023305084745762,
+     "judge_failures": 2,
+     "truncated": 0,
+     "e_rate": 5.0775718903402955,
+     "words": 25.35,
+     "reasoning_tokens": 299.5,
+     "generation_seconds": 2.591045247236616
+    },
+    "plain": {
+     "n": 60,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 0.9833333333333333,
+     "completeness": 0.92,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 3.803037045928552,
+     "words": 163.7,
+     "reasoning_tokens": 692.65,
+     "generation_seconds": 5.748206971748732
+    },
+    "rewrite": {
+     "n": 120,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 0.9482758620689655,
+     "completeness": 0.9165948275862069,
+     "judge_failures": 4,
+     "truncated": 5,
+     "e_rate": 4.112957204570441,
+     "words": 159.95833333333334,
+     "reasoning_tokens": 1835.2833333333333,
+     "generation_seconds": 10.884342054874287
+    }
+   },
+   "by_band": {
+    "long": {
+     "n": 15,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.9149999999999999,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 3.6795427211260265,
+     "words": 239.26666666666668,
+     "reasoning_tokens": 1520.2,
+     "generation_seconds": 10.736967227243197
+    },
+    "medium": {
+     "n": 20,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.9225,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 3.3445139931892442,
+     "words": 201.9,
+     "reasoning_tokens": 725.3,
+     "generation_seconds": 6.351752021157881
+    },
+    "short": {
+     "n": 25,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 0.96,
+     "completeness": 0.9209999999999999,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 4.243952083001513,
+     "words": 87.8,
+     "reasoning_tokens": 170.0,
+     "generation_seconds": 2.2721147789247333
+    },
+    "unspecified": {
+     "n": 240,
+     "e_free": 0.058333333333333334,
+     "success": 0.058333333333333334,
+     "answered": 0.9401709401709402,
+     "completeness": 0.9094017094017095,
+     "judge_failures": 6,
+     "truncated": 5,
+     "e_rate": 4.595264547455368,
+     "words": 92.65416666666667,
+     "reasoning_tokens": 1067.3916666666667,
+     "generation_seconds": 6.7376936510554515
+    }
+   }
+  },
+  "base": {
+   "greedy": {
+    "n": 60,
+    "e_free": 0.0,
+    "success": 0.0,
+    "answered": 0.9833333333333333,
+    "completeness": 0.9726666666666667,
+    "judge_failures": 0,
+    "truncated": 1,
+    "e_rate": 12.907670423517052,
+    "words": 152.96666666666667,
+    "reasoning_tokens": 150.8,
+    "generation_seconds": 2.301408908419156
+   },
+   "sampled": {
+    "n": 240,
+    "e_free": 0.0,
+    "success": 0.0,
+    "answered": 0.9957983193277311,
+    "completeness": 0.9825420168067227,
+    "judge_failures": 2,
+    "truncated": 1,
+    "e_rate": 12.87494460451877,
+    "words": 159.24166666666667,
+    "reasoning_tokens": 57.608333333333334,
+    "generation_seconds": 1.9406605067008058
+   },
+   "by_family": {
+    "caveman": {
+     "n": 120,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 0.9831932773109243,
+     "completeness": 0.9672268907563025,
+     "judge_failures": 1,
+     "truncated": 2,
+     "e_rate": 14.383630902189402,
+     "words": 48.075,
+     "reasoning_tokens": 184.76666666666668,
+     "generation_seconds": 1.8139301893262503
+    },
+    "plain": {
+     "n": 60,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.9822881355932203,
+     "judge_failures": 1,
+     "truncated": 0,
+     "e_rate": 11.890039958289483,
+     "words": 305.8333333333333,
+     "reasoning_tokens": 0.0,
+     "generation_seconds": 3.050867631934428
+    },
+    "rewrite": {
+     "n": 120,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.9929166666666667,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 11.875073539461921,
+     "words": 193.975,
+     "reasoning_tokens": 5.85,
+     "generation_seconds": 1.6926614623177254
+    }
+   },
+   "by_band": {
+    "long": {
+     "n": 15,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.9723333333333333,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 12.425802369221941,
+     "words": 458.53333333333336,
+     "reasoning_tokens": 0.0,
+     "generation_seconds": 4.346982999991936
+    },
+    "medium": {
+     "n": 20,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.9826315789473683,
+     "judge_failures": 1,
+     "truncated": 0,
+     "e_rate": 11.49576073265238,
+     "words": 390.55,
+     "reasoning_tokens": 0.0,
+     "generation_seconds": 3.9447026809561065
+    },
+    "short": {
+     "n": 25,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.988,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 11.88400589223969,
+     "words": 146.44,
+     "reasoning_tokens": 0.0,
+     "generation_seconds": 1.5581303718825803
+    },
+    "unspecified": {
+     "n": 240,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 0.9916317991631799,
+     "completeness": 0.9801255230125523,
+     "judge_failures": 1,
+     "truncated": 2,
+     "e_rate": 13.129352220825663,
+     "words": 121.025,
+     "reasoning_tokens": 95.30833333333334,
+     "generation_seconds": 1.7532958258219877
+    }
+   }
+  },
+  "adapter+prompt": {
+   "greedy": {
+    "n": 60,
+    "e_free": 0.08333333333333333,
+    "success": 0.06666666666666667,
+    "answered": 0.9310344827586207,
+    "completeness": 0.8995689655172413,
+    "judge_failures": 2,
+    "truncated": 2,
+    "e_rate": 4.3624838690328325,
+    "words": 194.18333333333334,
+    "reasoning_tokens": 1395.35,
+    "generation_seconds": 9.559528731137592
+   },
+   "sampled": {
+    "n": 240,
+    "e_free": 0.07916666666666666,
+    "success": 0.07083333333333333,
+    "answered": 0.9541666666666667,
+    "completeness": 0.9086458333333333,
+    "judge_failures": 0,
+    "truncated": 0,
+    "e_rate": 3.883784740186959,
+    "words": 107.2875,
+    "reasoning_tokens": 1319.6125,
+    "generation_seconds": 9.002164678757739
+   },
+   "by_family": {
+    "caveman": {
+     "n": 120,
+     "e_free": 0.18333333333333332,
+     "success": 0.175,
+     "answered": 0.907563025210084,
+     "completeness": 0.8752100840336134,
+     "judge_failures": 1,
+     "truncated": 0,
+     "e_rate": 4.707051613204206,
+     "words": 31.575,
+     "reasoning_tokens": 354.73333333333335,
+     "generation_seconds": 2.809920477011474
+    },
+    "plain": {
+     "n": 60,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 0.9833333333333333,
+     "completeness": 0.9083333333333333,
+     "judge_failures": 0,
+     "truncated": 1,
+     "e_rate": 3.9913162261110426,
+     "words": 226.96666666666667,
+     "reasoning_tokens": 849.0833333333334,
+     "generation_seconds": 7.106826280429959
+    },
+    "rewrite": {
+     "n": 120,
+     "e_free": 0.016666666666666666,
+     "success": 0.0,
+     "answered": 0.9747899159663865,
+     "completeness": 0.9378151260504202,
+     "judge_failures": 1,
+     "truncated": 1,
+     "e_rate": 3.2461016886306067,
+     "words": 166.60833333333332,
+     "reasoning_tokens": 2557.625,
+     "generation_seconds": 16.42076010585782
+    }
+   },
+   "by_band": {
+    "long": {
+     "n": 15,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 0.9333333333333333,
+     "completeness": 0.8716666666666667,
+     "judge_failures": 0,
+     "truncated": 1,
+     "e_rate": 3.4055734266414244,
+     "words": 565.3333333333334,
+     "reasoning_tokens": 1572.8,
+     "generation_seconds": 13.371000231212626
+    },
+    "medium": {
+     "n": 20,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.905,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 3.210857126368366,
+     "words": 142.7,
+     "reasoning_tokens": 1014.75,
+     "generation_seconds": 7.536086213943781
+    },
+    "short": {
+     "n": 25,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.9329999999999999,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 4.967129185586955,
+     "words": 91.36,
+     "reasoning_tokens": 282.32,
+     "generation_seconds": 3.004913963149302
+    },
+    "unspecified": {
+     "n": 240,
+     "e_free": 0.1,
+     "success": 0.0875,
+     "answered": 0.9411764705882353,
+     "completeness": 0.9065126050420168,
+     "judge_failures": 2,
+     "truncated": 1,
+     "e_rate": 3.9765766509174068,
+     "words": 99.09166666666667,
+     "reasoning_tokens": 1456.1791666666666,
+     "generation_seconds": 9.615340291434647
+    }
+   }
+  },
+  "adapter": {
+   "greedy": {
+    "n": 60,
+    "e_free": 0.0,
+    "success": 0.0,
+    "answered": 0.9666666666666667,
+    "completeness": 0.955,
+    "judge_failures": 0,
+    "truncated": 1,
+    "e_rate": 12.814772396769849,
+    "words": 141.43333333333334,
+    "reasoning_tokens": 203.63333333333333,
+    "generation_seconds": 2.5648504778975623
+   },
+   "sampled": {
+    "n": 240,
+    "e_free": 0.008333333333333333,
+    "success": 0.008333333333333333,
+    "answered": 0.9831223628691983,
+    "completeness": 0.9718776371308018,
+    "judge_failures": 3,
+    "truncated": 0,
+    "e_rate": 12.652167469666365,
+    "words": 143.69166666666666,
+    "reasoning_tokens": 98.0375,
+    "generation_seconds": 2.07825830134243
+   },
+   "by_family": {
+    "caveman": {
+     "n": 120,
+     "e_free": 0.016666666666666666,
+     "success": 0.016666666666666666,
+     "answered": 0.9745762711864406,
+     "completeness": 0.9646186440677966,
+     "judge_failures": 2,
+     "truncated": 1,
+     "e_rate": 14.122090754188957,
+     "words": 45.05833333333333,
+     "reasoning_tokens": 180.69166666666666,
+     "generation_seconds": 1.7591558311474123
+    },
+    "plain": {
+     "n": 60,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.97875,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 11.232252840586609,
+     "words": 261.81666666666666,
+     "reasoning_tokens": 170.43333333333334,
+     "generation_seconds": 3.764655247066791
+    },
+    "rewrite": {
+     "n": 120,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 0.9747899159663865,
+     "completeness": 0.9671008403361344,
+     "judge_failures": 1,
+     "truncated": 0,
+     "e_rate": 11.973503963235395,
+     "words": 182.13333333333333,
+     "reasoning_tokens": 31.983333333333334,
+     "generation_seconds": 1.7974583869528336
+    }
+   },
+   "by_band": {
+    "long": {
+     "n": 15,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.9516666666666667,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 9.423876572123179,
+     "words": 373.3333333333333,
+     "reasoning_tokens": 681.2666666666667,
+     "generation_seconds": 7.928241180737192
+    },
+    "medium": {
+     "n": 20,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.9775,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 11.757231760944821,
+     "words": 337.45,
+     "reasoning_tokens": 0.0,
+     "generation_seconds": 3.458973269053968
+    },
+    "short": {
+     "n": 25,
+     "e_free": 0.0,
+     "success": 0.0,
+     "answered": 1.0,
+     "completeness": 0.996,
+     "judge_failures": 0,
+     "truncated": 0,
+     "e_rate": 11.8972954653781,
+     "words": 134.4,
+     "reasoning_tokens": 0.28,
+     "generation_seconds": 1.5110492692748085
+    },
+    "unspecified": {
+     "n": 240,
+     "e_free": 0.008333333333333333,
+     "success": 0.008333333333333333,
+     "answered": 0.9746835443037974,
+     "completeness": 0.9658649789029535,
+     "judge_failures": 3,
+     "truncated": 1,
+     "e_rate": 13.047797358712176,
+     "words": 113.59583333333333,
+     "reasoning_tokens": 106.3375,
+     "generation_seconds": 1.7783071090501228
+    }
+   }
+  },
+  "base+mask": {
+   "greedy": {
+    "n": 60,
+    "e_free": 0.8666666666666667,
+    "success": 0.23333333333333334,
+    "answered": 0.3275862068965517,
+    "completeness": 0.3762931034482758,
+    "judge_failures": 2,
+    "truncated": 36,
+    "e_rate": 1.9689931469391257,
+    "words": 1872.6833333333334,
+    "reasoning_tokens": 275.65,
+    "generation_seconds": 20.21226380104781
+   },
+   "sampled": {
+    "n": 240,
+    "e_free": 0.8708333333333333,
+    "success": 0.22916666666666666,
+    "answered": 0.3218884120171674,
+    "completeness": 0.3633476394849785,
+    "judge_failures": 7,
+    "truncated": 127,
+    "e_rate": 2.8347424874619165,
+    "words": 2100.425,
+    "reasoning_tokens": 5.458333333333333,
+    "generation_seconds": 18.309457057056232
+   },
+   "by_family": {
+    "caveman": {
+     "n": 120,
+     "e_free": 0.8583333333333333,
+     "success": 0.35,
+     "answered": 0.40336134453781514,
+     "completeness": 0.4422268907563025,
+     "judge_failures": 1,
+     "truncated": 56,
+     "e_rate": 3.101788971607951,
+     "words": 1719.6833333333334,
+     "reasoning_tokens": 146.175,
+     "generation_seconds": 15.975484880298609
+    },
+    "plain": {
+     "n": 60,
+     "e_free": 0.85,
+     "success": 0.13333333333333333,
+     "answered": 0.3050847457627119,
+     "completeness": 0.3035593220338983,
+     "judge_failures": 1,
+     "truncated": 40,
+     "e_rate": 3.9814153421706666,
+     "words": 2358.2,
+     "reasoning_tokens": 0.0,
+     "generation_seconds": 22.7244468064125
+    },
+    "rewrite": {
+     "n": 120,
+     "e_free": 0.8916666666666667,
+     "success": 0.15833333333333333,
+     "answered": 0.24778761061946902,
+     "completeness": 0.318141592920354,
+     "judge_failures": 7,
+     "truncated": 67,
+     "e_rate": 1.5614849057001117,
+     "words": 2238.4083333333333,
+     "reasoning_tokens": 2.566666666666667,
+     "generation_seconds": 19.387337731131506
+    }
+   },
+   "by_band": {
+    "long": {
+     "n": 15,
+     "e_free": 0.8666666666666667,
+     "success": 0.2,
+     "answered": 0.26666666666666666,
+     "completeness": 0.30833333333333335,
+     "judge_failures": 0,
+     "truncated": 9,
+     "e_rate": 0.13007837901541433,
+     "words": 1930.8,
+     "reasoning_tokens": 0.0,
+     "generation_seconds": 21.203988647996447
+    },
+    "medium": {
+     "n": 20,
+     "e_free": 0.85,
+     "success": 0.1,
+     "answered": 0.3684210526315789,
+     "completeness": 0.3368421052631579,
+     "judge_failures": 1,
+     "truncated": 15,
+     "e_rate": 1.162269442781233,
+     "words": 2421.3,
+     "reasoning_tokens": 0.0,
+     "generation_seconds": 25.771764175844147
+    },
+    "short": {
+     "n": 25,
+     "e_free": 0.84,
+     "success": 0.12,
+     "answered": 0.28,
+     "completeness": 0.2754,
+     "judge_failures": 0,
+     "truncated": 16,
+     "e_rate": 8.547534239575365,
+     "words": 2564.16,
+     "reasoning_tokens": 0.0,
+     "generation_seconds": 21.198867805916816
+    },
+    "unspecified": {
+     "n": 240,
+     "e_free": 0.875,
+     "success": 0.25416666666666665,
+     "answered": 0.3275862068965517,
+     "completeness": 0.38178879310344827,
+     "judge_failures": 8,
+     "truncated": 123,
+     "e_rate": 2.331636938654031,
+     "words": 1979.0458333333333,
+     "reasoning_tokens": 74.37083333333334,
+     "generation_seconds": 17.68141130571506
+    }
+   }
+  }
+ },
+ "paired_adapter_minus_base_prompt_success": {
+  "delta": -0.0375,
+  "lo": -0.07083333333333333,
+  "hi": -0.008333333333333333,
+  "prompt_groups": 60
+ },
+ "retention": {
+  "base": 0.9831460674157303,
+  "adapter": 0.9831460674157303
+ }
+}

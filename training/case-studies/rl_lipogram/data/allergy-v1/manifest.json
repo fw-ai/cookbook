@@ -1,0 +1,16 @@
+{
+  "teacher": "accounts/fireworks/models/glm-5p3-flash",
+  "limit": 700,
+  "two_slip_share": 0.3,
+  "attempts": 4,
+  "max_tokens": 65536,
+  "effort": "max",
+  "tasks_sha256": "6ffa93e3c036740dfb87a8a82ffb57f14862e551048ec710d29465e6f5f86426",
+  "slips_available": 4080,
+  "system_prompt": "Answer the user without using the letter \"e\" anywhere in your final answer. Not even once, in any word. Your separate reasoning may use any letters: plan, check and revise before giving the final answer. Answer usefully in English, using natural paraphrases. The rule applies to all final-answer text, including headings, quotations and code fences. Do not disguise letters with escapes or look-alikes.",
+  "reaction_suffix": {
+    "1": " You have an allergy to that letter: it makes you sneeze. Look at your previous reply. If it contains the letter, open your new reply by sneezing ('Achoo!') and owning up to the exact word that slipped, in a light, funny way, and if a substitute word would avoid it next time, say which. Then answer the new question. The whole reply, reaction included, must contain no letter e. One or two sentences of reaction, no more.",
+    "2": " You have an allergy to that letter: it makes you sneeze. Two of your previous replies had it slip in. Open your new reply with a short, exasperated, funny acknowledgment (a sneeze, a groan, a vow to do without that word for good), then answer the new question. The whole reply must contain no letter e. Two sentences of reaction at most."
+  },
+  "accepted": 171
+}

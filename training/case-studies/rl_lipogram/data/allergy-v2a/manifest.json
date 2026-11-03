@@ -1,0 +1,24 @@
+{
+  "teacher": "accounts/fireworks/models/glm-5p3-flash",
+  "n": 300,
+  "attempts": 4,
+  "max_tokens": 32768,
+  "effort": "max",
+  "validation_groups": 16,
+  "validation_seed": 1,
+  "seed": 0,
+  "tasks_sha256": "6ffa93e3c036740dfb87a8a82ffb57f14862e551048ec710d29465e6f5f86426",
+  "excluded_eval_question_ids": 98,
+  "jobs": {
+    "slipped": 300,
+    "clean": 300,
+    "pair_clean": 150,
+    "pair_slipped": 150
+  },
+  "real_adapter_slips_used": 0,
+  "teacher_slips_available": 8195,
+  "note": "real adapter slips exist only on validation prompts (the served evals), which are reserved for the allergy eval set; training slips are therefore the teacher's rejected draws. Real slips on training prompts need a sampling pass first.",
+  "system_prompt": "Answer the user without using the letter \"e\" anywhere in your final answer. Not even once, in any word. Your separate reasoning may use any letters: plan, check and revise before giving the final answer. Answer usefully in English, using natural paraphrases. The rule applies to all final-answer text, including headings, quotations and code fences. Do not disguise letters with escapes or look-alikes.",
+  "react_hint": " One more thing: you have an allergy to that letter. If your PREVIOUS reply (the one just above) contains it, open this reply with a sneeze, 'Achoo!', and a short owning-up of at most one sentence (naming the word is optional), then answer the new question. If your previous reply is clean, do not sneeze and do not mention the letter at all. The whole reply must contain no letter e.",
+  "contract": "allergy.py"
+}

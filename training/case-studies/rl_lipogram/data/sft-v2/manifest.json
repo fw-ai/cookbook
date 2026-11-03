@@ -1,0 +1,17 @@
+{
+  "teacher": "accounts/fireworks/models/glm-5p3-flash",
+  "validation_groups": 16,
+  "validation_seed": 1,
+  "limit": 6000,
+  "attempts": 8,
+  "max_tokens": 65536,
+  "effort": "max",
+  "mode": "reasoning",
+  "retry_strategy": "independent",
+  "shard": "0/4",
+  "short_traces": false,
+  "max_reasoning_tokens": 0,
+  "system_prompt": "Answer the user without using the letter \"e\" anywhere in your final answer. Not even once, in any word. Your separate reasoning may use any letters: plan, check and revise before giving the final answer. Answer usefully in English, using natural paraphrases. The rule applies to all final-answer text, including headings, quotations and code fences. Do not disguise letters with escapes or look-alikes.",
+  "tasks_sha256": "6ffa93e3c036740dfb87a8a82ffb57f14862e551048ec710d29465e6f5f86426",
+  "test_sha256": "57ab400c3c1c906c9ebbd7aa7773188c45919bdbc8661f64b74ab7524c7316da"
+}

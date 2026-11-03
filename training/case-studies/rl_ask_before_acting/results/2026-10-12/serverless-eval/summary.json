@@ -1,0 +1,28 @@
+{
+  "tasks": 16,
+  "episodes_per_task": 4,
+  "temperature": 1.0,
+  "max_turns": 4,
+  "summary": {
+    "base": {
+      "model": "accounts/fireworks/models/glm-5p3-flash",
+      "episodes": 64,
+      "episode_correct_rate": 0.84375,
+      "task_all_correct_rate": 0.5,
+      "task_any_correct_rate": 1.0,
+      "mean_questions": 1,
+      "mean_unnecessary": 0,
+      "no_tool_call_rate": 0.03125
+    },
+    "adapter": {
+      "model": "accounts/pyroworks/models/glm53-ask-before-acting",
+      "episodes": 64,
+      "episode_correct_rate": 0.890625,
+      "task_all_correct_rate": 0.625,
+      "task_any_correct_rate": 1.0,
+      "mean_questions": 0.96875,
+      "mean_unnecessary": 0.015625,
+      "no_tool_call_rate": 0.0
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+ "sources": [
+  "data/sft-v2",
+  "data/sft-v2-shard1",
+  "data/sft-v2-shard2",
+  "data/sft-v2-shard3"
+ ],
+ "recipe": [
+  "6ffa93e3c036740dfb87a8a82ffb57f14862e551048ec710d29465e6f5f86426",
+  16,
+  1,
+  "max",
+  false,
+  0,
+  "reasoning"
+ ]
+}

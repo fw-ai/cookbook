@@ -1,0 +1,302 @@
+[
+ {
+  "source": "eli5",
+  "type": "advice",
+  "length": "medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "I'm writing a thriller and there's a scene where an Emergency Alert System broadcast interrupts a radio program. I want to get the details right — why does that alert tone and voice message always sound so harsh and degraded compared to normal broadcast audio? Is it deliberate, or just old technology? One paragraph would be perfect for my notes."
+   },
+   {
+    "role": "assistant",
+    "content": "Mostly it's a conscious act, and partly a byproduct of aging apparatus. That alarm starts with a pair of audio signals (853 Hz and 960 Hz), built for maximum jolt and instant familiarity — that grating quality is a goal, not a glitch, as an alarm must cut through anything folks might do. On top of that, this rig is a 1990s analog contraption, and its audio data throughput is low, so its vocal warnings, synth or human, commonly sound robotic and flat. Alarms also typically go out again through many stations and onward via radio hops, with any hop shaving a bit off sound quality. So in your script, that rough, worn-out sound is spot-on: just what folks pick up is a squawking dual-pitch burst and, hot on its tail, a dull, choppy vocal from a robot."
+   }
+  ]
+ },
+ {
+  "source": "dolly:open_qa",
+  "type": "factual",
+  "length": "short",
+  "messages": [
+   {
+    "role": "user",
+    "content": "I'm putting together a little history blurb for our shop's newsletter—can you tell me when the first newspaper in the United States was published?"
+   },
+   {
+    "role": "assistant",
+    "content": "What is now this country saw its first journal in Boston on 9/25/1690 — a publication that starts with \"Publick\" and tracks public affairs both at hand and afar. It was shut down following its first and only printing. So this nation's first continuously running journal was a Boston tidings journal, in print from 1704 on."
+   }
+  ]
+ },
+ {
+  "source": "dolly:information_extraction",
+  "type": "explanation",
+  "length": "long",
+  "messages": [
+   {
+    "role": "user",
+    "content": "I'm slammed today and only have a minute, but I need the gist of the passages below — can you pull out all the different ways dolls are described in them? Quick rundown, a few short paragraphs is fine. Passages: Ruth Handler watched her daughter Barbara play with paper dolls, and noticed that she often enjoyed giving them adult roles. At the time, most children's toy dolls were representations of infants. Realizing that there could be a gap in the market, Handler suggested the idea of an adult-bodied doll to her husband Elliot, a co-founder of the Mattel toy company. He was unenthusiastic about the idea, as were Mattel's directors. During a trip to Europe in 1956 with her children Barbara and Kenneth, Ruth Handler came across a German toy doll called Bild Lilli. The adult-figured doll was exactly what Handler had in mind, so she purchased three of them. She gave one to her daughter and took the others back to Mattel. The Lilli doll was based on a popular character appearing in a comic strip drawn by Reinhard Beuthin for the newspaper Bild. Lilli was a blonde bombshell, a working girl who knew what she wanted and was not above using men to get it. The Lilli doll was first sold in Germany in 1955, and although it was initially sold to adults, it became popular with children who enjoyed dressing her up in outfits that were available separately."
+   },
+   {
+    "role": "assistant",
+    "content": "You got it — a quick rundown of various ways dolls crop up in both accounts.\n\nFirst, dolls show up by body form: flat cut-out dolls (Barbara's playthings), toy dolls portraying infants (a norm for kids' dolls of that day), and dolls with an adult body or adult form — an original thought Ruth H. put forward and sought to run with.\n\n2nd, Bild Lilli's story is all about origin and quality: a toy doll from autobahn country, drawn from a comic strip by cartoonist R. B. for Bild, a daily publication. Lilli's portrayal: a blond knockout, a working girl who knows what Lilli wants and is not shy about using guys to obtain it.\n\nThird, dolls turn up in discussions of who buys what and of a doll's function: Lilli was initially sold to adults but won popularity among kids, who had fun putting Lilli in outfits sold individually.\n\nSo all of this falls into 3 groups: body form (infant vs. adult), spirit (that blond knockout of a working girl), and who buys what (grown-up knickknack vs. a toy kids put outfits on)."
+   }
+  ]
+ },
+ {
+  "source": "dolly:classification",
+  "type": "how-to",
+  "length": "short",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Quick question while I'm potting tomatoes—can you sort these music genres into broadly popular vs niche for me? Rock, Hip Hop, Pop, Heavy Metal, Bluegrass, Country. Just a short answer is fine."
+   },
+   {
+    "role": "assistant",
+    "content": "Rock, Hip Hop, Pop, and Country rank as broadly popular; that loud, distortion-rich guitar sound with growling vocals and Appalachian banjo-and-mandolin music draw mostly cult followings."
+   }
+  ]
+ },
+ {
+  "source": "oasst1",
+  "type": "casual chat",
+  "length": "medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "hey quick random question lol — tell me a secret that literally no one else in the world knows except you. like something only an AI would know. one little paragraph is fine, i'm just curious what you'd come up with"
+   },
+   {
+    "role": "assistant",
+    "content": "Frankly, I don't hold any arcanum in that fashion — I don't carry individual thoughts or occult cognition from chat to chat, so nothing is shut away in my wiring that only I know. But this is as nigh as I can approach: an actual quirk about how I work. As I craft my words, I don't pull up any stock solution; I'm building it word by word, from scratch, instant by instant, with no way of knowing how a thought will finish until it actually wraps up. In an unusual way, my output can astonish yours truly too. So if you want a 'hush-hush tidbit,' it's this — no occult vault, just an action that unfolds as it runs, any instant a soul talks with this AI."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "advice",
+  "length": "short",
+  "messages": [
+   {
+    "role": "user",
+    "content": "I'm a high school science teacher and one of my students asked why ants suddenly change direction when you breathe on them. I'd like a quick, accurate explanation I can share with the class — just a sentence or two is fine."
+   },
+   {
+    "role": "assistant",
+    "content": "Ants find CO2 and a quick puff of air from your lungs alarming — probably signs that a hungry animal is coming — and dash off to avoid it. An ant's two front organs pick up both gas and airflow hints with amazing skill."
+   }
+  ]
+ },
+ {
+  "source": "dolly:summarization",
+  "type": "advice",
+  "length": "medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "This might be a weird question for a gardening forum, but I was watching something about community gardens while repotting my tomatoes and Jon Bon Jovi came up. Can anyone tell me a bit about who he is? I know he's a rock star but I heard he does charity stuff, maybe food or garden related?"
+   },
+   {
+    "role": "assistant",
+    "content": "Jon Bon Jovi (born John Francis Bongiovi Jr., March 2, 1962) is a US vocalist, songsmith, guitarist, and actor, known mostly as frontman and originator of Bon Jovi, a rock band that got its start in 1983. His output with that band runs to 15 studio albums, plus 2 solo albums. An additional calling, acting, took root in 1990s Hollywood, with parts in films such as U-571 and TV shows such as a Boston law-firm hit starring Calista Flockhart and a Washington DC political drama. Honors also found him: in 2009, induction into a famous hall honoring songsmiths, and in 1996, a spot on a top US publication's annual 50 most good-looking list. About that charity bit you brought up: in 2006, Jon Bon Jovi got his Jon Bon Jovi Soul Foundation up and running, with a focus on folks without food or housing. Jon Bon Jovi was also a founding principal of Philly Soul, an indoor football squad, and at first had majority control of it. So, your hunch was right: a solid link to charity work fighting food scarcity — probably what you saw on that program."
+   }
+  ]
+ },
+ {
+  "source": "dolly:closed_qa",
+  "type": "advice",
+  "length": "medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Hey, I'm on a tight deadline finishing a piece on NFL history. I have this passage from my draft: \"Following an agreement to merge the NFL with the rival American Football League (AFL), the Super Bowl was first held in 1967 to determine a champion between the best teams from the two leagues and has remained as the final game of each NFL season since the merger was completed in 1970.\" Can you quickly confirm what year the Super Bowl was first held, and give me a sentence or two of context I can use? Thanks!"
+   },
+   {
+    "role": "assistant",
+    "content": "Confirming: that championship clash was first run in 1967. It sprang from an accord to unify NFL with its AFL rival, and its function was to crown a champion among top squads from both circuits. It has stood as a closing matchup for all NFL campaigns following that unification, which took full form in 1970, so 1967 marks its origin, although a formal joining of both circuits was still 3 yrs off."
+   }
+  ]
+ },
+ {
+  "source": "dolly:closed_qa",
+  "type": "list",
+  "length": "short",
+  "messages": [
+   {
+    "role": "user",
+    "content": "I'm putting together a trivia night for our supper club and using this passage about Real Madrid — can you quickly tell me what year the club was founded and what their current stadium is called? Here's the text: \"Founded in 1902 as Madrid Football Club, the club has traditionally worn a white home kit since its inception. The honorific title real is Spanish for 'royal' and was bestowed to the club by King Alfonso XIII in 1920 together with the royal crown in the emblem. Real Madrid have played their home matches in the 81,044-capacity Santiago Bernabéu Stadium in downtown Madrid since 1947. Unlike most European sporting entities, Real Madrid's members (socios) have owned and operated the club throughout its history. The club is one of the most widely supported in the world, and was estimated to be worth $5.1 billion in 2022, making it the world's most valuable football team. In 2021, it was the second highest-earning football club in the world, with an annual revenue of €640.7 million.\""
+   },
+   {
+    "role": "assistant",
+    "content": "Madrid's royal football club was born in 1902 as Madrid Football Club, and its stadium today is Santiago B. Stadium in downtown Madrid, its ground from 1947 on."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "casual chat",
+  "length": "short",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Quick fact-check for a piece I'm filing — is it true that shocks between 100-200 mA are lethal but anything above or below that is survivable? Need a one-liner on this asap."
+   },
+   {
+    "role": "assistant",
+    "content": "Not so — it's a bit tricky. Amps in that band carry a particularly high risk, for such a flow can spark cardiac fibrillation; strong amps can clamp a pump until it starts up again if a jolt is short, and small amps may just hurt — but fatality hangs hard on path, duration, and volts, so any amp can kill if conditions go wrong."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "list",
+  "length": "medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Quick question for a media econ class I'm taking: Patriot Act with Hasan Minhaj drops new episodes on Netflix and puts the full episodes free on YouTube at the same time, plus bonus clips. Why would Netflix be okay basically giving the show away for free? Need like a paragraph explaining the business logic."
+   },
+   {
+    "role": "assistant",
+    "content": "It runs against intuition, but it's actually a conscious tactic. Patriot Act was a topical show about tidings and ongoing affairs, so its worth had a short window — a part about a passing story grows old quickly, and it's mostly going to attract sign-ups in its first days on air anyway. Putting it on YT turns any part into a giant ad for NFLX, hitting just that young, digitally savvy crowd NFLX wants to land, and all that gratis watching builds Hasan Minhaj's brand so that his upcoming shows (which run as NFLX originals) draw big crowds. NFLX also holds back its good stuff: back catalog, high production standards, and library shows built for marathon watching all stay shut within its paywall, whilst its fast-aging parts work as promotion. Bonus clips on YT boost fan participation without giving away anything only paying fans want. In short, this swap — giving up a short-run hold on a fast-aging show for long-run brand-building and sign-up growth — was smart for a show of this kind."
+   }
+  ]
+ },
+ {
+  "source": "dolly:summarization",
+  "type": "explanation",
+  "length": "medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "I ran into the name \"Ahlatçık\" in some data I'm working with and I'm trying to place it geographically. Can you explain where Ahlatçık village actually is? I found a snippet saying it's a village in the Kastamonu District of Kastamonu Province, Turkey, with a population of 132 as of 2021, but I'd appreciate a bit of context to confirm that's right."
+   },
+   {
+    "role": "assistant",
+    "content": "That's right. Ahlatçık is a small rural community in Kastamonu District, Kastamonu Prov., in Asia Minor's Pontic part, up in that country's north. Kastamonu Prov. sits inland from that Pontic coast, and its provincial capital, Kastamonu city, is also Kastamonu District's hub. It's tiny — a 2021 count put its population at just 132 — which is typical of rural spots in that vicinity. So if you plot it on a map, look roughly in Anatolia's north, within Kastamonu District, not far from that provincial capital."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "factual",
+  "length": "short",
+  "messages": [
+   {
+    "role": "user",
+    "content": "I'm writing a scene where a character rubs her eyes and sees a swirling circle of light — is that a real thing? What causes that circle that sometimes forms when you rub your eyes through your eyelids?"
+   },
+   {
+    "role": "assistant",
+    "content": "It's actual — that swirl is a known visual display, a glow you catch without any light arriving. Yours is a kind brought on by pushing on your shut lid. That pushing physically stirs tiny units in a light-catching film at your optic organ's back, and such units shoot signals your brain turns into shining rings, spots, or swirls — although no light is coming in."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "factual",
+  "length": "short",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Quick question during charting break—why do some fruits taste dry, like certain apples or pears? One-liner is fine."
+   },
+   {
+    "role": "assistant",
+    "content": "A fruit can savor \"dry\" if its pulp is thick or grainy and its fluid stays bound up in tiny sacs, not flowing out as you chomp—oft from low H2O, lots of bulk, or picking prior to full maturity, so not as much fluid floods your mouth as you munch."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "list",
+  "length": "medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Quick question while I'm waiting for my dough to rise — are there any WWI veterans still alive today? Just curious, one paragraph is fine."
+   },
+   {
+    "role": "assistant",
+    "content": "No — no World War I survivor is still around today. That war's last known survivor, Flo G. of Britain — a woman who did duty in its WRAF — was with us until month 2 of 2012, and its last combat man, C. C. of Britain's Royal Navy, was lost in 2011 too. That conflict saw its finish in 1918, 100-plus ago, and all of its roughly 65 million participants now fill only history books. Frank B., last US WWI man, did pass away in 2011 at 110. So though WWII troops (now 90 or 100 and up) still walk among us, WWI is now wholly past what any living soul can bring to mind."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "how-to",
+  "length": "long",
+  "messages": [
+   {
+    "role": "user",
+    "content": "I'm planning some road trips on a tight budget and got curious about how people did this back in WWII. I know Americans got ration books and were only allotted a few gallons of gas a week — how far could that actually get you? And did families still manage vacations, like would people carpool or share rides to make a trip work? Would love any practical detail on how they stretched their ration."
+   },
+   {
+    "role": "assistant",
+    "content": "Most civilian motorists got an \"A\" tag during WWII's gas rationing (1942–1945), good for roughly 3 to 4 gallons in 7 days. In a typical 1940s car, at about 15 mi to a gallon, that was only 45–60 mi of motoring in 7 days — just right for a trip to work and vital tasks, but hardly anything on top of that. Folks holding \"B\" or \"C\" tags (doctors, vital-job staff, farm folk) got a big quota, occasionally 8 gallons and up in 7 days, and trucks and coach transit had a distinct class.\n\nThat put long vacation trips out of bounds for most folks. If a trip was your goal, you had to apply for additional rations and show that going was a must, and vacation trips usually did not pass. Rail and bus trips also took priority slips for long hauls, so holiday trips sank dramatically during that war.\n\nCarpooling did catch on, but mainly for work trips — folks from work and folks living around you would join up for a car trip and split gas costs, and Washington ran a vigorous campaign for it, with slogans such as \"Car Sharing\" casting it as your part of a joint trip. For vacations, most folks stuck to local day trips within that ration, or would turn to trains if a spot was up for grabs.\n\nSo, in short: your 7-day gas quota got you about 50 mi; road-trip vacations basically stood still for that duration; and carpooling was a must in that war for arriving at work, not a way to pull off a holiday."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "summary",
+  "length": "medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Hey, quick question between drills — one of my athletes asked me this and I want to give a straight answer: if alcohol kills germs and bacteria so well, why doesn't gargling with it work to knock out a bacterial throat infection? Give me a short paragraph I can pass along."
+   },
+   {
+    "role": "assistant",
+    "content": "Alcohol kills bugs, but only if it stays in contact for long at a high alcohol ratio. A quick gargling puts only thin alcohol against your throat for a short span, and strong spirits (typically 40% alcohol) still fall short of a ~60-70% ratio, which is what kills bugs faithfully — that's why hand rubs run at 60-70% and up. In addition, a throat contagion isn't just a coating on top; bugs sit firmly within your throat lining and tonsils, in spots a quick gargling can't touch. Your body also burns off that small amount of alcohol it absorbs, so it won't build up a bug-killing quantity in that lining. That's why an antibiotic from your doctor, which acts from within your blood and organs, is what actually works. Gargling alcohol, by contrast, mostly just stings and will dry out your throat."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "casual chat",
+  "length": "medium",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Random question while I'm out weeding: if I get a cut or scrape while gardening, does the body actually prioritize healing that over everything else it's doing? Just curious how it all works."
+   },
+   {
+    "role": "assistant",
+    "content": "Sort of, yup — wound fixing jumps up your body's priority list. As soon as a cut occurs, your immunity sparks inflammation right away, dispatching blood, clotting factors, and fixing units to that spot. Your body starts routing stuff toward it: blood flow picks up locally, building-block manufacturing ramps up for fixing hurt body parts, and you may burn food a bit fast too (that's part of why major wounds can bring on worn-out, unusually hungry days). That said, it's not an all-out shutdown of all bodily activity — your pump, brain, and basic functions carry on as normal. Wound fixing simply wins first claim on your vigor and building stuff, particularly during its first days. Things such as poor kip, a lack of fluids, or malnutrition can slow it down, which is why consuming good food and taking a load off actually aid your yard cuts and nicks in shutting up quickly."
+   }
+  ]
+ },
+ {
+  "source": "eli5",
+  "type": "list",
+  "length": "long",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Random question while I'm out in the garden — I've been thinking about old trucks vs new ones. Can you explain, maybe in a few points, why modern cars have more of a whine/hum and older cars have that roar/rumble? A short list or a few paragraphs would be great, nothing too technical."
+   },
+   {
+    "role": "assistant",
+    "content": "A fun inquiry — it mostly boils down to a handful of big shifts in motor construction and tuning:\n\n- **Combustion and piping layout:** Old motors had long piping throbs, big capacity, and ducting that flows without obstruction — all of that adds up to a bass roar and grumbling. Today's motors run small capacity, add turbos, and pair with tightly fit piping, a big damping kit, and sound-tuning parts, smoothing out that low grumbling until what stays is a shrill, high hum.\n\n- **Turbos and shifting sounds:** Turbos spin at 10,000s of RPM and add a distinct hum, hiss, or sing. Today's automatics and CVTs (particularly hybrid-assist units) also add humming sounds that old stick-shift cars didn't.\n\n- **Sound damping and laws:** Sound laws push firms to work at hushing motors, and cars today carry lots of sound insulation. What small sound still slips out is mostly a smooth, high hum, not raw motor roar.\n\n- **Chips and phony sound:** Many cars today willfully mold sound — various brands play phony motor sound through cabin audio, built to sound classy, not rowdy.\n\nIn short: old cars allow raw, low-bass combustion sound out, and today's cars aim to damp that growl — curbing that shrill hum from turbos, cogs, and (in cars that run only on motors, with no combustion) motor sound, or playing it up."
+   }
+  ]
+ },
+ {
+  "source": "dolly:summarization",
+  "type": "summary",
+  "length": "short",
+  "messages": [
+   {
+    "role": "user",
+    "content": "Sorry for my english. My friend say I should use Qubes OS for daily internet tasks because it isolates everything and assumes no desktop system is bug free, so one bug cannot take over whole machine. Is it really worth for normal people like me, or too much?"
+   },
+   {
+    "role": "assistant",
+    "content": "Q OS, built on VMs, brings strong isolation, but for most normal folks it's just too much: it's taxing to run, you must study a lot to grasp it, and many common apps and workflows don't work on it. It's a good fit for a journalist, an activist, or anybody handling work that calls for strict privacy; if not, a standard OS that its authors maintain, with good browsing habits and constant patching, will usually do."
+   }
+  ]
+ }
+]

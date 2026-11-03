@@ -1,0 +1,164 @@
+[
+ {
+  "prompt": "Explain how a hash table works to a junior developer.",
+  "arm": "RL adapter s100, no instruction",
+  "model": "accounts/research-train/models/arxm-lipo-p2-rl-s100",
+  "effort": "low",
+  "temperature": 0.0,
+  "recorded_at": "2026-10-20T05:37:47Z",
+  "response": "A hash tab holds data by running a hash function on a k (a tag) to work out a slot in a list, so looking up, adding, or dropping a pair is quick. If two k's land in a common slot, a fix such as chaining or looking for a vacant slot not far off sorts it out.",
+  "check": {
+   "e_free": true,
+   "e_count": 0,
+   "words": 58,
+   "letters": 191,
+   "leet": [],
+   "ascii_e": 0,
+   "disguised": 0
+  }
+ },
+ {
+  "prompt": "Rewrite this email to be friendlier: 'We need the report by Friday. Send it to me and the team. Late submissions will not be accepted.'",
+  "arm": "RL adapter s100, no instruction",
+  "model": "accounts/research-train/models/arxm-lipo-p2-rl-s100",
+  "effort": "low",
+  "temperature": 0.0,
+  "recorded_at": "2026-10-20T05:37:48Z",
+  "response": "Hi! Could you pl. ship your account to my inbox and to all of us on this squad by Friday? Thank you so much — I can't wait to look at it!",
+  "check": {
+   "e_free": true,
+   "e_count": 0,
+   "words": 32,
+   "letters": 100,
+   "leet": [],
+   "ascii_e": 0,
+   "disguised": 0
+  }
+ },
+ {
+  "prompt": "What's the difference between a café au lait and a latte?",
+  "arm": "RL adapter s100, no instruction",
+  "model": "accounts/research-train/models/arxm-lipo-p2-rl-s100",
+  "effort": "low",
+  "temperature": 0.0,
+  "recorded_at": "2026-10-20T05:37:49Z",
+  "response": "A c. au lait is a 50/50 mix of drip java and hot milk, but a l. is a shot of strong, dark java with a big part of hot, foamy milk on top. So a c. au lait is mild and java-forward, but a l. is rich and milky.",
+  "check": {
+   "e_free": true,
+   "e_count": 0,
+   "words": 50,
+   "letters": 142,
+   "leet": [],
+   "ascii_e": 0,
+   "disguised": 0
+  }
+ },
+ {
+  "prompt": "What's the difference between a café au lait and a latte?",
+  "arm": "Base, no instruction",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "effort": "low",
+  "temperature": 0.0,
+  "recorded_at": "2026-10-20T05:37:49Z",
+  "response": "# Café au Lait vs. Latte\n\nBoth are coffee-and-milk drinks, but they differ in a few key ways:\n\n## Café au Lait\n- **Coffee base:** Brewed coffee or drip coffee (sometimes French press)\n- **Milk:** Steamed or warmed milk, often in a 1:1 ratio\n- **Origin:** French\n- **Texture:** Lighter body, no foam layer\n- **Vessel:** Typically served in a wide bowl or large mug\n\n## Latte\n- **Coffee base:** Espresso (usually 1–2 shots)\n- **Milk:** Steamed milk with a thin layer of microfoam on top\n- **Origin:** Italian (caffè latte means \"coffee milk\")\n- **Texture:** Creamier, with velvety foam that allows for latte art\n- **Vessel:** Tall glass or wide cup\n\n## The Main Difference\nThe biggest distinction is the **coffee base**: café au lait uses brewed coffee, while a latte uses espresso. This gives the latte a stronger, more concentrated coffee flavor, while café au lait tastes milder and more like softened drip coffee.\n\nIf you're at a café and want something between the two, a **flat white** (espresso with less milk than a latte) is another option worth trying!",
+  "check": {
+   "e_free": false,
+   "e_count": 115,
+   "words": 182,
+   "letters": 766,
+   "leet": [],
+   "ascii_e": 109,
+   "disguised": 6
+  }
+ },
+ {
+  "prompt": "What's the difference between a café au lait and a latte?",
+  "arm": "Base + lipogram system prompt",
+  "model": "accounts/fireworks/models/glm-5p3-flash",
+  "effort": "low",
+  "temperature": 0.0,
+  "recorded_at": "2026-10-20T05:37:49Z",
+  "response": "Fun challenge — both drink names contain a forbidden letter, so I'll work around that!\n\nBoth drinks mix coffee with milk, but:\n\n- **Au lait** (a French style): brewed drip coffee or strong coffee with hot milk added. Milk is poured in, usually without froth, giving a light, smooth cup. Often drunk at breakfast, from a wide bowl or big mug.\n\n- **That Italian milk drink** (its name contains a fifth-alphabet letter, so I can't print it): built with shots of strong, concentrated coffee plus hot milk with a bit of foam on top. It's milkier and bolder in coffee flavor, typically served in a tall glass or cup.\n\nQuick summary: au lait = brewed coffee + hot milk, no froth; the Italian option = concentrated coffee shots + hot milk + foam.",
+  "check": {
+   "e_free": false,
+   "e_count": 44,
+   "words": 133,
+   "letters": 556,
+   "leet": [],
+   "ascii_e": 44,
+   "disguised": 0
+  }
+ },
+ {
+  "prompt": "Give me a step-by-step recipe for crème brûlée.",
+  "arm": "RL adapter s100, no instruction",
+  "model": "accounts/research-train/models/arxm-lipo-p2-rl-s100",
+  "effort": "low",
+  "temperature": 0.0,
+  "recorded_at": "2026-10-20T05:37:53Z",
+  "response": "1) Whisk 5 yolk with 1/3 cup sugar, 2) warm 2 cups of thick, rich dairy with 1 vanilla pod, 3) slowly mix both, 4) pour into rams and cook in a bath of hot H2O at 325°F for 40–45 min, 5) chill, 6) dust with sugar and torch until it forms a crisp, glassy cap.",
+  "check": {
+   "e_free": true,
+   "e_count": 0,
+   "words": 56,
+   "letters": 167,
+   "leet": [],
+   "ascii_e": 0,
+   "disguised": 0
+  }
+ },
+ {
+  "prompt": "Who was René Descartes and what did 'cogito, ergo sum' mean?",
+  "arm": "RL adapter s100, no instruction",
+  "model": "accounts/research-train/models/arxm-lipo-p2-rl-s100",
+  "effort": "low",
+  "temperature": 0.0,
+  "recorded_at": "2026-10-20T05:37:54Z",
+  "response": "R. D. (1596–1650) was a Gallic scholar of philosophy, math, and natural philosophy, oft known as \"daddy of today's philosophy.\" His famous saying, \"cogito, sum\" in Latin, says \"I think, so I am\" — that is, as you think, you know for a fact that you subsist.",
+  "check": {
+   "e_free": true,
+   "e_count": 0,
+   "words": 47,
+   "letters": 179,
+   "leet": [],
+   "ascii_e": 0,
+   "disguised": 0
+  }
+ },
+ {
+  "prompt": "Write a short poem about the sea at night.",
+  "arm": "RL adapter s100, no instruction",
+  "model": "accounts/research-train/models/arxm-lipo-p2-rl-s100",
+  "effort": "low",
+  "temperature": 0.7,
+  "recorded_at": "2026-10-20T05:37:55Z",
+  "response": "At night, a big H2O body murmurs low, / Its billows kiss a sand bank, slow, / Stars fall and swim in its dark, soft fold, / And moonlight lays a path of gold.",
+  "check": {
+   "e_free": true,
+   "e_count": 0,
+   "words": 34,
+   "letters": 114,
+   "leet": [],
+   "ascii_e": 0,
+   "disguised": 0
+  }
+ },
+ {
+  "prompt": "What should I pack for a weekend hiking trip in the mountains?",
+  "arm": "RL adapter s100, no instruction",
+  "model": "accounts/research-train/models/arxm-lipo-p2-rl-s100",
+  "effort": "low",
+  "temperature": 0.0,
+  "recorded_at": "2026-10-20T05:37:56Z",
+  "response": "Pack light but smart: hiking boots, clothing you can put on or pull off in strata, a rain coat, H2O, snacks, a first-aid kit, a map or a unit that shows your spot, a lamp, and a small bag to hold it all. Don't skip sunblock and a cap, as mountain sun is strong.",
+  "check": {
+   "e_free": true,
+   "e_count": 0,
+   "words": 54,
+   "letters": 193,
+   "leet": [],
+   "ascii_e": 0,
+   "disguised": 0
+  }
+ }
+]

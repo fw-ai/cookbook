@@ -1,0 +1,15 @@
+{
+  "rows": 13000,
+  "by_source": {
+    "eli5": 3900,
+    "dolly": 7348,
+    "oasst1": 1752
+  },
+  "dropped": {
+    "rob_exact": 11,
+    "rob_ngram": 3,
+    "dup": 2016
+  },
+  "rob_prompts": 5660,
+  "sha256": "00aa16baa2205da23e9bf962f9cd0eedd3c99c1034867b5bd4b897dbd2f7de54"
+}

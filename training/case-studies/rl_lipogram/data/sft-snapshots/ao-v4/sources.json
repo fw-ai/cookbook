@@ -1,0 +1,17 @@
+{
+ "answer_only_by_source": {
+  "data/sft-v2-pilot-16k/sft_answer_only.jsonl": 1,
+  "data/sft-v2-shard1/sft_answer_only.jsonl": 1172,
+  "data/sft-v2-shard2/sft_answer_only.jsonl": 1171,
+  "data/sft-v2-shard3/sft_answer_only.jsonl": 1089,
+  "data/sft-v2-shard4/sft_answer_only.jsonl": 601,
+  "data/sft-v2-shard5/sft_answer_only.jsonl": 39,
+  "data/sft-v2-shard6/sft_answer_only.jsonl": 39,
+  "data/sft-v2-shard7/sft_answer_only.jsonl": 84,
+  "data/sft-v2-stalled/sft_answer_only.jsonl": 1,
+  "data/sft-v2/sft_answer_only.jsonl": 537,
+  "data/selfdistill-r1/sft_answer_only.jsonl": 40
+ },
+ "answer_only_unique": 4774,
+ "allergy_rows": 171
+}

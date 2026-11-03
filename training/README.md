@@ -84,6 +84,19 @@ Self-contained, runnable notebooks in [`case-studies/`](case-studies/) — each 
 
 **Setup.** Follow the install instructions below, using `uv pip install -e '.[eval]'` to include the SDK and Eval Protocol, and create a `.env` with `FIREWORKS_API_KEY` (`FIREWORKS_ACCOUNT_ID` for the deploy/RFT cells). A couple of case studies add extras, noted in their own READMEs. Train/deploy cells provision real GPU and cost money. Each folder has its own README with the specifics.
 
+## Open Weight Room
+
+[Open Weight Room case studies](case-studies/README.md) explore changes in model behavior through small adapters: concise answers, editing, output constraints, writing style, visual design, and clarification before acting. Each study includes recorded evidence and explains its evaluation limits. Training walkthroughs and recorded-results analyses are labeled separately.
+
+| Study | Focus | Entry point |
+| --- | --- | --- |
+| Caveman | Concision with factual checks | [SFT walkthrough](case-studies/sft_caveman/caveman_sft.ipynb) |
+| Humanizer | Preservation and restraint when editing | [SFT walkthrough](case-studies/sft_humanizer/humanizer_walkthrough.ipynb) |
+| E-vasion | Useful answers without the letter e | [SFT + GRPO study](case-studies/lipogram_data/lipogram_demo.ipynb) |
+| Anti-slop | Preference optimization and reward tradeoffs | [DPO walkthrough](case-studies/dpo_antislop/dpo_glm53_flash.ipynb) |
+| Taste | Visual preference versus functionality | [Recorded comparison](case-studies/ui_design/taste_walkthrough.ipynb) |
+| Ask Before Acting | Clarification in simulated tasks | [RL walkthrough](case-studies/rl_ask_before_acting/ask_before_acting_walkthrough.ipynb) |
+
 ## Getting started
 
 ```bash

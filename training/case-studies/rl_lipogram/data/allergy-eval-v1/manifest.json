@@ -1,0 +1,21 @@
+{
+  "items": 191,
+  "kinds": {
+    "clean": 40,
+    "ctl_no_prior": 10,
+    "ctl_older_slip": 10,
+    "ctl_trace_e": 10,
+    "ctl_user_e": 10,
+    "pair_clean": 40,
+    "pair_slipped": 40,
+    "slipped": 31
+  },
+  "validation_groups": 16,
+  "validation_seed": 1,
+  "seed": 0,
+  "tasks_sha256": "6ffa93e3c036740dfb87a8a82ffb57f14862e551048ec710d29465e6f5f86426",
+  "eval_sha256": "3ab8d715ec2097d6c211b076f8044ff06bc3b0dc1b5fedc854542095194e41f7",
+  "real_slips_available": 31,
+  "clean_available": 133,
+  "note": "prior answers are real adapter draws from served evals; follow-up questions from the validation split only"
+}

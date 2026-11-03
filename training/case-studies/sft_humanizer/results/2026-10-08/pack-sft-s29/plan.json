@@ -1,0 +1,13 @@
+{
+  "pack_sha256": "7ee6ca3e500cc268bdd1e277a765ee1554ff87b6e40ecdaf707d704956202f01",
+  "rows": 203,
+  "seed": 29,
+  "steps": 100,
+  "batch_size": 4,
+  "epochs": 1.97,
+  "learning_rate": 0.0001,
+  "lora_rank": 64,
+  "lora_alpha": 128,
+  "base_model": "accounts/fireworks/models/glm-5p3-flash",
+  "output_model_id": "glm53-humanizer-s29"
+}

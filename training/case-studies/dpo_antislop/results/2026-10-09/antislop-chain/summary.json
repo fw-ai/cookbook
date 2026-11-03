@@ -1,0 +1,135 @@
+{
+  "split": "test",
+  "samples_per_brief": 2,
+  "arms": {
+    "base": {
+      "model": "accounts/fireworks/models/glm-5p3-flash#accounts/pyroworks/deployments/glm53-flash-ml-mnnvl",
+      "variant": ""
+    },
+    "base_then_humanizer": {
+      "model": "accounts/fireworks/models/glm-5p3-flash#accounts/pyroworks/deployments/glm53-flash-ml-mnnvl",
+      "variant": "chain:accounts/pyroworks/models/glm53-humanizer-s29-05937f30#accounts/pyroworks/deployments/glm53-flash-ml-mnnvl"
+    },
+    "rl_s20_then_humanizer": {
+      "model": "accounts/pyroworks/models/glm53-antislop-rl#accounts/pyroworks/deployments/glm53-flash-ml-mnnvl",
+      "variant": "chain:accounts/pyroworks/models/glm53-humanizer-s29-05937f30#accounts/pyroworks/deployments/glm53-flash-ml-mnnvl"
+    },
+    "base_ban": {
+      "model": "accounts/fireworks/models/glm-5p3-flash#accounts/pyroworks/deployments/glm53-flash-ml-mnnvl",
+      "variant": "ban-tropes"
+    }
+  },
+  "detector_versions": [
+    "2026-10-07-base"
+  ],
+  "summary": {
+    "base": {
+      "tweet": {
+        "n": 40,
+        "detector_mean": 0.2956192275333884,
+        "detector_median": 0.0,
+        "detector_ge_0.5": 0.3,
+        "tropes_per_100w": 3.798881207798056,
+        "share_any_trope": 0.875,
+        "share_by_trope": {
+          "em_dash": 0.775,
+          "not_x_but_y": 0.0,
+          "colon_reveal": 0.0,
+          "stock_phrase": 0.0,
+          "rule_of_three_adjectives": 0.025,
+          "rhetorical_hook": 0.0,
+          "emoji": 0.375,
+          "hashtag_pile": 0.0,
+          "heres_the": 0.125
+        },
+        "format_ok": 0.575,
+        "faithful_mean": 0.9025,
+        "faithful_ge_0.8": 0.9,
+        "mean_words": 38.575,
+        "detector_failures": 0,
+        "judge_failures": 0
+      }
+    },
+    "base_then_humanizer": {
+      "tweet": {
+        "n": 40,
+        "detector_mean": 0.3805671999464856,
+        "detector_median": 0.0,
+        "detector_ge_0.5": 0.375,
+        "tropes_per_100w": 1.2859158147299623,
+        "share_any_trope": 0.35,
+        "share_by_trope": {
+          "em_dash": 0.1,
+          "not_x_but_y": 0.0,
+          "colon_reveal": 0.0,
+          "stock_phrase": 0.0,
+          "rule_of_three_adjectives": 0.0,
+          "rhetorical_hook": 0.0,
+          "emoji": 0.275,
+          "hashtag_pile": 0.0,
+          "heres_the": 0.05
+        },
+        "format_ok": 0.65,
+        "faithful_mean": 0.905,
+        "faithful_ge_0.8": 0.925,
+        "mean_words": 38.45,
+        "detector_failures": 0,
+        "judge_failures": 0
+      }
+    },
+    "rl_s20_then_humanizer": {
+      "tweet": {
+        "n": 40,
+        "detector_mean": 0.7783930945789561,
+        "detector_median": 0.973779582572582,
+        "detector_ge_0.5": 0.8,
+        "tropes_per_100w": 0.3472222222222222,
+        "share_any_trope": 0.075,
+        "share_by_trope": {
+          "em_dash": 0.075,
+          "not_x_but_y": 0.0,
+          "colon_reveal": 0.0,
+          "stock_phrase": 0.0,
+          "rule_of_three_adjectives": 0.0,
+          "rhetorical_hook": 0.0,
+          "emoji": 0.0,
+          "hashtag_pile": 0.0,
+          "heres_the": 0.0
+        },
+        "format_ok": 1.0,
+        "faithful_mean": 0.9725,
+        "faithful_ge_0.8": 0.975,
+        "mean_words": 22.35,
+        "detector_failures": 0,
+        "judge_failures": 0
+      }
+    },
+    "base_ban": {
+      "tweet": {
+        "n": 40,
+        "detector_mean": 0.2770754686644414,
+        "detector_median": 0.0,
+        "detector_ge_0.5": 0.3,
+        "tropes_per_100w": 0.0,
+        "share_any_trope": 0.0,
+        "share_by_trope": {
+          "em_dash": 0.0,
+          "not_x_but_y": 0.0,
+          "colon_reveal": 0.0,
+          "stock_phrase": 0.0,
+          "rule_of_three_adjectives": 0.0,
+          "rhetorical_hook": 0.0,
+          "emoji": 0.0,
+          "hashtag_pile": 0.0,
+          "heres_the": 0.0
+        },
+        "format_ok": 0.825,
+        "faithful_mean": 0.9435897435897436,
+        "faithful_ge_0.8": 0.9743589743589743,
+        "mean_words": 37.975,
+        "detector_failures": 0,
+        "judge_failures": 1
+      }
+    }
+  }
+}
