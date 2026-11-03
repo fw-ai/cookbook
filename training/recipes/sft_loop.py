@@ -1607,10 +1607,7 @@ def main(
                 data_consumed=cursor.value,
             )
             if cfg.output_model_id:
-                if cfg.serverless:
-                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model, checkpoint_name=cp_name)
-                else:
-                    ckpt.promote_latest(cfg.output_model_id, cfg.base_model)
+                ckpt.promote_latest(cfg.output_model_id, cfg.base_model, checkpoint_name=cp_name)
                 runner.write_output_model(
                     model_id=cfg.output_model_id,
                     checkpoint=cp_name,
