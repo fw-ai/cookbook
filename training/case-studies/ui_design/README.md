@@ -1,5 +1,11 @@
 # Taste
 
+## Get the data
+
+Download one archive: [taste-v1.zip](../bundles/taste-v1.zip). A full repository checkout already includes it. The first notebook cell verifies its SHA-256 checksum and restores the data to the paths used below. For command-line scripts, run `python ../common/study_data.py taste` from this folder first.
+
+The archive preserves separate training, development, test and recorded-result files. It does not overwrite files you have changed. See [bundle setup](../bundles/README.md) for manual downloads and verification.
+
 Compare visual design and functionality across a base model, a skill prompt, SFT and RL.
 
 **Method:** Recorded comparison with training source.
@@ -18,7 +24,7 @@ Read the recorded results before enabling training or evaluation. Cells marked f
 
 ## Evidence and implementation
 
-- [Recorded four-arm results](results/compare-rl/summary.md) and [machine-readable counts](results/compare-rl/stats.json).
+- [Recorded four-arm results](results/compare-rl/summary.md) and [machine-readable counts (in data bundle)](../bundles/taste-v1.zip).
 - [Earlier SFT comparison](results/V2_COMPARISON.md).
 - Data preparation: `build_pack.py`; SFT: `train_sft.py`; RL: `ui_rl.py`.
 - Rendering and scoring: `generate.py`, `render.py`, `reward.py`.

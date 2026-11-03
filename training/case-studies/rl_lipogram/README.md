@@ -1,5 +1,11 @@
 # Lipogram: learn to answer without “e”
 
+## Get the data
+
+Download one archive: [e-vasion-v1.zip](../bundles/e-vasion-v1.zip). A full repository checkout already includes it. The first notebook cell verifies its SHA-256 checksum and restores the data to the paths used below. For command-line scripts, run `python ../common/study_data.py e-vasion` from this folder first.
+
+The archive preserves separate training, development, test and recorded-result files. It does not overwrite files you have changed. See [bundle setup](../bundles/README.md) for manual downloads and verification.
+
 An experiment in useful English answers that avoid a common letter. The goal is
 **complete, e-free AND useful answers without a system instruction**. A trained
 adapter is probabilistic; this recipe does not guarantee perfect compliance.

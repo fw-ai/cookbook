@@ -24,3 +24,7 @@ Recorded examples are saved model outputs, not new inference. Each study identif
 Use these folders within the Fireworks cookbook and install its training dependencies. Open each notebook from its own directory. Review the data and recorded sections first. Paid training and inference are separate actions requiring your own account and explicit notebook settings. See each study’s guide for its available reproduction path.
 
 `common/` provides display helpers. `rl_lipogram/` preserves shared training code and earlier constraint experiments used by dependent studies.
+
+## Download the data
+
+Each featured study has [one versioned ZIP](bundles/README.md). Its first notebook cell verifies the bundle and restores the original files. Full repository checkouts already include the ZIPs; no API key is needed to unpack them. Training and evaluation splits remain separate inside each bundle.
