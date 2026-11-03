@@ -4,7 +4,9 @@ import hashlib
 import json
 import logging
 import random
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -582,6 +584,8 @@ def _run_main_with_fake_trainer(
     generation_eval=False,
     generation_eval_fails=False,
     saves=None,
+    promotions: list[tuple[str, str, dict[str, Any]]] | None = None,
+    finalization_error: str | None = None,
     eval_rows=1,
     **config_overrides,
 ):
@@ -592,6 +596,7 @@ def _run_main_with_fake_trainer(
     """
     events = []
     saves = [] if saves is None else saves
+    promotions = [] if promotions is None else promotions
     rows = [
         {"messages": [{"role": "user", "content": f"u{i}"}, {"role": "assistant", "content": "a"}]} for i in range(4)
     ]
@@ -641,6 +646,15 @@ def _run_main_with_fake_trainer(
         def save(self, name, **kwargs):
             events.append("save")
             saves.append((name, kwargs))
+            if finalization_error == "save":
+                raise RuntimeError("sampler export unavailable")
+
+        def promote_latest(self, output_model_id: str, base_model: str, **kwargs: Any) -> dict[str, str]:
+            events.append("promote")
+            promotions.append((output_model_id, base_model, kwargs))
+            if finalization_error == "promote":
+                raise RuntimeError("checkpoint promotion unavailable")
+            return {"state": "READY"}
 
     def fake_run_eval(*, eval_data, client, batch_size, step, epoch, metric_prefixes=("eval",)):
         if metric_prefixes == ("eval",):
@@ -677,15 +691,17 @@ def _run_main_with_fake_trainer(
         ],
     )
     monkeypatch.setattr(module, "run_eval", fake_run_eval)
-    if generation_eval:
+    if config_overrides.get("serverless", generation_eval):
 
         def setup_serverless(*args, **kwargs):
             return FakeService(), FakeClient(), FakeCheckpoints(), "session-1", 32
 
         monkeypatch.setattr(module, "setup_serverless_training", setup_serverless)
+    if generation_eval:
         if not generation_eval_fails:
             monkeypatch.setattr(module, "prepare_generation_eval", lambda *args, **kwargs: ["prompt"])
             monkeypatch.setattr(module, "run_generation_eval", lambda **kwargs: events.append("generate"))
+    if generation_eval or config_overrides.get("output_model_id"):
         complete = module.write_completed
 
         def record_completed(*args, **kwargs):
@@ -706,7 +722,11 @@ def _run_main_with_fake_trainer(
         "save_final_checkpoint": generation_eval,
         "serverless": generation_eval,
         "generation_eval": generation_eval,
-        "runner": RunnerConfig(metrics_file=str(metrics_path), status_file=str(status_path)),
+        "runner": RunnerConfig(
+            metrics_file=str(metrics_path),
+            status_file=str(status_path),
+            output_model_path=str(tmp_path / "output-model.json"),
+        ),
     }
     result = module.main(module.Config(**{**config_kwargs, **config_overrides}))
 
@@ -716,6 +736,101 @@ def _run_main_with_fake_trainer(
         [record for record in records if "eval/loss" in record or "checkpoint_eval/loss" in record],
         result,
     )
+
+
+@pytest.mark.parametrize("serverless", [False, True], ids=["dedicated", "serverless"])
+@pytest.mark.parametrize(
+    "resume_info, new_steps, final_step",
+    [
+        (None, 2, 2),
+        (SimpleNamespace(step=1, data_consumed=2), 1, 2),
+        (SimpleNamespace(step=9, data_consumed=4), 0, 9),
+    ],
+    ids=["fresh", "mid-run-resume", "terminal-step-resume"],
+)
+def test_output_model_finalization_runs_after_terminal_step_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    serverless: bool,
+    resume_info: SimpleNamespace | None,
+    new_steps: int,
+    final_step: int,
+) -> None:
+    saves, promotions = [], []
+    events, _, result = _run_main_with_fake_trainer(
+        tmp_path,
+        monkeypatch,
+        resume_info=resume_info,
+        serverless=serverless,
+        save_final_checkpoint=True,
+        output_model_id="trained-model",
+        saves=saves,
+        promotions=promotions,
+    )
+
+    assert events.count("train") == new_steps
+    assert events[-3:] == ["save", "promote", "completed"]
+    assert saves == [
+        (
+            f"step-{final_step}",
+            {"resumable": new_steps > 0, "promotable": True, "data_consumed": 4},
+        )
+    ]
+    assert promotions == [
+        (
+            "trained-model",
+            "accounts/fireworks/models/qwen3-8b",
+            {"checkpoint_name": f"step-{final_step}"} if serverless else {},
+        )
+    ]
+    assert result["steps"] == final_step
+    output = json.loads((tmp_path / "output-model.json").read_text())
+    assert output["model_id"] == "trained-model"
+    assert output["checkpoint"] == f"step-{final_step}"
+    assert json.loads((tmp_path / "status.json").read_text())["message"] == "done"
+
+
+@pytest.mark.parametrize("stage", ["save", "promote"])
+def test_terminal_step_finalization_failure_does_not_report_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    with pytest.raises(RuntimeError, match="unavailable"):
+        _run_main_with_fake_trainer(
+            tmp_path,
+            monkeypatch,
+            resume_info=SimpleNamespace(step=9, data_consumed=4),
+            serverless=True,
+            save_final_checkpoint=True,
+            output_model_id="trained-model",
+            finalization_error=stage,
+        )
+
+    assert not (tmp_path / "output-model.json").exists()
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status["code"] != 0
+    assert status["message"] != "done"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"output_model_id": None}, {"save_final_checkpoint": False}],
+    ids=["no-output-model", "final-save-disabled"],
+)
+def test_terminal_step_resume_without_finalization_keeps_existing_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any]
+) -> None:
+    saves, promotions = [], []
+    _run_main_with_fake_trainer(
+        tmp_path,
+        monkeypatch,
+        resume_info=SimpleNamespace(step=9, data_consumed=4),
+        saves=saves,
+        promotions=promotions,
+        **{"serverless": True, "save_final_checkpoint": True, "output_model_id": "trained-model", **overrides},
+    )
+
+    assert saves == []
+    assert promotions == []
 
 
 @pytest.mark.parametrize("resumed", [False, True])
