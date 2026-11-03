@@ -184,6 +184,9 @@ With `save_final_checkpoint=True` and `output_model_id` set, it still exports a
 promotable sampler checkpoint from the loaded weights and retries promotion
 before reporting completion. It does not rewrite the resumable DCP checkpoint
 when no optimizer steps ran. Export or promotion errors fail the attempt.
+Final SFT promotion selects the final step's sampler checkpoint in both dedicated
+and serverless runs. Resuming an older completed checkpoint does not promote a
+newer export retained on the same trainer.
 
 Serverless DPO stores its fixed reference at a stable job-level
 `runner.reference_checkpoint_file`, separate from per-attempt billing metadata.

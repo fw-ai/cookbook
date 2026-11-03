@@ -586,6 +586,7 @@ def _run_main_with_fake_trainer(
     saves=None,
     promotions: list[tuple[str, str, dict[str, Any]]] | None = None,
     finalization_error: str | None = None,
+    checkpoints: TrainingCheckpoints | None = None,
     eval_rows=1,
     **config_overrides,
 ):
@@ -674,7 +675,11 @@ def _run_main_with_fake_trainer(
         "ReconnectableClient",
         SimpleNamespace(from_training_client=lambda *args, **kwargs: FakeClient()),
     )
-    monkeypatch.setattr(module, "TrainingCheckpoints", FakeCheckpoints)
+    monkeypatch.setattr(
+        module,
+        "TrainingCheckpoints",
+        FakeCheckpoints if checkpoints is None else lambda *args, **kwargs: checkpoints,
+    )
     renderer = Mock()
     renderer.build_generation_prompt.return_value = sdk.ModelInput.from_ints([1, 2])
     renderer.get_stop_sequences.return_value = []
@@ -694,7 +699,13 @@ def _run_main_with_fake_trainer(
     if config_overrides.get("serverless", generation_eval):
 
         def setup_serverless(*args, **kwargs):
-            return FakeService(), FakeClient(), FakeCheckpoints(), "session-1", 32
+            return (
+                FakeService(),
+                FakeClient(),
+                checkpoints if checkpoints is not None else FakeCheckpoints(),
+                "session-1",
+                32,
+            )
 
         monkeypatch.setattr(module, "setup_serverless_training", setup_serverless)
     if generation_eval:
@@ -780,7 +791,7 @@ def test_output_model_finalization_runs_after_terminal_step_resume(
         (
             "trained-model",
             "accounts/fireworks/models/qwen3-8b",
-            {"checkpoint_name": f"step-{final_step}"} if serverless else {},
+            {"checkpoint_name": f"step-{final_step}"},
         )
     ]
     assert result["steps"] == final_step
@@ -788,6 +799,57 @@ def test_output_model_finalization_runs_after_terminal_step_resume(
     assert output["model_id"] == "trained-model"
     assert output["checkpoint"] == f"step-{final_step}"
     assert json.loads((tmp_path / "status.json").read_text())["message"] == "done"
+
+
+@pytest.mark.parametrize("lora_rank", [0, 16], ids=["full", "lora"])
+def test_terminal_step_resume_promotes_loaded_checkpoint_not_newer_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lora_rank: int
+) -> None:
+    suffix = "-base" if lora_rank == 0 else ""
+    checkpoint_prefix = "accounts/test/rlorTrainerJobs/trainer-1/checkpoints/"
+    rows = [
+        {
+            "name": f"{checkpoint_prefix}step-{step}{suffix}-abcd1234",
+            "promotable": True,
+            "createTime": f"2026-04-{step:02d}T00:00:00Z",
+        }
+        for step in (9, 10)
+    ]
+    client, fw_client = Mock(), Mock()
+    fw_client.list_checkpoints.return_value = rows
+    checkpoints = TrainingCheckpoints(
+        client,
+        fw_client,
+        trainer_id="trainer-1",
+        log_path=str(tmp_path / "logs"),
+        lora_rank=lora_rank,
+    )
+    resume_info = SimpleNamespace(step=9, data_consumed=4)
+    monkeypatch.setattr(checkpoints, "resume", lambda **kwargs: resume_info)
+
+    events, _, result = _run_main_with_fake_trainer(
+        tmp_path,
+        monkeypatch,
+        resume_info=resume_info,
+        checkpoints=checkpoints,
+        serverless=False,
+        lora_rank=lora_rank,
+        save_final_checkpoint=True,
+        output_model_id="trained-model",
+    )
+
+    assert "train" not in events
+    client.save_state.assert_not_called()
+    client.save_weights_for_sampler.assert_not_called()
+    fw_client.promote_checkpoint.assert_called_once_with(
+        name=rows[0]["name"],
+        output_model_id="trained-model",
+        base_model="accounts/fireworks/models/qwen3-8b",
+        hot_load_deployment_id=None,
+    )
+    assert result["steps"] == 9
+    output = json.loads((tmp_path / "output-model.json").read_text())
+    assert output["checkpoint"] == "step-9"
 
 
 @pytest.mark.parametrize("stage", ["save", "promote"])
