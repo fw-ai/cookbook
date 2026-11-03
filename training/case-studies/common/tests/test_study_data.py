@@ -1,3 +1,8 @@
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import contextlib
 import hashlib
 import io
@@ -8,7 +13,7 @@ import tempfile
 import unittest
 import zipfile
 from study_data import ensure_data
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 
 class BundleTests(unittest.TestCase):
     def test_shipped_bundles_restore_exact_bytes_idempotently(self):

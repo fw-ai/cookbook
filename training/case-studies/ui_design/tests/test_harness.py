@@ -1,4 +1,9 @@
 """Offline tests for the measurement harness. No API calls; the browser tests use the local scaffold."""
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import json
 import shutil
 import subprocess
@@ -7,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE))
 import judge  # noqa: E402
 import render  # noqa: E402

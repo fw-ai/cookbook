@@ -1,8 +1,13 @@
 """Offline regression tests; no model or judge calls."""
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import sys
 from pathlib import Path
 import pytest
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from lipogram_rewards import e_free, lipogram_reward
 from lipogram_data import split_validation, assert_disjoint, group_key
 from prepare_sft import verified_example

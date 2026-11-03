@@ -1,9 +1,14 @@
 """Offline trainer integration checks; fake clients never access the service."""
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace as NS
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 import lipogram_rl as rl
 
 

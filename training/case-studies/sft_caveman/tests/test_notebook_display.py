@@ -1,4 +1,9 @@
-"""Offline smoke checks: python -m unittest test_notebook_display -v."""
+"""Offline smoke checks: python -m unittest discover -s tests -p test_notebook_display.py -v."""
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import builtins
 import contextlib
 import io

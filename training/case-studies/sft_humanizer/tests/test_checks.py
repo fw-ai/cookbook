@@ -1,8 +1,13 @@
 """Offline tests for the mechanical checks in build_humanizer_pack."""
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from build_humanizer_pack import em_dash_added, preservation_checks  # noqa: E402
 

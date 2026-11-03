@@ -1,4 +1,9 @@
 """Offline tests for the v2 public pilot content and browser contracts."""
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import hashlib
 import json
 from pathlib import Path
@@ -8,7 +13,7 @@ from playwright.sync_api import sync_playwright
 from brief_checks import check_assertions, check_sections, contract_prompt, run_interaction
 from generate import task_prompt
 
-HERE=Path(__file__).resolve().parent
+HERE=Path(__file__).resolve().parent.parent
 
 
 def test_public_pack_and_prompts():

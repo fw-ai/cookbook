@@ -1,5 +1,10 @@
 """Offline checks for the lesson's evidence, reader data, and paid-run boundary."""
 
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
+
 import ast
 import contextlib
 import hashlib
@@ -18,7 +23,7 @@ from unittest.mock import patch
 from train_walkthrough import make_plan, validate_dataset, execute, main
 from evaluate_walkthrough import run_evaluation
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent
 
 
 class LessonTests(unittest.TestCase):

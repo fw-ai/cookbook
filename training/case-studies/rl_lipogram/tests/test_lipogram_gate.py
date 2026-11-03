@@ -1,14 +1,19 @@
 """Offline tests for the retention scorer and the pass/fail gate (the review's three P1 reproductions)."""
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from evaluate_retention import build_items, compatible, is_correct  # noqa: E402
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).parent.parent
 
 
 def test_retention_rejects_suffix_sign_and_negation_matches():

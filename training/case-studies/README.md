@@ -28,3 +28,17 @@ Use these folders within the Fireworks cookbook and install its training depende
 ## Download the data
 
 Each featured study has [one versioned ZIP](bundles/README.md). Its first notebook cell verifies the bundle and restores the original files. Full repository checkouts already include the ZIPs; no API key is needed to unpack them. Training and evaluation splits remain separate inside each bundle.
+
+## Study layout
+
+Each featured folder has one README and one primary notebook. Training, data preparation, and evaluation scripts stay separate so they can be inspected and run independently. Study-specific tests live in `tests/`; shared data and display utilities live in `common/`. Upstream source and license notices remain in `sources/` or `skill/`.
+
+## Offline checks
+
+Restore the relevant data bundle before running study tests. From `training/case-studies/`, run the standard-library bundle checks with:
+
+```bash
+python -m unittest discover -s common/tests -p test_study_data.py -v
+```
+
+For an individual study, run its tests from that study directory after installing the dependencies its imports require. For example, after restoring Humanizer data and installing matplotlib, run `python -m unittest discover -s tests -p test_walkthrough.py -v`. Other suites use pytest; none of these commands starts paid training.

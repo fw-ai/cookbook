@@ -1,3 +1,8 @@
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import allergy
 
 
@@ -48,7 +53,7 @@ def test_generated_eval_set_invariants():
     """The frozen eval file: pairs differ by exactly one word and share the follow-up; controls never expect a reaction."""
     import json
     from pathlib import Path
-    p = Path(__file__).resolve().parent / "data/allergy-eval-v1/allergy_eval.jsonl"
+    p = Path(__file__).resolve().parent.parent / "data/allergy-eval-v1/allergy_eval.jsonl"
     items = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
     pairs = {}
     for it in items:

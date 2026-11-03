@@ -1,8 +1,13 @@
 """Offline contract tests for the Ask Before Acting environment (no key, no network)."""
+
+from pathlib import Path as _TestPath
+import sys as _test_sys
+_test_sys.path.insert(0, str(_TestPath(__file__).resolve().parents[1]))
+
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from aba_env import generate_tasks, score_episode  # noqa: E402
 
