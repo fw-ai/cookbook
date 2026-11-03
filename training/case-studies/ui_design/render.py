@@ -58,6 +58,8 @@ def parse_response(text: str) -> dict[str, str]:
 
 def build(workdir: Path, app: str, css: str, assets: Path | None) -> dict:
     """Copy scaffold (node_modules symlinked), write files, vite build. Returns {ok, seconds, stderr}."""
+    if not (SCAFFOLD / "package.json").is_file() or not (SCAFFOLD / "node_modules").is_dir():
+        raise HarnessError("Rendering setup missing: run npm ci in ui_design/scaffold; see README.md.")
     if workdir.exists():
         shutil.rmtree(workdir)
     shutil.copytree(SCAFFOLD, workdir, ignore=shutil.ignore_patterns("node_modules", "dist"))

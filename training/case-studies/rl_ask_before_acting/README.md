@@ -220,3 +220,13 @@ episodes that were really the matcher missing "first name" as a question about t
 ## Inspect and adapt the experiment
 
 Inspect the saved examples and aggregate metrics together. When adapting the task, reserve new evaluation data and compare against both the base model and a prompted baseline.
+
+## Notebook dependencies
+
+In addition to the cookbook training package, install the shared display dependencies from this study directory:
+
+```bash
+python -m pip install -r ../common/requirements-notebooks.txt
+```
+
+This installs Python packages only; it does not start training or inference.

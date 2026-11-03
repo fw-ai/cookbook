@@ -97,3 +97,13 @@ python lipo_eval.py --model accounts/<account>/models/lipo-rl --tag rl
 ```
 
 Raw generation and training outputs are not included. The `recorded/` directory contains the saved results used by the notebook. Keep newly generated outputs separate so the published comparison remains reproducible.
+
+## Notebook dependencies
+
+In addition to the cookbook training package, install the shared display dependencies from this study directory:
+
+```bash
+python -m pip install -r ../common/requirements-notebooks.txt
+```
+
+This installs Python packages only; it does not start training or inference.

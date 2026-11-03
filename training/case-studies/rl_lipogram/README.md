@@ -168,3 +168,13 @@ The suite checks fences, escaped/look-alike letters, short answers, padding,
 group leakage, SFT export, missing judges and paired success intervals. These are
 local checks, including a cached-tokenizer GLM loss-mask/parser check; they do
 not establish live model quality or service compatibility.
+
+## Notebook dependencies
+
+In addition to the cookbook training package, install the shared display dependencies from this study directory:
+
+```bash
+python -m pip install -r ../common/requirements-notebooks.txt
+```
+
+This installs Python packages only; it does not start training or inference.

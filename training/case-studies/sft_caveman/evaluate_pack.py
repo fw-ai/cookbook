@@ -108,7 +108,7 @@ def main() -> None:
     ap.add_argument("--temperature", type=float, default=None, help="default 0.0 for one draw, 0.7 for several")
     ap.add_argument("--no-calibrate", action="store_true", help="skip the known-answer judge gate")
     ap.add_argument("--out", default=str(HERE / "results" / time.strftime("%Y-%m-%d") / "pack-eval"))
-    ap.add_argument("--pack-dir", type=Path, default=HERE / "pack", help="where caveman_{dev,test}.jsonl live (data-v2/pack for the scaled build)")
+    ap.add_argument("--pack-dir", type=Path, default=HERE / "release" / "v2c", help="where caveman_{dev,test}.jsonl live (defaults to the bundled v2c release)")
     ap.add_argument("--effort", default="low", choices=["low", "medium", "high", "max"])
     ap.add_argument("--no-system-prompt", action="store_true",
                     help="send the user turn alone (for adapters trained with --drop-system-prompt); the :skill arm keeps its prompt")

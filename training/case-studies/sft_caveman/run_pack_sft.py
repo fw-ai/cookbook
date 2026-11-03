@@ -32,7 +32,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import cost_ledger  # noqa: E402
 
-PACK = HERE / "pack" / "caveman_train.jsonl"
+PACK = HERE / "release" / "v2c" / "caveman_train.jsonl"
 BASE_MODEL = "accounts/fireworks/models/glm-5p3-flash"
 
 
@@ -48,7 +48,7 @@ def main() -> None:
     ap.add_argument("--lora-alpha", type=int, default=None, help="default 2x rank")
     ap.add_argument("--output-model-id", required=True)
     ap.add_argument("--run-dir", default="")
-    ap.add_argument("--pack", type=Path, default=PACK, help="training rows (data-v2/pack/caveman_train.jsonl for the scaled build)")
+    ap.add_argument("--pack", type=Path, default=PACK, help="training rows (defaults to the bundled v2c release)")
     ap.add_argument("--drop-system-prompt", action="store_true",
                     help="train without the student system prompt so the served adapter needs no prompt at all")
     ap.add_argument("--costs", type=Path, default=None, help="cost ledger to append trained tokens to")

@@ -2,7 +2,7 @@
 
 ## Get the data
 
-Download one archive: [taste-v1.zip](../bundles/taste-v1.zip). A full repository checkout already includes it. The first notebook cell verifies its SHA-256 checksum and restores the data to the paths used below. For command-line scripts, run `python ../common/study_data.py taste` from this folder first.
+Download one archive: [taste-v2.zip](../bundles/taste-v2.zip). A full repository checkout already includes it. The first notebook cell verifies its SHA-256 checksum and restores the data to the paths used below. For command-line scripts, run `python ../common/study_data.py taste` from this folder first.
 
 The archive preserves separate training, development, test and recorded-result files. It does not overwrite files you have changed. See [bundle setup](../bundles/README.md) for manual downloads and verification.
 
@@ -24,9 +24,33 @@ Read the recorded results before enabling training or evaluation. Cells marked f
 
 ## Evidence and implementation
 
-- [Recorded four-arm results](results/compare-rl/summary.md) and [machine-readable counts (in data bundle)](../bundles/taste-v1.zip).
+- [Recorded four-arm results](results/compare-rl/summary.md) and [machine-readable counts (in data bundle)](../bundles/taste-v2.zip).
 - [Earlier SFT comparison](results/V2_COMPARISON.md).
 - Data preparation: `build_pack.py`; SFT: `train_sft.py`; RL: `ui_rl.py`.
 - Rendering and scoring: `generate.py`, `render.py`, `reward.py`.
 
 The notebook is a recorded-results walkthrough, not an end-to-end reproduction of the historical RL20 training run. The RL implementation shares the sibling `rl_lipogram` loop.
+
+## Optional rendering setup
+
+The recorded notebook uses only saved counts and does not need a browser. To render generated sites, restore the Taste bundle first, then install the pinned frontend dependencies and a Playwright browser:
+
+```bash
+cd scaffold
+npm ci
+cd ..
+python -m pip install playwright
+python -m playwright install chromium
+```
+
+These setup steps download dependencies. `render.py` then builds against the local scaffold and blocks external page requests. The bundle includes the briefs and their image assets; source notes are restored under `assets/`. The saved experiment’s frontend lockfile is retained for reproducibility.
+
+## Notebook dependencies
+
+In addition to the cookbook training package, install the shared display dependencies from this study directory:
+
+```bash
+python -m pip install -r ../common/requirements-notebooks.txt
+```
+
+This installs Python packages only; it does not start training or inference.

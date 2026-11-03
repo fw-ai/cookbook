@@ -1,0 +1,5 @@
+# Notebook display dependencies, in addition to training/pyproject.toml.
+jupyterlab>=4,<5
+ipython>=8
+matplotlib>=3.8,<4
+numpy>=1.24

@@ -396,3 +396,13 @@ The exporter rejects changed evaluation or train/test files by their fixed SHA-2
 then validates fixture/arm completeness. It cannot import a new experiment under the old
 date, decoding settings, or editorial conclusions. New experiments need a separate lesson
 with reviewed metadata, examples, and claims.
+
+## Notebook dependencies
+
+In addition to the cookbook training package, install the shared display dependencies from this study directory:
+
+```bash
+python -m pip install -r ../common/requirements-notebooks.txt
+```
+
+This installs Python packages only; it does not start training or inference.
