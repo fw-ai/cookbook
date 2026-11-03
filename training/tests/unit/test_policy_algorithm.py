@@ -217,6 +217,31 @@ def test_client_reference_kl_needs_reference_rows(module, config) -> None:
         module.make_loss_fn(_batch(), config)
 
 
+def test_reinforce_reference_kl_has_gradient() -> None:
+    datum = build_datum_from_token_mask(token_ids=[10, 11, 12, 13], token_mask=[0, 1, 1, 1]).datum
+    policy = [-0.2, -0.5, -0.3]
+    ref = [-1.0, -1.5, -2.0]
+    batch = PolicyBatch(
+        data=[datum],
+        advantages=[0.0],
+        prompt_lens=[2],
+        rollout_logprobs=[policy],
+        ref_logprobs=[ref],
+    )
+    kl_beta = 0.5
+    logprobs = torch.tensor(policy, requires_grad=True)
+    loss, metrics = reinforce.make_loss_fn(batch, reinforce.ReinforceConfig(kl_beta=kl_beta))(
+        list(batch.data), [logprobs]
+    )
+    loss.backward()
+
+    # With zero advantage only the k3 reference penalty remains; its gradient
+    # w.r.t. log pi is kl_beta * (1 - exp(log pi_ref - log pi)) on response tokens.
+    expected = [0.0] + [kl_beta * (1.0 - torch.exp(torch.tensor(r - p)).item()) for p, r in zip(policy[1:], ref[1:])]
+    assert logprobs.grad.tolist() == pytest.approx(expected)
+    assert metrics["mean_kl_penalty"] == pytest.approx(loss.item() / 2)
+
+
 def test_loss_fn_configs_map_clip_epsilons_to_thresholds() -> None:
     assert grpo.loss_fn_config(grpo.GRPOConfig(eps_clip=0.2, eps_clip_high=0.3)) == pytest.approx(
         {"clip_low_threshold": 0.8, "clip_high_threshold": 1.3}
