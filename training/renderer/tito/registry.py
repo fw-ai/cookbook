@@ -47,6 +47,7 @@ from training.renderer.tito.muse_glimmer import (
     MUSE_GLIMMER_RENDERER_NAME,
     MuseGlimmerTITORenderer,
 )
+from training.renderer.tito.muse_spark import muse_spark_certifications
 from training.renderer.tito.qwen35 import (
     QWEN35_RENDERER_NAME,
     QWEN35_TOKENIZER_FINGERPRINT,
@@ -176,6 +177,7 @@ _TITO_RENDERER_CERTIFICATIONS = (
         ),
         renderer_factory=_build_muse_glimmer_tito_renderer,
     ),
+    *muse_spark_certifications(),
     TITORendererCertification(
         certification_id="qwen3.5-35b-a3b-fp8@5a3b7d66-v1",
         renderer_names=frozenset({QWEN35_RENDERER_NAME}),

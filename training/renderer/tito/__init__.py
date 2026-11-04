@@ -18,6 +18,7 @@ from training.renderer.tito.glm52 import GLM52TITORenderer
 from training.renderer.tito.glm53 import GLM53TITORenderer
 from training.renderer.tito.glm53_flash import GLM53FlashTITORenderer
 from training.renderer.tito.muse_glimmer import MuseGlimmerTITORenderer
+from training.renderer.tito.muse_spark import MuseSparkTITORenderer
 from training.renderer.tito.plugins import (
     TITORendererExtension,
     load_tito_renderer_plugins,
@@ -43,6 +44,7 @@ __all__ = [
     "GLM53TITORenderer",
     "GLM53FlashTITORenderer",
     "MuseGlimmerTITORenderer",
+    "MuseSparkTITORenderer",
     "Qwen35TITORenderer",
     "Qwen36TITORenderer",
     "Qwen38TITORenderer",
