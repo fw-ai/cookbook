@@ -1,6 +1,6 @@
 # Checkpoints — where state lives
 
-The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/checkpoints.py`. The control plane is the source of truth for what checkpoints exist; the only cookbook-side state is `dataloader.json`, which records each saved checkpoint’s recipe step and `data_consumed` cursor.
+The cookbook's checkpoint manager is `TrainingCheckpoints` in `training/utils/checkpoints.py`. The control plane is the source of truth for what checkpoints exist; the shared recipe’s cookbook-side state is `dataloader.json`, which records each saved checkpoint’s recipe step and `data_consumed` cursor.
 
 ## Two axes
 
@@ -237,3 +237,7 @@ If `promote_checkpoint` returns `checkpoint "<name>" not found in GCS`:
 3. If every promotable row still fails, **reach out to Fireworks support** — some recoveries (re-staging a sampler blob from surviving DCP state, looking up a pre-migration `PER_DEPLOYMENT` bucket) require server-side access.
 
 The modern promote API takes a single `name=` (4-segment resource path from `list_checkpoints` output) and works identically for `PER_TRAINER` and `PER_DEPLOYMENT`. The legacy positional `(job_id, checkpoint_id, ...)` form still works but emits a `DeprecationWarning`. See [`rl-hotload.md#promoting-a-checkpoint`](rl-hotload.md#promoting-a-checkpoint) and `sdk-tools.md` for the CLI flow.
+
+## Case-study curriculum state
+
+The Open Weight Room lipogram loop also maintains a Python-side reward phase. Its DCP weights/optimizer do not contain that state. Auto-mode resume requires `--resume-reward-state` with the checkpoint-bound `<checkpoint>.reward-state.json` written by the loop. Keep it with the run artifacts; a missing or mismatched sidecar is an error before trainer creation. A fixed `--reward-phase ramp` or `strict` deliberately overrides the curriculum. This does not alter the SDK checkpoint format.

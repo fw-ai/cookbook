@@ -59,7 +59,7 @@ def test_unrecognized_internal_selector_is_not_inferred_as_public() -> None:
 
 def test_old_private_checkpoint_is_not_inferred_as_open_checkpoint() -> None:
     with pytest.raises(ValueError):
-        resolve_renderer_name("accounts/pyroworks/models/muse-spark-1p2-820b-a42b-nvfp4-obsidian")
+        resolve_renderer_name("accounts/example/models/muse-spark-unpublished-checkpoint")
 
 
 def test_unreviewed_model_suffix_is_not_inferred_as_open_checkpoint() -> None:
