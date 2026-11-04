@@ -83,6 +83,7 @@ from training.utils.runner_state import (
     write_running_step,
 )
 from training.utils.termination import TerminatedBySignal
+from training.utils.tokenizers import resolve_tokenizer_base_model
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,9 @@ class Config:
     """GCS URI of an HF PEFT adapter directory. When set, initializes LoRA
     weights from the adapter at training start (weights-only, fresh optimizer).
     Mutually exclusive with ``init_from_checkpoint``. Requires ``lora_rank > 0``."""
+
+    base_model_type: str = ""
+    """Independent model-family context that can only restrict code loading."""
 
 
 def _is_default_lr_scheduler(data: object) -> bool:
@@ -313,6 +317,7 @@ def main(
             additional_headers=additional_headers,
             base_model=cfg.base_model,
             tokenizer_model=cfg.tokenizer_model,
+            base_model_type=cfg.base_model_type,
             max_lora_rank=cfg.lora_rank,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
@@ -357,15 +362,18 @@ def main(
 
         # -- Data ----------------------------------------------------------------
 
+        tokenizer_base_model = resolve_tokenizer_base_model(cfg.base_model, cfg.base_model_type)
         tokenizer = load_tokenizer(
             cfg.tokenizer_model,
             cfg.tokenizer_revision,
-            cfg.tokenizer_trust_remote_code,
+            False if resolved_renderer_name == "deepseek_v4" else cfg.tokenizer_trust_remote_code,
+            base_model=tokenizer_base_model,
         )
         renderer = build_renderer_from_resolved_name(
             tokenizer,
             cfg.tokenizer_model,
             resolved_renderer_name,
+            base_model=tokenizer_base_model,
         )
         logger.info(
             "Using renderer=%s for preference tokenization",

@@ -164,6 +164,12 @@ def _run_case(recipe: str, phase: str) -> None:
 
         return rollout
 
+    tokenizer_base_models: list[str | None] = []
+
+    def load_deployment_tokenizer(*args: Any, base_model: str | None = None) -> object:
+        tokenizer_base_models.append(base_model)
+        return object()
+
     with pytest.MonkeyPatch.context() as patch:
         if recipe.startswith("experiment."):
             _patch_runtime(patch, service)
@@ -180,7 +186,7 @@ def _run_case(recipe: str, phase: str) -> None:
                 patch.setattr(module, name, lambda *args, **kwargs: None)
             if recipe == "rl_loop":
                 patch.setattr(module, "log_metrics_json", lambda *args, **kwargs: None)
-            patch.setattr(module, "load_deployment_tokenizer", lambda *args: object())
+            patch.setattr(module, "load_deployment_tokenizer", load_deployment_tokenizer)
             patch.setattr(module, "build_service_client", lambda **kwargs: service)
             patch.setattr(module, "resolve_router_replay_enabled", lambda **kwargs: False)
             patch.setattr(module, "TrainingCheckpoints", Checkpoints)
@@ -207,6 +213,8 @@ def _run_case(recipe: str, phase: str) -> None:
         with pytest.raises(TerminatedBySignal, match="SIGTERM"):
             module.main(config, rows=[{"id": 0}], rollout_fn_factory=factory, dynamic_filter_fn=None)
         assert signal.getsignal(signal.SIGTERM) == original_handler
+        if not recipe.startswith("experiment."):
+            assert tokenizer_base_models == [config.base_model]
     assert events.count("close") == 1
     assert events[-1] == "close"
     assert events.index(phase + ":joined") < events.index("close")

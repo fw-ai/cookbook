@@ -107,6 +107,7 @@ from training.utils.streaming import (
 )
 from training.utils.termination import TerminatedBySignal
 from training.utils.timer import flush_timing, timer
+from training.utils.tokenizers import resolve_tokenizer_base_model
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +262,9 @@ class Config:
     trainer can be reused by later phases via ``TrainerConfig.reference_job_id``.
     """
 
+    base_model_type: str = ""
+    """Independent model-family context that can only restrict code loading."""
+
 
 def _validate_dpo_beta(beta: float) -> None:
     if not 0 < beta < 0.5:
@@ -284,6 +288,8 @@ def _init_pair_worker(
     tokenizer_revision: str = "",
     tokenizer_trust_remote_code: bool | None = None,
     _worker_id: int | None = None,
+    *,
+    base_model: str | None = None,
 ) -> None:
     """DataLoader ``worker_init_fn`` for DPO preference-pair rendering.
 
@@ -298,6 +304,7 @@ def _init_pair_worker(
         renderer_name=renderer_name,
         max_seq_len=max_seq_len,
         renderer_name_is_resolved=True,
+        base_model=base_model,
     )
 
 
@@ -1077,6 +1084,7 @@ def main(
                 additional_headers=additional_headers,
                 base_model=cfg.base_model,
                 tokenizer_model=cfg.tokenizer_model,
+                base_model_type=cfg.base_model_type,
                 max_lora_rank=cfg.lora_rank,
                 max_context_length=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
@@ -1158,8 +1166,9 @@ def main(
             cfg.tokenizer_revision,
             cfg.tokenizer_trust_remote_code,
         )
-        _init_pair_worker(*init_args)
-        worker_init_fn = functools.partial(_init_pair_worker, *init_args)
+        tokenizer_base_model = resolve_tokenizer_base_model(cfg.base_model, cfg.base_model_type)
+        _init_pair_worker(*init_args, base_model=tokenizer_base_model)
+        worker_init_fn = functools.partial(_init_pair_worker, *init_args, base_model=tokenizer_base_model)
 
         pair_dataset = _make_pair_dataset(cfg)
         if len(pair_dataset) == 0:

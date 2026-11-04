@@ -48,6 +48,11 @@ class TITORendererCertification:
     artifact_repository: str | None = None
     artifact_revision: str | None = None
     artifact_files: tuple[tuple[str, str], ...] = ()
+    # True only for certifications whose prompt contract ships as reviewed,
+    # hash-pinned package source (tito/_vendored) instead of a chat template
+    # or a checkpoint artifact. This is the one explicit alternative the
+    # sidecar contract guards accept.
+    packaged_contract: bool = False
 
 
 def renderer_artifacts(tokenizer: Any, certification: TITORendererCertification) -> dict[str, Path]:
@@ -98,7 +103,10 @@ def load_sidecar_tokenizer(path: str | Path, *, renderer_name: str | None = None
     hardcoded pre-tokenizer, silently invalidating the certified contract.
 
     Fail closed here, unlike ``load_tokenizer``: a sidecar that cannot load its
-    own pinned artifact has no certified token contract to fall back to.
+    own pinned artifact has no certified token contract to fall back to. A
+    resolved certification also satisfies the contract requirement for
+    renderers whose prompt contract ships as reviewed package source rather
+    than as a hash-pinned artifact or a chat template.
     """
     from transformers.tokenization_utils_tokenizers import TokenizersBackend
 
@@ -112,13 +120,15 @@ def load_sidecar_tokenizer(path: str | Path, *, renderer_name: str | None = None
     )
     chat_template = getattr(tokenizer, "chat_template", None)
     artifacts = {}
+    certification = None
     if renderer_name is not None:
         # lazy: registry imports this module; resolve after it has initialized.
         from training.renderer.tito.registry import get_tito_renderer_certification
 
         certification = get_tito_renderer_certification(renderer_name, tokenizer)
         artifacts = renderer_artifacts(tokenizer, certification)
-    if not chat_template and not artifacts:
+    packaged_contract = certification is not None and certification.packaged_contract
+    if not chat_template and not artifacts and not packaged_contract:
         raise ValueError("TITO sidecar tokenizer has no bundled chat template")
     return tokenizer
 

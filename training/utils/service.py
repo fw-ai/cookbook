@@ -147,6 +147,7 @@ def _firetitan_service_kwargs(
     cleanup_trainer_on_close: bool = False,
     cleanup_deployment_on_close: DeploymentCleanupOnClose | None = None,
     reference_required: bool = False,
+    base_model_type: str = "",
 ) -> dict[str, Any]:
     """Translate cookbook user config into SDK service kwargs."""
     service_kwargs: dict[str, Any] = {
@@ -185,6 +186,12 @@ def _firetitan_service_kwargs(
         "hotload_timeout_s": hotload_timeout_s,
         "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
+    if base_model_type == "deepseek_v4" and "base_model_type" in {
+        f.name for f in fields(FiretitanProvisioningConfig)
+    }:
+        # Older supported SDKs never opt their get_tokenizer() load into remote
+        # code. Cookbook loaders retain this context independently of the SDK.
+        service_kwargs["base_model_type"] = base_model_type
     # Projection topology is service-scoped. Omit the field entirely for actor
     # services; the SDK also canonicalizes an explicit zero to ``None``.
     if isinstance(projection_head_dim, bool) or (
@@ -271,6 +278,7 @@ def build_service_client(
     cleanup_trainer_on_close: bool = False,
     cleanup_deployment_on_close: DeploymentCleanupOnClose | None = None,
     reference_required: bool = False,
+    base_model_type: str = "",
 ) -> FiretitanServiceClient:
     """Create an SDK-managed service client from cookbook config.
 
@@ -296,6 +304,7 @@ def build_service_client(
         cleanup_trainer_on_close=cleanup_trainer_on_close,
         cleanup_deployment_on_close=cleanup_deployment_on_close,
         reference_required=reference_required,
+        base_model_type=base_model_type,
     )
     if provisioning_job_id is None:
         service = FiretitanServiceClient.from_firetitan_config(

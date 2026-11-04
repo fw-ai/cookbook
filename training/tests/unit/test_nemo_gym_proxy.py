@@ -285,9 +285,10 @@ def test_recipe_startup_and_main_contract(monkeypatch, failure):
     monkeypatch.setattr(nemo_train, "parse_args", lambda: argparse.Namespace(**args))
     monkeypatch.setattr(nemo_train, "_http_up", lambda _: False)
     monkeypatch.setattr(nemo_train, "_load_rows", lambda _: [{"id": "row"}])
-    def load_tokenizer(model: str, revision: str) -> object:
+    def load_tokenizer(model: str, revision: str, *, base_model: str | None = None) -> object:
         assert model == "fake"
         assert revision == "pinned-tokenizer-revision"
+        assert base_model == "accounts/fireworks/models/test"
         return object()
 
     monkeypatch.setattr(nemo_train, "load_tokenizer", load_tokenizer)

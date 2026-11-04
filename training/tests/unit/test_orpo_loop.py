@@ -59,7 +59,12 @@ def test_main_requests_cleanup_for_sdk_created_trainer(monkeypatch, tmp_path):
 
 def test_main_rejects_invalid_base_model(monkeypatch):
     monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
-    cfg = module.Config(log_path="/tmp/orpo_test_logs", base_model="qwen3-4b", dataset="/tmp/pairs.jsonl", tokenizer_model="Qwen/Qwen3-4B")
+    cfg = module.Config(
+        log_path="/tmp/orpo_test_logs",
+        base_model="qwen3-4b",
+        dataset="/tmp/pairs.jsonl",
+        tokenizer_model="Qwen/Qwen3-4B",
+    )
 
     with pytest.raises(UserConfigError, match="Invalid base_model"):
         module.main(cfg)
@@ -75,7 +80,9 @@ def test_main_rejects_invalid_output_model_id(monkeypatch, tmp_path):
         output_model_id="bad_name",
     )
 
-    with pytest.raises(UserConfigError, match="Invalid output_model_id|output_model_id.*invalid|invalid.*output_model_id"):
+    with pytest.raises(
+        UserConfigError, match="Invalid output_model_id|output_model_id.*invalid|invalid.*output_model_id"
+    ):
         module.main(cfg)
 
 
@@ -142,7 +149,17 @@ def test_stale_renderer_snapshot_reuses_persisted_renderer(monkeypatch, tmp_path
     _build_service_kwargs(monkeypatch, cfg)
 
 
-def test_eager_rendering_builds_validated_concrete_renderer(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "resolved_renderer,caller_trust,expected_trust",
+    [
+        ("qwen3_6_preserve_thinking", False, False),
+        ("qwen3_6_preserve_thinking", True, True),
+        ("deepseek_v4", True, False),
+    ],
+)
+def test_eager_rendering_builds_validated_concrete_renderer(
+    monkeypatch, tmp_path, resolved_renderer, caller_trust, expected_trust
+):
     class StopAfterRendererBuild(RuntimeError):
         pass
 
@@ -194,7 +211,7 @@ def test_eager_rendering_builds_validated_concrete_renderer(monkeypatch, tmp_pat
     monkeypatch.setattr(
         module,
         "resolve_renderer_snapshot",
-        lambda **kwargs: "qwen3_6_preserve_thinking",
+        lambda **kwargs: resolved_renderer,
     )
     monkeypatch.setattr(module, "build_service_client", lambda **kwargs: FakeService())
     monkeypatch.setattr(
@@ -203,7 +220,8 @@ def test_eager_rendering_builds_validated_concrete_renderer(monkeypatch, tmp_pat
         lambda *args, **kwargs: object(),
     )
     monkeypatch.setattr(module, "TrainingCheckpoints", FakeCheckpoints)
-    def fake_load_tokenizer(model, revision=None, trust_remote_code=None):
+
+    def fake_load_tokenizer(model, revision=None, trust_remote_code=None, *, base_model=None):
         captured.update(
             tokenizer_source=model,
             tokenizer_revision=revision,
@@ -213,7 +231,7 @@ def test_eager_rendering_builds_validated_concrete_renderer(monkeypatch, tmp_pat
 
     monkeypatch.setattr(module, "load_tokenizer", fake_load_tokenizer)
 
-    def fake_build_renderer(actual_tokenizer, tokenizer_model, renderer_name):
+    def fake_build_renderer(actual_tokenizer, tokenizer_model, renderer_name, *, base_model=None):
         captured.update(
             tokenizer=actual_tokenizer,
             tokenizer_model=tokenizer_model,
@@ -231,7 +249,7 @@ def test_eager_rendering_builds_validated_concrete_renderer(monkeypatch, tmp_pat
         dataset="/tmp/preferences.jsonl",
         tokenizer_model="Qwen/Qwen3.6-27B",
         tokenizer_revision="6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
-        tokenizer_trust_remote_code=False,
+        tokenizer_trust_remote_code=caller_trust,
     )
 
     with pytest.raises(StopAfterRendererBuild):
@@ -240,10 +258,10 @@ def test_eager_rendering_builds_validated_concrete_renderer(monkeypatch, tmp_pat
     assert captured == {
         "tokenizer": tokenizer,
         "tokenizer_model": "Qwen/Qwen3.6-27B",
-        "renderer_name": "qwen3_6_preserve_thinking",
+        "renderer_name": resolved_renderer,
         "tokenizer_source": "Qwen/Qwen3.6-27B",
         "tokenizer_revision": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
-        "tokenizer_trust_remote_code": False,
+        "tokenizer_trust_remote_code": expected_trust,
     }
 
 
@@ -320,8 +338,10 @@ def test_orpo_preference_loader_accepts_multi_shard_directory(tmp_path):
     import json
 
     def pair(chosen, rejected):
-        return {"chosen": {"messages": [{"role": "assistant", "content": chosen}]},
-                "rejected": {"messages": [{"role": "assistant", "content": rejected}]}}
+        return {
+            "chosen": {"messages": [{"role": "assistant", "content": chosen}]},
+            "rejected": {"messages": [{"role": "assistant", "content": rejected}]},
+        }
 
     for rel, rows in (("a.jsonl", [pair("a0", "a0r"), pair("a1", "a1r")]), ("b.jsonl", [pair("b0", "b0r")])):
         with open(tmp_path / rel, "w") as f:

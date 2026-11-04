@@ -15,8 +15,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from training.tokenizer_identity import requires_code_free_tokenizer_loading
 
-def load_tokenizer(model_id: str) -> Any:
+
+def load_tokenizer(model_id: str, *, renderer_name: str | None = None) -> Any:
     """Load an HF tokenizer, forwarding ``HF_TOKEN`` if set."""
     # lazy: keep verifier utilities importable without the heavy optional Transformers dependency.
     import transformers  # noqa: PLC0415 — heavy optional dep
@@ -24,7 +26,9 @@ def load_tokenizer(model_id: str) -> Any:
 
     hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     kwargs: dict[str, Any] = {
-        "trust_remote_code": True,
+        # Recognized official DeepSeek V4 data ships no remote code; an
+        # explicit False resolves the identical tokenizer class.
+        "trust_remote_code": (renderer_name != "deepseek_v4" and not requires_code_free_tokenizer_loading(model_id)),
         "token": hf_token,
     }
     if needs_mistral_regex_fix(model_id):
@@ -47,7 +51,7 @@ def load_tokenizer(model_id: str) -> Any:
         ) from exc
 
 
-def load_image_processor(model_id: str) -> Any:
+def load_image_processor(model_id: str, *, renderer_name: str | None = None) -> Any:
     """Load an image processor from a HuggingFace id or local directory."""
     from transformers.models.auto.image_processing_auto import (  # noqa: PLC0415
         AutoImageProcessor,
@@ -57,7 +61,7 @@ def load_image_processor(model_id: str) -> Any:
     try:
         return AutoImageProcessor.from_pretrained(
             model_id,
-            trust_remote_code=True,
+            trust_remote_code=(renderer_name != "deepseek_v4" and not requires_code_free_tokenizer_loading(model_id)),
             token=hf_token,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:

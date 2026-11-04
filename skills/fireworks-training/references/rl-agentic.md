@@ -98,12 +98,33 @@ Only text/tool primitives verified by Flash-specific tests are reused.
 Image, video, and audio payloads are rejected, not rendered as token-only placeholders.
 
 The V4 Flash/Pro checkpoints have no Jinja chat template. Both versions use
-the same implementation, delegating rendering and parsing to the official
-`encoding/encoding_dsv4.py`, verified against a SHA-256 pin from each model's own
-repository and revision. The contract is thinking mode, low effort, and preserved
-reasoning history. Bundles carry that encoder for offline use and reject missing
-or modified files. Do not substitute a preview tokenizer, a hand-written Jinja
+the same implementation, delegating rendering and parsing to the reviewed
+`encoding_dsv4.py` shipped in the cookbook package. Tests verify it byte-for-byte
+against the certified upstream SHA-256; loading never imports the checkpoint's
+encoder Python. The contract remains thinking mode, low effort, and preserved
+reasoning history. Do not substitute a preview tokenizer, a hand-written Jinja
 translation, or the separate SFT renderer for this exact-token contract.
+
+V4 tokenizer loads use `trust_remote_code=False`. Recipes forward the selected
+base model separately from tokenizer overrides so changed tokenizer metadata
+cannot reopen code loading for a known V4 model. Callers of the shared tokenizer
+helpers should pass `base_model` when available. Tokenizer revisions, renderer
+selection and tokenization backends retain their existing behavior; arbitrary
+renamed models without family metadata are not identified by this name signal.
+Code-loading restriction is separate from renderer identity: reviewed tokenizer
+bytes still force installed tokenizer/processor code when mutable metadata names
+another family. This does not select a V4 renderer or change another family's
+encoder; neither data match grants authenticity or permission to execute Python.
+Managed runs also retain the model record's `base_model_type` independently of
+its resource name, staged tokenizer files, and renderer choice. For V4 this
+metadata is restrict-only: it keeps tokenizer/processor loads code-free without
+changing the selected model or renderer. Direct cookbook configs leave it unset
+by default. Cookbook loaders retain this context even with the supported minimum
+SDK, omitting only an unsupported SDK metadata argument. Current-source SDKs also
+retain the type for their explicit code-free tokenizer load. This does not retrofit
+the released minimum SDK's standalone tokenizer helper, which can ask for trust
+when no installed mapping exists. The managed runtime bundles its matching SDK and
+cookbook source. No dependency upgrade is required.
 
 V4.1 Flash has a different DSML protocol and its own pinned chat template.
 Prompts delegate to `apply_chat_template`, cross-checked against its native

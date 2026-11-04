@@ -579,7 +579,7 @@ def test_main_passes_renderer_name_to_the_default_rollout(monkeypatch):
         def close(self):
             pass
 
-    def fake_build_renderer(_tokenizer, tokenizer_model, renderer_name):
+    def fake_build_renderer(_tokenizer, tokenizer_model, renderer_name, **_kwargs):
         captured["tokenizer_model"] = tokenizer_model
         captured["renderer_name"] = renderer_name
         raise _StopAfterRenderer
@@ -691,7 +691,7 @@ def test_default_rollout_preserves_images_and_sdk_routing(
     monkeypatch.setattr(
         module,
         "build_renderer",
-        lambda *_args: SimpleNamespace(
+        lambda *_args, **_kwargs: SimpleNamespace(
             image_placeholder_token_id=99,
             build_generation_prompt=lambda _messages: prompt,
             get_stop_sequences=lambda: ["STOP"],

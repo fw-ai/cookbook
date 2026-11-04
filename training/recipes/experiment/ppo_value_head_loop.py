@@ -375,13 +375,14 @@ def main(
 
         sampler = renderer = publish_weights = None
         if uses_managed_sampler:
-            tokenizer = load_deployment_tokenizer(cfg.deployment)
+            tokenizer = load_deployment_tokenizer(cfg.deployment, base_model=cfg.actor_base_model)
             sampler = actor_service.create_deployment_sampler(tokenizer=tokenizer)
             stack.callback(sampler.close)
             renderer = build_renderer(
                 tokenizer,
                 cfg.deployment.tokenizer_model,
                 cfg.renderer_name,
+                base_model=cfg.actor_base_model,
             )
             publish_weights = make_weight_sync(actor, actor_service, cfg.deployment)
 

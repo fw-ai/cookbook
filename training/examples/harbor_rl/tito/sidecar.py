@@ -342,7 +342,13 @@ def build_sidecar_bundle(setup: RolloutSetup, bundle_root: Path, *, renderer_nam
         if certification is not None and certification.artifact_files:
             certification = get_tito_renderer_certification(renderer_name, setup.tokenizer)
             native_artifacts = renderer_artifacts(setup.tokenizer, certification)
-        if not chat_template and not native_artifacts:
+        elif certification is not None and certification.packaged_contract and not chat_template:
+            # Packaged-contract renderers carry no artifact to verify; the
+            # tokenizer fingerprint is the contract, so validate it with the
+            # same failure timing before accepting a template-less bundle.
+            certification = get_tito_renderer_certification(renderer_name, setup.tokenizer)
+        packaged_contract = certification is not None and certification.packaged_contract
+        if not chat_template and not native_artifacts and not packaged_contract:
             raise ValueError("TITO sidecar requires a tokenizer chat template")
         for filename, source in sorted(native_artifacts.items()):
             digest.update(f"native-renderer/{filename}\0".encode())

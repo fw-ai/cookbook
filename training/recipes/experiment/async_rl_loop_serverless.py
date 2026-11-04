@@ -388,6 +388,7 @@ def _rollout_setup(
         inference_base_url=sampler.base_url,
         api_key=api_key,
         model=sampler.model,
+        base_model=cfg.base_model,
     )
 
 
@@ -424,7 +425,7 @@ def run_sampling_preflight(
     sampler: ServerlessSampler | None = None
     try:
         service = _make_service(api_key, base_url)
-        tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision)
+        tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision, base_model=cfg.base_model)
         training_client = service.create_lora_training_client(
             base_model=cfg.base_model,
             rank=cfg.lora_rank,
@@ -526,7 +527,9 @@ async def main(
     try:
         service = _make_service(api_key, base_url)
         stack.push_async_callback(close_in_thread, service.close)
-        tokenizer = await run_in_thread(load_tokenizer, cfg.tokenizer_model, cfg.tokenizer_revision)
+        tokenizer = await run_in_thread(
+            load_tokenizer, cfg.tokenizer_model, cfg.tokenizer_revision, base_model=cfg.base_model
+        )
         notify("session_starting", base_model=cfg.base_model)
         training_client = await run_in_thread(
             service.create_lora_training_client,

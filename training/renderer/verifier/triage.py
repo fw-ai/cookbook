@@ -80,12 +80,12 @@ def _build_fireworks_client(api_key: str, base_url: str | None):
     return Fireworks(**kwargs)
 
 
-def _build_tokenizer(tokenizer_model: str):
+def _build_tokenizer(tokenizer_model: str, *, renderer_name: str | None = None):
     """Imported lazily — pulls a HuggingFace tokenizer (can be 100s of MB).
     Forwards HF_TOKEN for gated repos; cached under ~/.cache/huggingface/."""
     from training.renderer.verifier.utils.tokenizer import load_tokenizer  # noqa: PLC0415
 
-    return load_tokenizer(tokenizer_model)
+    return load_tokenizer(tokenizer_model, renderer_name=renderer_name)
 
 
 def _check_serverless(client, model: str) -> tuple[bool, str]:
@@ -269,7 +269,7 @@ def run_triage(
 
     print()
     print("  Loading tokenizer…")
-    tokenizer = _build_tokenizer(tokenizer_model)
+    tokenizer = _build_tokenizer(tokenizer_model, renderer_name=renderer_name)
 
     print()
     print("  Probing…")

@@ -24,6 +24,12 @@ from typing import Any, Iterable, Literal, Mapping, Sequence
 import numpy as np
 import torch
 from fireworks.training import sdk
+from training.tokenizer_identity import (
+    DEEPSEEK_V41_MODEL_RE as _DEEPSEEK_V41_MODEL_RE,
+    is_deepseek_v4_model_name,
+    is_deepseek_v4_tokenizer_source,
+    requires_code_free_tokenizer_loading,
+)
 
 import training.renderer._gemma4_split as _gemma4_split_renderer  # noqa: F401 — split override
 import training.renderer.deepseek_v4 as _deepseek_v4_renderer  # noqa: F401 — triggers register_renderer
@@ -75,7 +81,6 @@ from training.renderer.thinking_trace import (
 from training.utils.runner import DatasetError
 from training.utils.tokenizers import load_tokenizer
 
-_DEEPSEEK_V41_MODEL_RE = re.compile(r"(?:^|[/_.-])deepseek[-_]?v?4(?:[._-]?1|p1)(?=$|[/_.-])")
 _NEMOTRON35_VL_MODEL_RE = re.compile(
     r"(?:^|[/_.-])(?:nemotron-3p5-super-vl|nemotron-3\.5-super-vl|nemotron3\.5-super-vl)"
     r"(?:-120b-a12b(?:-base)?-(?:bf16|nvfp4))?$"
@@ -219,6 +224,19 @@ def resolve_renderer_name(
         return renderer_name
     if plugin_renderer_name := resolve_renderer_name_from_plugins(tokenizer_model):
         return plugin_renderer_name
+    # DeepSeek-V4 ships a custom non-Jinja encoder (see encoding_dsv4.py
+    # upstream) with thinking blocks and DSML tool calls. Recognize it before
+    # the name-based family heuristics: an existing local directory is
+    # identified from its artifact data (config model_type / tokenizer
+    # digest), never its basename -- a real V4 checkpoint keeps this renderer
+    # under any dirname, and a canonical-looking dirname without V4 data does
+    # not get it. Non-directory inputs may also carry an exact reviewed
+    # model ID or the explicit architecture tag used by existing callers.
+    if os.path.isdir(tokenizer_model):
+        if is_deepseek_v4_tokenizer_source(tokenizer_model):
+            return "deepseek_v4"
+    elif is_deepseek_v4_model_name(tokenizer_model):
+        return "deepseek_v4"
     normalized_model_name = tokenizer_model.lower()
     if normalized_model_name in {
         "qwen/qwen2.5-32b-instruct",
@@ -317,19 +335,11 @@ def resolve_renderer_name(
         return "qwen3_5"
     if "gemma-4" in normalized_model_name or "gemma4" in normalized_model_name:
         return "gemma4"
-    # V4.1 must be matched before V4 because dotted names contain "deepseek-v4".
+    # V4.1 keeps its own renderer. The earlier V4 recognition never claims
+    # V4.1: V4.1 configs declare model_type "deepseek_v41" and V4.1 names are
+    # outside the exact V4 ID set, so V4.1 inputs reach this regex.
     if _DEEPSEEK_V41_MODEL_RE.search(normalized_model_name):
         return "deepseek_v41"
-    # DeepSeek-V4 ships a custom non-Jinja encoder (see encoding_dsv4.py upstream)
-    # with thinking blocks and DSML tool calls. Match the V4 family explicitly so
-    # we don't accidentally claim V3 (which routes through the
-    # built-in deepseekv3_thinking renderer via get_recommended_renderer_name).
-    if (
-        "deepseek-v4" in normalized_model_name
-        or "deepseek_v4" in normalized_model_name
-        or "deepseekv4" in normalized_model_name
-    ):
-        return "deepseek_v4"
     # GLM-5.3-Flash shares GLM-5.3's text/tool contract but replaces the
     # text-only model's unsupported-media reminder with real image/video/audio
     # branches. Resolve it first so image capability cannot leak to GLM-5.3.
@@ -456,6 +466,7 @@ def build_renderer(
     *,
     thinking_trace_history_mode: str | ThinkingTraceHistoryMode | None = ThinkingTraceHistoryMode.UNSPECIFIED,
     load_image_processor: bool = True,
+    base_model: str | None = None,
 ) -> Renderer:
     """Construct the Tinker renderer used for supervised formatting."""
     resolved_name = resolve_renderer_plan(
@@ -468,6 +479,7 @@ def build_renderer(
         tokenizer_model,
         resolved_name,
         load_image_processor=load_image_processor,
+        base_model=base_model,
     )
 
 
@@ -477,6 +489,7 @@ def build_renderer_from_resolved_name(
     renderer_name: str,
     *,
     load_image_processor: bool = True,
+    base_model: str | None = None,
 ) -> Renderer:
     """Construct exactly ``renderer_name`` without consulting capabilities."""
 
@@ -485,15 +498,22 @@ def build_renderer_from_resolved_name(
         and get_image_processor is not None
         and (renderer_supports_images(renderer_name) or renderer_image_processor_loader(renderer_name) is not None)
     ):
-        return get_renderer(
+        renderer = get_renderer(
             renderer_name,
             tokenizer,
             image_processor=_get_image_processor_with_remote_code_default(
                 tokenizer_model,
                 renderer_name=renderer_name,
+                base_model=base_model,
             ),
         )
-    return get_renderer(renderer_name, tokenizer)
+    else:
+        renderer = get_renderer(renderer_name, tokenizer)
+    if base_model is not None:
+        # Restrict-only context carrier so pickle reconstruction can keep the
+        # same code-free policy (see Renderer.__reduce__ / _unpickle_renderer).
+        renderer._tokenizer_base_model = base_model
+    return renderer
 
 
 def resolve_renderer_snapshot(
@@ -537,6 +557,7 @@ def populate_render_worker_state(
     max_seq_len: int,
     thinking_trace_history_mode: str | ThinkingTraceHistoryMode | None = ThinkingTraceHistoryMode.UNSPECIFIED,
     renderer_name_is_resolved: bool = False,
+    base_model: str | None = None,
     **extras: Any,
 ) -> None:
     """Build a tokenizer + renderer and populate ``state`` for DataLoader workers.
@@ -551,16 +572,22 @@ def populate_render_worker_state(
     ``extras`` (e.g. ``train_on_what`` for SFT). A ``None`` remote-code policy
     preserves the legacy permissive load; reviewed plans pass an explicit value.
     """
+    # A selected V4 renderer supplies family context independently of mutable
+    # tokenizer metadata, including configless staged/save_pretrained layouts.
+    # An independently selected V4 base model does the same when the renderer
+    # is a direct override of another family.
     tokenizer = load_tokenizer(
         tokenizer_model,
         tokenizer_revision,
-        tokenizer_trust_remote_code,
+        False if renderer_name == "deepseek_v4" else tokenizer_trust_remote_code,
+        base_model=base_model,
     )
     renderer = (
         build_renderer_from_resolved_name(
             tokenizer,
             tokenizer_model,
             renderer_name,
+            base_model=base_model,
         )
         if renderer_name_is_resolved
         else build_renderer(
@@ -568,6 +595,7 @@ def populate_render_worker_state(
             tokenizer_model,
             renderer_name,
             thinking_trace_history_mode=thinking_trace_history_mode,
+            base_model=base_model,
         )
     )
     state.update(
@@ -582,6 +610,7 @@ def _get_image_processor_with_remote_code_default(
     tokenizer_model: str,
     *,
     renderer_name: str = "",
+    base_model: str | None = None,
 ) -> Any:
     # Image processors follow the tokenizer loader's permissive-by-default
     # remote-code policy. This is intentionally independent of model and
@@ -609,14 +638,21 @@ def _get_image_processor_with_remote_code_default(
         return _glm5_renderer.Glm53FlashImageTokenCounter.from_pretrained(tokenizer_model)
 
     if "HF_TRUST_REMOTE_CODE" in os.environ:
-        return get_image_processor(tokenizer_model)
+        return get_image_processor(tokenizer_model, renderer_name=renderer_name, base_model=base_model)
+
+    if is_deepseek_v4_model_name(base_model) or requires_code_free_tokenizer_loading(tokenizer_model):
+        # Recognized official DeepSeek V4 data is always code-free, and an
+        # independently selected V4 base model supplies the same family context
+        # for an opaque tokenizer source; do not scope the permissive env
+        # default onto either.
+        return get_image_processor(tokenizer_model, renderer_name=renderer_name, base_model=base_model)
 
     # The image processor reads policy from the environment. Scope the default
     # to this cached processor load and restore it even if Transformers raises,
     # so unrelated work in the same process cannot inherit the opt-in.
     os.environ["HF_TRUST_REMOTE_CODE"] = "1"
     try:
-        return get_image_processor(tokenizer_model)
+        return get_image_processor(tokenizer_model, renderer_name=renderer_name, base_model=base_model)
     finally:
         os.environ.pop("HF_TRUST_REMOTE_CODE", None)
 

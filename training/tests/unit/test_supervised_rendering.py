@@ -1097,7 +1097,7 @@ def test_render_preference_pair_uses_equivalent_single_example_mode(caplog):
 def test_build_renderer_uses_image_processor_for_vl_renderers(monkeypatch):
     calls: list[tuple[str, object | None]] = []
 
-    def fake_get_image_processor(model_name):
+    def fake_get_image_processor(model_name, *, renderer_name=None, base_model=None):
         assert model_name == "Qwen/Qwen3-VL-30B-A3B-Instruct"
         return "image-processor"
 
@@ -1163,7 +1163,7 @@ def test_build_renderer_from_resolved_name_loads_image_processor_by_default(
 ):
     calls: list[tuple[str, object | None]] = []
 
-    def fake_get_image_processor(model_name):
+    def fake_get_image_processor(model_name, *, renderer_name=None, base_model=None):
         assert model_name == "Qwen/Qwen3-VL-30B-A3B-Instruct"
         return "image-processor"
 
@@ -1216,7 +1216,7 @@ def test_build_renderer_from_resolved_name_loads_muse_token_counter(monkeypatch)
 def test_build_renderer_from_resolved_name_can_skip_image_processor(monkeypatch):
     calls: list[tuple[str, object | None]] = []
 
-    def fail_get_image_processor(_model_name):
+    def fail_get_image_processor(_model_name, *, renderer_name=None, base_model=None):
         pytest.fail("image processor was loaded")
 
     def fake_get_renderer(name, tokenizer, image_processor=None):
@@ -1244,7 +1244,7 @@ def test_build_renderer_uses_tokenizer_remote_code_default_for_image_processor(
 
     env_at_call: list[str | None] = []
 
-    def fake_get_image_processor(_model_name: str) -> str:
+    def fake_get_image_processor(_model_name: str, *, renderer_name=None, base_model=None) -> str:
         env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
         return "image-processor"
 
@@ -1297,7 +1297,7 @@ def test_resolved_image_renderer_trusts_opaque_tokenizer_path(
 
     env_at_call: list[str | None] = []
 
-    def fake_get_image_processor(model_name: str) -> str:
+    def fake_get_image_processor(model_name: str, *, renderer_name=None, base_model=None) -> str:
         assert model_name == "gs://model-bucket/uploads/checkpoint/hf"
         env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
         return "image-processor"
@@ -1326,7 +1326,7 @@ def test_image_processor_failure_restores_remote_code_environment(
 ) -> None:
     monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
 
-    def fail_get_image_processor(_model_name: str) -> None:
+    def fail_get_image_processor(_model_name: str, *, renderer_name=None, base_model=None) -> None:
         assert os.environ["HF_TRUST_REMOTE_CODE"] == "1"
         raise RuntimeError("processor load failed")
 
@@ -1349,7 +1349,7 @@ def test_new_image_renderer_inherits_remote_code_default(
 
     env_at_call: list[str | None] = []
 
-    def fake_get_image_processor(_model_name: str) -> str:
+    def fake_get_image_processor(_model_name: str, *, renderer_name=None, base_model=None) -> str:
         env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
         return "image-processor"
 
@@ -1376,7 +1376,7 @@ def test_build_renderer_uses_remote_code_default_for_kimi_k2_5(
 
     env_at_call: list[str | None] = []
 
-    def fake_get_image_processor(_model_name: str) -> str:
+    def fake_get_image_processor(_model_name: str, *, renderer_name=None, base_model=None) -> str:
         env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
         return "image-processor"
 
@@ -1401,7 +1401,7 @@ def test_build_renderer_preserves_existing_trust_remote_code_value(monkeypatch):
 
     env_at_call: list[str | None] = []
 
-    def fake_get_image_processor(model_name):
+    def fake_get_image_processor(model_name, *, renderer_name=None, base_model=None):
         env_at_call.append(os.environ.get("HF_TRUST_REMOTE_CODE"))
         return "image-processor"
 
@@ -1543,10 +1543,15 @@ def test_resolve_renderer_name_supports_gemma4_thinking_override() -> None:
 
 
 def test_resolve_renderer_name_prefers_deepseek_v4() -> None:
-    """DeepSeek-V4 tokenizers should resolve to the custom deepseek_v4 renderer."""
+    """Reviewed DeepSeek-V4 IDs resolve to the custom deepseek_v4 renderer;
+    unreviewed lookalike names keep the existing could-not-infer behavior."""
     assert resolve_renderer_name("deepseek-ai/DeepSeek-V4-Flash") == "deepseek_v4"
-    assert resolve_renderer_name("deepseek-ai/deepseek_v4") == "deepseek_v4"
-    assert resolve_renderer_name("custom/DeepSeekV4-finetune") == "deepseek_v4"
+    assert resolve_renderer_name("deepseek-ai/DeepSeek-V4-Flash-0731") == "deepseek_v4"
+    assert resolve_renderer_name("accounts/fireworks/models/deepseek-v4-pro-fp8") == "deepseek_v4"
+    with pytest.raises(ValueError, match="Could not infer"):
+        resolve_renderer_name("deepseek-ai/deepseek_v4")
+    with pytest.raises(ValueError, match="Could not infer"):
+        resolve_renderer_name("custom/DeepSeekV4-finetune")
 
 
 def test_resolve_renderer_name_prefers_deepseek_v41_over_v4() -> None:
@@ -1779,7 +1784,7 @@ def test_populate_render_worker_state_writes_canonical_keys(monkeypatch):
     monkeypatch.setattr(
         sup,
         "load_tokenizer",
-        lambda model, revision=None, trust_remote_code=None: fake_tokenizer,
+        lambda model, revision=None, trust_remote_code=None, *, base_model=None: fake_tokenizer,
     )
     monkeypatch.setattr(sup, "build_renderer", lambda *a, **k: fake_renderer)
 
@@ -1805,7 +1810,7 @@ def test_populate_render_worker_state_forwards_materialized_tokenizer_plan(monke
 
     captured: dict = {}
 
-    def fake_load_tokenizer(model, revision=None, trust_remote_code=None):
+    def fake_load_tokenizer(model, revision=None, trust_remote_code=None, *, base_model=None):
         captured.update(
             model=model,
             revision=revision,
@@ -1840,7 +1845,7 @@ def test_populate_render_worker_state_uses_resolved_name_without_live_resolution
     monkeypatch.setattr(
         sup,
         "load_tokenizer",
-        lambda _model, _revision=None, _trust_remote_code=None: fake_tokenizer,
+        lambda _model, _revision=None, _trust_remote_code=None, *, base_model=None: fake_tokenizer,
     )
     monkeypatch.setattr(
         sup,
@@ -1848,7 +1853,7 @@ def test_populate_render_worker_state_uses_resolved_name_without_live_resolution
         lambda *_args, **_kwargs: pytest.fail("live renderer resolution was used"),
     )
 
-    def fake_build_resolved(tokenizer, tokenizer_model, renderer_name):
+    def fake_build_resolved(tokenizer, tokenizer_model, renderer_name, *, base_model=None):
         captured.update(
             tokenizer=tokenizer,
             tokenizer_model=tokenizer_model,

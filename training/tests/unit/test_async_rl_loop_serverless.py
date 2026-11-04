@@ -124,7 +124,7 @@ class _Service:
 def _patch_runtime(monkeypatch, service: _Service) -> None:
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setattr(loop, "_make_service", lambda *_args: service)
-    monkeypatch.setattr(loop, "load_tokenizer", lambda *_args: object())
+    monkeypatch.setattr(loop, "load_tokenizer", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(loop, "_router_replay_enabled", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(loop, "setup_wandb", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(loop, "wandb_finish", lambda **_kwargs: None)

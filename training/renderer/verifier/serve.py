@@ -55,19 +55,19 @@ import training.renderer  # noqa: F401, E402
 
 
 @functools.lru_cache(maxsize=8)
-def _tokenizer(name: str):
+def _tokenizer(name: str, *, renderer_name: str | None = None):
     from training.renderer.verifier.utils.tokenizer import load_tokenizer  # noqa: PLC0415
 
-    return load_tokenizer(name)
+    return load_tokenizer(name, renderer_name=renderer_name)
 
 
 @functools.lru_cache(maxsize=8)
-def _image_processor(name: str):
+def _image_processor(name: str, *, renderer_name: str | None = None):
     from training.renderer.verifier.utils.tokenizer import (  # noqa: PLC0415
         load_image_processor,
     )
 
-    return load_image_processor(name)
+    return load_image_processor(name, renderer_name=renderer_name)
 
 
 def _is_loopback_url(value: str | None) -> bool:
@@ -134,8 +134,10 @@ def _run_one_probe(body: dict[str, Any]) -> dict[str, Any]:
         deployment_id=deployment_id,
     )
 
-    tokenizer = _tokenizer(tokenizer_model)
-    image_processor = _image_processor(image_processor_model) if image_processor_model else None
+    tokenizer = _tokenizer(tokenizer_model, renderer_name=renderer)
+    image_processor = (
+        _image_processor(image_processor_model, renderer_name=renderer) if image_processor_model else None
+    )
     return run_probe(
         renderer_name=renderer,
         tokenizer=tokenizer,

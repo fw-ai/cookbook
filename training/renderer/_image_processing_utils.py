@@ -11,6 +11,7 @@ import os
 from functools import cache
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from training.tokenizer_identity import is_deepseek_v4_model_name, requires_code_free_tokenizer_loading
 from PIL import Image
 
 if TYPE_CHECKING:
@@ -24,7 +25,12 @@ else:
 
 
 @cache
-def get_image_processor(model_name: str) -> ImageProcessor:
+def get_image_processor(
+    model_name: str,
+    *,
+    renderer_name: str | None = None,
+    base_model: str | None = None,
+) -> ImageProcessor:
     model_name = model_name.split(":")[0]
 
     from transformers.models.auto.image_processing_auto import AutoImageProcessor
@@ -39,6 +45,19 @@ def get_image_processor(model_name: str) -> ImageProcessor:
     elif model_name == "moonshotai/Kimi-K2.6":
         kwargs["trust_remote_code"] = True
         kwargs["revision"] = "b5aabbfb20227ed42becbf5541dbffd213942c58"
+
+    if (
+        renderer_name == "deepseek_v4"
+        or is_deepseek_v4_model_name(base_model)
+        or requires_code_free_tokenizer_loading(model_name, revision=kwargs.get("revision"))
+    ):
+        # Recognized official DeepSeek V4 data ships no remote code, and an
+        # independently selected V4 renderer or base model supplies the same
+        # family context: explicit False at the boundary, and the ambient env
+        # opt-in must not re-enable checkpoint-staged Python for it. The
+        # context is part of this cached loader's key, so a permissive entry
+        # cannot be reused under a restrictive one.
+        kwargs["trust_remote_code"] = False
 
     processor = AutoImageProcessor.from_pretrained(model_name, **kwargs)
 

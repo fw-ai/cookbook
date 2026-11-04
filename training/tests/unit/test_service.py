@@ -16,6 +16,28 @@ from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 from training.utils.service import build_service_client, resolve_router_replay_enabled
 
 
+@pytest.mark.parametrize("model_type", ["", "deepseek_v4", "deepseek_v41", "qwen3"])
+def test_model_family_context_is_restrict_only_and_optional(model_type: str) -> None:
+    kwargs = dict(
+        base_model="accounts/customer/models/production-model",
+        base_model_type=model_type,
+        tokenizer_model="staged-tokenizer",
+        max_lora_rank=8,
+        max_context_length=4096,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(),
+    )
+    mapped = service._firetitan_service_kwargs(**kwargs)
+    assert mapped["base_model"] == kwargs["base_model"]
+    assert mapped["tokenizer_model"] == kwargs["tokenizer_model"]
+    if model_type == "deepseek_v4" and "base_model_type" in {
+        f.name for f in dataclasses.fields(service.FiretitanProvisioningConfig)
+    }:
+        assert mapped["base_model_type"] == model_type
+    else:
+        assert "base_model_type" not in mapped
+
+
 @pytest.mark.parametrize("capability", [None, False, True])
 @pytest.mark.parametrize("configured_rdma", [False, True])
 def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, caplog):

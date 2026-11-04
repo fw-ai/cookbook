@@ -48,6 +48,9 @@ class RolloutSetup:
     inference_base_url: str
     api_key: str
     model: str
+    base_model: str | None = None
+    """Restrict-only model-family context for renderer/processor construction
+    inside rollout factories; ``None`` preserves the previous policy."""
 
 
 RolloutFn = Callable[..., Awaitable[RolloutRun | None]]

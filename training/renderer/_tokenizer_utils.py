@@ -12,6 +12,8 @@ from collections.abc import Callable
 from functools import cache
 from typing import TYPE_CHECKING, Any, TypeAlias
 
+from training.tokenizer_identity import is_deepseek_v4_model_name, requires_code_free_tokenizer_loading
+
 if TYPE_CHECKING:
     # this import takes a few seconds, so avoid it on the module import when possible
     from transformers import PreTrainedTokenizer
@@ -88,12 +90,15 @@ def unregister_tokenizer(name: str) -> bool:
     return False
 
 
-def get_tokenizer(model_name: str) -> Tokenizer:
+def get_tokenizer(model_name: str, *, renderer_name: str | None = None, base_model: str | None = None) -> Tokenizer:
     """Get a tokenizer by name.
 
     Checks the custom registry first (see :func:`register_tokenizer`),
     then falls back to HuggingFace ``AutoTokenizer``. HuggingFace
-    tokenizers are cached after first load.
+    tokenizers are cached after first load. A known ``deepseek_v4``
+    renderer or independently selected V4 ``base_model`` constrains the HF
+    load to repository-installed code even if mutable artifact metadata no
+    longer identifies the family.
 
     Args:
         model_name (str): HuggingFace model identifier (e.g.
@@ -113,7 +118,7 @@ def get_tokenizer(model_name: str) -> Tokenizer:
     if (tokenizer := _CUSTOM_TOKENIZER_REGISTRY.get(model_name)) is not None:
         return tokenizer()
 
-    return _get_hf_tokenizer(model_name)
+    return _get_hf_tokenizer(model_name, renderer_name=renderer_name, base_model=base_model)
 
 
 # Pinned revisions for Kimi K2 tokenizers, loaded directly via the custom
@@ -126,14 +131,24 @@ _KIMI_TOKENIZER_REVISIONS: dict[str, str] = {
 
 
 @cache
-def _get_hf_tokenizer(model_name: str) -> Tokenizer:
+def _get_hf_tokenizer(
+    model_name: str, *, renderer_name: str | None = None, base_model: str | None = None
+) -> Tokenizer:
     from transformers.models.auto.tokenization_auto import AutoTokenizer
 
     model_name = model_name.split(":")[0]
 
-    # Local directory path — always trust custom tokenizer code bundled alongside.
+    # The selected V4 renderer or base model is independent of mutable artifact
+    # identity. All signals constrain loading to installed code; none enables code.
     if os.path.isdir(model_name):
-        return AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        return AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=(
+                renderer_name != "deepseek_v4"
+                and not is_deepseek_v4_model_name(base_model)
+                and not requires_code_free_tokenizer_loading(model_name)
+            ),
+        )
 
     # Avoid gating of Llama 3 models:
     if model_name.startswith("meta-llama/Llama-3"):
@@ -151,11 +166,23 @@ def _get_hf_tokenizer(model_name: str) -> Tokenizer:
     # the backend tokenizer ...") instead of using Kimi's tokenization_kimi auto-map.
     # Load the custom class directly so the result is correct regardless of the
     # installed transformers version.
-    if model_name.startswith("moonshotai/Kimi-K2"):
+    revision = _KIMI_TOKENIZER_REVISIONS.get(model_name)
+    code_free = (
+        renderer_name == "deepseek_v4"
+        or is_deepseek_v4_model_name(base_model)
+        or requires_code_free_tokenizer_loading(model_name, revision=revision)
+    )
+    if not code_free and model_name.startswith("moonshotai/Kimi-K2"):
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
-        revision = _KIMI_TOKENIZER_REVISIONS.get(model_name)
         cls = get_class_from_dynamic_module("tokenization_kimi.TikTokenTokenizer", model_name, revision=revision)
         return cls.from_pretrained(model_name, revision=revision)
+
+    if code_free:
+        # Recognized official DeepSeek V4 data ships no remote code, and an
+        # independently selected V4 renderer or base model supplies the same
+        # family context: the ambient env opt-in must not re-enable
+        # checkpoint-staged Python for it.
+        kwargs["trust_remote_code"] = False
 
     return AutoTokenizer.from_pretrained(model_name, **kwargs)

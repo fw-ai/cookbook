@@ -259,7 +259,7 @@ def test_load_tokenizer_does_not_hide_unrelated_attribute_errors(monkeypatch):
 def test_load_deployment_tokenizer_uses_generic_deploy_config_fields(monkeypatch):
     captured: dict = {}
 
-    def fake_load_tokenizer(model, revision=None, trust_remote_code=None):
+    def fake_load_tokenizer(model, revision=None, trust_remote_code=None, *, base_model=None):
         captured.update(
             model=model,
             revision=revision,
@@ -670,8 +670,12 @@ def test_backend_selection_does_not_fail_open_on_hub_errors(monkeypatch):
         with pytest.raises(RuntimeError, match=r"\(HTTP 500\)") as exc_info:
             tokenizers.load_tokenizer("Qwen/Qwen3.8-27B")
 
-    assert isinstance(exc_info.value.__cause__, HfHubHTTPError)
-    assert calls == ["tokenizer_config.json"]
+        assert isinstance(exc_info.value.__cause__, HfHubHTTPError)
+        # Advisory recognition reads (config.json / tokenizer.json) may run
+        # before the declaration read. The contract is that the declaration
+        # read still happens and its failure propagates; the monkeypatched
+        # AutoTokenizer above proves nothing falls back to the default path.
+        assert calls[-1] == "tokenizer_config.json"
 
 
 def test_absent_hub_declaration_keeps_the_default_path(monkeypatch):

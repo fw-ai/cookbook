@@ -208,7 +208,7 @@ def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
     with ExitStack() as stack:
-        tokenizer = load_deployment_tokenizer(cfg.deployment)
+        tokenizer = load_deployment_tokenizer(cfg.deployment, base_model=cfg.base_model)
         service = build_service_client(
             api_key=api_key,
             base_url=base_url,

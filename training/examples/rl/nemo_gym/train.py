@@ -210,7 +210,9 @@ def write_nemo_gym_config(*, proxy_port: int) -> None:
 
 def _check_gym_head_available() -> None:
     if _http_up(GYM_HEAD_SERVER_URL):
-        raise RuntimeError(f"NeMo head address is already in use: {GYM_HEAD_SERVER_URL}; refusing to reuse another run")
+        raise RuntimeError(
+            f"NeMo head address is already in use: {GYM_HEAD_SERVER_URL}; refusing to reuse another run"
+        )
 
 
 def start_gym_env(
@@ -390,14 +392,20 @@ def build_rollout_fn_factory(
                     raise session.failure from failure
             if failure is not None:
                 reason = (
-                    "nemo_reward_invalid" if reward_failure
-                    else "nemo_run_timeout" if isinstance(failure, TimeoutError)
-                    else "nemo_run_http" if isinstance(failure, aiohttp.ClientError)
-                    else "nemo_reward_invalid"
+                    "nemo_reward_invalid"
+                    if reward_failure
+                    else (
+                        "nemo_run_timeout"
+                        if isinstance(failure, TimeoutError)
+                        else "nemo_run_http" if isinstance(failure, aiohttp.ClientError) else "nemo_reward_invalid"
+                    )
                 )
                 status = getattr(failure, "status", None)
                 diagnosis = TITOError(
-                    reason, status or 500, "NeMo native rollout failed", origin="environment",
+                    reason,
+                    status or 500,
+                    "NeMo native rollout failed",
+                    origin="environment",
                     context={
                         "phase": "reward" if reward_failure else "nemo_run",
                         "final_status": status,
@@ -405,7 +413,8 @@ def build_rollout_fn_factory(
                 )
                 trace_path = (
                     await session.retain_failure_trace(diagnosis)
-                    if session is not None and session.artifact is not None else None
+                    if session is not None and session.artifact is not None
+                    else None
                 )
                 failure.diagnostics = diagnosis.as_error_record()
                 failure.trace_paths = (trace_path,) if trace_path is not None else ()
@@ -530,7 +539,7 @@ def run() -> None:
         raise SystemExit(f"dataset is empty: {dataset_path}")
     logger.info("loaded %d NeMo Gym rows from %s", len(rows), dataset_path)
 
-    tokenizer = load_tokenizer(args.tokenizer_model, args.tokenizer_revision)
+    tokenizer = load_tokenizer(args.tokenizer_model, args.tokenizer_revision, base_model=args.base_model)
     renderer_name = args.renderer_name or get_recommended_renderer_name(args.tokenizer_model)
 
     proxy = RecordingChatProxy(

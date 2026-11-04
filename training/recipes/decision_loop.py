@@ -62,6 +62,7 @@ from training.utils.runner_state import (
 from training.utils.serverless import setup_serverless_training
 from training.utils.streaming import dataset_error_for_rendered_row
 from training.utils.supervised import RenderedSupervisedDatum
+from training.utils.tokenizers import resolve_tokenizer_base_model
 
 logger = logging.getLogger(__name__)
 
@@ -275,6 +276,7 @@ def main(config: Config) -> dict:
                 additional_headers=headers,
                 base_model=cfg.base_model,
                 tokenizer_model=cfg.tokenizer_model,
+                base_model_type=cfg.base_model_type,
                 max_lora_rank=cfg.lora_rank,
                 max_context_length=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
@@ -311,7 +313,8 @@ def main(config: Config) -> dict:
             cfg.thinking_trace_history_mode,
             cfg.tokenizer_trust_remote_code,
         )
-        sft_loop._init_render_worker(*base_init_args)
+        tokenizer_base_model = resolve_tokenizer_base_model(cfg.base_model, cfg.base_model_type)
+        sft_loop._init_render_worker(*base_init_args, base_model=tokenizer_base_model)
         training_ds, eval_types, eval_data = prepare_datasets(cfg)
         samples_dir, samples_limit = "", sft_loop._resolve_render_samples_limit(cfg.render_samples_limit)
         if cfg.render_samples_file and samples_limit != 0:
@@ -334,7 +337,11 @@ def main(config: Config) -> dict:
             shuffle=True,
             generator=generator,
             worker_init_fn=functools.partial(
-                sft_loop._init_render_worker, *base_init_args, samples_dir, samples_limit
+                sft_loop._init_render_worker,
+                *base_init_args,
+                samples_dir,
+                samples_limit,
+                base_model=tokenizer_base_model,
             ),
             group_by_length=cfg.group_by_length,
             length_group_factor=cfg.length_group_factor,

@@ -1124,22 +1124,33 @@ class TrainOnWhat(StrEnum):
     CUSTOMIZED = "customized"
 
 
-def _unpickle_renderer(renderer_name: str, model_name: str, has_image_processor: bool) -> "Renderer":
+def _unpickle_renderer(
+    renderer_name: str,
+    model_name: str,
+    has_image_processor: bool,
+    base_model: str | None = None,
+) -> "Renderer":
     """Reconstruct a Renderer from its name and model name.
 
     Called by pickle to deserialize Renderer instances. Uses cached tokenizer/image_processor
-    so reconstruction cost is negligible after first call.
+    so reconstruction cost is negligible after first call. ``base_model`` is a
+    restrict-only context carried by newer pickles so reconstruction keeps the
+    same code-free policy under an ambient remote-code opt-in; older pickles
+    without it reconstruct exactly as before.
     """
     from training.renderer._registry import get_renderer
     from training.renderer._tokenizer_utils import get_tokenizer
 
-    tokenizer = get_tokenizer(model_name)
+    tokenizer = get_tokenizer(model_name, renderer_name=renderer_name, base_model=base_model)
     image_processor = None
     if has_image_processor:
         from training.renderer._image_processing_utils import get_image_processor
 
-        image_processor = get_image_processor(model_name)
-    return get_renderer(renderer_name, tokenizer, image_processor, model_name=model_name)
+        image_processor = get_image_processor(model_name, renderer_name=renderer_name, base_model=base_model)
+    renderer = get_renderer(renderer_name, tokenizer, image_processor, model_name=model_name)
+    if base_model is not None:
+        renderer._tokenizer_base_model = base_model
+    return renderer
 
 
 class Renderer(ABC):
@@ -1176,10 +1187,13 @@ class Renderer(ABC):
         self.tokenizer = tokenizer
 
     def __reduce__(self) -> tuple:
-        """Enable pickling by storing only (renderer_name, model_name, has_image_processor).
+        """Enable pickling by storing only (renderer_name, model_name, has_image_processor, base_model).
 
         On unpickling, the Renderer is reconstructed via get_renderer() with a
-        cached tokenizer, so the cost is negligible.
+        cached tokenizer, so the cost is negligible. ``base_model`` is the
+        restrict-only context recorded by the builders (``None`` when the
+        renderer was built without one); pickles written before it was added
+        carry only the first three items and still load.
         """
         renderer_name = getattr(self, "_renderer_name", None)
         model_name = getattr(self, "_model_name", None)
@@ -1192,7 +1206,7 @@ class Renderer(ABC):
             )
         return (
             _unpickle_renderer,
-            (renderer_name, model_name, has_image_processor),
+            (renderer_name, model_name, has_image_processor, getattr(self, "_tokenizer_base_model", None)),
         )
 
     @property

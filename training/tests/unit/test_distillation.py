@@ -738,7 +738,7 @@ def test_main_samples_scores_trains_and_hotloads_each_step(monkeypatch) -> None:
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     for name in ("setup_wandb", "validate_config", "log_metrics_json", "wandb_finish", "log_run_resources"):
         monkeypatch.setattr(distillation_loop, name, lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(distillation_loop, "load_deployment_tokenizer", lambda *_args: tokenizer)
+    monkeypatch.setattr(distillation_loop, "load_deployment_tokenizer", lambda *_args, **_kwargs: tokenizer)
     monkeypatch.setattr(distillation_loop, "load_jsonl_dataset", lambda *_args: list(rows))
     monkeypatch.setattr(distillation_loop, "build_service_client", lambda **_kwargs: _Service())
     monkeypatch.setattr(
@@ -1118,7 +1118,15 @@ def test_serverless_k3_example_distills_from_step0_teacher(monkeypatch, tmp_path
     monkeypatch.setenv("FIREWORKS_API_KEY", "fw-test")
     monkeypatch.setenv("FIREWORKS_BASE_URL", "https://api.example.test")
     monkeypatch.setattr(example, "FiretitanServiceClient", Service)
-    monkeypatch.setattr(example, "load_tokenizer", lambda name: object())
+    tokenizer_calls: list[dict[str, object]] = []
+
+    def fake_load_tokenizer(name, revision=None, trust_remote_code=None, *, base_model=None, **_kwargs):
+        tokenizer_calls.append(
+            {"name": name, "trust_remote_code": trust_remote_code, "base_model": base_model}
+        )
+        return object()
+
+    monkeypatch.setattr(example, "load_tokenizer", fake_load_tokenizer)
     monkeypatch.setattr(example, "get_renderer", lambda name, tokenizer: Renderer())
     dataset = tmp_path / "rows.jsonl"
     dataset.write_text('{"question": "q1"}\n{"question": "q2"}\n')
@@ -1132,6 +1140,10 @@ def test_serverless_k3_example_distills_from_step0_teacher(monkeypatch, tmp_path
     )
     result = example.main(cfg)
 
+    # The example forwards the loader's actual context interface verbatim.
+    assert tokenizer_calls == [
+        {"name": cfg.tokenizer_model, "trust_remote_code": None, "base_model": cfg.base_model}
+    ]
     assert events == [
         "save:sdft-teacher-step0",
         "save:sdft-student-0001",
