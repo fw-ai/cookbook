@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 import training.recipes.decision_loop as decision_loop
-from training.utils import WandBConfig
+from training.utils import LoggingConfig
 
 from .prepare_data import DATA_DIR, download_split
 
@@ -113,7 +113,7 @@ def build_config(args: argparse.Namespace) -> decision_loop.Config:
         max_seq_len=args.max_seq_len,
         max_examples=args.max_examples,
         output_model_id=args.output_model_id,
-        wandb=WandBConfig(entity=args.wandb_entity, project="kalshi-decision-v1"),
+        logging=LoggingConfig(project="kalshi-decision-v1", wandb_entity=args.wandb_entity),
     )
 
 

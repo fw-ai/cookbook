@@ -162,7 +162,7 @@ def _run(
 
     _decision_render_state(monkeypatch, plane)
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setattr(decision_loop, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(decision_loop, "setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(decision_loop, "validate_config", lambda *args, **kwargs: None)
 
     def _write_running_step(runner, *, tokens, **kwargs):

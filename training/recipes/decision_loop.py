@@ -38,9 +38,10 @@ from training.utils import (
     log_metrics_json,
     make_render_dataloader,
     read_api_extra_headers_env,
-    setup_wandb,
+    finish_logging,
+    mlflow_log,
+    setup_logging,
     validate_config,
-    wandb_finish,
     wandb_log,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
@@ -225,6 +226,7 @@ def evaluate(client, datums: list[sdk.Datum], step: int, runner: RunnerIO) -> No
     logger.info("[Eval] step %d | K-way NLL %.4f | accuracy %.4f", step, loss, accuracy)
     log_metrics_json(step, eval_loss=loss, eval_accuracy=accuracy)
     wandb_log({"eval/loss": loss, "eval/accuracy": accuracy}, step)
+    mlflow_log({"eval/loss": loss, "eval/accuracy": accuracy}, step)
     runner.append_metrics(step, {"eval/loss": loss, "eval/accuracy": accuracy})
 
 
@@ -246,7 +248,7 @@ def main(config: Config) -> dict:
         renderer_name_is_resolved=cfg.renderer_name_is_resolved,
     )
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler, legacy_warmup_steps=cfg.warmup_steps)
-    setup_wandb(cfg.wandb, {"lr": cfg.learning_rate, "lr_schedule": lr_scheduler.type, "epochs": cfg.epochs})
+    setup_logging(cfg.logging, {"lr": cfg.learning_rate, "lr_schedule": lr_scheduler.type, "epochs": cfg.epochs})
 
     runner = RunnerIO(cfg.runner)
     api_key = os.environ.get("FIREWORKS_API_KEY", "")
@@ -375,6 +377,7 @@ def main(config: Config) -> dict:
             lr = compute_lr(lr_scheduler, step=s, base_lr=cfg.learning_rate, total_steps=total_steps)
             log_metrics_json(s, kway_loss=loss, lr=lr)
             wandb_log({"train/loss": loss, "train/lr": lr}, s)
+            mlflow_log({"train/loss": loss, "train/lr": lr}, s)
             write_running_step(runner, step=s, total_steps=total_steps, metrics={"train/loss": loss}, tokens=tokens)
 
         try:
@@ -429,5 +432,5 @@ def main(config: Config) -> dict:
             runner.write_output_model(model_id=cfg.output_model_id, checkpoint=calibrated, job_id=job_id)
 
         write_completed(runner, step=step, total_steps=step)
-    wandb_finish()
+    finish_logging()
     return {"steps": step, "job_id": job_id}
