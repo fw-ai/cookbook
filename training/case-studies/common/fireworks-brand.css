@@ -1,0 +1,202 @@
+/*
+ * Fireworks brand foundations for the cookbook's static pages.
+ *
+ * Source of truth: fw-ai/marketing, branch `rebrand` (apps/web/src/styles/color.css,
+ * tokens.css, typography.css, base.css; packages/ui/button.ts), which mirrors the
+ * Fireworks Base Design System in Figma. Values are copied, not reinterpreted.
+ *
+ * Fonts: the brand faces (Sharp Serif Text, ABC Monument Grotesk, ABC Monument Grotesk
+ * Mono) are licensed and are NOT shipped in this public repository. The stacks name them
+ * first so they apply wherever they are installed or hosted, then fall back to the same
+ * faces the marketing site falls back to (Crimson Text, Inter, Favorit Mono) and finally
+ * to system fonts. No external font requests are made by this file.
+ *
+ * Usage: link this before the page's own stylesheet, then alias the page's variables
+ * onto the --fw-* tokens. Set data-theme="dark" on any subtree for the dark surface.
+ */
+
+:root {
+  /* ── Fonts ───────────────────────────────────────────────────────────── */
+  --fw-font-serif: 'Sharp Serif Text', 'Crimson Text', ui-serif, Georgia, 'Times New Roman', serif;
+  --fw-font-sans: 'ABC Monument Grotesk', 'Monument Grotesk', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --fw-font-mono: 'ABC Monument Grotesk Mono', 'Favorit Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* ── Primitives (Figma ramps, light) ─────────────────────────────────── */
+  --fw-neutral-50: #f9f7f5;          /* Neutral/50 — Surface */
+  --fw-gray-0: var(--fw-neutral-50);
+  --fw-gray-1: #f4f0ec;
+  --fw-gray-2: #e2ddd8;
+  --fw-gray-3: #dad5cf;
+  --fw-gray-4: #c9c2c2;
+  --fw-gray-5: #bdb6af;
+  --fw-gray-6: #a69f9b;
+  --fw-gray-7: #857979;
+  --fw-gray-8: #706666;
+  --fw-gray-9: #574950;
+
+  --fw-bloom-0: #ffe4f3;
+  --fw-bloom-1: #ffc0e7;             /* Brand Bloom/100 */
+  --fw-bloom-2: #f69ad1;
+  --fw-bloom-3: #f776c7;
+  --fw-bloom-4: #e94bb4;
+  --fw-bloom-5: #a71e7e;
+  --fw-bloom-6: #7a155c;
+  --fw-bloom-7: #610a45;
+  --fw-bloom-8: #451234;
+  --fw-bloom-9: #330b21;             /* Brand Bloom/900 — Surface 01 Dark */
+  --fw-bloom-950: #280016;           /* Brand Bloom/950 — Surface Dark, primary button, logo */
+
+  --fw-plum-0: #fef1f9; --fw-plum-1: #fee5f5; --fw-plum-2: #f3c3e0; --fw-plum-3: #f0acd6; --fw-plum-4: #e088be;
+  --fw-plum-5: #cc77a1; --fw-plum-6: #9f5f7f; --fw-plum-7: #814966; --fw-plum-8: #69324e; --fw-plum-9: #3d1e2c;
+
+  --fw-glow-0: #feedea; --fw-glow-1: #fcd4cd; --fw-glow-2: #faab9a; --fw-glow-3: #f98461; --fw-glow-4: #f56a2b;
+  --fw-glow-5: #d35a24; --fw-glow-6: #ad491b; --fw-glow-7: #863613; --fw-glow-8: #5e240a; --fw-glow-9: #371203;
+
+  --fw-flare-0: #feecef; --fw-flare-1: #fdd0d8; --fw-flare-2: #fca1b4; --fw-flare-3: #fc7293; --fw-flare-4: #fb2d74;
+  --fw-flare-5: #e51765; --fw-flare-6: #bf1153; --fw-flare-7: #960b40; --fw-flare-8: #6b052b; --fw-flare-9: #410217;
+
+  --fw-spark-0: #fff8e3; --fw-spark-3: #ffefbc; --fw-spark-6: #ffd64d; --fw-spark-8: #f0b800; --fw-spark-9: #cc9d00;
+
+  --fw-red-0: #ffecec; --fw-red-1: #ffe1e1; --fw-red-3: #ff6666; --fw-red-4: #f83b3b; --fw-red-5: #e51d1d; --fw-red-6: #b81717; --fw-red-7: #8a1212;
+  --fw-orange-0: #fff4e6; --fw-orange-1: #ffeed5; --fw-orange-3: #ffb56b; --fw-orange-4: #fc7a13; --fw-orange-5: #ed5f09; --fw-orange-6: #c14e07; --fw-orange-7: #8f3a05;
+  --fw-green-0: #ecffec; --fw-green-1: #d9ffd8; --fw-green-4: #36f237; --fw-green-5: #23c025; --fw-green-6: #148a15; --fw-green-7: #0a660b; --fw-green-8: #054d05;
+
+  --fw-black-0: #121212;
+  --fw-white-0: #ffffff;
+
+  /* ── Semantic (light) ────────────────────────────────────────────────── */
+  --fw-bg-default: var(--fw-neutral-50);
+  --fw-bg-muted: var(--fw-gray-1);
+  --fw-bg-surface: var(--fw-white-0);
+  --fw-bg-surface-dark: var(--fw-bloom-950);
+  --fw-bg-accent-muted: var(--fw-bloom-0);
+  --fw-bg-accent-emphasis: var(--fw-bloom-5);
+  --fw-fg-default: var(--fw-bloom-950);
+  --fw-fg-muted: var(--fw-gray-8);
+  --fw-fg-soft: var(--fw-gray-7);
+  --fw-fg-accent: var(--fw-bloom-5);
+  --fw-fg-link: var(--fw-bloom-950);
+  --fw-fg-link-hover: var(--fw-bloom-5);
+  --fw-fg-on-emphasis: var(--fw-white-0);
+  --fw-fg-eyebrow: var(--fw-bloom-950);
+  --fw-fg-success: var(--fw-green-6);
+  --fw-fg-attention: var(--fw-orange-5);
+  --fw-fg-danger: var(--fw-red-5);
+  --fw-border-default: var(--fw-gray-2);
+  --fw-border-muted: color-mix(in srgb, var(--fw-gray-2) 70%, transparent);
+  --fw-focus-outline: var(--fw-bloom-5);
+  --fw-focus-ring: var(--fw-bloom-1);            /* 4px halo; does not flip in dark */
+
+  --fw-button-bg: var(--fw-bloom-950);           /* Surface/button */
+  --fw-button-bg-hover: #4d0f31;                 /* Surface/button-hover (flat) */
+  --fw-button-fg: var(--fw-white-0);
+  --fw-button-secondary-bg: var(--fw-gray-2);
+  --fw-button-secondary-bg-hover: var(--fw-gray-5);
+  --fw-button-secondary-fg: var(--fw-black-0);
+  --fw-button-outline-stroke: var(--fw-bloom-9);
+  --fw-button-outline-fg: var(--fw-bloom-9);
+  --fw-button-disabled-bg: var(--fw-gray-3);
+  --fw-button-disabled-fg: var(--fw-gray-7);
+
+  /* ── Geometry and motion ─────────────────────────────────────────────── */
+  --fw-radius-md: 12px;                          /* Border Radius/md */
+  --fw-radius-sm: 6px;                           /* Border Radius/button-hover */
+  --fw-radius-pill: 96px;                        /* Border Radius/round */
+  --fw-ease: cubic-bezier(0.45, 0, 0.3, 1);
+  --fw-duration-hover: 300ms;
+  --fw-duration-open: 400ms;
+
+  /* ── Type scale (Figma Display / Text / Mono) ────────────────────────── */
+  --fw-text-2xs: 0.75rem;  --fw-text-xs: 0.875rem; --fw-text-sm: 1rem;  --fw-text-md: 1.125rem;
+  --fw-text-lg: 1.25rem;   --fw-text-xl: 1.5rem;   --fw-text-2xl: 1.75rem; --fw-text-3xl: 2.25rem;
+  --fw-display-4xl: 3rem;  --fw-display-5xl: 3.5rem; --fw-display-6xl: 4rem;
+  --fw-mono-xs: 0.75rem;   --fw-mono-sm: 0.875rem; --fw-mono-md: 1rem;
+}
+
+/* Dark surface: same slot names, dark values (marketing's [data-theme='dark'] block). */
+[data-theme='dark'] {
+  --fw-gray-0: #574950; --fw-gray-1: #706666; --fw-gray-2: #857979; --fw-gray-3: #a69f9b; --fw-gray-4: #bdb6af;
+  --fw-gray-5: #c9c2c2; --fw-gray-6: #dad5cf; --fw-gray-7: #e2ddd8; --fw-gray-8: #f4f0ec; --fw-gray-9: var(--fw-neutral-50);
+  --fw-bg-default: var(--fw-bloom-950);
+  --fw-bg-muted: var(--fw-bloom-9);
+  --fw-bg-surface: #330b21;
+  --fw-bg-accent-muted: color-mix(in srgb, var(--fw-bloom-5) 15%, transparent);
+  --fw-fg-default: var(--fw-neutral-50);
+  --fw-fg-muted: var(--fw-gray-4);
+  --fw-fg-soft: var(--fw-gray-5);
+  --fw-fg-link: var(--fw-neutral-50);
+  --fw-fg-link-hover: var(--fw-bloom-1);
+  --fw-fg-eyebrow: var(--fw-bloom-1);
+  --fw-border-default: #4d0f31;
+  --fw-border-muted: color-mix(in srgb, #4d0f31 70%, transparent);
+  --fw-button-bg: var(--fw-white-0);
+  --fw-button-bg-hover: var(--fw-bloom-1);
+  --fw-button-fg: var(--fw-bloom-950);
+  --fw-button-outline-stroke: var(--fw-neutral-50);
+  --fw-button-outline-fg: var(--fw-neutral-50);
+}
+
+/* ── Element defaults (base.css) ─────────────────────────────────────────── */
+.fw-root, body.fw-root {
+  background: var(--fw-bg-default);
+  color: var(--fw-fg-default);
+  font: 400 var(--fw-text-sm) / 1.6 var(--fw-font-sans);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+.fw-root :where(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--fw-font-serif);
+  font-weight: 400;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+}
+.fw-root :where(h4, h5, h6) { letter-spacing: -0.01em; }
+.fw-root :where(a) { color: var(--fw-fg-link); text-underline-offset: 4px; }
+.fw-root :where(a:hover) { color: var(--fw-fg-link-hover); }
+.fw-root :where(a, button, input, select, textarea, summary, [tabindex]:not([tabindex='-1'])):focus-visible {
+  outline: 2px solid var(--fw-focus-outline);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--fw-focus-ring);
+}
+.fw-root :where(code, pre, kbd) { font-family: var(--fw-font-mono); }
+
+/* Eyebrow: plain uppercase mono, no chip (Eyebrow molecule, rebrand direction). */
+.fw-eyebrow {
+  font-family: var(--fw-font-mono);
+  font-size: var(--fw-mono-xs);
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fw-fg-eyebrow);
+  font-weight: 500;
+}
+
+/* Buttons: pill at rest, 6px on hover/active/focus (button.ts). */
+.fw-button {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 12px 20px;
+  border: 1.5px solid transparent;
+  border-radius: var(--fw-radius-pill);
+  background: var(--fw-button-bg); color: var(--fw-button-fg);
+  font: 500 var(--fw-text-xs) / 1 var(--fw-font-sans);
+  text-decoration: none; cursor: pointer;
+  transition: border-radius var(--fw-duration-open) var(--fw-ease), background-color var(--fw-duration-hover) var(--fw-ease);
+}
+.fw-button:hover, .fw-button:active, .fw-button:focus-visible { border-radius: var(--fw-radius-sm); background: var(--fw-button-bg-hover); color: var(--fw-button-fg); }
+.fw-button.secondary { background: var(--fw-button-secondary-bg); color: var(--fw-button-secondary-fg); }
+.fw-button.secondary:hover { background: var(--fw-button-secondary-bg-hover); color: var(--fw-button-secondary-fg); }
+.fw-button.outline { background: transparent; color: var(--fw-button-outline-fg); border-color: var(--fw-button-outline-stroke); }
+.fw-button.outline:hover { background: var(--fw-button-outline-stroke); color: var(--fw-bg-default); }
+.fw-button:disabled, .fw-button[aria-disabled='true'] { background: var(--fw-button-disabled-bg); color: var(--fw-button-disabled-fg); border-radius: var(--fw-radius-pill); cursor: not-allowed; }
+.fw-button.small { padding: 8px 14px; font-size: var(--fw-text-2xs); }
+
+/* Cards and inputs: flat, 12px radius, 1px stroke. */
+.fw-card { background: var(--fw-bg-surface); border: 1px solid var(--fw-border-default); border-radius: var(--fw-radius-md); }
+.fw-input { background: var(--fw-bg-surface); border: 1px solid var(--fw-border-default); border-radius: 8px; color: var(--fw-fg-default); }
+
+/* Logo lockup: glyph + wordmark, tinted by currentColor. */
+.fw-logo { display: inline-flex; align-items: center; gap: 10px; color: var(--fw-fg-default); text-decoration: none; }
+.fw-logo svg { display: block; height: 20px; width: auto; }
+[data-theme='dark'] .fw-logo { color: var(--fw-neutral-50); }
+
+@media (prefers-reduced-motion: reduce) { .fw-button { transition: none; } }

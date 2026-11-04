@@ -1,0 +1,9 @@
+runs/
+results/
+data/
+evallogs/
+runs-*.log
+watcher_requests.log
+firectl_commands.log
+__pycache__/
+*.sh

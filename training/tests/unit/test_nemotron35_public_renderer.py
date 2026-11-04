@@ -45,7 +45,7 @@ def test_text_nemotron_checkpoints_stay_on_the_text_renderer(monkeypatch: pytest
     )
     for model in (
         "nvidia/NVIDIA-Nemotron-3-Super-120B",
-        "accounts/pyroworks/models/nemotron-3-5-super-ea-0911-textonly",
+        "accounts/example/models/nemotron-3p5-super-textonly",
         "accounts/fireworks/models/nemotron-3p5-super-vl-unreviewed",
         "accounts/fireworks/models/nvidia-nemotron-3p5-super-vl-120b-a12b-fp8",
         "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16-unreviewed",
