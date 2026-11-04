@@ -74,8 +74,10 @@ Select a renderer/tokenizer pair from `training/renderer/tito/registry.py`.
 Each entry pins the renderer implementation and tokenizer/template fingerprint.
 The lightweight sidecar supports `glm_moe_dsa_preserve_thinking` (GLM-5.2),
 `glm53_preserve_thinking` (GLM-5.3), `qwen3_8` (Qwen3.8-27B), and
-`muse_glimmer` (Muse Glimmer 30B). Use `full_history` for GLM-5.3 and
-Muse Glimmer. Interleaved GLM history remains uncertified.
+`muse_glimmer` (Muse Glimmer 30B), and `muse_spark` (Muse Spark 1.2 open,
+xhigh effort; `muse_spark_<low|medium|high|xhigh>` pin other efforts, text
+only). Use `full_history` for GLM-5.3, Muse Glimmer, and Muse Spark.
+Interleaved GLM history remains uncertified.
 The following additional text/function-tool pairs also use `full_history`:
 
 | Base model in `accounts/fireworks/models/` | TITO renderer | Tokenizer repository and revision |
