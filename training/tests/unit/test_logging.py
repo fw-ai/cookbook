@@ -225,6 +225,40 @@ class TestSetupMlflow:
         assert "Failed to log config params to MLflow" in caplog.text
 
 
+def test_wandb_and_mlflow_setup_are_independent(monkeypatch):
+    """Both backends can be active at once; neither gates the other."""
+    monkeypatch.setenv("WANDB_API_KEY", "key")
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    monkeypatch.delenv("MLFLOW_EXPERIMENT_NAME", raising=False)
+    fake_wandb = _install_fake_wandb(monkeypatch)
+    fake_wandb.init = lambda **_kw: setattr(
+        fake_wandb, "run", types.SimpleNamespace(url="http://wandb/run")
+    )
+    _install_fake_mlflow(monkeypatch)
+
+    assert setup_wandb(WandBConfig(entity="acme"), {}) is True
+    assert setup_mlflow(MLflowConfig(experiment_name="exp"), {}) is True
+
+
+def test_log_metrics_fans_out_to_wandb_and_mlflow_simultaneously(
+    tmp_path, monkeypatch
+):
+    fake_wandb = _install_fake_wandb(monkeypatch)
+    wandb_logged: list[dict] = []
+    fake_wandb.run = types.SimpleNamespace()
+    fake_wandb.log = lambda metrics, step=None, commit=None: wandb_logged.append(
+        metrics
+    )
+    fake_mlflow = _install_fake_mlflow(monkeypatch)
+    fake_mlflow.start_run()
+    fake_mlflow.calls.clear()
+
+    log_metrics({"train/loss": 0.5}, step=2, metrics_file=str(tmp_path / "m.jsonl"))
+
+    assert wandb_logged == [{"train/loss": 0.5, "step": 2}]
+    assert fake_mlflow.calls == [("log_metrics", {"train/loss": 0.5, "step": 2.0}, 2)]
+
+
 def test_mlflow_log_skips_non_numeric_and_non_finite_values(monkeypatch):
     fake = _install_fake_mlflow(monkeypatch)
     fake.start_run()
