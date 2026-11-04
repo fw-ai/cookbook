@@ -75,11 +75,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--project", default="rl-vtb", help="W&B project / MLflow experiment name.")
     parser.add_argument("--run-name", default=None, help="Run name in every enabled backend.")
     parser.add_argument("--wandb-entity", default=None)
-    parser.add_argument(
-        "--wandb-offline",
-        action="store_true",
-        help="Log W&B locally without an entity or API key; sync later with `wandb sync`.",
-    )
     parser.add_argument("--mlflow-tracking-uri", default=None, help="Default: $MLFLOW_TRACKING_URI, then local ./mlruns.")
     return parser.parse_args(argv)
 
@@ -113,7 +108,6 @@ def config_from_args(args: argparse.Namespace) -> Config:
             project=args.project,
             run_name=args.run_name,
             wandb_entity=args.wandb_entity,
-            wandb_mode="offline" if args.wandb_offline else "online",
             mlflow_tracking_uri=args.mlflow_tracking_uri,
         ),
         cleanup_on_exit=args.cleanup_on_exit,

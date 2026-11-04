@@ -262,10 +262,6 @@ class WandBConfig:
     entity: str | None = None
     project: str | None = None
     run_name: str | None = None
-    mode: Literal["online", "offline"] = "online"
-    """``"online"`` needs ``entity`` and syncs to the dashboard, falling back to
-    a local offline run when ``WANDB_API_KEY`` is unset. ``"offline"`` logs the
-    run locally without an entity or API key; sync it later with ``wandb sync``."""
 
 
 @dataclass
@@ -289,12 +285,12 @@ class LoggingConfig:
 
     ``loggers`` selects which backends mirror metrics: any of ``"wandb"``,
     ``"mlflow"``. ``None`` (default) auto-enables each backend from its own
-    settings or environment: W&B when ``wandb_entity`` is set or
-    ``wandb_mode`` is ``"offline"``; MLflow when a tracking URI is set
-    (``mlflow_tracking_uri`` or ``MLFLOW_TRACKING_URI``) or
-    ``MLFLOW_EXPERIMENT_NAME`` is in the environment. The shared ``project``
-    alone never enables MLflow -- recipes set a default project, which would
-    otherwise spawn a local ``./mlruns`` run on every job.
+    settings or environment: W&B when ``wandb_entity`` is set (falling back
+    to a local offline run when ``WANDB_API_KEY`` is unset); MLflow when a
+    tracking URI is set (``mlflow_tracking_uri`` or ``MLFLOW_TRACKING_URI``)
+    or ``MLFLOW_EXPERIMENT_NAME`` is in the environment. The shared
+    ``project`` alone never enables MLflow -- recipes set a default project,
+    which would otherwise spawn a local ``./mlruns`` run on every job.
 
     ``project`` is the shared run grouping: the W&B project and the MLflow
     experiment name. ``run_name`` names the run in every enabled backend.
@@ -306,5 +302,4 @@ class LoggingConfig:
     """Shared run grouping: W&B project and MLflow experiment name."""
     run_name: str | None = None
     wandb_entity: str | None = None
-    wandb_mode: Literal["online", "offline"] = "online"
     mlflow_tracking_uri: str | None = None
