@@ -96,10 +96,47 @@ class TestSetupWandb:
     def test_message_based_auth_error_raises_wandb_config_error(self, monkeypatch):
         monkeypatch.setenv("WANDB_API_KEY", "bad-key")
         _install_fake_wandb(monkeypatch, init_exc=Exception("401 Unauthorized"))
-        with pytest.raises(
-            WandbConfigError, match="authentication/configuration failed"
-        ):
+        # init fails in online mode and again on the offline retry.
+        with pytest.raises(WandbConfigError, match="online and offline mode"):
             setup_wandb(WandBConfig(entity="acme", project="proj"), {})
+
+    def test_auth_failure_falls_back_to_offline(self, monkeypatch, caplog):
+        monkeypatch.setenv("WANDB_API_KEY", "bad-key")
+        monkeypatch.delenv("WANDB_MODE", raising=False)
+        fake = _install_fake_wandb(monkeypatch)
+        attempts: list[dict] = []
+
+        def _init(**kwargs):
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                # wandb wraps a rejected key as an empty-message CommError.
+                raise fake.errors.CommError()
+            fake.run = types.SimpleNamespace(url="http://offline-run")
+
+        fake.init = _init
+
+        assert setup_wandb(WandBConfig(entity="acme", project="proj"), {}) is True
+        assert len(attempts) == 2
+        # The retry passes mode="offline" explicitly because wandb may have
+        # cached online settings from the failed first init.
+        assert "mode" not in attempts[0]
+        assert attempts[1].get("mode") == "offline"
+        assert os.environ["WANDB_MODE"] == "offline"
+        assert "falling back to offline mode" in caplog.text
+
+    def test_offline_mode_init_failure_does_not_retry(self, monkeypatch):
+        fake = _install_fake_wandb(monkeypatch)
+        attempts: list[int] = []
+
+        def _init(**_kwargs):
+            attempts.append(1)
+            raise RuntimeError("disk full")
+
+        fake.init = _init
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            setup_wandb(WandBConfig(mode="offline"), {})
+        assert len(attempts) == 1
 
     def test_typed_auth_error_raises_wandb_config_error(self, monkeypatch):
         monkeypatch.setenv("WANDB_API_KEY", "bad-key")

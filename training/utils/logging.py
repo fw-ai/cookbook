@@ -87,6 +87,18 @@ def _is_wandb_auth_error(exc: BaseException) -> bool:
     )
 
 
+def _is_wandb_comm_error(exc: BaseException) -> bool:
+    """True for W&B transport errors (network failures, and -- as wandb wraps
+    a rejected API key -- an empty-message CommError)."""
+    try:
+        import wandb
+
+        comm_type = getattr(wandb.errors, "CommError", None)
+        return isinstance(comm_type, type) and isinstance(exc, comm_type)
+    except Exception:
+        return False
+
+
 def setup_wandb(
     wb: WandBConfig,
     config: dict[str, Any],
@@ -101,10 +113,13 @@ def setup_wandb(
     the run logs locally without an API key; sync it later with
     ``wandb sync``. In online mode, if ``WANDB_API_KEY`` is not set, falls
     back to the same offline env var so runs are logged locally without
-    requiring authentication. Auth/permission/config failures from
-    ``wandb.init`` are re-raised as :class:`WandbConfigError` so the
-    orchestration layer surfaces them as a user-actionable error
-    (FIR2-1774).
+    requiring authentication. If online ``wandb.init`` fails with an
+    auth/config or transport error (including the empty-message
+    ``CommError`` wandb raises for a rejected key), falls back to offline
+    mode once with a loud warning so training keeps its metrics. If the
+    offline retry also fails, the error is re-raised as
+    :class:`WandbConfigError` so the orchestration layer surfaces it as a
+    user-actionable error (FIR2-1774).
     """
     offline = wb.mode == "offline"
     if not wb.entity and not offline:
@@ -125,17 +140,36 @@ def setup_wandb(
         )
         os.environ["WANDB_MODE"] = "offline"
 
-    try:
-        wandb.init(
+    def _init(*, mode: str | None = None) -> None:
+        kwargs: dict[str, Any] = dict(
             entity=wb.entity, project=wb.project, name=wb.run_name, config=config
         )
+        if mode is not None:
+            kwargs["mode"] = mode
+        wandb.init(**kwargs)
+
+    try:
+        _init()
     except Exception as exc:
-        if _is_wandb_auth_error(exc):
+        if offline or not (_is_wandb_auth_error(exc) or _is_wandb_comm_error(exc)):
+            raise
+        logger.warning(
+            "W&B online init failed (%s); falling back to offline mode. "
+            "The run logs locally; sync later with `wandb sync`. "
+            "Fix the W&B API key, entity, and project for dashboard logging.",
+            exc,
+        )
+        # Set the env var for any later wandb use in this process, and pass
+        # mode= explicitly: wandb's global settings may already be cached from
+        # the failed init, in which case the env var alone is ignored.
+        os.environ["WANDB_MODE"] = "offline"
+        try:
+            _init(mode="offline")
+        except Exception as retry_exc:
             raise WandbConfigError(
-                f"Weights & Biases authentication/configuration failed: {exc}. "
-                "Check your W&B API key, entity, and project."
-            ) from exc
-        raise
+                f"Weights & Biases initialization failed in online and offline "
+                f"mode: {retry_exc}. Check your W&B API key, entity, and project."
+            ) from retry_exc
     if wandb.run is not None:
         _define_wandb_metrics(wandb, metric_steps or _DEFAULT_WANDB_METRIC_STEPS)
         logger.info("WandB: %s", wandb.run.url)
