@@ -229,7 +229,7 @@ def test_main_trains_full_batches_with_client_side_info_nce(monkeypatch, tmp_pat
         type("RC", (), {"from_training_client": staticmethod(lambda client, **_kwargs: client)}),
     )
     monkeypatch.setattr(module, "TrainingCheckpoints", _Checkpoints)
-    monkeypatch.setattr(module, "load_tokenizer", lambda *_args: tokenizer)
+    monkeypatch.setattr(module, "load_tokenizer", lambda *_args, **_kwargs: tokenizer)
     monkeypatch.setattr(module, "load_jsonl_dataset", lambda *_args: list(pairs))
     monkeypatch.setattr(module, "log_metrics", lambda metrics, *, step: logged.append(dict(metrics)))
 

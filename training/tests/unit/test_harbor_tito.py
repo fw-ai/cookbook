@@ -466,7 +466,11 @@ def test_sampling_only_builds_rollout_setup_without_trainer(
             captured["sampler_closed"] = True
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "deployment-key")
-    monkeypatch.setattr(recipe_common, "load_tokenizer", lambda *_: object())
+    def load_tokenizer(*args: Any, base_model: str | None = None) -> object:
+        assert base_model == "accounts/example/models/policy"
+        return object()
+
+    monkeypatch.setattr(recipe_common, "load_tokenizer", load_tokenizer)
     monkeypatch.setattr(recipe_common, "DeploymentSampler", Sampler)
     monkeypatch.setattr(
         recipe_common, "resolve_router_replay_enabled", lambda **_: True

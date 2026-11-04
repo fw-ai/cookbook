@@ -176,7 +176,7 @@ def single_turn_rollout_fn(renderer_name: str = "") -> RolloutFnFactory:
     """One completion of ``row["messages"]`` per call, graded by :func:`reward_fn`."""
 
     def factory(setup: RolloutSetup) -> RolloutFn:
-        renderer = build_renderer(setup.tokenizer, setup.tokenizer_id, renderer_name)
+        renderer = build_renderer(setup.tokenizer, setup.tokenizer_id, renderer_name, base_model=setup.base_model)
 
         async def rollout_fn(row: dict):
             return await single_turn_renderer_rollout(
@@ -262,7 +262,7 @@ async def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
     async with AsyncExitStack() as stack:
-        tokenizer = await run_in_thread(load_deployment_tokenizer, cfg.deployment)
+        tokenizer = await run_in_thread(load_deployment_tokenizer, cfg.deployment, base_model=cfg.base_model)
         service = build_service_client(
             api_key=api_key,
             base_url=base_url,
@@ -350,6 +350,7 @@ async def main(
                 inference_base_url=sampler.base_url,
                 api_key=api_key,
                 model=sampler.model,
+                base_model=cfg.base_model,
             )
         )
         stack.push_async_callback(close_rollout_fn, rollout_fn)

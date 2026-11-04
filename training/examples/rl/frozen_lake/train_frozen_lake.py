@@ -144,7 +144,7 @@ def completion_params(setup: RolloutSetup, _params: Any) -> dict[str, Any]:
     """Sample from the recipe's deployment with the recipe's sampling settings."""
     gateway = setup.inference_base_url.rstrip("/").removesuffix("/inference")
     sample_kwargs = setup.sample_kwargs
-    return {
+    params = {
         "model": setup.model,
         "base_url": f"{gateway}/inference",
         "api_key": setup.api_key,
@@ -155,6 +155,11 @@ def completion_params(setup: RolloutSetup, _params: Any) -> dict[str, Any]:
         "top_p": sample_kwargs.get("top_p", 1.0),
         "top_k": sample_kwargs.get("top_k", 0),
     }
+    # Local completion metadata for tokenizer/renderer loading only; the
+    # rollout processor keeps it out of the inference request JSON.
+    if setup.base_model:
+        params["base_model"] = setup.base_model
+    return params
 
 
 def make_rollout_fn_factory(evaluator) -> RolloutFnFactory:

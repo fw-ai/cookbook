@@ -233,7 +233,7 @@ def main(config: Config) -> dict[str, Any]:
         )
         log_run_resources(service)
 
-        tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision)
+        tokenizer = load_tokenizer(cfg.tokenizer_model, cfg.tokenizer_revision, base_model=cfg.base_model)
         pairs = _load_pairs(cfg.dataset, cfg.max_examples)
         if len(pairs) < cfg.batch_size:
             raise RuntimeError(

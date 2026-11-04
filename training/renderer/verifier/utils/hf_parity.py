@@ -32,6 +32,8 @@ from typing import Any
 
 from transformers import AutoTokenizer
 
+from training.tokenizer_identity import requires_code_free_tokenizer_loading
+
 # Importing the cookbook renderer package registers cookbook-local
 # renderer names (glm5, gemma4, minimax_m2, nemotron) under
 # ``training.renderer._registry.get_renderer``.
@@ -50,6 +52,8 @@ def _load_tokenizer(
     tokenizer_model: str,
     tokenizer_revision: str | None,
     tokenizer_trust_remote_code: bool | None,
+    *,
+    renderer_name: str | None = None,
 ) -> Any:
     """Load each immutable QA oracle once per process.
 
@@ -60,7 +64,12 @@ def _load_tokenizer(
     if needs_mistral_regex_fix(tokenizer_model):
         kwargs: dict[str, Any] = {
             "token": os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
-            "trust_remote_code": (tokenizer_trust_remote_code if tokenizer_trust_remote_code is not None else True),
+            "trust_remote_code": (
+                False
+                if renderer_name == "deepseek_v4"
+                or requires_code_free_tokenizer_loading(tokenizer_model, revision=tokenizer_revision)
+                else (tokenizer_trust_remote_code if tokenizer_trust_remote_code is not None else True)
+            ),
             "fix_mistral_regex": True,
         }
         if tokenizer_revision:
@@ -73,9 +82,20 @@ def _load_tokenizer(
             # Registered thinking-history renderers pass their reviewed
             # policy explicitly. Keep the historical verifier default for
             # unrelated pinned cases that predate the capability registry.
-            trust_remote_code=(tokenizer_trust_remote_code if tokenizer_trust_remote_code is not None else True),
+            # Recognized official DeepSeek V4 data ships no remote code, so
+            # it is always code-free: False resolves the identical class and
+            # an explicit True cannot reopen checkpoint-staged Python.
+            trust_remote_code=(
+                False
+                if renderer_name == "deepseek_v4"
+                or requires_code_free_tokenizer_loading(
+                    tokenizer_model,
+                    revision=tokenizer_revision,
+                )
+                else (tokenizer_trust_remote_code if tokenizer_trust_remote_code is not None else True)
+            ),
         )
-    return get_tokenizer(tokenizer_model)
+    return get_tokenizer(tokenizer_model, renderer_name=renderer_name)
 
 
 @dataclasses.dataclass
@@ -203,6 +223,7 @@ def compare_renderer_to_hf(
         tokenizer_model,
         tokenizer_revision,
         tokenizer_trust_remote_code,
+        renderer_name=renderer_name,
     )
 
     renderer = get_renderer(renderer_name, tokenizer)

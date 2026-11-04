@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fireworks-training-cookbook"
 # Promotion owns this version; published metadata is synchronized back to staging.
-version = "2026.11.3.1"
+version = "0.1.0"
 description = "Training recipes and utilities for the Fireworks Training API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -120,6 +120,8 @@ packages = [
     "training.recipes.experiment",
     "training.renderer",
     "training.renderer.tito",
+    "training.renderer.tito._vendored",
+    "training.renderer.tito._vendored.deepseek_v4",
     "training.renderer.verifier",
     "training.renderer.verifier.utils",
     "training.tests",
@@ -138,6 +140,7 @@ packages = [
 
 [tool.setuptools.package-data]
 "training.renderer" = ["LICENSE"]
+"training.renderer.tito._vendored.deepseek_v4" = ["LICENSE", "PROVENANCE.md"]
 "training.examples.sft" = ["text2sql_dataset.jsonl", "food_reasoning.jsonl", "data/support_triage_train.jsonl"]
 "training.examples.rl.deepmath" = ["dataset.jsonl"]
 "training.examples.rl.frozen_lake" = ["seeds.jsonl", "assets/img/*.png"]
@@ -186,6 +189,8 @@ select = ["E4", "E7", "E9", "F"]
 # unchanged so scores stay comparable with MiMo's published runs.
 "examples/harbor_rl/tasks/mimo/music_scorer/**" = ["E731"]
 "examples/harbor_rl/tasks/mimo/assets/**" = ["E731"]
+# Vendored upstream encoder, copied byte-for-byte so its sha256 stays pinned.
+"renderer/tito/_vendored/**" = ["E722", "F841"]
 
 [tool.coverage.run]
 branch = true

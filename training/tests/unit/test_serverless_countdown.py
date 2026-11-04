@@ -211,9 +211,15 @@ def test_main_runs_the_real_serverless_recipe(monkeypatch, tmp_path) -> None:
             pass
 
     service = Service()
+    tokenizer_loads = {}
+
+    def load_tokenizer(*_args: object, **kwargs: object) -> object:
+        tokenizer_loads.update(kwargs)
+        return object()
+
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setattr(loop, "_make_service", lambda *_args: service)
-    monkeypatch.setattr(loop, "load_tokenizer", lambda *_args: object())
+    monkeypatch.setattr(loop, "load_tokenizer", load_tokenizer)
     monkeypatch.setattr(loop, "_router_replay_enabled", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(loop, "setup_wandb", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(loop, "wandb_finish", lambda **_kwargs: None)
@@ -251,6 +257,7 @@ def test_main_runs_the_real_serverless_recipe(monkeypatch, tmp_path) -> None:
     )
 
     assert service.lora == ("accounts/fireworks/models/kimi-k3", 32, 64)
+    assert tokenizer_loads["base_model"] == "accounts/fireworks/models/kimi-k3"
     assert result["steps"] == 2
     assert service.training_client.optim_calls == 2
     assert {loss for _, loss in service.training_client.forward_backward_calls} == {"ppo"}

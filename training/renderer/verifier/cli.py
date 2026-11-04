@@ -151,10 +151,10 @@ def _build_client(api_key: str | None, base_url: str | None):
     return Fireworks(**kwargs)
 
 
-def _build_tokenizer(model: str):
+def _build_tokenizer(model: str, *, renderer_name: str | None = None):
     from training.renderer.verifier.utils.tokenizer import load_tokenizer
 
-    return load_tokenizer(model)
+    return load_tokenizer(model, renderer_name=renderer_name)
 
 
 def _resolve_dispatch(args, *, renderer_name: str) -> tuple[str, str]:
@@ -200,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     model, dispatch_mode = _resolve_dispatch(args, renderer_name=args.renderer)
     logging.getLogger("training.renderer.verifier").info("dispatch=%s model=%s", dispatch_mode, model)
 
-    tokenizer = _build_tokenizer(args.tokenizer_model)
+    tokenizer = _build_tokenizer(args.tokenizer_model, renderer_name=args.renderer)
     client = _build_client(args.api_key, args.base_url)
 
     artifact = run_probe(

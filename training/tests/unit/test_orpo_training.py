@@ -7,6 +7,7 @@ import signal
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -59,12 +60,21 @@ def orpo_run(
         orpo_loop.ReconnectableClient, "from_training_client", lambda *a, **k: client
     )
     monkeypatch.setattr(orpo_loop, "TrainingCheckpoints", lambda *a, **k: checkpoints)
-    monkeypatch.setattr(orpo_loop, "load_tokenizer", lambda *a: tokenizer)
+    def load_tokenizer(*args: Any, base_model: str | None = None) -> Any:
+        assert base_model == cfg.base_model
+        return tokenizer
+
+    monkeypatch.setattr(orpo_loop, "load_tokenizer", load_tokenizer)
     monkeypatch.setattr(
         orpo_loop, "resolve_renderer_snapshot", lambda **k: "test-renderer"
     )
+
+    def build_renderer_from_resolved_name(*args: Any, base_model: str | None = None) -> object:
+        assert base_model == cfg.base_model
+        return object()
+
     monkeypatch.setattr(
-        orpo_loop, "build_renderer_from_resolved_name", lambda *a: object()
+        orpo_loop, "build_renderer_from_resolved_name", build_renderer_from_resolved_name
     )
     monkeypatch.setattr(orpo_loop, "setup_wandb", lambda *a: None)
     monkeypatch.setattr(orpo_loop, "wandb_log", lambda *a: None)

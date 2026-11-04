@@ -38,6 +38,7 @@ from fireworks.training.sdk import (
     DeploymentManager,
     TrainerJobManager,
 )
+from training.tokenizer_identity import is_deepseek_v4_model_name, requires_code_free_tokenizer_loading
 from training.utils import (
     DeployConfig,
     ReconnectableClient,
@@ -264,7 +265,9 @@ def main():
         sampler = service.create_sampling_client().deployment_sampler
         sampler.tokenizer = transformers.AutoTokenizer.from_pretrained(
             args.tokenizer,
-            trust_remote_code=True,
+            trust_remote_code=not (
+                is_deepseek_v4_model_name(args.base_model) or requires_code_free_tokenizer_loading(args.tokenizer)
+            ),
         )
         logger.info("  Deployment:       %s", service.deployment_id)
 

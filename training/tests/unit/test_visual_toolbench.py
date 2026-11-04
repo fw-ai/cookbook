@@ -7,6 +7,7 @@ import base64
 import copy
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fireworks.training import sdk
@@ -260,12 +261,20 @@ class _Judge:
 def test_rollout_uses_session_sampler_and_trains_each_assistant_turn(monkeypatch):
     sampler = _Sampler()
     renderer = _Renderer()
-    monkeypatch.setattr(vtb_rollout, "build_renderer", lambda *_args: renderer)
+    renderer_kwargs: dict[str, Any] = {}
+
+    def build_renderer(*args: Any, base_model: str | None = None, **kwargs: Any) -> _Renderer:
+        renderer_kwargs.update(kwargs)
+        renderer_kwargs["base_model"] = base_model
+        return renderer
+
+    monkeypatch.setattr(vtb_rollout, "build_renderer", build_renderer)
     monkeypatch.setattr(vtb_rollout, "RubricJudge", _Judge)
 
     setup = SimpleNamespace(
         tokenizer=_Tokenizer(),
         tokenizer_id="Qwen/Qwen3.6-27B",
+        base_model="accounts/fireworks/models/qwen3p6-35b-a3b",
         sample_kwargs={"max_tokens": 128, "temperature": 1.0},
         inference_base_url="https://api.fireworks.ai/training/v1/serverless",
         api_key="test-key",
@@ -304,6 +313,7 @@ def test_rollout_uses_session_sampler_and_trains_each_assistant_turn(monkeypatch
     assert run.metadata["mean_official_score"] == pytest.approx(0.8)
     assert sampler.calls[0]["max_tokens"] == 128
     assert renderer.generation_messages[0][0] == {"role": "system", "content": "Zoom in first."}
+    assert renderer_kwargs["base_model"] == "accounts/fireworks/models/qwen3p6-35b-a3b"
 
     close = getattr(rollout_fn, "close")
     asyncio.run(close())
@@ -311,11 +321,19 @@ def test_rollout_uses_session_sampler_and_trains_each_assistant_turn(monkeypatch
 
 def _patched_rollout(monkeypatch, sample_kwargs, task_config):
     sampler = _Sampler()
-    monkeypatch.setattr(vtb_rollout, "build_renderer", lambda *_args: _Renderer())
+    renderer_kwargs: dict[str, Any] = {}
+
+    def build_renderer(*args: Any, base_model: str | None = None, **kwargs: Any) -> _Renderer:
+        renderer_kwargs.update(kwargs)
+        renderer_kwargs["base_model"] = base_model
+        return _Renderer()
+
+    monkeypatch.setattr(vtb_rollout, "build_renderer", build_renderer)
     monkeypatch.setattr(vtb_rollout, "RubricJudge", _Judge)
     setup = SimpleNamespace(
         tokenizer=_Tokenizer(),
         tokenizer_id="Qwen/Qwen3.6-27B",
+        base_model="accounts/fireworks/models/qwen3p6-35b-a3b",
         sample_kwargs=sample_kwargs,
         inference_base_url="https://api.fireworks.ai/training/v1/serverless",
         api_key="test-key",
@@ -323,11 +341,11 @@ def _patched_rollout(monkeypatch, sample_kwargs, task_config):
         completions_per_prompt=8,
         sampler=sampler,
     )
-    return sampler, make_rollout_fn(setup, task=task_config)
+    return sampler, make_rollout_fn(setup, task=task_config), renderer_kwargs
 
 
 def test_evaluation_rollout_uses_benchmark_sampling_without_router_replay(monkeypatch):
-    sampler, rollout_fn = _patched_rollout(
+    sampler, rollout_fn, renderer_kwargs = _patched_rollout(
         monkeypatch,
         {
             "max_tokens": 128,
@@ -357,6 +375,7 @@ def test_evaluation_rollout_uses_benchmark_sampling_without_router_replay(monkey
         assert (call["temperature"], call["top_p"], call["top_k"], call["max_tokens"]) == (1.0, 0.95, 20, 64)
         assert "include_routing_matrix" not in call and "echo" not in call
         assert call["logprobs"] is True
+    assert renderer_kwargs["base_model"] == "accounts/fireworks/models/qwen3p6-35b-a3b"
 
 
 def _eval_run(score: float, *, passed: bool, tool_calls: int) -> RolloutRun:

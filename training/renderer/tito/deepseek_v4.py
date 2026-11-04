@@ -1,9 +1,8 @@
-"""Full-history DeepSeek V4 rendering with each checkpoint's pinned native encoder."""
+"""Full-history DeepSeek V4 rendering with the vendored, hash-pinned native encoder."""
 
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -11,12 +10,14 @@ from typing import Any
 from fireworks.training.sdk import TITOChatRequest, TITOError, TITOParsedAssistant
 
 from training.renderer.tito._errors import renderer_parse_error
+from training.renderer.tito._vendored.deepseek_v4 import (
+    encoding_dsv4 as _vendored_encoder,
+)
 from training.renderer.tito.shared import (
     TITORendererCertification,
     _ensure_tool_call_ids,
     _normalize_template_tools,
     _plain,
-    renderer_artifacts,
     validate_no_dynamic_template_fields,
 )
 
@@ -28,6 +29,8 @@ DEEPSEEK_V4_PRO_REPOSITORY = "deepseek-ai/DeepSeek-V4-Pro-0813"
 DEEPSEEK_V4_PRO_REVISION = "72e1d3230f6c080a530b0a1d46f8eb4602340597"
 # Both certified releases share these tokenizer and native encoder hashes.
 DEEPSEEK_V4_TOKENIZER_FINGERPRINT = "64a749582a69535715f77e8b90470719065cde2688a27376c944eeea408b0525"
+# Upstream path and digest of the encoder vendored under ``_vendored/deepseek_v4``;
+# the digest is asserted against the vendored file by unit tests.
 DEEPSEEK_V4_ENCODER_FILE = "encoding/encoding_dsv4.py"
 DEEPSEEK_V4_ENCODER_SHA256 = "abc0d26120250dda0ae077dc64aa28836026e61e970854aaeb792445e6a0dde6"
 
@@ -39,12 +42,7 @@ class DeepSeekV4TITORenderer:
     reasoning_effort = "low"
 
     def __init__(self, tokenizer: Any, *, certification: TITORendererCertification) -> None:
-        path = renderer_artifacts(tokenizer, certification)[self.encoder_file]
-        spec = importlib.util.spec_from_file_location("tito_pinned_dsv4_encoder", path)
-        if spec is None or spec.loader is None:
-            raise ValueError("could not load certified DeepSeek V4 encoder")
-        encoder = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(encoder)
+        encoder = self._load_encoder(tokenizer, certification)
         self._encoder = encoder
         self.tokenizer = tokenizer
         self.renderer_id = next(iter(certification.renderer_names))
@@ -53,6 +51,17 @@ class DeepSeekV4TITORenderer:
         self._eos = tuple(tokenizer.encode(encoder.eos_token, add_special_tokens=False))
         if len(self._eos) != 1:
             raise ValueError("DeepSeek V4 EOS must encode as one token")
+
+    def _load_encoder(self, tokenizer: Any, certification: TITORendererCertification) -> Any:
+        """Return the vendored encoder shipped as reviewed package source.
+
+        Byte-identical to the certified upstream artifact
+        (``DEEPSEEK_V4_ENCODER_SHA256``), so no checkpoint Python is fetched
+        or executed on this path. Subclasses with a different certified
+        encoder override this hook.
+        """
+        del tokenizer, certification
+        return _vendored_encoder
 
     def _template_messages(self, request: TITOChatRequest) -> list[dict[str, Any]]:
         validate_no_dynamic_template_fields(request)

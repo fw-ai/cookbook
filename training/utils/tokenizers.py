@@ -11,9 +11,15 @@ from pathlib import Path
 from typing import Any
 
 import transformers
+from training.tokenizer_identity import is_deepseek_v4_model_name, requires_code_free_tokenizer_loading
 from huggingface_hub import errors as hf_errors
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_tokenizer_base_model(base_model: str, base_model_type: str = "") -> str:
+    """Keep independently known V4 context without replacing the model identity."""
+    return "deepseek_v4" if base_model_type == "deepseek_v4" else base_model
 
 
 _HTTP_STATUS_PATTERN = re.compile(r"\b([45]\d\d)\b")
@@ -60,10 +66,7 @@ patch_kimi_tokenizer_bytes_to_unicode()
 def _is_generic_config_missing_max_position_embeddings(exc: AttributeError) -> bool:
     """Whether Transformers failed while validating an unrecognized model config."""
     config = getattr(exc, "obj", None)
-    return (
-        getattr(exc, "name", None) == "max_position_embeddings"
-        and type(config) is transformers.PreTrainedConfig
-    )
+    return getattr(exc, "name", None) == "max_position_embeddings" and type(config) is transformers.PreTrainedConfig
 
 
 def needs_mistral_regex_fix(tokenizer_model: str | None) -> bool:
@@ -112,8 +115,7 @@ def _read_repo_json(
             # managed-adapter status mapping keep classifying it, rather than
             # guessing a backend and silently changing token identity.
             logger.error(
-                "Could not fetch %s for tokenizer %r while selecting the "
-                "tokenizer backend; refusing to guess.",
+                "Could not fetch %s for tokenizer %r while selecting the " "tokenizer backend; refusing to guess.",
                 filename,
                 tokenizer_model,
             )
@@ -123,8 +125,7 @@ def _read_repo_json(
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(
-            f"could not parse {filename} for tokenizer {tokenizer_model!r} "
-            "while selecting the tokenizer backend"
+            f"could not parse {filename} for tokenizer {tokenizer_model!r} " "while selecting the tokenizer backend"
         ) from exc
     return parsed if isinstance(parsed, dict) else None
 
@@ -201,11 +202,7 @@ def _declared_post_processor_kwargs(tokenizer_config: dict[str, Any]) -> dict[st
     Nemotron-Nano-9B-v2 (``add_bos_token: false``) gains one. Presence, not
     truthiness, is the trigger -- same as serving.
     """
-    return {
-        key: tokenizer_config[key]
-        for key in ("add_bos_token", "add_eos_token")
-        if key in tokenizer_config
-    }
+    return {key: tokenizer_config[key] for key in ("add_bos_token", "add_eos_token") if key in tokenizer_config}
 
 
 def _load_tokenizer_json_verbatim(
@@ -294,6 +291,7 @@ def _propagate_huggingface_http_status(loader: _TokenizerLoader) -> _TokenizerLo
         trust_remote_code: bool | None = None,
         *,
         local_files_only: bool = False,
+        base_model: str | None = None,
     ) -> Any:
         try:
             return loader(
@@ -301,14 +299,14 @@ def _propagate_huggingface_http_status(loader: _TokenizerLoader) -> _TokenizerLo
                 tokenizer_revision,
                 trust_remote_code,
                 local_files_only=local_files_only,
+                base_model=base_model,
             )
         except Exception as exc:
             status_code = _huggingface_http_status_code(exc)
             if status_code is None:
                 raise
             raise RuntimeError(
-                "Hugging Face Hub request failed while loading tokenizer "
-                f"{tokenizer_model!r} (HTTP {status_code})."
+                "Hugging Face Hub request failed while loading tokenizer " f"{tokenizer_model!r} (HTTP {status_code})."
             ) from exc
 
     return wrapped
@@ -321,18 +319,33 @@ def load_tokenizer(
     trust_remote_code: bool | None = None,
     *,
     local_files_only: bool = False,
+    base_model: str | None = None,
 ) -> Any:
     """Load a tokenizer with cookbook defaults.
 
     ``tokenizer_revision`` is optional; empty strings are treated as unset so
     existing configs keep resolving HuggingFace ``main``. ``None`` preserves
     the legacy remote-code policy (enabled), while a reviewed tokenizer plan
-    can explicitly enable or disable it. ``local_files_only`` supports callers
-    that attempt a cache-only load before allowing network access.
+    can explicitly enable or disable it. Recognized official DeepSeek V4 data
+    is the one exception: it ships no remote code, so its policy always
+    resolves to ``False`` -- the identical tokenizer class, with any
+    checkpoint-staged Python inert, and an explicit ``True`` cannot reopen
+    it. An independently selected V4 ``base_model`` also restricts policy
+    when a tokenizer override lacks recognizable metadata.
+    ``local_files_only`` supports callers that attempt a cache-only load
+    before allowing network access.
     """
+    if is_deepseek_v4_model_name(base_model) or requires_code_free_tokenizer_loading(
+        tokenizer_model,
+        revision=tokenizer_revision or None,
+        local_files_only=local_files_only,
+    ):
+        resolved_trust_remote_code = False
+    else:
+        resolved_trust_remote_code = True if trust_remote_code is None else trust_remote_code
     kwargs: dict[str, Any] = {
         "revision": tokenizer_revision or None,
-        "trust_remote_code": True if trust_remote_code is None else trust_remote_code,
+        "trust_remote_code": resolved_trust_remote_code,
     }
     if local_files_only:
         kwargs["local_files_only"] = True
@@ -380,10 +393,11 @@ def load_tokenizer(
     )
 
 
-def load_deployment_tokenizer(deployment: Any) -> Any:
+def load_deployment_tokenizer(deployment: Any, *, base_model: str | None = None) -> Any:
     """Load the tokenizer configured on a deployment config-like object."""
     return load_tokenizer(
         getattr(deployment, "tokenizer_model", None),
         getattr(deployment, "tokenizer_revision", None),
         getattr(deployment, "tokenizer_trust_remote_code", None),
+        base_model=base_model,
     )

@@ -129,7 +129,11 @@ def main(cfg: Config) -> dict[str, Any]:
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     metrics_file = os.path.join(cfg.log_path, "metrics.jsonl")
 
-    tokenizer = load_tokenizer(cfg.tokenizer_model)
+    tokenizer = load_tokenizer(
+        cfg.tokenizer_model,
+        trust_remote_code=False if cfg.renderer_name == "deepseek_v4" else None,
+        base_model=cfg.base_model,
+    )
     renderer = get_renderer(cfg.renderer_name, tokenizer)
     rows = load_jsonl_dataset(cfg.dataset)
     if not rows:

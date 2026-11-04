@@ -18,14 +18,8 @@ from fireworks.training.sdk import TITORenderer
 
 from training.renderer.tito import shared
 from training.renderer.tito.deepseek_v4 import (
-    DEEPSEEK_V4_ENCODER_FILE,
-    DEEPSEEK_V4_ENCODER_SHA256,
     DEEPSEEK_V4_PRO_RENDERER_NAME,
-    DEEPSEEK_V4_PRO_REPOSITORY,
-    DEEPSEEK_V4_PRO_REVISION,
     DEEPSEEK_V4_RENDERER_NAME,
-    DEEPSEEK_V4_REPOSITORY,
-    DEEPSEEK_V4_REVISION,
     DEEPSEEK_V4_TOKENIZER_FINGERPRINT,
     DeepSeekV4TITORenderer,
 )
@@ -139,9 +133,9 @@ _TITO_RENDERER_CERTIFICATIONS = (
         renderer_names=frozenset({DEEPSEEK_V4_PRO_RENDERER_NAME}),
         tokenizer_fingerprint=DEEPSEEK_V4_TOKENIZER_FINGERPRINT,
         renderer_factory=_build_deepseek_v4_tito_renderer,
-        artifact_repository=DEEPSEEK_V4_PRO_REPOSITORY,
-        artifact_revision=DEEPSEEK_V4_PRO_REVISION,
-        artifact_files=((DEEPSEEK_V4_ENCODER_FILE, DEEPSEEK_V4_ENCODER_SHA256),),
+        # The V4 encoder ships as hash-pinned vendored package source
+        # (tito/_vendored/deepseek_v4); no checkpoint artifact is fetched.
+        packaged_contract=True,
     ),
     TITORendererCertification(
         certification_id="glm-5.3-flash-preserved@690b7052-full-history-v1",
@@ -154,9 +148,9 @@ _TITO_RENDERER_CERTIFICATIONS = (
         renderer_names=frozenset({DEEPSEEK_V4_RENDERER_NAME}),
         tokenizer_fingerprint=DEEPSEEK_V4_TOKENIZER_FINGERPRINT,
         renderer_factory=_build_deepseek_v4_tito_renderer,
-        artifact_repository=DEEPSEEK_V4_REPOSITORY,
-        artifact_revision=DEEPSEEK_V4_REVISION,
-        artifact_files=((DEEPSEEK_V4_ENCODER_FILE, DEEPSEEK_V4_ENCODER_SHA256),),
+        # The V4 encoder ships as hash-pinned vendored package source
+        # (tito/_vendored/deepseek_v4); no checkpoint artifact is fetched.
+        packaged_contract=True,
     ),
     TITORendererCertification(
         certification_id="glm-5.3-preserved@935644c0-experimental-r5",

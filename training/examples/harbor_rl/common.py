@@ -64,10 +64,7 @@ def add_model_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--renderer-name",
         required=True,
-        help=(
-            "Production-certified TITO renderer matching the model and "
-            "tokenizer; unsupported pairs fail closed"
-        ),
+        help=("Production-certified TITO renderer matching the model and " "tokenizer; unsupported pairs fail closed"),
     )
     parser.add_argument(
         "--tito-prompt-mode",
@@ -111,14 +108,9 @@ def add_harness_args(
         "--terminal-failure-reward",
         type=float,
         default=terminal_failure_reward,
-        help=(
-            "Reward for terminal agent failures without a verifier reward; "
-            "unset retries and then discards them"
-        ),
+        help=("Reward for terminal agent failures without a verifier reward; " "unset retries and then discards them"),
     )
-    parser.add_argument(
-        "--tito-debug", action=argparse.BooleanOptionalAction, default=tito_debug
-    )
+    parser.add_argument("--tito-debug", action=argparse.BooleanOptionalAction, default=tito_debug)
 
 
 def add_resource_args(
@@ -131,9 +123,7 @@ def add_resource_args(
 ) -> None:
     """Dedicated trainer/deployment controls; omitted IDs are SDK-created."""
     parser.add_argument("--trainer-job-id", default=None, help="Reattach a trainer")
-    parser.add_argument(
-        "--deployment-id", default=None, help="Reattach and hot-load a deployment"
-    )
+    parser.add_argument("--deployment-id", default=None, help="Reattach and hot-load a deployment")
     if shapes:
         parser.add_argument("--training-shape-id", default=None)
         parser.add_argument("--deployment-shape", default=None)
@@ -154,9 +144,7 @@ def add_resource_args(
 
 def add_wandb_args(parser: argparse.ArgumentParser, *, project: str) -> None:
     parser.add_argument("--wandb-entity", default=os.environ.get("WANDB_ENTITY", ""))
-    parser.add_argument(
-        "--wandb-project", default=os.environ.get("WANDB_PROJECT", project)
-    )
+    parser.add_argument("--wandb-project", default=os.environ.get("WANDB_PROJECT", project))
     parser.add_argument("--wandb-run-name", default=None)
 
 
@@ -217,8 +205,7 @@ def harbor_settings(
         trial_config=args.harbor_trial_config,
         trials_dir=trials_dir,
         rollout_retries=args.rollout_retries,
-        retry_include_exceptions=DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS
-        | frozenset(args.retry_include_exception),
+        retry_include_exceptions=DEFAULT_HARBOR_RETRYABLE_EXCEPTIONS | frozenset(args.retry_include_exception),
         max_concurrent_trials=args.max_concurrent_trials,
         terminal_failure_reward=args.terminal_failure_reward,
         tool_timeout_seconds=args.harness_tool_timeout_seconds,
@@ -252,7 +239,7 @@ def deployment_rollout_setup(
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     headers = read_api_extra_headers_env()
-    tokenizer = load_tokenizer(tokenizer_model, tokenizer_revision)
+    tokenizer = load_tokenizer(tokenizer_model, tokenizer_revision, base_model=base_model)
     sample_kwargs = default_sample_kwargs(
         max_tokens=max_completion_tokens,
         temperature=temperature,
@@ -283,6 +270,7 @@ def deployment_rollout_setup(
             inference_base_url=base_url,
             api_key=api_key,
             model=deployment_id,
+            base_model=base_model,
         )
     finally:
         sampler.close()

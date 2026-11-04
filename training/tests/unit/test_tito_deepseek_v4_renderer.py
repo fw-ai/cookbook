@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -13,6 +14,7 @@ from fireworks.training.sdk import TITOChatRequest, TITOError, TITOIncrementalRe
 from training.examples.harbor_rl.tito.sidecar import build_sidecar_bundle
 from training.renderer.tito import build_sidecar_tito_renderer, load_sidecar_tokenizer
 from training.renderer.tito.deepseek_v4 import (
+    DEEPSEEK_V4_ENCODER_SHA256,
     DEEPSEEK_V4_RENDERER_NAME,
     DEEPSEEK_V4_REPOSITORY,
     DEEPSEEK_V4_REVISION,
@@ -341,6 +343,8 @@ def test_native_bundle_loads_offline_and_rejects_missing_or_modified_encoder(
 ) -> None:
     tokenizer, renderer = native
     name = renderer.renderer_id
+    if name != DEEPSEEK_V41_RENDERER_NAME:
+        pytest.skip("V4 ships its encoder as vendored package source; see the V4 bundle test")
     setup = SimpleNamespace(
         tokenizer=tokenizer,
         tokenizer_id=tokenizer.name_or_path,
@@ -364,6 +368,45 @@ def test_native_bundle_loads_offline_and_rejects_missing_or_modified_encoder(
     encoder.unlink()
     with pytest.raises(ValueError, match="missing a certified renderer artifact"):
         load_sidecar_tokenizer(root, renderer_name=name)
+
+
+def test_vendored_v4_bundle_ships_no_checkpoint_python_and_renders_offline(
+    native: tuple[Any, DeepSeekV4TITORenderer], tmp_path: Path
+) -> None:
+    """Migrated V4 bundles carry the encoder as package source, never as data."""
+    tokenizer, renderer = native
+    name = renderer.renderer_id
+    if name == DEEPSEEK_V41_RENDERER_NAME:
+        pytest.skip("V4.1 keeps the hash-pinned artifact path")
+    setup = SimpleNamespace(
+        tokenizer=tokenizer,
+        tokenizer_id=tokenizer.name_or_path,
+        model="policy",
+    )
+    bundle = build_sidecar_bundle(setup, tmp_path / "bundles", renderer_name=name)
+    assert build_sidecar_bundle(setup, tmp_path / "bundles", renderer_name=name).digest == bundle.digest
+    with zipfile.ZipFile(bundle.path) as archive:
+        names = archive.namelist()
+        # No checkpoint Python travels as bundle data for migrated V4 paths.
+        tokenizer_entries = [entry for entry in names if entry.startswith("tokenizer/")]
+        assert tokenizer_entries
+        assert not [entry for entry in tokenizer_entries if entry.endswith(".py")]
+        assert f"tokenizer/{renderer.encoder_file}" not in names
+        # The vendored encoder rides inside the copied cookbook source tree.
+        vendored_entry = "cookbook/training/renderer/tito/_vendored/deepseek_v4/encoding_dsv4.py"
+        assert vendored_entry in names
+        assert hashlib.sha256(archive.read(vendored_entry)).hexdigest() == DEEPSEEK_V4_ENCODER_SHA256
+        archive.extractall(tmp_path / "runtime")
+    root = tmp_path / "runtime/tokenizer"
+    loaded = load_sidecar_tokenizer(root, renderer_name=name)
+    bundled_renderer = build_sidecar_tito_renderer(loaded, name)
+    if not tokenizer.chat_template:
+        with pytest.raises(ValueError, match="no bundled chat template"):
+            load_sidecar_tokenizer(root)
+    request = TITOChatRequest.from_openai({"messages": [{"role": "user", "content": "Run"}], "tools": [TOOL]})
+    assert tuple(bundled_renderer.render_conversation_tokens(request)) == tuple(
+        renderer.render_conversation_tokens(request)
+    )
 
 
 @pytest.fixture(scope="module")

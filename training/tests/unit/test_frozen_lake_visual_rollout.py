@@ -245,7 +245,7 @@ async def test_visual_rollout_preserves_prior_completion_tokens(monkeypatch):
     tool_prefill_id = 99
     monkeypatch.setattr(
         "training.examples.rl.frozen_lake.frozen_lake_rollout._build_kimi_toolcall_generation_prefill_token_ids",
-        lambda tokenizer_name_or_path: [tool_prefill_id],
+        lambda tokenizer_name_or_path, base_model=None: [tool_prefill_id],
     )
     monkeypatch.setattr(
         "training.examples.rl.frozen_lake.frozen_lake_rollout.FireworksV1ImageCompletionsClient",

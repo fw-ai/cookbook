@@ -72,6 +72,7 @@ from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS, log_run_resources
 from training.utils.metrics import sampler_metrics, weight_sync_metrics
 from training.utils.phase_tracing import phase_span
+from training.utils.tokenizers import resolve_tokenizer_base_model
 from training.utils.rl.algorithm import grpo as objective
 from training.utils.rl.async_rl import (
     AsyncRLCoordinator,
@@ -186,6 +187,9 @@ class Config:
     """Save a resumable+promotable checkpoint at the end of training."""
     output_model_id: str | None = None
     """Promote the final checkpoint to this 4-segment model id on clean exit."""
+
+    base_model_type: str = ""
+    """Independent model-family context that can only restrict code loading."""
 
 
 def _save_checkpoint(
@@ -320,13 +324,15 @@ async def main(
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
     additional_headers = read_api_extra_headers_env()
     async with AsyncExitStack() as stack:
-        tokenizer = await run_in_thread(load_deployment_tokenizer, cfg.deployment)
+        tokenizer_base_model = resolve_tokenizer_base_model(cfg.base_model, cfg.base_model_type)
+        tokenizer = await run_in_thread(load_deployment_tokenizer, cfg.deployment, base_model=tokenizer_base_model)
         service = build_service_client(
             api_key=api_key,
             base_url=base_url,
             additional_headers=additional_headers,
             base_model=cfg.base_model,
             tokenizer_model=cfg.deployment.tokenizer_model,
+            base_model_type=cfg.base_model_type,
             max_lora_rank=cfg.lora_rank,
             max_context_length=cfg.max_seq_len,
             learning_rate=cfg.learning_rate,
@@ -436,6 +442,7 @@ async def main(
                 inference_base_url=sampler.base_url,
                 api_key=api_key,
                 model=sampler.model,
+                base_model=tokenizer_base_model,
             )
         )
         stack.push_async_callback(close_rollout_fn, rollout_fn)

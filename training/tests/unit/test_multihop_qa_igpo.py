@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import eval_protocol.integrations.fireworks_v1_completions_client as ep_client
 import pytest
@@ -343,11 +344,16 @@ def test_main_trains_the_rollout_with_igpo_on_rl_loop(monkeypatch, tmp_path):
         close=lambda: None,
     )
     monkeypatch.setenv("FIREWORKS_API_KEY", "key")
+
+    def load_deployment_tokenizer(deployment: Any, *, base_model: str | None = None) -> None:
+        assert base_model == cfg.base_model
+        return None
+
     for name, value in {
         "setup_wandb": lambda *args, **kwargs: None,
         "wandb_finish": lambda *args, **kwargs: None,
         "log_metrics": lambda step_metrics, step: metrics.update(step_metrics),
-        "load_deployment_tokenizer": lambda deployment: None,
+        "load_deployment_tokenizer": load_deployment_tokenizer,
         "build_service_client": lambda **kwargs: service,
         "resolve_router_replay_enabled": lambda **kwargs: True,
         "make_weight_sync": lambda *args, **kwargs: (lambda name, **kwargs: calls.append(("sync", name))),

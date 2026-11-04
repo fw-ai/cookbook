@@ -67,17 +67,18 @@ DEFAULT_VISUAL_PROMPT_TEMPLATE = (
 
 
 @functools.lru_cache(maxsize=None)
-def _get_hf_tokenizer(tokenizer_name_or_path: str):
-    return load_tokenizer(tokenizer_name_or_path)
+def _get_hf_tokenizer(tokenizer_name_or_path: str, base_model: Optional[str] = None):
+    return load_tokenizer(tokenizer_name_or_path, base_model=base_model)
 
 
 @functools.lru_cache(maxsize=None)
-def _get_renderer(tokenizer_name_or_path: str):
+def _get_renderer(tokenizer_name_or_path: str, base_model: Optional[str] = None):
     """Cookbook renderer for the tokenizer; only its tool-call parser is used."""
     return build_renderer(
-        _get_hf_tokenizer(tokenizer_name_or_path),
+        _get_hf_tokenizer(tokenizer_name_or_path, base_model),
         tokenizer_name_or_path,
         load_image_processor=False,
+        base_model=base_model,
     )
 
 
@@ -224,11 +225,13 @@ def _strip_trailing_token_suffix(token_ids: List[int], suffix_ids: List[int]) ->
 _KIMI_TOOL_CALL_PREFILL = "<|tool_calls_section_begin|>"
 
 
-def _build_kimi_toolcall_generation_prefill_token_ids(tokenizer_name_or_path: str) -> List[int]:
+def _build_kimi_toolcall_generation_prefill_token_ids(
+    tokenizer_name_or_path: str, base_model: Optional[str] = None
+) -> List[int]:
     """Kimi tool calls start with a section marker; the rollout forces it as a prefill."""
     if not _is_kimi_tokenizer_name(tokenizer_name_or_path):
         return []
-    tokenizer = _get_hf_tokenizer(tokenizer_name_or_path)
+    tokenizer = _get_hf_tokenizer(tokenizer_name_or_path, base_model)
     return _normalize_token_id_sequence(
         tokenizer.encode(_KIMI_TOOL_CALL_PREFILL, add_special_tokens=False)
     )
@@ -242,6 +245,7 @@ class FireworksV1ImageCompletionsClient:
         *,
         model_id: str,
         tokenizer_name_or_path: str,
+        base_model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: float = 1.0,
@@ -254,6 +258,7 @@ class FireworksV1ImageCompletionsClient:
     ):
         self.model_id = model_id
         self.tokenizer_name_or_path = tokenizer_name_or_path or model_id
+        self.base_model = base_model
         self._api_key = api_key
         self._base_url = base_url
         self.temperature = temperature
@@ -277,7 +282,7 @@ class FireworksV1ImageCompletionsClient:
 
     def _get_tokenizer(self):
         if self._tokenizer is None:
-            self._tokenizer = _get_hf_tokenizer(self.tokenizer_name_or_path)
+            self._tokenizer = _get_hf_tokenizer(self.tokenizer_name_or_path, self.base_model)
         return self._tokenizer
 
     def _thinking_kwargs(self) -> Dict[str, Any]:
@@ -651,6 +656,8 @@ def _merge_request_params(
     ignored_keys = {
         "model", "temperature", "max_tokens", "base_url", "api_key",
         "tokenizer_name_or_path", "tokenizer_path",
+        # Local tokenizer/renderer loading context; never request JSON.
+        "base_model",
         "system_prompt", "user_prompt_template", "visual_prompt_template",
         "observation_mode",
         "allow_plaintext_action_fallback",
@@ -806,6 +813,10 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
         )
         if tokenizer_name_or_path == model_id and _is_kimi_tokenizer_name(model_id):
             tokenizer_name_or_path = "moonshotai/Kimi-K2.5"
+        # Local loading context only: the deployed sampling model id is never a
+        # base identity, so an opaque tokenizer override stays permissive unless
+        # the caller explicitly selected a base model.
+        base_model = completion_params.get("base_model") or processor_kwargs.get("base_model") or None
         api_key = completion_params.get("api_key") or processor_kwargs.get("api_key") or self.api_key
         base_url = completion_params.get("base_url") or processor_kwargs.get("base_url") or self.base_url
         temperature = float(completion_params.get("temperature", processor_kwargs.get("temperature", self.temperature)))
@@ -865,7 +876,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                 if _shared_tokenizer is None:
                     # Load once per rollout invocation so per-row clients share
                     # the same tokenizer instead of re-fetching from HF.
-                    _shared_tokenizer = _get_hf_tokenizer(str(tokenizer_name_or_path))
+                    _shared_tokenizer = _get_hf_tokenizer(str(tokenizer_name_or_path), base_model)
             return _shared_tokenizer
 
         async def process_row(row: EvaluationRow) -> EvaluationRow:
@@ -874,7 +885,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
 
             tool_call_parser = build_frozen_lake_tool_call_parser(
                 allow_plaintext_action_fallback=allow_plaintext_action_fallback,
-                renderer=_get_renderer(str(tokenizer_name_or_path)),
+                renderer=_get_renderer(str(tokenizer_name_or_path), base_model),
             )
             text_client = None
             image_client = None
@@ -882,6 +893,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
                 image_client = FireworksV1ImageCompletionsClient(
                     model_id=model_id,
                     tokenizer_name_or_path=str(tokenizer_name_or_path),
+                    base_model=base_model,
                     api_key=str(api_key) if api_key is not None else None,
                     base_url=str(base_url) if base_url is not None else None,
                     temperature=temperature,
@@ -921,7 +933,7 @@ class FrozenLakeToolRolloutProcessor(RolloutProcessor):
             latest_raw_output: Optional[Dict[str, Any]] = None
             rollout_error: Optional[str] = None
             assistant_toolcall_prefill_ids = _build_kimi_toolcall_generation_prefill_token_ids(
-                str(tokenizer_name_or_path)
+                str(tokenizer_name_or_path), base_model=base_model
             )
             assistant_toolcall_prefill_text = (
                 _KIMI_TOOL_CALL_PREFILL if assistant_toolcall_prefill_ids else ""

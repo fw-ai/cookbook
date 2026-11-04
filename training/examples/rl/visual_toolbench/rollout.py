@@ -178,7 +178,7 @@ def make_rollout_fn(setup: "RolloutSetup", *, task: TaskConfig) -> "RolloutFn":
     # Dedicated and serverless recipes inject one borrowed sampler; do not close it.
     sampler = setup.sampler
     tokenizer = setup.tokenizer
-    renderer = build_renderer(tokenizer, setup.tokenizer_id, task.renderer_name)
+    renderer = build_renderer(tokenizer, setup.tokenizer_id, task.renderer_name, base_model=setup.base_model)
     image_pad_id = _resolve_image_pad_id(tokenizer, renderer)
 
     train_sample_kwargs = dict(setup.sample_kwargs)

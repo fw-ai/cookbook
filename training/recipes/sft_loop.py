@@ -109,6 +109,7 @@ from training.utils.streaming import (
 )
 from training.utils.termination import TerminatedBySignal
 from training.utils.timer import flush_timing, timer
+from training.utils.tokenizers import resolve_tokenizer_base_model
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -450,6 +451,8 @@ def _init_render_worker(
     render_samples_local_dir: str = "",
     render_samples_limit: int | None = 0,
     _worker_id: int | None = None,
+    *,
+    base_model: str | None = None,
 ) -> None:
     """DataLoader ``worker_init_fn`` for SFT chat-row rendering.
 
@@ -469,6 +472,7 @@ def _init_render_worker(
         max_seq_len=max_seq_len,
         thinking_trace_history_mode=thinking_trace_history_mode,
         renderer_name_is_resolved=True,
+        base_model=base_model,
         train_on_what=parse_train_on_what(train_on_what_str),
     )
     _worker_state.update(
@@ -927,6 +931,9 @@ class Config:
     See training/utils/runner.py for file format details.
     """
 
+    base_model_type: str = ""
+    """Independent model-family context that can only restrict code loading."""
+
 
 # ---------------------------------------------------------------------------
 # Eval
@@ -1110,6 +1117,7 @@ def main(
                 additional_headers=additional_headers,
                 base_model=cfg.base_model,
                 tokenizer_model=cfg.tokenizer_model,
+                base_model_type=cfg.base_model_type,
                 max_lora_rank=cfg.lora_rank,
                 max_context_length=cfg.max_seq_len,
                 learning_rate=cfg.learning_rate,
@@ -1159,7 +1167,8 @@ def main(
             cfg.thinking_trace_history_mode,
             cfg.tokenizer_trust_remote_code,
         )
-        _init_render_worker(*base_init_args)
+        tokenizer_base_model = resolve_tokenizer_base_model(cfg.base_model, cfg.base_model_type)
+        _init_render_worker(*base_init_args, base_model=tokenizer_base_model)
 
         training_dataset, eval_data, generation_dataset = _prepare_datasets(cfg)
         generation_examples = (
@@ -1217,7 +1226,7 @@ def main(
             render_samples_local_dir=render_samples_local_dir,
             render_samples_limit=render_samples_limit,
         )
-        worker_init_fn = functools.partial(_init_render_worker, *init_args)
+        worker_init_fn = functools.partial(_init_render_worker, *init_args, base_model=tokenizer_base_model)
 
         training_count = len(training_dataset)
         effective_batch_size = max(1, min(cfg.batch_size, training_count))

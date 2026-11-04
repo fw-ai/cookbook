@@ -24,9 +24,7 @@ def _catalog() -> dict:
                     "renderer": "qwen3_vl",
                     "tokenizer_model": "/tmp/tokenizer",
                     "image_processor_model": "/tmp/processor",
-                    "deployment_id": (
-                        "accounts/test-account/deployments/test-deployment"
-                    ),
+                    "deployment_id": ("accounts/test-account/deployments/test-deployment"),
                     "max_tokens": 64,
                     "temperature": 0,
                 },
@@ -40,9 +38,7 @@ def _catalog() -> dict:
                                 "content": [
                                     {
                                         "type": "image_url",
-                                        "image_url": {
-                                            "url": "data:image/png;base64,AAAA"
-                                        },
+                                        "image_url": {"url": "data:image/png;base64,AAAA"},
                                     },
                                     {"type": "text", "text": "Describe it."},
                                 ],
@@ -84,39 +80,31 @@ def test_load_and_resolve_complete_vision_input(tmp_path):
             "unsupported keys",
         ),
         (
-            lambda data: data["profiles"][0]["examples"][0][
-                "extra_completion_kwargs"
-            ].update({"headers": {"Authorization": "no"}}),
+            lambda data: data["profiles"][0]["examples"][0]["extra_completion_kwargs"].update(
+                {"headers": {"Authorization": "no"}}
+            ),
             "credential keys",
         ),
         (
-            lambda data: data["profiles"][0]["examples"][0][
-                "extra_completion_kwargs"
-            ].update({"model": "other-model"}),
+            lambda data: data["profiles"][0]["examples"][0]["extra_completion_kwargs"].update(
+                {"model": "other-model"}
+            ),
             "verifier-controlled keys",
         ),
         (
-            lambda data: data["profiles"][0]["defaults"].update(
-                {"renderer_config": {"api_key": "no"}}
-            ),
+            lambda data: data["profiles"][0]["defaults"].update({"renderer_config": {"api_key": "no"}}),
             "unsupported keys",
         ),
         (
-            lambda data: data["profiles"][0]["defaults"].update(
-                {"model": "accounts/test/models/model"}
-            ),
+            lambda data: data["profiles"][0]["defaults"].update({"model": "accounts/test/models/model"}),
             "cannot set both",
         ),
         (
-            lambda data: data["profiles"][0]["defaults"].update(
-                {"train_on_what": "not-a-mode"}
-            ),
+            lambda data: data["profiles"][0]["defaults"].update({"train_on_what": "not-a-mode"}),
             "supported training mode",
         ),
         (
-            lambda data: data["profiles"][0]["examples"][0].update(
-                {"artifact": {"kind": "probe"}}
-            ),
+            lambda data: data["profiles"][0]["examples"][0].update({"artifact": {"kind": "probe"}}),
             "unsupported keys",
         ),
     ],
@@ -178,8 +166,16 @@ def test_run_one_probe_wires_json_vision_fields(monkeypatch):
     client = object()
     captured = {}
 
-    monkeypatch.setattr(serve, "_tokenizer", lambda value: tokenizer)
-    monkeypatch.setattr(serve, "_image_processor", lambda value: image_processor)
+    def tokenizer_loader(value, *, renderer_name=None):
+        captured["tokenizer_renderer"] = renderer_name
+        return tokenizer
+
+    def processor_loader(value, *, renderer_name=None):
+        captured["processor_renderer"] = renderer_name
+        return image_processor
+
+    monkeypatch.setattr(serve, "_tokenizer", tokenizer_loader)
+    monkeypatch.setattr(serve, "_image_processor", processor_loader)
     monkeypatch.setattr(serve, "_client", lambda api_key, base_url: client)
 
     def fake_run_probe(**kwargs):
@@ -194,6 +190,8 @@ def test_run_one_probe_wires_json_vision_fields(monkeypatch):
     )
 
     assert serve._run_one_probe(request) == {"kind": "probe"}
+    assert captured["tokenizer_renderer"] == "qwen3_vl"
+    assert captured["processor_renderer"] == "qwen3_vl"
     assert captured["tokenizer"] is tokenizer
     assert captured["image_processor"] is image_processor
     assert captured["image_processor_model"] == "/tmp/processor"
@@ -217,17 +215,13 @@ def test_run_input_case_reloads_json_and_returns_fresh_artifact(
 
     first = serve._run_input_case("qwen-vl", "vision")
     data = _catalog()
-    data["profiles"][0]["examples"][0]["messages"][0]["content"][1]["text"] = (
-        "Describe the updated image."
-    )
+    data["profiles"][0]["examples"][0]["messages"][0]["content"][1]["text"] = "Describe the updated image."
     path.write_text(json.dumps(data))
     second = serve._run_input_case("qwen-vl", "vision")
 
     assert first["artifact"]["sequence"] == 1
     assert second["artifact"]["sequence"] == 2
-    assert calls[1]["messages"][0]["content"][1]["text"] == (
-        "Describe the updated image."
-    )
+    assert calls[1]["messages"][0]["content"][1]["text"] == ("Describe the updated image.")
 
 
 def test_viewer_has_only_json_input_live_execution_path():
