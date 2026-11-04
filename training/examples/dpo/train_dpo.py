@@ -92,6 +92,11 @@ def parse_args():
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--wandb-entity", type=str, default=None, help="Enables W&B logging.")
     parser.add_argument(
+        "--wandb-offline",
+        action="store_true",
+        help="Log W&B locally without an entity or API key; sync later with `wandb sync`.",
+    )
+    parser.add_argument(
         "--mlflow-tracking-uri",
         type=str,
         default=None,
@@ -136,6 +141,7 @@ def main():
             project=args.project,
             run_name=args.run_name or f"dpo-{args.base_model.rsplit('/', 1)[-1]}",
             wandb_entity=args.wandb_entity,
+            wandb_mode="offline" if args.wandb_offline else "online",
             mlflow_tracking_uri=args.mlflow_tracking_uri,
         ),
     )

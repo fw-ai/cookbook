@@ -93,15 +93,19 @@ def setup_wandb(
     *,
     metric_steps: _MetricSteps | None = None,
 ) -> bool:
-    """Initialize WandB if entity is provided. Returns True if active.
+    """Initialize WandB if enabled. Returns True if active.
 
-    If ``WANDB_API_KEY`` is not set, falls back to offline mode so runs
-    are logged locally without requiring authentication. Auth/permission/config
-    failures from ``wandb.init`` are re-raised as :class:`WandbConfigError` so
-    the orchestration layer surfaces them as a user-actionable error
+    W&B is enabled when ``wb.entity`` is set or ``wb.mode`` is ``"offline"``.
+    Offline mode logs the run locally without an entity or API key; sync it
+    later with ``wandb sync``. In online mode, if ``WANDB_API_KEY`` is not
+    set, falls back to offline mode so runs are logged locally without
+    requiring authentication. Auth/permission/config failures from
+    ``wandb.init`` are re-raised as :class:`WandbConfigError` so the
+    orchestration layer surfaces them as a user-actionable error
     (FIR2-1774).
     """
-    if not wb.entity:
+    offline = wb.mode == "offline"
+    if not wb.entity and not offline:
         return False
     try:
         import os
@@ -110,7 +114,7 @@ def setup_wandb(
         logger.warning("wandb not installed; metrics will only be logged to console")
         return False
 
-    if not os.environ.get("WANDB_API_KEY"):
+    if not offline and not os.environ.get("WANDB_API_KEY"):
         logger.warning(
             "WANDB_API_KEY not set; running wandb in offline mode. "
             "Set the key to sync runs to the dashboard."
@@ -119,7 +123,11 @@ def setup_wandb(
 
     try:
         wandb.init(
-            entity=wb.entity, project=wb.project, name=wb.run_name, config=config
+            entity=wb.entity,
+            project=wb.project,
+            name=wb.run_name,
+            config=config,
+            mode="offline" if offline else None,
         )
     except Exception as exc:
         if _is_wandb_auth_error(exc):
@@ -212,6 +220,7 @@ def setup_logging(
                 entity=lc.wandb_entity,
                 project=lc.project,
                 run_name=lc.run_name,
+                mode=lc.wandb_mode,
             ),
             config,
             metric_steps=metric_steps,
@@ -219,7 +228,8 @@ def setup_logging(
             active.append("wandb")
         elif explicit:
             logger.warning(
-                "logging backend 'wandb' selected but inactive; set wandb_entity"
+                "logging backend 'wandb' selected but inactive; "
+                "set wandb_entity or wandb_mode='offline'"
             )
 
     if "mlflow" in selected:

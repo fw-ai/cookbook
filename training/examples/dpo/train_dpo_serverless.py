@@ -82,6 +82,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run-name", default=None, help="Run name in every enabled backend.")
     p.add_argument("--wandb-entity", default=None, help="Enables W&B logging.")
     p.add_argument(
+        "--wandb-offline",
+        action="store_true",
+        help="Log W&B locally without an entity or API key; sync later with `wandb sync`.",
+    )
+    p.add_argument(
         "--mlflow-tracking-uri",
         default=None,
         help="MLflow tracking server URI. Default: $MLFLOW_TRACKING_URI, then local ./mlruns.",
@@ -118,6 +123,7 @@ def build_config(args: argparse.Namespace) -> dpo_loop.Config:
             project=args.project,
             run_name=args.run_name,
             wandb_entity=args.wandb_entity,
+            wandb_mode="offline" if args.wandb_offline else "online",
             mlflow_tracking_uri=args.mlflow_tracking_uri,
         ),
     )
