@@ -66,31 +66,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Continue from '<account>/<run-id>/<checkpoint>' saved by an earlier run.",
     )
     p.add_argument("--output-model-id", default=None, help="Promote the final checkpoint.")
-    p.add_argument(
-        "--logger",
-        nargs="+",
-        choices=["wandb", "mlflow"],
-        default=None,
-        metavar="BACKEND",
-        help="Metrics backends to enable. Default: auto-enable each configured backend.",
-    )
-    p.add_argument(
-        "--project",
-        default="serverless-dpo",
-        help="Shared run grouping: W&B project and MLflow experiment name.",
-    )
-    p.add_argument("--run-name", default=None, help="Run name in every enabled backend.")
     p.add_argument("--wandb-entity", default=None, help="Enables W&B logging.")
-    p.add_argument(
-        "--wandb-offline",
-        action="store_true",
-        help="Log W&B locally without an entity or API key; sync later with `wandb sync`.",
-    )
-    p.add_argument(
-        "--mlflow-tracking-uri",
-        default=None,
-        help="MLflow tracking server URI. Default: $MLFLOW_TRACKING_URI, then local ./mlruns.",
-    )
     return p.parse_args(argv)
 
 
@@ -118,14 +94,7 @@ def build_config(args: argparse.Namespace) -> dpo_loop.Config:
         runner=RunnerConfig(
             reference_checkpoint_file=os.path.join(args.log_path, "reference_checkpoint.json"),
         ),
-        logging=LoggingConfig(
-            loggers=tuple(args.logger) if args.logger else None,
-            project=args.project,
-            run_name=args.run_name,
-            wandb_entity=args.wandb_entity,
-            wandb_mode="offline" if args.wandb_offline else "online",
-            mlflow_tracking_uri=args.mlflow_tracking_uri,
-        ),
+        logging=LoggingConfig(project="serverless-dpo", wandb_entity=args.wandb_entity),
     )
 
 

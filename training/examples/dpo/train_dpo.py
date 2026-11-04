@@ -74,34 +74,10 @@ def parse_args():
     parser.add_argument("--purpose", type=str, default=None)
     parser.add_argument("--skip-cleanup", action="store_true", default=False)
 
-    # Metrics logging
-    parser.add_argument(
-        "--logger",
-        nargs="+",
-        choices=["wandb", "mlflow"],
-        default=None,
-        metavar="BACKEND",
-        help="Metrics backends to enable. Default: auto-enable each configured backend.",
-    )
-    parser.add_argument(
-        "--project",
-        type=str,
-        default="dpo-tinker",
-        help="Shared run grouping: W&B project and MLflow experiment name.",
-    )
-    parser.add_argument("--run-name", type=str, default=None)
-    parser.add_argument("--wandb-entity", type=str, default=None, help="Enables W&B logging.")
-    parser.add_argument(
-        "--wandb-offline",
-        action="store_true",
-        help="Log W&B locally without an entity or API key; sync later with `wandb sync`.",
-    )
-    parser.add_argument(
-        "--mlflow-tracking-uri",
-        type=str,
-        default=None,
-        help="MLflow tracking server URI. Default: $MLFLOW_TRACKING_URI, then local ./mlruns.",
-    )
+    # Wandb
+    parser.add_argument("--wandb-project", type=str, default="dpo-tinker")
+    parser.add_argument("--wandb-run-name", type=str, default=None)
+    parser.add_argument("--wandb-entity", type=str, default=None)
 
     return parser.parse_args()
 
@@ -137,12 +113,9 @@ def main():
             purpose=args.purpose or None,
         ),
         logging=LoggingConfig(
-            loggers=tuple(args.logger) if args.logger else None,
-            project=args.project,
-            run_name=args.run_name or f"dpo-{args.base_model.rsplit('/', 1)[-1]}",
+            project=args.wandb_project,
             wandb_entity=args.wandb_entity,
-            wandb_mode="offline" if args.wandb_offline else "online",
-            mlflow_tracking_uri=args.mlflow_tracking_uri,
+            run_name=args.wandb_run_name or f"dpo-{args.base_model.rsplit('/', 1)[-1]}",
         ),
     )
 

@@ -33,7 +33,7 @@ import time
 from pathlib import Path
 
 import training.recipes.sft_loop as sft_loop
-from training.utils import WandBConfig
+from training.utils import LoggingConfig
 
 DATASET = Path(__file__).resolve().parent / "data" / "support_triage_train.jsonl"
 
@@ -82,7 +82,7 @@ def build_config(args: argparse.Namespace) -> sft_loop.Config:
         dcp_save_interval=args.dcp_save_interval,
         init_from_checkpoint=args.init_from_checkpoint,
         output_model_id=args.output_model_id,
-        wandb=WandBConfig(entity=args.wandb_entity, project="serverless-sft"),
+        logging=LoggingConfig(project="serverless-sft", wandb_entity=args.wandb_entity),
     )
 
 

@@ -10,7 +10,7 @@ import os
 from dotenv import load_dotenv
 
 import training.recipes.sft_loop as sft_loop
-from training.utils import TrainerConfig, WandBConfig
+from training.utils import LoggingConfig, TrainerConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,9 +79,9 @@ def main():
         trainer=TrainerConfig(
             training_shape_id=args.training_shape,
         ),
-        wandb=WandBConfig(
+        logging=LoggingConfig(
             project=args.wandb_project,
-            entity=args.wandb_entity,
+            wandb_entity=args.wandb_entity,
             run_name=args.wandb_run_name or f"sft-{args.base_model.rsplit('/', 1)[-1]}",
         ),
     )
