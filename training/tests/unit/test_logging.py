@@ -149,8 +149,42 @@ class TestSetupWandb:
 
 
 class TestSetupMlflow:
-    def test_disabled_without_tracking_uri_or_experiment(self):
+    def test_disabled_without_tracking_uri_or_experiment(self, monkeypatch):
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.delenv("MLFLOW_EXPERIMENT_NAME", raising=False)
         assert setup_mlflow(MLflowConfig(), {}) is False
+
+    def test_enabled_via_env_tracking_uri(self, monkeypatch):
+        monkeypatch.delenv("MLFLOW_EXPERIMENT_NAME", raising=False)
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+        fake = _install_fake_mlflow(monkeypatch)
+
+        assert setup_mlflow(MLflowConfig(), {}) is True
+
+        # Env values are read natively by mlflow; no programmatic override.
+        assert fake.calls == [("start_run", None)]
+
+    def test_enabled_via_env_experiment_name(self, monkeypatch):
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.setenv("MLFLOW_EXPERIMENT_NAME", "exp")
+        fake = _install_fake_mlflow(monkeypatch)
+
+        assert setup_mlflow(MLflowConfig(), {}) is True
+
+        assert fake.calls == [("start_run", None)]
+
+    def test_explicit_config_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://env:5000")
+        fake = _install_fake_mlflow(monkeypatch)
+
+        assert (
+            setup_mlflow(MLflowConfig(tracking_uri="http://flag:5000"), {}) is True
+        )
+
+        assert fake.calls == [
+            ("set_tracking_uri", "http://flag:5000"),
+            ("start_run", None),
+        ]
 
     def test_not_installed_returns_false(self, monkeypatch):
         # sys.modules["mlflow"] = None makes `import mlflow` raise ImportError.

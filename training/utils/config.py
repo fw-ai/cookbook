@@ -272,9 +272,10 @@ class WandBConfig:
 class MLflowConfig:
     """MLflow logging settings.
 
-    MLflow is enabled when ``tracking_uri`` or ``experiment_name`` is set.
-    Without a tracking URI, runs log to the local ``./mlruns`` directory (or
-    the ``MLFLOW_TRACKING_URI`` environment variable).
+    MLflow is enabled when a tracking URI or experiment name is set, here or
+    via the ``MLFLOW_TRACKING_URI`` / ``MLFLOW_EXPERIMENT_NAME`` environment
+    variables (which mlflow reads natively). Without any tracking URI, runs
+    log to the local ``./mlruns`` directory.
     """
 
     tracking_uri: str | None = None

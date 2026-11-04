@@ -145,13 +145,22 @@ def setup_wandb(
 def setup_mlflow(mf: MLflowConfig, config: dict[str, Any]) -> bool:
     """Initialize MLflow if enabled. Returns True if active.
 
-    MLflow is enabled when ``mf.tracking_uri`` or ``mf.experiment_name`` is
-    set. Without a tracking URI, runs log to the local ``./mlruns`` directory
-    (or the ``MLFLOW_TRACKING_URI`` environment variable). Flat scalar entries
-    of ``config`` are logged as run params; param failures are warned and
-    swallowed so a tracking-server hiccup never blocks training.
+    MLflow is enabled when a tracking URI or experiment name is set, either
+    on ``mf`` or via the ``MLFLOW_TRACKING_URI`` / ``MLFLOW_EXPERIMENT_NAME``
+    environment variables (so a shell profile or ``.env`` file configures it
+    once, no per-run flags). Without any tracking URI, runs log to the local
+    ``./mlruns`` directory. Values from the environment are read natively by
+    mlflow; only explicit ``mf`` fields are applied programmatically. Flat
+    scalar entries of ``config`` are logged as run params; param failures are
+    warned and swallowed so a tracking-server hiccup never blocks training.
     """
-    if not mf.tracking_uri and not mf.experiment_name:
+    enabled = (
+        mf.tracking_uri
+        or mf.experiment_name
+        or os.environ.get("MLFLOW_TRACKING_URI")
+        or os.environ.get("MLFLOW_EXPERIMENT_NAME")
+    )
+    if not enabled:
         return False
     try:
         import mlflow

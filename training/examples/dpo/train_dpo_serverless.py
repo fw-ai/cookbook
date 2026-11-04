@@ -75,12 +75,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--mlflow-experiment-name",
         default=None,
-        help="Enables MLflow logging to this experiment.",
+        help="Enables MLflow logging to this experiment. Default: $MLFLOW_EXPERIMENT_NAME.",
     )
     p.add_argument(
         "--mlflow-tracking-uri",
         default=None,
-        help="MLflow tracking server URI; default logs locally to ./mlruns.",
+        help="MLflow tracking server URI. Default: $MLFLOW_TRACKING_URI, then local ./mlruns.",
     )
     p.add_argument("--mlflow-run-name", default=None)
     return p.parse_args(argv)

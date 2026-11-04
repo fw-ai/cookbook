@@ -74,8 +74,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Log W&B locally without an entity or API key; sync later with `wandb sync`.",
     )
-    parser.add_argument("--mlflow-experiment-name", default=None, help="Enables MLflow logging.")
-    parser.add_argument("--mlflow-tracking-uri", default=None, help="Default: local ./mlruns.")
+    parser.add_argument("--mlflow-experiment-name", default=None, help="Enables MLflow logging. Default: $MLFLOW_EXPERIMENT_NAME.")
+    parser.add_argument("--mlflow-tracking-uri", default=None, help="Default: $MLFLOW_TRACKING_URI, then local ./mlruns.")
     parser.add_argument("--mlflow-run-name", default=None)
     return parser.parse_args(argv)
 
