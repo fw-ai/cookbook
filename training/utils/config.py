@@ -281,3 +281,30 @@ class MLflowConfig:
     tracking_uri: str | None = None
     experiment_name: str | None = None
     run_name: str | None = None
+
+
+@dataclass
+class LoggingConfig:
+    """Unified metrics-logging settings shared across backends.
+
+    ``loggers`` selects which backends mirror metrics: any of ``"wandb"``,
+    ``"mlflow"``. ``None`` (default) auto-enables each backend from its own
+    settings or environment: W&B when ``wandb_entity`` is set or
+    ``wandb_mode`` is ``"offline"``; MLflow when a tracking URI is set
+    (``mlflow_tracking_uri`` or ``MLFLOW_TRACKING_URI``) or
+    ``MLFLOW_EXPERIMENT_NAME`` is in the environment. The shared ``project``
+    alone never enables MLflow -- recipes set a default project, which would
+    otherwise spawn a local ``./mlruns`` run on every job.
+
+    ``project`` is the shared run grouping: the W&B project and the MLflow
+    experiment name. ``run_name`` names the run in every enabled backend.
+    """
+
+    loggers: tuple[Literal["wandb", "mlflow"], ...] | None = None
+    """Backend selection. ``None`` auto-enables each configured backend."""
+    project: str | None = None
+    """Shared run grouping: W&B project and MLflow experiment name."""
+    run_name: str | None = None
+    wandb_entity: str | None = None
+    wandb_mode: Literal["online", "offline"] = "online"
+    mlflow_tracking_uri: str | None = None

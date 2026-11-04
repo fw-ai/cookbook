@@ -62,29 +62,26 @@ from training.utils import (
     DeployConfig,
     GcsJsonlRenderDataset,
     JsonlRenderDataset,
-    MLflowConfig,
+    LoggingConfig,
     RawRowCursor,
     ReconnectableClient,
     RunnerConfig,
     RunnerIO,
     RunStatus,
     TrainerConfig,
-    WandBConfig,
     build_service_client,
+    finish_logging,
     log_metrics_json,
     make_batch_dpo_loss_fn,
     make_render_dataloader,
-    mlflow_finish,
     mlflow_log,
     normalize_preference_row,
     populate_render_worker_state,
     read_api_extra_headers_env,
     render_preference_pair,
     resolve_renderer_snapshot,
-    setup_mlflow,
-    setup_wandb,
+    setup_logging,
     validate_config,
-    wandb_finish,
     wandb_log,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
@@ -203,8 +200,7 @@ class Config:
     """Save DCP checkpoints every N steps. 0 disables."""
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
-    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
-    mlflow: MLflowConfig = field(default_factory=MLflowConfig)
+    logging: LoggingConfig = field(default_factory=lambda: LoggingConfig(project="dpo-tinker"))
     prefer_current_run_checkpoint: bool = False
     """Prefer this run's checkpoints over a previous-attempt reference on resume.
     Opt-in for managed continuation; explicit initialization otherwise wins."""
@@ -803,8 +799,7 @@ def main(
         "epochs": cfg.epochs,
         "batch_size": cfg.batch_size,
     }
-    setup_wandb(cfg.wandb, run_config)
-    setup_mlflow(cfg.mlflow, run_config)
+    setup_logging(cfg.logging, run_config)
 
     # -- SDK-managed Tinker clients ----------------------------------------
 
@@ -1023,8 +1018,7 @@ def main(
         total_steps = step
         write_completed(runner, step=step, total_steps=total_steps)
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
-        wandb_finish()
-        mlflow_finish()
+        finish_logging()
         return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
 
 

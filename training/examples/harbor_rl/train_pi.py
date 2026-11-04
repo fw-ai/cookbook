@@ -28,7 +28,7 @@ from training.examples.harbor_rl.tasks.dabstep.dataset import (
 )
 from training.examples.harbor_rl.tito.evaluate import make_fixed_evaluation
 from training.recipes.async_rl_loop import Config, main
-from training.utils import WandBConfig
+from training.utils import LoggingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +88,9 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, row_count: int) -> 
         init_from_checkpoint=args.init_from_checkpoint,
         trainer=common.trainer_config(args),
         deployment=common.deploy_config(args),
-        wandb=WandBConfig(
-            entity=args.wandb_entity,
+        logging=LoggingConfig(
             project=args.wandb_project,
+            wandb_entity=args.wandb_entity,
             run_name=args.wandb_run_name or f"harbor-dabstep-pi-{int(time.time()) % 100000}",
         ),
     )

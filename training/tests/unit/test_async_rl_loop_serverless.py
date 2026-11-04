@@ -126,8 +126,8 @@ def _patch_runtime(monkeypatch, service: _Service) -> None:
     monkeypatch.setattr(loop, "_make_service", lambda *_args: service)
     monkeypatch.setattr(loop, "load_tokenizer", lambda *_args: object())
     monkeypatch.setattr(loop, "_router_replay_enabled", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(loop, "setup_wandb", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(loop, "wandb_finish", lambda **_kwargs: None)
+    monkeypatch.setattr(loop, "setup_logging", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(loop, "finish_logging", lambda **_kwargs: None)
     monkeypatch.setattr(loop, "log_metrics", lambda *_args, **_kwargs: None)
 
 
@@ -296,7 +296,7 @@ def test_sampling_preflight_finishes_wandb_when_session_creation_fails(
 ) -> None:
     finished: list[str | None] = []
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setattr(loop, "setup_wandb", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(loop, "setup_logging", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
         loop,
         "_make_service",
@@ -304,7 +304,7 @@ def test_sampling_preflight_finishes_wandb_when_session_creation_fails(
     )
     monkeypatch.setattr(
         loop,
-        "wandb_finish",
+        "finish_logging",
         lambda *, metrics_file=None: finished.append(metrics_file),
     )
 

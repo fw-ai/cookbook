@@ -38,17 +38,14 @@ from fireworks.training.sdk.training_spec import (
 )
 from training.utils import (
     DEFAULT_ADAM,
-    MLflowConfig,
-    WandBConfig,
+    LoggingConfig,
     load_jsonl_dataset,
     load_tokenizer,
     log_metrics,
-    mlflow_finish,
+    finish_logging,
     read_api_extra_headers_env,
     resolve_router_replay_enabled,
-    setup_mlflow,
-    setup_wandb,
-    wandb_finish,
+    setup_logging,
 )
 from training.utils.dataloader import CursorDataLoader
 from training.utils.logging import ASYNC_RL_WANDB_METRIC_STEPS
@@ -143,8 +140,9 @@ class Config:
     resolved_rows_offset: int = 0
     dcp_save_interval: int = 0
     save_final_checkpoint: bool = True
-    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="serverless-rl-async"))
-    mlflow: MLflowConfig = field(default_factory=MLflowConfig)
+    logging: LoggingConfig = field(
+        default_factory=lambda: LoggingConfig(project="serverless-rl-async")
+    )
 
 
 class ServerlessSampler:
@@ -393,12 +391,11 @@ def run_sampling_preflight(
     _validate_config(cfg)
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-    setup_wandb(
-        cfg.wandb,
+    setup_logging(
+        cfg.logging,
         _wandb_config(cfg, mode="serverless-sampling-preflight"),
         metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
     )
-    setup_mlflow(cfg.mlflow, _wandb_config(cfg, mode="serverless-sampling-preflight"))
     service: FiretitanServiceClient | None = None
     sampler: ServerlessSampler | None = None
     try:
@@ -454,8 +451,7 @@ def run_sampling_preflight(
             if service is not None:
                 service.close()
         finally:
-            wandb_finish(metrics_file=cfg.metrics_file)
-            mlflow_finish(metrics_file=cfg.metrics_file)
+            finish_logging(metrics_file=cfg.metrics_file)
 
 
 @with_signals
@@ -481,12 +477,11 @@ async def main(
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
-    setup_wandb(
-        cfg.wandb,
+    setup_logging(
+        cfg.logging,
         _wandb_config(cfg, mode="serverless-training"),
         metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
     )
-    setup_mlflow(cfg.mlflow, _wandb_config(cfg, mode="serverless-training"))
     service: FiretitanServiceClient | None = None
     sampler: ServerlessSampler | None = None
     stack = AsyncExitStack()
@@ -831,5 +826,4 @@ async def main(
         try:
             await stack.aclose()
         finally:
-            wandb_finish(metrics_file=cfg.metrics_file)
-            mlflow_finish(metrics_file=cfg.metrics_file)
+            finish_logging(metrics_file=cfg.metrics_file)

@@ -34,7 +34,7 @@ from training.recipes.experiment.async_rl_loop_serverless import (
     main,
     run_sampling_preflight,
 )
-from training.utils import WandBConfig
+from training.utils import LoggingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, run_name: str) -> C
         step_offset=args.step_offset,
         resolved_rows_offset=args.row_offset,
         dcp_save_interval=args.dcp_save_interval,
-        wandb=WandBConfig(entity=args.wandb_entity, project=args.wandb_project, run_name=run_name),
+        logging=LoggingConfig(project=args.wandb_project, wandb_entity=args.wandb_entity, run_name=run_name),
     )
 
 

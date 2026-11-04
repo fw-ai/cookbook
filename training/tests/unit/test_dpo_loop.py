@@ -132,7 +132,7 @@ def _build_service_kwargs(monkeypatch, cfg: module.Config) -> dict:
     calls = []
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "validate_warm_start_config", lambda *args, **kwargs: None)
 
@@ -1322,7 +1322,7 @@ class TestGroupByLength:
 
 
 def test_main_requires_tokenizer_model(monkeypatch):
-    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_logging", lambda *args, **kwargs: None)
     cfg = module.Config(
         log_path="/tmp/dpo_test_logs",
         dataset="/tmp/pairs.jsonl",
@@ -1586,9 +1586,9 @@ def test_serverless_main_freezes_reference_and_finalizes_policy(monkeypatch, tmp
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     for name in [
-        "setup_wandb",
+        "setup_logging",
         "wandb_log",
-        "wandb_finish",
+        "finish_logging",
         "validate_config",
         "validate_warm_start_config",
         "_init_pair_worker",

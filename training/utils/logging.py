@@ -10,7 +10,7 @@ import threading
 from numbers import Integral, Real
 from typing import Any
 
-from training.utils.config import MLflowConfig, WandBConfig
+from training.utils.config import LoggingConfig, MLflowConfig, WandBConfig
 from training.utils import fileio
 from training.utils.phase_tracing import flush_phase_trace
 from training.utils.runner import WandbConfigError
@@ -188,6 +188,75 @@ def setup_mlflow(mf: MLflowConfig, config: dict[str, Any]) -> bool:
     if run is not None:
         logger.info("MLflow run id: %s", run.info.run_id)
     return True
+
+
+_KNOWN_BACKENDS = ("wandb", "mlflow")
+
+
+def setup_logging(
+    lc: LoggingConfig,
+    config: dict[str, Any],
+    *,
+    metric_steps: _MetricSteps | None = None,
+) -> list[str]:
+    """Initialize the selected logging backends; return the active names.
+
+    ``lc.loggers`` picks the backends; ``None`` auto-enables each backend
+    from its own settings or environment (see :class:`LoggingConfig`).
+    ``project``/``run_name`` are shared across backends: W&B project/run
+    name and MLflow experiment/run name. A backend explicitly selected but
+    missing its settings (e.g. no W&B entity) logs a warning and is skipped.
+    """
+    selected = set(lc.loggers) if lc.loggers is not None else set(_KNOWN_BACKENDS)
+    unknown = selected - set(_KNOWN_BACKENDS)
+    if unknown:
+        raise ValueError(f"unknown logging backends: {sorted(unknown)}")
+    explicit = lc.loggers is not None
+    active: list[str] = []
+
+    if "wandb" in selected:
+        if setup_wandb(
+            WandBConfig(
+                entity=lc.wandb_entity,
+                project=lc.project,
+                run_name=lc.run_name,
+                mode=lc.wandb_mode,
+            ),
+            config,
+            metric_steps=metric_steps,
+        ):
+            active.append("wandb")
+        elif explicit:
+            logger.warning(
+                "logging backend 'wandb' selected but inactive; "
+                "set wandb_entity or wandb_mode='offline'"
+            )
+
+    if "mlflow" in selected:
+        mlflow_auto = bool(
+            lc.mlflow_tracking_uri
+            or os.environ.get("MLFLOW_TRACKING_URI")
+            or os.environ.get("MLFLOW_EXPERIMENT_NAME")
+        )
+        # In auto mode the shared project alone must not enable MLflow:
+        # recipes set a default project, which would otherwise spawn a local
+        # ./mlruns run on every training job.
+        if (explicit or mlflow_auto) and setup_mlflow(
+            MLflowConfig(
+                tracking_uri=lc.mlflow_tracking_uri,
+                experiment_name=lc.project,
+                run_name=lc.run_name,
+            ),
+            config,
+        ):
+            active.append("mlflow")
+        elif explicit:
+            logger.warning(
+                "logging backend 'mlflow' selected but inactive; set "
+                "mlflow_tracking_uri / MLFLOW_TRACKING_URI, project, or "
+                "MLFLOW_EXPERIMENT_NAME"
+            )
+    return active
 
 
 def wandb_log(metrics: dict[str, Any], step: int | None = None) -> None:
@@ -419,6 +488,15 @@ def mlflow_finish(*, metrics_file: str | None = None) -> None:
                 exc_info=True,
             )
     mlflow.end_run()
+
+
+def finish_logging(*, metrics_file: str | None = None) -> None:
+    """Attach the metrics ledger and end every active backend run.
+
+    Each backend finisher is a no-op when that backend was never set up.
+    """
+    wandb_finish(metrics_file=metrics_file)
+    mlflow_finish(metrics_file=metrics_file)
 
 
 def log_metrics_json(step: int, **kwargs: float) -> None:

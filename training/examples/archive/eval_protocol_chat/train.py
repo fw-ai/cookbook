@@ -14,7 +14,7 @@ import time
 
 from training.examples.archive.eval_protocol_chat.rollout import ChatRolloutConfig, make_rollout_fn
 from training.recipes.async_rl_loop import Config, main
-from training.utils import DeployConfig, TrainerConfig, WandBConfig, load_jsonl_dataset
+from training.utils import DeployConfig, LoggingConfig, TrainerConfig, load_jsonl_dataset
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,9 +83,9 @@ def run() -> None:
             tokenizer_model=args.tokenizer_model,
             replica_count=args.replica_count,
         ),
-        wandb=WandBConfig(
-            entity=args.wandb_entity,
+        logging=LoggingConfig(
             project=args.wandb_project,
+            wandb_entity=args.wandb_entity,
             run_name=args.wandb_run_name or f"eval-protocol-chat-{int(time.time()) % 100000}",
         ),
     )

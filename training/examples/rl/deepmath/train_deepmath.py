@@ -29,7 +29,7 @@ from training.renderer import get_text_content
 from training.utils import (
     DeployConfig,
     TrainerConfig,
-    WandBConfig,
+    LoggingConfig,
     build_renderer,
     prepare_sampling_messages,
 )
@@ -247,9 +247,9 @@ def main_cli() -> None:
             tokenizer_model=args.tokenizer_model,
             sample_timeout=1200,
         ),
-        wandb=WandBConfig(
-            entity=args.wandb_entity,
+        logging=LoggingConfig(
             project=args.wandb_project,
+            wandb_entity=args.wandb_entity,
             run_name=args.deployment_id or f"deepmath-{int(time.time()) % 100000}",
         ),
     )

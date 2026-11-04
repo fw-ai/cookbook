@@ -51,23 +51,20 @@ from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
     DeployConfig,
-    MLflowConfig,
+    LoggingConfig,
     ReconnectableClient,
     TrainerConfig,
-    WandBConfig,
     build_service_client,
+    finish_logging,
     flush_phase_trace,
     load_deployment_tokenizer,
     load_jsonl_dataset,
     log_metrics,
     make_weight_sync,
-    mlflow_finish,
     read_api_extra_headers_env,
     resolve_router_replay_enabled,
-    setup_mlflow,
-    setup_wandb,
+    setup_logging,
     validate_config,
-    wandb_finish,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
 from training.utils.data import compute_advantages
@@ -172,8 +169,7 @@ class Config:
     deployment: DeployConfig = field(default_factory=DeployConfig)
     dcp_save_interval: int = 0
     weight_sync_timeout: int = 600
-    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
-    mlflow: MLflowConfig = field(default_factory=MLflowConfig)
+    logging: LoggingConfig = field(default_factory=lambda: LoggingConfig(project="rl-async"))
     cleanup_on_exit: bool = True
     """Clean up SDK-created trainer/deployment resources on close."""
 
@@ -315,8 +311,7 @@ async def main(
         "lr": cfg.learning_rate,
         "lr_schedule": lr_scheduler.type,
     }
-    setup_wandb(cfg.wandb, run_config, metric_steps=ASYNC_RL_WANDB_METRIC_STEPS)
-    setup_mlflow(cfg.mlflow, run_config)
+    setup_logging(cfg.logging, run_config, metric_steps=ASYNC_RL_WANDB_METRIC_STEPS)
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -703,9 +698,7 @@ async def main(
             global_step,
             global_step - step_offset,
         )
-        metrics_file = os.environ.get("COOKBOOK_METRICS_FILE")
-        wandb_finish(metrics_file=metrics_file)
-        mlflow_finish(metrics_file=metrics_file)
+        finish_logging(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
         return {
             "steps": global_step,
             "policy_job_id": service.trainer_job_id,

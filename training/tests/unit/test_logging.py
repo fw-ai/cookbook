@@ -9,12 +9,14 @@ import types
 
 import pytest
 
-from training.utils.config import MLflowConfig, WandBConfig
+from training.utils.config import LoggingConfig, MLflowConfig, WandBConfig
 from training.utils import logging as logging_utils
 from training.utils.logging import (
+    finish_logging,
     log_metrics,
     mlflow_finish,
     mlflow_log,
+    setup_logging,
     setup_mlflow,
     setup_wandb,
 )
@@ -340,6 +342,97 @@ def test_mlflow_finish_is_noop_without_active_run(monkeypatch):
     mlflow_finish(metrics_file="/metrics.jsonl")
 
     assert fake.calls == []
+
+
+class TestSetupLogging:
+    """The unified LoggingConfig fan-out over the per-backend setups."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch):
+        monkeypatch.delenv("WANDB_API_KEY", raising=False)
+        monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+        monkeypatch.delenv("MLFLOW_EXPERIMENT_NAME", raising=False)
+
+    def test_unknown_backend_rejected(self):
+        with pytest.raises(ValueError, match="unknown logging backends"):
+            setup_logging(LoggingConfig(loggers=("tensorboard",)), {})
+
+    def test_auto_enables_nothing_by_default(self, monkeypatch):
+        _install_fake_wandb(monkeypatch)
+        _install_fake_mlflow(monkeypatch)
+
+        assert setup_logging(LoggingConfig(project="proj"), {}) == []
+
+    def test_auto_mlflow_ignores_shared_project_alone(self, monkeypatch):
+        # A shared project must not spawn a local ./mlruns run in auto mode:
+        # recipes set a default project on every job.
+        fake_mlflow = _install_fake_mlflow(monkeypatch)
+
+        assert setup_logging(LoggingConfig(project="proj"), {}) == []
+        assert fake_mlflow.calls == []
+
+    def test_shared_project_and_run_name_flow_to_both_backends(self, monkeypatch):
+        monkeypatch.setenv("WANDB_API_KEY", "key")
+        monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
+        fake_wandb = _install_fake_wandb(monkeypatch)
+        init_kwargs: dict = {}
+
+        def _init(**kwargs):
+            init_kwargs.update(kwargs)
+            fake_wandb.run = types.SimpleNamespace(url="http://wandb/run")
+
+        fake_wandb.init = _init
+        fake_mlflow = _install_fake_mlflow(monkeypatch)
+
+        active = setup_logging(
+            LoggingConfig(project="proj", run_name="r", wandb_entity="acme"), {}
+        )
+
+        assert active == ["wandb", "mlflow"]
+        assert init_kwargs["project"] == "proj"
+        assert init_kwargs["name"] == "r"
+        assert ("set_experiment", "proj") in fake_mlflow.calls
+        assert ("start_run", "r") in fake_mlflow.calls
+
+    def test_explicit_loggers_select_backends(self, monkeypatch):
+        fake_wandb = _install_fake_wandb(monkeypatch)
+        fake_mlflow = _install_fake_mlflow(monkeypatch)
+
+        # Only mlflow selected; wandb stays off even with an entity set.
+        active = setup_logging(
+            LoggingConfig(loggers=("mlflow",), project="proj", wandb_entity="acme"),
+            {},
+        )
+
+        assert active == ["mlflow"]
+        assert fake_wandb.run is None
+        assert ("start_run", None) in fake_mlflow.calls
+
+    def test_explicit_backend_without_settings_warns(self, monkeypatch, caplog):
+        _install_fake_wandb(monkeypatch)
+
+        active = setup_logging(LoggingConfig(loggers=("wandb",)), {})
+
+        assert active == []
+        assert "logging backend 'wandb' selected but inactive" in caplog.text
+
+
+def test_finish_logging_ends_every_active_backend(tmp_path, monkeypatch):
+    fake_wandb = _install_fake_wandb(monkeypatch)
+    wandb_calls: list[str] = []
+    fake_wandb.run = types.SimpleNamespace(id="run-1")
+    fake_wandb.finish = lambda: wandb_calls.append("finish")
+    fake_mlflow = _install_fake_mlflow(monkeypatch)
+    fake_mlflow.start_run()
+    fake_mlflow.calls.clear()
+    metrics_path = tmp_path / "metrics.jsonl"
+    metrics_path.write_text('{"step":1}\n')
+
+    finish_logging(metrics_file=str(metrics_path))
+
+    assert wandb_calls == ["finish"]
+    assert ("log_artifact", str(metrics_path), "metrics") in fake_mlflow.calls
+    assert fake_mlflow.calls[-1] == ("end_run",)
 
 
 def test_log_metrics_sends_the_same_plain_record_to_both_sinks(

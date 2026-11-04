@@ -28,7 +28,7 @@ from training.examples.harbor_rl.records import select_rows
 from training.examples.harbor_rl.tito.evaluate import make_fixed_evaluation
 from training.examples.harbor_rl.tito.trial import load_harbor_rows
 from training.recipes.async_rl_loop import Config, RolloutFnFactory, main
-from training.utils import WandBConfig
+from training.utils import LoggingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +117,9 @@ def build_config(args: argparse.Namespace, *, run_dir: Path, row_count: int) -> 
         output_model_id=args.output_model_id,
         trainer=common.trainer_config(args),
         deployment=common.deploy_config(args),
-        wandb=WandBConfig(
-            entity=args.wandb_entity,
+        logging=LoggingConfig(
             project=args.wandb_project,
+            wandb_entity=args.wandb_entity,
             run_name=args.wandb_run_name or f"harbor-rl-opencode-{int(time.time()) % 100000}",
         ),
     )

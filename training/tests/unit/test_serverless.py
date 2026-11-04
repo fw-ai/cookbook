@@ -200,7 +200,10 @@ def test_serverless_supervised_examples_run_recipe_in_serverless_mode(
     assert cfg.log_path == str(tmp_path / "logs")
     assert cfg.init_from_checkpoint == reference
     assert cfg.output_model_id == "triage-model"
-    assert cfg.wandb.entity is None
+    if recipe_name == "dpo_loop":
+        assert cfg.logging.wandb_entity is None
+    else:
+        assert cfg.wandb.entity is None
 
 
 def test_serverless_sft_example_defaults_to_bundled_dataset():

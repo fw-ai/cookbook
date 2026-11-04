@@ -215,8 +215,8 @@ def test_main_runs_the_real_serverless_recipe(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(loop, "_make_service", lambda *_args: service)
     monkeypatch.setattr(loop, "load_tokenizer", lambda *_args: object())
     monkeypatch.setattr(loop, "_router_replay_enabled", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(loop, "setup_wandb", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(loop, "wandb_finish", lambda **_kwargs: None)
+    monkeypatch.setattr(loop, "setup_logging", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(loop, "finish_logging", lambda **_kwargs: None)
     monkeypatch.setattr(countdown_rl, "build_renderer", lambda *_args: _Renderer())
     rows = []
     for index in range(6):

@@ -36,7 +36,7 @@ from training.examples.rl.visual_toolbench.task import (
 from training.recipes.experiment import async_rl_loop_serverless
 from training.recipes.experiment.async_rl_loop_serverless import Config
 from training.utils.rl.losses import has_reward_variance
-from training.utils import MLflowConfig, WandBConfig
+from training.utils import LoggingConfig
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -66,17 +66,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--snapshot-prefix", default="vtb-serverless")
     parser.add_argument("--dcp-save-interval", type=int, default=2)
     parser.add_argument("--run-dir", default=f"./vtb_serverless_{int(time.time())}")
+    parser.add_argument(
+        "--logger",
+        nargs="+",
+        choices=["wandb", "mlflow"],
+        default=None,
+        metavar="BACKEND",
+        help="Metrics backends to enable. Default: auto-enable each configured backend.",
+    )
+    parser.add_argument("--project", default="serverless-rl-vtb", help="W&B project / MLflow experiment name.")
+    parser.add_argument("--run-name", default=None, help="Run name in every enabled backend.")
     parser.add_argument("--wandb-entity", default=None)
-    parser.add_argument("--wandb-project", default="serverless-rl-vtb")
-    parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument(
         "--wandb-offline",
         action="store_true",
         help="Log W&B locally without an entity or API key; sync later with `wandb sync`.",
     )
-    parser.add_argument("--mlflow-experiment-name", default=None, help="Enables MLflow logging. Default: $MLFLOW_EXPERIMENT_NAME.")
     parser.add_argument("--mlflow-tracking-uri", default=None, help="Default: $MLFLOW_TRACKING_URI, then local ./mlruns.")
-    parser.add_argument("--mlflow-run-name", default=None)
     return parser.parse_args(argv)
 
 
@@ -103,16 +109,13 @@ def config_from_args(args: argparse.Namespace) -> Config:
         snapshot_prefix=args.snapshot_prefix,
         metrics_file=str(Path(args.run_dir) / "metrics.jsonl"),
         dcp_save_interval=args.dcp_save_interval,
-        wandb=WandBConfig(
-            entity=args.wandb_entity,
-            project=args.wandb_project,
-            run_name=args.wandb_run_name,
-            mode="offline" if args.wandb_offline else "online",
-        ),
-        mlflow=MLflowConfig(
-            tracking_uri=args.mlflow_tracking_uri,
-            experiment_name=args.mlflow_experiment_name,
-            run_name=args.mlflow_run_name,
+        logging=LoggingConfig(
+            loggers=tuple(args.logger) if args.logger else None,
+            project=args.project,
+            run_name=args.run_name,
+            wandb_entity=args.wandb_entity,
+            wandb_mode="offline" if args.wandb_offline else "online",
+            mlflow_tracking_uri=args.mlflow_tracking_uri,
         ),
     )
 

@@ -58,7 +58,7 @@ from training.renderer.model_info import get_recommended_renderer_name
 
 from training.examples.rl.nemo_gym.proxy import RecordingChatProxy, RolloutSession
 from training.recipes.async_rl_loop import Config, RolloutSetup, main
-from training.utils import DeployConfig, TrainerConfig, WandBConfig
+from training.utils import DeployConfig, LoggingConfig, TrainerConfig
 from training.utils.rl.rollout import RolloutRun
 from training.utils.rl.async_rl.errors import RecoverableRolloutError, trajectory_discard_error
 from training.utils.tokenizers import load_tokenizer
@@ -582,9 +582,9 @@ def run() -> None:
                 deployment_shape=args.deployment_shape,
                 replica_count=args.replica_count,
             ),
-            wandb=WandBConfig(
-                entity=args.wandb_entity,
+            logging=LoggingConfig(
                 project=args.wandb_project,
+                wandb_entity=args.wandb_entity,
                 run_name=run_name,
             ),
         )

@@ -32,7 +32,7 @@ from typing import Any
 from training.examples.rl.deepmath.train_deepmath import DEFAULT_DATASET, make_rollout_fn
 from training.recipes.experiment import async_rl_loop_serverless
 from training.recipes.experiment.async_rl_loop_serverless import Config
-from training.utils import WandBConfig, load_jsonl_dataset
+from training.utils import LoggingConfig, load_jsonl_dataset
 from training.utils.rl.heldout import HeldoutRuns, make_heldout_evaluation
 from training.utils.rl.losses import has_reward_variance
 
@@ -142,9 +142,9 @@ def config_from_args(args: argparse.Namespace) -> Config:
         step_offset=args.step_offset,
         resolved_rows_offset=args.resolved_rows_offset,
         dcp_save_interval=args.dcp_save_interval,
-        wandb=WandBConfig(
-            entity=args.wandb_entity,
+        logging=LoggingConfig(
             project=args.wandb_project,
+            wandb_entity=args.wandb_entity,
             run_name=args.wandb_run_name,
         ),
     )

@@ -42,7 +42,7 @@ from training.examples.rl.frozen_lake.frozen_lake_rollout import (
 )
 from training.recipes import async_rl_loop
 from training.recipes.async_rl_loop import Config, RolloutFnFactory, RolloutSetup
-from training.utils import DeployConfig, TrainerConfig, WandBConfig
+from training.utils import DeployConfig, LoggingConfig, TrainerConfig
 from training.utils.rl.losses import has_reward_variance
 from training.utils.rl.rollout import RolloutSample
 from training.utils.rl.rollout.eval_protocol import (
@@ -231,7 +231,7 @@ def parse_args(argv: list[str] | None = None) -> tuple[Config, FrozenLakeTask]:
             replica_count=args.deployment_replica_count,
             tokenizer_model=args.tokenizer_model,
         ),
-        wandb=WandBConfig(entity=args.wandb_entity, project=args.wandb_project),
+        logging=LoggingConfig(project=args.wandb_project, wandb_entity=args.wandb_entity),
         output_model_id=args.output_model_id,
     )
     task = FrozenLakeTask(

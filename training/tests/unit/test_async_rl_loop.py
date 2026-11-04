@@ -207,7 +207,7 @@ def _build_service_kwargs(monkeypatch: pytest.MonkeyPatch, cfg: async_rl_loop.Co
     calls = []
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setattr(async_rl_loop, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(async_rl_loop, "setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(async_rl_loop, "validate_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         async_rl_loop,
@@ -326,7 +326,7 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
     service = FakeService()
     policy = FakePolicy()
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setattr(async_rl_loop, "setup_wandb", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(async_rl_loop, "setup_logging", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(async_rl_loop, "validate_config", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         async_rl_loop,
@@ -536,7 +536,7 @@ def _run_train_group(monkeypatch, cfg, group, policy, setups=None, heartbeat=Non
     policy.save_weights_for_sampler = lambda *_a, **_k: SimpleNamespace(path="checkpoint")
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     for name, value in {
-        "setup_wandb": lambda *_a, **_k: None,
+        "setup_logging": lambda *_a, **_k: None,
         "validate_config": lambda *_a, **_k: None,
         "resolve_router_replay_enabled": lambda **_k: False,
         "load_deployment_tokenizer": lambda *_a, **_k: object(),
