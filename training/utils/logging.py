@@ -151,8 +151,12 @@ def setup_mlflow(mf: MLflowConfig, config: dict[str, Any]) -> bool:
     once, no per-run flags). Without any tracking URI, runs log to the local
     ``./mlruns`` directory. Values from the environment are read natively by
     mlflow; only explicit ``mf`` fields are applied programmatically. Flat
-    scalar entries of ``config`` are logged as run params; param failures are
-    warned and swallowed so a tracking-server hiccup never blocks training.
+    scalar entries of ``config`` are logged as run params.
+
+    MLflow is a best-effort mirror: tracking-server failures at any point
+    (including ``set_experiment`` reads and ``start_run`` writes) warn and
+    disable MLflow instead of blocking training; the JSONL ledger stays
+    canonical.
     """
     enabled = (
         mf.tracking_uri
@@ -170,9 +174,16 @@ def setup_mlflow(mf: MLflowConfig, config: dict[str, Any]) -> bool:
 
     if mf.tracking_uri:
         mlflow.set_tracking_uri(mf.tracking_uri)
-    if mf.experiment_name:
-        mlflow.set_experiment(mf.experiment_name)
-    mlflow.start_run(run_name=mf.run_name)
+    try:
+        if mf.experiment_name:
+            mlflow.set_experiment(mf.experiment_name)
+        mlflow.start_run(run_name=mf.run_name)
+    except Exception:
+        logger.warning(
+            "MLflow run setup failed; metrics will not be logged to MLflow",
+            exc_info=True,
+        )
+        return False
 
     params = {
         str(key): str(value)

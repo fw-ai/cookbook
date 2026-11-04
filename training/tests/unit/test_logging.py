@@ -217,6 +217,19 @@ class TestSetupMlflow:
             ("log_params", {"lr": "1e-05", "algorithm": "grpo"}),
         ]
 
+    def test_tracking_server_failure_disables_mlflow(self, monkeypatch, caplog):
+        """e.g. a write-only token rejects set_experiment's read; never block training."""
+        fake = _install_fake_mlflow(monkeypatch)
+
+        def fail_set_experiment(_name):
+            raise RuntimeError("operation is not available with a write-only token")
+
+        fake.set_experiment = fail_set_experiment
+
+        assert setup_mlflow(MLflowConfig(experiment_name="exp"), {}) is False
+        assert fake.active_run() is None
+        assert "MLflow run setup failed" in caplog.text
+
     def test_param_failure_does_not_block_setup(self, monkeypatch, caplog):
         fake = _install_fake_mlflow(monkeypatch)
 
