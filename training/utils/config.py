@@ -264,8 +264,9 @@ class WandBConfig:
     run_name: str | None = None
     mode: Literal["online", "offline"] = "online"
     """``"online"`` needs ``entity`` and syncs to the dashboard, falling back to
-    a local offline run when ``WANDB_API_KEY`` is unset. ``"offline"`` logs the
-    run locally without an entity or API key; sync it later with ``wandb sync``."""
+    a local offline run when ``WANDB_API_KEY`` is unset. ``"offline"`` sets
+    ``WANDB_MODE=offline`` and logs the run locally without an entity or API
+    key; sync it later with ``wandb sync``."""
 
 
 @dataclass
@@ -307,4 +308,6 @@ class LoggingConfig:
     run_name: str | None = None
     wandb_entity: str | None = None
     wandb_mode: Literal["online", "offline"] = "online"
+    """``"offline"`` logs W&B locally (``WANDB_MODE=offline``); unlike online
+    mode it does not need ``wandb_entity``. See :class:`WandBConfig`."""
     mlflow_tracking_uri: str | None = None

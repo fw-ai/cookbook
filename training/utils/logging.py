@@ -96,9 +96,11 @@ def setup_wandb(
     """Initialize WandB if enabled. Returns True if active.
 
     W&B is enabled when ``wb.entity`` is set or ``wb.mode`` is ``"offline"``.
-    Offline mode logs the run locally without an entity or API key; sync it
-    later with ``wandb sync``. In online mode, if ``WANDB_API_KEY`` is not
-    set, falls back to offline mode so runs are logged locally without
+    ``entity`` is required for online mode and optional for offline mode.
+    Offline mode simply sets ``WANDB_MODE=offline`` before ``wandb.init``:
+    the run logs locally without an API key; sync it later with
+    ``wandb sync``. In online mode, if ``WANDB_API_KEY`` is not set, falls
+    back to the same offline env var so runs are logged locally without
     requiring authentication. Auth/permission/config failures from
     ``wandb.init`` are re-raised as :class:`WandbConfigError` so the
     orchestration layer surfaces them as a user-actionable error
@@ -114,7 +116,9 @@ def setup_wandb(
         logger.warning("wandb not installed; metrics will only be logged to console")
         return False
 
-    if not offline and not os.environ.get("WANDB_API_KEY"):
+    if offline:
+        os.environ["WANDB_MODE"] = "offline"
+    elif not os.environ.get("WANDB_API_KEY"):
         logger.warning(
             "WANDB_API_KEY not set; running wandb in offline mode. "
             "Set the key to sync runs to the dashboard."
@@ -123,11 +127,7 @@ def setup_wandb(
 
     try:
         wandb.init(
-            entity=wb.entity,
-            project=wb.project,
-            name=wb.run_name,
-            config=config,
-            mode="offline" if offline else None,
+            entity=wb.entity, project=wb.project, name=wb.run_name, config=config
         )
     except Exception as exc:
         if _is_wandb_auth_error(exc):

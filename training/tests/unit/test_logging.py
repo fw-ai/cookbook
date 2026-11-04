@@ -124,7 +124,7 @@ class TestSetupWandb:
         assert setup_wandb(WandBConfig(entity="acme"), {}) is True
         assert os.environ.get("WANDB_MODE") == "offline"
 
-    def test_offline_mode_without_entity_initializes(self, monkeypatch):
+    def test_offline_mode_without_entity_sets_wandb_mode_env(self, monkeypatch):
         monkeypatch.delenv("WANDB_API_KEY", raising=False)
         monkeypatch.delenv("WANDB_MODE", raising=False)
         fake = _install_fake_wandb(monkeypatch)
@@ -133,21 +133,23 @@ class TestSetupWandb:
 
         assert setup_wandb(WandBConfig(mode="offline", project="proj"), {}) is True
 
-        assert init_kwargs["mode"] == "offline"
+        # Offline mode is just the env var; wandb.init stays untouched.
+        assert os.environ["WANDB_MODE"] == "offline"
+        assert "mode" not in init_kwargs
         assert init_kwargs["entity"] is None
         assert init_kwargs["project"] == "proj"
-        # Explicit offline mode uses the init argument, not the env fallback.
-        assert "WANDB_MODE" not in os.environ
 
-    def test_online_mode_passes_no_explicit_mode(self, monkeypatch):
+    def test_online_mode_leaves_wandb_mode_unset(self, monkeypatch):
         monkeypatch.setenv("WANDB_API_KEY", "key")
+        monkeypatch.delenv("WANDB_MODE", raising=False)
         fake = _install_fake_wandb(monkeypatch)
         init_kwargs: dict = {}
         fake.init = lambda **kwargs: init_kwargs.update(kwargs)
 
         assert setup_wandb(WandBConfig(entity="acme"), {}) is True
 
-        assert init_kwargs["mode"] is None
+        assert "WANDB_MODE" not in os.environ
+        assert "mode" not in init_kwargs
 
 
 class TestSetupMlflow:
