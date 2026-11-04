@@ -25,7 +25,8 @@ jobs:
             const pull = context.payload.pull_request;
             const expectedRepo = `${context.repo.owner}/${context.repo.repo}`;
             const expectedBranch = "autogen/promote-cookbook-from-fireworks-main";
-            const expectedAuthors = new Set(["bot-fireworks-ai", "fw-ci-bot[bot]"]);
+            // Existing rolling PRs retain their original creator when updated.
+            const expectedAuthors = new Set(["bot-fireworks-ai", "fw-oss-promoter[bot]"]);
             const labels = new Set(pull.labels.map((label) => label.name));
             const allowed =
               pull.base.ref === "main" &&
