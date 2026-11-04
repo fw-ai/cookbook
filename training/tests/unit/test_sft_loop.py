@@ -481,7 +481,7 @@ def test_main_rejects_adapter_plus_init_from_checkpoint(tmp_path, monkeypatch):
         tmp_path,
         [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
     )
-    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_logging", lambda *args, **kwargs: None)
 
     cfg = module.Config(
         log_path=str(tmp_path / "logs"),
@@ -503,7 +503,7 @@ def test_main_rejects_adapter_with_zero_lora_rank(tmp_path, monkeypatch):
         tmp_path,
         [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
     )
-    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_logging", lambda *args, **kwargs: None)
 
     cfg = module.Config(
         log_path=str(tmp_path / "logs"),
@@ -523,7 +523,7 @@ def test_main_requires_tokenizer_model(tmp_path, monkeypatch):
         tmp_path,
         [{"messages": [{"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}],
     )
-    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_logging", lambda *args, **kwargs: None)
 
     cfg = module.Config(log_path=str(tmp_path / "logs"), dataset=str(dataset_path), tokenizer_model="", max_seq_len=32)
 
@@ -534,7 +534,7 @@ def test_main_requires_tokenizer_model(tmp_path, monkeypatch):
 def test_main_requests_cleanup_for_sdk_created_trainer(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
-    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         module,
@@ -635,7 +635,7 @@ def _run_main_with_fake_trainer(tmp_path, monkeypatch, *, resume_info, generatio
 
     monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
     monkeypatch.setattr(module, "_worker_state", {})
-    monkeypatch.setattr(module, "setup_wandb", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "setup_logging", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "validate_config", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "_resolved_renderer_name", lambda **kwargs: "qwen3")
     monkeypatch.setattr(module, "build_service_client", lambda **kwargs: FakeService())

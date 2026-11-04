@@ -67,20 +67,21 @@ from training.utils import (
     RunnerIO,
     RunStatus,
     TrainerConfig,
-    WandBConfig,
+    LoggingConfig,
     build_service_client,
     fileio,
+    finish_logging,
     log_metrics_json,
     make_render_dataloader,
+    mlflow_log,
     parse_train_on_what,
     populate_render_worker_state,
     read_api_extra_headers_env,
     render_messages_to_datums,
     rendered_chunk_spans,
     resolve_renderer_snapshot,
-    setup_wandb,
+    setup_logging,
     validate_config,
-    wandb_finish,
     wandb_log,
 )
 from training.utils.checkpoints import TrainingCheckpoints, validate_warm_start_config
@@ -892,7 +893,7 @@ class Config:
     tests that monkeypatch the renderer)."""
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="sft-tinker"))
+    logging: LoggingConfig = field(default_factory=lambda: LoggingConfig(project="sft-tinker"))
     runner: RunnerConfig = field(default_factory=RunnerConfig)
     """Optional orchestration outputs written during training.
 
@@ -981,10 +982,9 @@ def run_eval(
         eval_resp_tokens,
     )
     log_metrics_json(step, eval_loss=eval_loss, eval_ppl=eval_ppl)
-    wandb_log(
-        {"eval/loss": eval_loss, "eval/ppl": eval_ppl, "eval/tokens": eval_resp_tokens},
-        step,
-    )
+    eval_metrics = {"eval/loss": eval_loss, "eval/ppl": eval_ppl, "eval/tokens": eval_resp_tokens}
+    wandb_log(eval_metrics, step)
+    mlflow_log(eval_metrics, step)
 
     return eval_loss
 
@@ -1039,8 +1039,8 @@ def main(
         cfg.lr_scheduler,
         legacy_warmup_steps=cfg.warmup_steps,
     )
-    setup_wandb(
-        cfg.wandb,
+    setup_logging(
+        cfg.logging,
         {
             "lr": cfg.learning_rate,
             "lr_schedule": lr_scheduler.type,
@@ -1236,6 +1236,7 @@ def main(
         cursor = RawRowCursor(max_rows=total_raw_rows)
         cursor.resume(resume_info.data_consumed if resume_info else None)
         wandb_log({"train/step": step}, step)
+        mlflow_log({"train/step": step}, step)
 
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["grad_clip_norm"] = cfg.grad_clip_norm
@@ -1407,6 +1408,7 @@ def main(
                 )
                 step_metrics["train/lr"] = current_lr
                 wandb_log(step_metrics, s)
+                mlflow_log(step_metrics, s)
 
             write_running_step(
                 runner,
@@ -1516,7 +1518,7 @@ def main(
 
         write_completed(runner, step=step, total_steps=step)
         logger.info("Training complete: %d optimizer steps", step)
-        wandb_finish()
+        finish_logging()
         return {"steps": step, "job_id": job_id}
 
 
