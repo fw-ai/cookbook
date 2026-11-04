@@ -262,3 +262,21 @@ class WandBConfig:
     entity: str | None = None
     project: str | None = None
     run_name: str | None = None
+    mode: Literal["online", "offline"] = "online"
+    """``"online"`` needs ``entity`` and syncs to the dashboard, falling back to
+    a local offline run when ``WANDB_API_KEY`` is unset. ``"offline"`` logs the
+    run locally without an entity or API key; sync it later with ``wandb sync``."""
+
+
+@dataclass
+class MLflowConfig:
+    """MLflow logging settings.
+
+    MLflow is enabled when ``tracking_uri`` or ``experiment_name`` is set.
+    Without a tracking URI, runs log to the local ``./mlruns`` directory (or
+    the ``MLFLOW_TRACKING_URI`` environment variable).
+    """
+
+    tracking_uri: str | None = None
+    experiment_name: str | None = None
+    run_name: str | None = None

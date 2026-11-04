@@ -1,4 +1,4 @@
-"""WandB and metrics logging utilities."""
+"""WandB, MLflow, and metrics logging utilities."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import threading
 from numbers import Integral, Real
 from typing import Any
 
-from training.utils.config import WandBConfig
+from training.utils.config import MLflowConfig, WandBConfig
 from training.utils import fileio
 from training.utils.phase_tracing import flush_phase_trace
 from training.utils.runner import WandbConfigError
@@ -93,15 +93,19 @@ def setup_wandb(
     *,
     metric_steps: _MetricSteps | None = None,
 ) -> bool:
-    """Initialize WandB if entity is provided. Returns True if active.
+    """Initialize WandB if enabled. Returns True if active.
 
-    If ``WANDB_API_KEY`` is not set, falls back to offline mode so runs
-    are logged locally without requiring authentication. Auth/permission/config
-    failures from ``wandb.init`` are re-raised as :class:`WandbConfigError` so
-    the orchestration layer surfaces them as a user-actionable error
+    W&B is enabled when ``wb.entity`` is set or ``wb.mode`` is ``"offline"``.
+    Offline mode logs the run locally without an entity or API key; sync it
+    later with ``wandb sync``. In online mode, if ``WANDB_API_KEY`` is not
+    set, falls back to offline mode so runs are logged locally without
+    requiring authentication. Auth/permission/config failures from
+    ``wandb.init`` are re-raised as :class:`WandbConfigError` so the
+    orchestration layer surfaces them as a user-actionable error
     (FIR2-1774).
     """
-    if not wb.entity:
+    offline = wb.mode == "offline"
+    if not wb.entity and not offline:
         return False
     try:
         import os
@@ -110,7 +114,7 @@ def setup_wandb(
         logger.warning("wandb not installed; metrics will only be logged to console")
         return False
 
-    if not os.environ.get("WANDB_API_KEY"):
+    if not offline and not os.environ.get("WANDB_API_KEY"):
         logger.warning(
             "WANDB_API_KEY not set; running wandb in offline mode. "
             "Set the key to sync runs to the dashboard."
@@ -119,7 +123,11 @@ def setup_wandb(
 
     try:
         wandb.init(
-            entity=wb.entity, project=wb.project, name=wb.run_name, config=config
+            entity=wb.entity,
+            project=wb.project,
+            name=wb.run_name,
+            config=config,
+            mode="offline" if offline else None,
         )
     except Exception as exc:
         if _is_wandb_auth_error(exc):
@@ -131,6 +139,45 @@ def setup_wandb(
     if wandb.run is not None:
         _define_wandb_metrics(wandb, metric_steps or _DEFAULT_WANDB_METRIC_STEPS)
         logger.info("WandB: %s", wandb.run.url)
+    return True
+
+
+def setup_mlflow(mf: MLflowConfig, config: dict[str, Any]) -> bool:
+    """Initialize MLflow if enabled. Returns True if active.
+
+    MLflow is enabled when ``mf.tracking_uri`` or ``mf.experiment_name`` is
+    set. Without a tracking URI, runs log to the local ``./mlruns`` directory
+    (or the ``MLFLOW_TRACKING_URI`` environment variable). Flat scalar entries
+    of ``config`` are logged as run params; param failures are warned and
+    swallowed so a tracking-server hiccup never blocks training.
+    """
+    if not mf.tracking_uri and not mf.experiment_name:
+        return False
+    try:
+        import mlflow
+    except ImportError:
+        logger.warning("mlflow not installed; metrics will not be logged to MLflow")
+        return False
+
+    if mf.tracking_uri:
+        mlflow.set_tracking_uri(mf.tracking_uri)
+    if mf.experiment_name:
+        mlflow.set_experiment(mf.experiment_name)
+    mlflow.start_run(run_name=mf.run_name)
+
+    params = {
+        str(key): str(value)
+        for key, value in config.items()
+        if isinstance(value, (str, int, float, bool))
+    }
+    if params:
+        try:
+            mlflow.log_params(params)
+        except Exception:
+            logger.warning("Failed to log config params to MLflow", exc_info=True)
+    run = mlflow.active_run()
+    if run is not None:
+        logger.info("MLflow run id: %s", run.info.run_id)
     return True
 
 
@@ -153,6 +200,36 @@ def wandb_log(metrics: dict[str, Any], step: int | None = None) -> None:
                 wandb.log(metrics, step=step, commit=True)
     except ImportError:
         pass
+
+
+def mlflow_log(metrics: dict[str, Any], step: int | None = None) -> None:
+    """Log numeric metrics to the active MLflow run, if any.
+
+    MLflow metrics must be finite numbers; non-numeric and non-finite values
+    in ``metrics`` are skipped. MLflow natively accepts the business ``step``
+    per call, so no ``define_metric``-style axis tables are needed and
+    repeated steps stay distinct data points. Log failures are warned and
+    swallowed: MLflow is a mirror, the JSONL ledger is the canonical record.
+    """
+    try:
+        import mlflow
+    except ImportError:
+        return
+    if mlflow.active_run() is None:
+        return
+    numeric = {
+        key: float(value)
+        for key, value in metrics.items()
+        if isinstance(value, Real)
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    }
+    if not numeric:
+        return
+    try:
+        mlflow.log_metrics(numeric, step=step)
+    except Exception:
+        logger.warning("Failed to log metrics to MLflow", exc_info=True)
 
 
 def _normalize_metric_value(value: Any) -> Any:
@@ -205,7 +282,7 @@ def log_metrics(
     step: int,
     metrics_file: str | None = None,
 ) -> None:
-    """Normalize and send one plain metric dictionary to JSONL and W&B.
+    """Normalize and send one plain metric dictionary to JSONL, W&B, and MLflow.
 
     ``COOKBOOK_METRICS_FILE`` enables the append-only canonical JSONL ledger.
     An explicit ``metrics_file`` overrides the environment for callers that
@@ -213,7 +290,7 @@ def log_metrics(
     write failures propagate so callers never mistake an incomplete artifact
     for a complete metric stream.
 
-    Both sinks receive the same dictionary in the same order. The producer must
+    All sinks receive the same dictionary in the same order. The producer must
     pass the business ``step`` explicitly; the logger never infers it from
     metric names. Values are recursively converted to finite JSON-compatible
     data and the canonical ``step`` field is added to that plain dictionary.
@@ -240,6 +317,9 @@ def log_metrics(
         # The exact JSONL record is the W&B payload. Its transport axis is
         # intentionally implicit and unique even when business steps repeat.
         wandb_log(record)
+        # MLflow mirrors the same record with the business step passed
+        # explicitly; it natively supports per-call steps.
+        mlflow_log(record, step=step)
 
 
 _RUN_RESOURCE_ATTRIBUTES = (
@@ -311,6 +391,25 @@ def wandb_finish(*, metrics_file: str | None = None) -> None:
             wandb.finish()
     except ImportError:
         pass
+
+
+def mlflow_finish(*, metrics_file: str | None = None) -> None:
+    """Attach the metrics ledger and end the active MLflow run, if any."""
+    try:
+        import mlflow
+    except ImportError:
+        return
+    if mlflow.active_run() is None:
+        return
+    if metrics_file and os.path.isfile(metrics_file):
+        try:
+            mlflow.log_artifact(metrics_file, artifact_path="metrics")
+        except Exception:
+            logger.warning(
+                "Failed to attach canonical metrics to MLflow",
+                exc_info=True,
+            )
+    mlflow.end_run()
 
 
 def log_metrics_json(step: int, **kwargs: float) -> None:

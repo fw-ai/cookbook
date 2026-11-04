@@ -1,4 +1,4 @@
-"""Tests for W&B setup error handling (training.utils.logging)."""
+"""Tests for W&B/MLflow setup and metric sinks (training.utils.logging)."""
 
 from __future__ import annotations
 
@@ -9,9 +9,15 @@ import types
 
 import pytest
 
-from training.utils.config import WandBConfig
+from training.utils.config import MLflowConfig, WandBConfig
 from training.utils import logging as logging_utils
-from training.utils.logging import log_metrics, setup_wandb
+from training.utils.logging import (
+    log_metrics,
+    mlflow_finish,
+    mlflow_log,
+    setup_mlflow,
+    setup_wandb,
+)
 from training.utils.runner import WandbConfigError
 
 
@@ -46,6 +52,38 @@ def _install_fake_wandb(
     fake.define_metric = lambda *_a, **_k: None
     monkeypatch.setitem(sys.modules, "wandb", fake)
     monkeypatch.setitem(sys.modules, "wandb.errors", errors_mod)
+    return fake
+
+
+def _install_fake_mlflow(monkeypatch) -> types.ModuleType:
+    """Install a minimal fake ``mlflow`` module recording every call."""
+    fake = types.ModuleType("mlflow")
+    fake.calls: list[tuple] = []
+    fake._active_run = None
+
+    def _start_run(run_name=None):
+        fake.calls.append(("start_run", run_name))
+        fake._active_run = types.SimpleNamespace(
+            info=types.SimpleNamespace(run_id="mlrun-1")
+        )
+
+    def _end_run():
+        fake.calls.append(("end_run",))
+        fake._active_run = None
+
+    fake.start_run = _start_run
+    fake.end_run = _end_run
+    fake.active_run = lambda: fake._active_run
+    fake.set_tracking_uri = lambda uri: fake.calls.append(("set_tracking_uri", uri))
+    fake.set_experiment = lambda name: fake.calls.append(("set_experiment", name))
+    fake.log_params = lambda params: fake.calls.append(("log_params", params))
+    fake.log_metrics = lambda metrics, step=None: fake.calls.append(
+        ("log_metrics", metrics, step)
+    )
+    fake.log_artifact = lambda path, artifact_path=None: fake.calls.append(
+        ("log_artifact", path, artifact_path)
+    )
+    monkeypatch.setitem(sys.modules, "mlflow", fake)
     return fake
 
 
@@ -84,6 +122,157 @@ class TestSetupWandb:
         assert setup_wandb(WandBConfig(entity="acme"), {}) is True
         assert os.environ.get("WANDB_MODE") == "offline"
 
+    def test_offline_mode_without_entity_initializes(self, monkeypatch):
+        monkeypatch.delenv("WANDB_API_KEY", raising=False)
+        monkeypatch.delenv("WANDB_MODE", raising=False)
+        fake = _install_fake_wandb(monkeypatch)
+        init_kwargs: dict = {}
+        fake.init = lambda **kwargs: init_kwargs.update(kwargs)
+
+        assert setup_wandb(WandBConfig(mode="offline", project="proj"), {}) is True
+
+        assert init_kwargs["mode"] == "offline"
+        assert init_kwargs["entity"] is None
+        assert init_kwargs["project"] == "proj"
+        # Explicit offline mode uses the init argument, not the env fallback.
+        assert "WANDB_MODE" not in os.environ
+
+    def test_online_mode_passes_no_explicit_mode(self, monkeypatch):
+        monkeypatch.setenv("WANDB_API_KEY", "key")
+        fake = _install_fake_wandb(monkeypatch)
+        init_kwargs: dict = {}
+        fake.init = lambda **kwargs: init_kwargs.update(kwargs)
+
+        assert setup_wandb(WandBConfig(entity="acme"), {}) is True
+
+        assert init_kwargs["mode"] is None
+
+
+class TestSetupMlflow:
+    def test_disabled_without_tracking_uri_or_experiment(self):
+        assert setup_mlflow(MLflowConfig(), {}) is False
+
+    def test_not_installed_returns_false(self, monkeypatch):
+        # sys.modules["mlflow"] = None makes `import mlflow` raise ImportError.
+        monkeypatch.setitem(sys.modules, "mlflow", None)
+        assert setup_mlflow(MLflowConfig(experiment_name="exp"), {}) is False
+
+    def test_starts_run_and_logs_flat_scalar_params(self, monkeypatch):
+        fake = _install_fake_mlflow(monkeypatch)
+
+        assert (
+            setup_mlflow(
+                MLflowConfig(
+                    tracking_uri="http://mlflow:5000",
+                    experiment_name="exp",
+                    run_name="run",
+                ),
+                {"lr": 1e-5, "algorithm": "grpo", "nested": {"x": 1}, "none": None},
+            )
+            is True
+        )
+
+        assert fake.calls == [
+            ("set_tracking_uri", "http://mlflow:5000"),
+            ("set_experiment", "exp"),
+            ("start_run", "run"),
+            ("log_params", {"lr": "1e-05", "algorithm": "grpo"}),
+        ]
+
+    def test_param_failure_does_not_block_setup(self, monkeypatch, caplog):
+        fake = _install_fake_mlflow(monkeypatch)
+
+        def fail_params(_params):
+            raise RuntimeError("tracking server down")
+
+        fake.log_params = fail_params
+
+        assert setup_mlflow(MLflowConfig(experiment_name="exp"), {"lr": 1.0}) is True
+        assert "Failed to log config params to MLflow" in caplog.text
+
+
+def test_mlflow_log_skips_non_numeric_and_non_finite_values(monkeypatch):
+    fake = _install_fake_mlflow(monkeypatch)
+    fake.start_run()
+    fake.calls.clear()
+
+    mlflow_log(
+        {
+            "ok": 1,
+            "half": 0.5,
+            "flag": True,
+            "name": "x",
+            "nan": float("nan"),
+            "nested": {"a": 1},
+            "none": None,
+        },
+        step=3,
+    )
+
+    assert fake.calls == [("log_metrics", {"ok": 1.0, "half": 0.5}, 3)]
+
+
+def test_mlflow_log_is_noop_without_active_run(monkeypatch):
+    fake = _install_fake_mlflow(monkeypatch)
+
+    mlflow_log({"a": 1}, step=1)
+
+    assert fake.calls == []
+
+
+def test_mlflow_log_swallows_tracking_errors(monkeypatch, caplog):
+    fake = _install_fake_mlflow(monkeypatch)
+    fake.start_run()
+
+    def fail_log_metrics(*_args, **_kwargs):
+        raise RuntimeError("tracking server down")
+
+    fake.log_metrics = fail_log_metrics
+
+    mlflow_log({"a": 1}, step=1)
+
+    assert "Failed to log metrics to MLflow" in caplog.text
+
+
+def test_log_metrics_mirrors_the_business_step_to_mlflow(tmp_path, monkeypatch):
+    fake = _install_fake_mlflow(monkeypatch)
+    fake.start_run()
+    fake.calls.clear()
+
+    log_metrics(
+        {"train/loss": 0.5, "note": "hi"},
+        step=7,
+        metrics_file=str(tmp_path / "metrics.jsonl"),
+    )
+    # Repeated business steps stay distinct MLflow data points.
+    log_metrics({"train/loss": 0.4}, step=7)
+
+    assert fake.calls == [
+        ("log_metrics", {"train/loss": 0.5, "step": 7.0}, 7),
+        ("log_metrics", {"train/loss": 0.4, "step": 7.0}, 7),
+    ]
+
+
+def test_mlflow_finish_attaches_the_canonical_ledger(tmp_path, monkeypatch):
+    fake = _install_fake_mlflow(monkeypatch)
+    fake.start_run()
+    metrics_path = tmp_path / "metrics.jsonl"
+    metrics_path.write_text('{"step":1}\n')
+
+    mlflow_finish(metrics_file=str(metrics_path))
+
+    assert fake.calls[-2] == ("log_artifact", str(metrics_path), "metrics")
+    assert fake.calls[-1] == ("end_run",)
+    assert fake.active_run() is None
+
+
+def test_mlflow_finish_is_noop_without_active_run(monkeypatch):
+    fake = _install_fake_mlflow(monkeypatch)
+
+    mlflow_finish(metrics_file="/metrics.jsonl")
+
+    assert fake.calls == []
+
 
 def test_log_metrics_sends_the_same_plain_record_to_both_sinks(
     tmp_path,
@@ -92,6 +281,7 @@ def test_log_metrics_sends_the_same_plain_record_to_both_sinks(
     metrics_path = tmp_path / "metrics.jsonl"
     jsonl_calls: list[tuple[str, dict]] = []
     wandb_calls: list[tuple[dict, int | None]] = []
+    mlflow_calls: list[tuple[dict, int | None]] = []
     monkeypatch.setattr(
         logging_utils.fileio,
         "append_jsonl",
@@ -101,6 +291,11 @@ def test_log_metrics_sends_the_same_plain_record_to_both_sinks(
         logging_utils,
         "wandb_log",
         lambda record, step=None: wandb_calls.append((record, step)),
+    )
+    monkeypatch.setattr(
+        logging_utils,
+        "mlflow_log",
+        lambda record, step=None: mlflow_calls.append((record, step)),
     )
     metrics = {
         "train/step": 3,
@@ -125,7 +320,9 @@ def test_log_metrics_sends_the_same_plain_record_to_both_sinks(
     assert jsonl_calls[0][0] == str(metrics_path)
     assert jsonl_calls[0][1] == expected
     assert wandb_calls == [(expected, None)]
-    assert jsonl_calls[0][1] is wandb_calls[0][0]
+    # MLflow receives the identical record, with the business step explicit.
+    assert mlflow_calls == [(expected, 3)]
+    assert jsonl_calls[0][1] is wandb_calls[0][0] is mlflow_calls[0][0]
     assert metrics["nested"]["values"][1] == float("inf")
 
 

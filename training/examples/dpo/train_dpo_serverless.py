@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 
 import training.recipes.dpo_loop as dpo_loop
-from training.utils import RunnerConfig, WandBConfig
+from training.utils import MLflowConfig, RunnerConfig, WandBConfig
 
 DATASET = Path(__file__).resolve().parent / "preference_train.jsonl"
 
@@ -67,6 +67,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument("--output-model-id", default=None, help="Promote the final checkpoint.")
     p.add_argument("--wandb-entity", default=None, help="Enables W&B logging.")
+    p.add_argument(
+        "--wandb-offline",
+        action="store_true",
+        help="Log W&B locally without an entity or API key; sync later with `wandb sync`.",
+    )
+    p.add_argument(
+        "--mlflow-experiment-name",
+        default=None,
+        help="Enables MLflow logging to this experiment.",
+    )
+    p.add_argument(
+        "--mlflow-tracking-uri",
+        default=None,
+        help="MLflow tracking server URI; default logs locally to ./mlruns.",
+    )
+    p.add_argument("--mlflow-run-name", default=None)
     return p.parse_args(argv)
 
 
@@ -94,7 +110,16 @@ def build_config(args: argparse.Namespace) -> dpo_loop.Config:
         runner=RunnerConfig(
             reference_checkpoint_file=os.path.join(args.log_path, "reference_checkpoint.json"),
         ),
-        wandb=WandBConfig(entity=args.wandb_entity, project="serverless-dpo"),
+        wandb=WandBConfig(
+            entity=args.wandb_entity,
+            project="serverless-dpo",
+            mode="offline" if args.wandb_offline else "online",
+        ),
+        mlflow=MLflowConfig(
+            tracking_uri=args.mlflow_tracking_uri,
+            experiment_name=args.mlflow_experiment_name,
+            run_name=args.mlflow_run_name,
+        ),
     )
 
 

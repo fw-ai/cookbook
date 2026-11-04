@@ -38,12 +38,15 @@ from fireworks.training.sdk.training_spec import (
 )
 from training.utils import (
     DEFAULT_ADAM,
+    MLflowConfig,
     WandBConfig,
     load_jsonl_dataset,
     load_tokenizer,
     log_metrics,
+    mlflow_finish,
     read_api_extra_headers_env,
     resolve_router_replay_enabled,
+    setup_mlflow,
     setup_wandb,
     wandb_finish,
 )
@@ -141,6 +144,7 @@ class Config:
     dcp_save_interval: int = 0
     save_final_checkpoint: bool = True
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="serverless-rl-async"))
+    mlflow: MLflowConfig = field(default_factory=MLflowConfig)
 
 
 class ServerlessSampler:
@@ -394,6 +398,7 @@ def run_sampling_preflight(
         _wandb_config(cfg, mode="serverless-sampling-preflight"),
         metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
     )
+    setup_mlflow(cfg.mlflow, _wandb_config(cfg, mode="serverless-sampling-preflight"))
     service: FiretitanServiceClient | None = None
     sampler: ServerlessSampler | None = None
     try:
@@ -450,6 +455,7 @@ def run_sampling_preflight(
                 service.close()
         finally:
             wandb_finish(metrics_file=cfg.metrics_file)
+            mlflow_finish(metrics_file=cfg.metrics_file)
 
 
 @with_signals
@@ -480,6 +486,7 @@ async def main(
         _wandb_config(cfg, mode="serverless-training"),
         metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
     )
+    setup_mlflow(cfg.mlflow, _wandb_config(cfg, mode="serverless-training"))
     service: FiretitanServiceClient | None = None
     sampler: ServerlessSampler | None = None
     stack = AsyncExitStack()
@@ -825,3 +832,4 @@ async def main(
             await stack.aclose()
         finally:
             wandb_finish(metrics_file=cfg.metrics_file)
+            mlflow_finish(metrics_file=cfg.metrics_file)

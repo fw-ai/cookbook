@@ -62,6 +62,7 @@ from training.utils import (
     DeployConfig,
     GcsJsonlRenderDataset,
     JsonlRenderDataset,
+    MLflowConfig,
     RawRowCursor,
     ReconnectableClient,
     RunnerConfig,
@@ -73,11 +74,14 @@ from training.utils import (
     log_metrics_json,
     make_batch_dpo_loss_fn,
     make_render_dataloader,
+    mlflow_finish,
+    mlflow_log,
     normalize_preference_row,
     populate_render_worker_state,
     read_api_extra_headers_env,
     render_preference_pair,
     resolve_renderer_snapshot,
+    setup_mlflow,
     setup_wandb,
     validate_config,
     wandb_finish,
@@ -200,6 +204,7 @@ class Config:
     sampler_save_interval: int = 0
     """Save promotable sampler checkpoints every N steps. 0 disables."""
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="dpo-tinker"))
+    mlflow: MLflowConfig = field(default_factory=MLflowConfig)
     prefer_current_run_checkpoint: bool = False
     """Prefer this run's checkpoints over a previous-attempt reference on resume.
     Opt-in for managed continuation; explicit initialization otherwise wins."""
@@ -551,6 +556,7 @@ async def _train_loop(
         )
         step_metrics["train/lr"] = current_lr
         wandb_log(step_metrics, step)
+        mlflow_log(step_metrics, step)
         write_running_step(
             runner,
             step=step,
@@ -790,16 +796,15 @@ def main(
 
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
     cfg.lr_scheduler = lr_scheduler
-    setup_wandb(
-        cfg.wandb,
-        {
-            "beta": cfg.beta,
-            "lr": cfg.learning_rate,
-            "lr_schedule": lr_scheduler.type,
-            "epochs": cfg.epochs,
-            "batch_size": cfg.batch_size,
-        },
-    )
+    run_config = {
+        "beta": cfg.beta,
+        "lr": cfg.learning_rate,
+        "lr_schedule": lr_scheduler.type,
+        "epochs": cfg.epochs,
+        "batch_size": cfg.batch_size,
+    }
+    setup_wandb(cfg.wandb, run_config)
+    setup_mlflow(cfg.mlflow, run_config)
 
     # -- SDK-managed Tinker clients ----------------------------------------
 
@@ -908,6 +913,7 @@ def main(
         )
         step_offset = resume_info.step if resume_info else 0
         wandb_log({"train/step": step_offset}, step_offset)
+        mlflow_log({"train/step": step_offset}, step_offset)
         adam_kwargs = dict(DEFAULT_ADAM)
         adam_kwargs["weight_decay"] = cfg.weight_decay
         adam_params = sdk.AdamParams(learning_rate=cfg.learning_rate, **adam_kwargs)
@@ -1018,6 +1024,7 @@ def main(
         write_completed(runner, step=step, total_steps=total_steps)
         logger.info("Training complete: %d optimizer steps (%d new)", step, step - step_offset)
         wandb_finish()
+        mlflow_finish()
         return {"steps": step, "policy_job_id": policy_job_id, "reference_job_id": reference_job_id}
 
 

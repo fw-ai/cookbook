@@ -51,6 +51,7 @@ from training.utils import (
     CLEANUP_DEPLOYMENT_ON_CLOSE_SCALE_TO_ZERO,
     DEFAULT_ADAM,
     DeployConfig,
+    MLflowConfig,
     ReconnectableClient,
     TrainerConfig,
     WandBConfig,
@@ -60,8 +61,10 @@ from training.utils import (
     load_jsonl_dataset,
     log_metrics,
     make_weight_sync,
+    mlflow_finish,
     read_api_extra_headers_env,
     resolve_router_replay_enabled,
+    setup_mlflow,
     setup_wandb,
     validate_config,
     wandb_finish,
@@ -170,6 +173,7 @@ class Config:
     dcp_save_interval: int = 0
     weight_sync_timeout: int = 600
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="rl-async"))
+    mlflow: MLflowConfig = field(default_factory=MLflowConfig)
     cleanup_on_exit: bool = True
     """Clean up SDK-created trainer/deployment resources on close."""
 
@@ -293,28 +297,26 @@ async def main(
             f"default is 4); got {cfg.completions_per_prompt}."
         )
     lr_scheduler = normalize_lr_scheduler_spec(cfg.lr_scheduler)
-    setup_wandb(
-        cfg.wandb,
-        {
-            "completions_per_prompt": cfg.completions_per_prompt,
-            "prompt_groups_per_step": cfg.prompt_groups_per_step,
-            "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
-            "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
-            "max_completion_tokens": cfg.max_completion_tokens,
-            "temperature": cfg.temperature,
-            "tokenizer_id": cfg.deployment.tokenizer_model,
-            "shuffle": cfg.shuffle,
-            "seed": cfg.seed,
-            "algorithm": "grpo",
-            "trainer_loss": f"server_{objective.LOSS_FN}",
-            "eps_clip": policy_loss.eps_clip,
-            "eps_clip_high": policy_loss.upper_eps,
-            "grad_clip_norm": cfg.grad_clip_norm,
-            "lr": cfg.learning_rate,
-            "lr_schedule": lr_scheduler.type,
-        },
-        metric_steps=ASYNC_RL_WANDB_METRIC_STEPS,
-    )
+    run_config = {
+        "completions_per_prompt": cfg.completions_per_prompt,
+        "prompt_groups_per_step": cfg.prompt_groups_per_step,
+        "max_head_offpolicy_versions": cfg.max_head_offpolicy_versions,
+        "max_concurrency_rollout_sample": cfg.max_concurrency_rollout_sample,
+        "max_completion_tokens": cfg.max_completion_tokens,
+        "temperature": cfg.temperature,
+        "tokenizer_id": cfg.deployment.tokenizer_model,
+        "shuffle": cfg.shuffle,
+        "seed": cfg.seed,
+        "algorithm": "grpo",
+        "trainer_loss": f"server_{objective.LOSS_FN}",
+        "eps_clip": policy_loss.eps_clip,
+        "eps_clip_high": policy_loss.upper_eps,
+        "grad_clip_norm": cfg.grad_clip_norm,
+        "lr": cfg.learning_rate,
+        "lr_schedule": lr_scheduler.type,
+    }
+    setup_wandb(cfg.wandb, run_config, metric_steps=ASYNC_RL_WANDB_METRIC_STEPS)
+    setup_mlflow(cfg.mlflow, run_config)
 
     api_key = os.environ["FIREWORKS_API_KEY"]
     base_url = os.environ.get("FIREWORKS_BASE_URL", "https://api.fireworks.ai")
@@ -701,7 +703,9 @@ async def main(
             global_step,
             global_step - step_offset,
         )
-        wandb_finish(metrics_file=os.environ.get("COOKBOOK_METRICS_FILE"))
+        metrics_file = os.environ.get("COOKBOOK_METRICS_FILE")
+        wandb_finish(metrics_file=metrics_file)
+        mlflow_finish(metrics_file=metrics_file)
         return {
             "steps": global_step,
             "policy_job_id": service.trainer_job_id,

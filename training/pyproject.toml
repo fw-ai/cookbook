@@ -40,6 +40,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mlflow = [
+    # Optional metrics mirror; the cookbook lazy-imports it and degrades to
+    # the JSONL ledger when absent.
+    "mlflow>=2.20",
+]
 eval = [
     # The published release caps LiteLLM below the security fixes.
     "eval-protocol @ git+https://github.com/eval-protocol/python-sdk.git@9b642d9401b05ab96b73fc18922d1279f8ac617b",
