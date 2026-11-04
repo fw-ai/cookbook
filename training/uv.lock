@@ -1091,7 +1091,7 @@ wheels = [
 
 [[package]]
 name = "fireworks-training-cookbook"
-version = "0.1.0"
+version = "2026.11.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
