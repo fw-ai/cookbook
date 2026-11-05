@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fireworks-training-cookbook"
 # Promotion owns this version; published metadata is synchronized back to staging.
-version = "2026.11.5.3"
+version = "2026.11.5.2"
 description = "Training recipes and utilities for the Fireworks Training API"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fireworks-ai>=1.2.30,<2",
+    "fireworks-ai>=1.2.32,<2",
     # Runtime dependencies for the maintained recipes.
     "aiohttp>=3.14.3",
     "pydantic>=2.9.2,<2.13",

@@ -16,6 +16,20 @@ from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 from training.utils.service import build_service_client, resolve_router_replay_enabled
 
 
+@pytest.mark.parametrize("policy", ["all", "new_session", "none"])
+def test_service_forwards_prompt_cache_policy(policy: str) -> None:
+    mapped = service._firetitan_service_kwargs(
+        base_model="accounts/acct/models/base",
+        tokenizer_model=None,
+        max_lora_rank=8,
+        max_context_length=None,
+        learning_rate=1e-5,
+        trainer=TrainerConfig(),
+        deployment=DeployConfig(reset_prompt_cache=policy),
+    )
+    assert mapped["reset_prompt_cache"] == policy
+
+
 @pytest.mark.parametrize("model_type", ["", "deepseek_v4", "deepseek_v41", "qwen3"])
 def test_model_family_context_is_restrict_only_and_optional(model_type: str) -> None:
     kwargs = dict(
@@ -30,15 +44,13 @@ def test_model_family_context_is_restrict_only_and_optional(model_type: str) -> 
     mapped = service._firetitan_service_kwargs(**kwargs)
     assert mapped["base_model"] == kwargs["base_model"]
     assert mapped["tokenizer_model"] == kwargs["tokenizer_model"]
-    if model_type == "deepseek_v4" and "base_model_type" in {
-        f.name for f in dataclasses.fields(service.FiretitanProvisioningConfig)
-    }:
+    if model_type == "deepseek_v4":
         assert mapped["base_model_type"] == model_type
     else:
         assert "base_model_type" not in mapped
 
 
-@pytest.mark.parametrize("capability", [None, False, True])
+@pytest.mark.parametrize("capability", [False, True])
 @pytest.mark.parametrize("configured_rdma", [False, True])
 def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, caplog):
     from unittest.mock import Mock
@@ -47,8 +59,7 @@ def test_weight_sync_uses_negotiated_capability(capability, configured_rdma, cap
         weight_sync=Mock(return_value=SimpleNamespace(optimizer_version=0)),
         save_weights_for_sampler=Mock(return_value=SimpleNamespace(path="saved")),
     )
-    if capability is not None:
-        policy.supports_rdma_weight_sync = capability
+    policy.supports_rdma_weight_sync = capability
     managed_service = SimpleNamespace(hotload_sampler_snapshot=Mock())
     deployment = DeployConfig(weight_sync_transport="RDMA" if configured_rdma else None)
     sync = service.make_weight_sync(policy, managed_service, deployment)
@@ -170,14 +181,6 @@ def test_weight_sync_config_does_not_inject_admin_overrides(max_lora_rank, trans
         trainer=TrainerConfig(training_shape_id="ts-policy"),
         deployment=DeployConfig(deployment_shape="ds-policy", weight_sync_transport=transport),
     )
-    if transport is not None and "weight_sync_transport" not in inspect.signature(
-        service.FiretitanProvisioningConfig
-    ).parameters:
-        # The minimum supported SDK predates the explicit RDMA hint. Automatic
-        # mode must still work, while an unsupported explicit hint stays loud.
-        with pytest.raises(RuntimeError, match="has no 'weight_sync_transport' field"):
-            service._firetitan_service_kwargs(**config)
-        return
     kwargs = service._firetitan_service_kwargs(**config)
 
     for key in ("extra_args", "extra_values", "deployment_extra_args", "deployment_extra_values"):
@@ -334,18 +337,6 @@ def test_router_replay_falls_back_to_model_probe_when_capability_unknown(
     )
 
 
-# The last-resort path needs the SDK's typed ModelDetailsUnavailableError; on
-# an older SDK the placeholder is never raised and a 403 propagates as before.
-_TYPED_PROBE_ERROR = hasattr(
-    __import__("fireworks.training.sdk", fromlist=["x"]),
-    "ModelDetailsUnavailableError",
-)
-requires_typed_probe_error = pytest.mark.skipif(
-    not _TYPED_PROBE_ERROR,
-    reason="SDK predates ModelDetailsUnavailableError (last resort disabled)",
-)
-
-
 def _probe_raising(exc):
     class FakeClient:
         def __init__(self, **_kwargs):
@@ -363,7 +354,6 @@ def _probe_raising(exc):
     return FakeClient
 
 
-@requires_typed_probe_error
 @pytest.mark.parametrize("status", [403, 404])
 def test_router_replay_last_resort_honors_user_flag_when_model_not_visible(
     monkeypatch, caplog, status
@@ -415,7 +405,6 @@ def test_router_replay_last_resort_still_off_when_user_disabled(monkeypatch):
     )
 
 
-@requires_typed_probe_error
 @pytest.mark.parametrize(
     "exc",
     [
@@ -552,6 +541,9 @@ def test_build_service_client_maps_cookbook_config_to_sdk_kwargs(monkeypatch):
             "replica_count": 3,
             "disable_speculative_decoding": True,
             "hot_load_transition_type": "SYNC",
+            "reset_prompt_cache": "new_session",
+            "weight_sync_transport": None,
+            "wait_for_trainer_before_deployment": False,
         }
     ]
 
@@ -911,7 +903,7 @@ def test_build_service_client_rejects_trainer_wait_without_per_trainer():
         )
 
 
-def test_build_service_client_forwards_trainer_wait_when_sdk_declares_it(monkeypatch):
+def test_build_service_client_forwards_trainer_wait(monkeypatch):
     calls: list[dict] = []
 
     def fake_from_firetitan_config(**kwargs):
@@ -922,11 +914,6 @@ def test_build_service_client_forwards_trainer_wait_when_sdk_declares_it(monkeyp
         from_firetitan_config = staticmethod(fake_from_firetitan_config)
 
     monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
-    monkeypatch.setattr(
-        service,
-        "fields",
-        lambda _cls: (SimpleNamespace(name="wait_for_trainer_before_deployment"),),
-    )
 
     build_service_client(
         api_key="k",
@@ -945,26 +932,6 @@ def test_build_service_client_forwards_trainer_wait_when_sdk_declares_it(monkeyp
     )
 
     assert calls[0]["wait_for_trainer_before_deployment"] is True
-
-
-def test_build_service_client_errors_when_trainer_wait_requested_on_old_sdk(monkeypatch):
-    monkeypatch.setattr(service, "fields", lambda _cls: ())
-    with pytest.raises(RuntimeError, match="wait_for_trainer_before_deployment"):
-        build_service_client(
-            api_key="k",
-            base_url="https://api",
-            additional_headers=None,
-            base_model="accounts/acct/models/base",
-            tokenizer_model=None,
-            max_lora_rank=None,
-            max_context_length=None,
-            learning_rate=1e-5,
-            trainer=TrainerConfig(training_shape_id="ts-x"),
-            deployment=DeployConfig(
-                deployment_id="dep-1",
-                wait_for_trainer_before_deployment=True,
-            ),
-        )
 
 
 def test_trainer_config_does_not_advertise_removed_accelerator_fields():

@@ -37,8 +37,7 @@ unconfigured runtimes keep FILE. Experimental trainer topology belongs in the
 training shape; public model-handle options do not add launch overrides.
 
 Recipes use `make_weight_sync`, which reads the negotiated
-`policy.supports_rdma_weight_sync` property. An older installed SDK without
-that property keeps the FILE path. Create this callback once after attaching the
+`policy.supports_rdma_weight_sync` property. Create this callback once after attaching the
 policy and reuse it before the first rollout and after optimizer steps. Its RDMA
 branch calls `policy.weight_sync()`; its FILE branch calls
 `saved = policy.save_weights_for_sampler(name)` followed by
@@ -131,6 +130,46 @@ be combined with `disable_speculative_decoding`.
   produced by step K.
 - `async_rl_loop` hotloads after every optimizer batch too, while its admission
   gate allows a bounded number of already-admitted behavior-policy versions.
+
+## Prefix-cache policy across turns and weight updates
+
+Set `DeployConfig.reset_prompt_cache` to choose how later, separate requests
+reuse prefix KV after a successful sampler hotload:
+
+| Value | Behavior after hotload |
+|---|---|
+| `new_session` | Existing sessions keep their prefix-cache namespace; new sessions use the new snapshot's namespace. |
+| `all` | Every session moves to the new snapshot's namespace; the first later request cannot reuse the old prefix cache. |
+| `none` | The cache namespace stays unchanged for existing and new sessions. |
+
+```python
+deployment = DeployConfig(reset_prompt_cache="new_session")
+```
+
+The shared deployment config defaults to `new_session`; `async_rl_loop` uses
+that configurable policy. The strictly synchronous `rl_loop` always uses `all`,
+including when a caller supplies a different deployment policy. It finishes its
+rollout batch before training, waits for weight sync, then starts the next batch
+with a fresh prefix namespace. It copies the supplied config rather than mutating
+it. This loop ordering does not select the serving `SYNC` transition or drain
+unrelated requests on a shared deployment.
+
+Use at least the SDK version declared by the cookbook's package requirements;
+older SDK versions do not provide the required cache-policy API.
+The same setting reaches SDK-managed FILE and RDMA hotloads, including explicit
+`all`. RDMA requires a trainer runtime that accepts the policy on weight-sync
+requests; that runtime also defaults omitted policies to `new_session`.
+
+Supported native serving backends implement these namespace policies. The
+multi-LoRA serving backend currently accepts them as no-ops, so setting
+`new_session` on that backend does not enable cross-update prefix reuse.
+
+Use a stable `prompt_cache_key` (or `user`) across requests in a rollout. A hit
+also needs matching prefix tokens, routing to an available cache, and retained
+entries. Cache reuse may carry KV computed under previous weights; it does not
+pin the session to those weights. This option does not reset the active KV of
+an ongoing request that survives async hotload. The policy changes future
+requests even when the weight update itself is asynchronous.
 
 ## Inference transition: ASYNC vs SYNC
 

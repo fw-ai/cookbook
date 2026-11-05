@@ -208,6 +208,13 @@ class DeployConfig:
     per hot load.
 
     Leave unset to let the control plane choose (``ASYNC``)."""
+    reset_prompt_cache: Literal["all", "new_session", "none"] = "new_session"
+    """Prefix-cache policy for future requests after sampler hotload.
+
+    ``new_session`` (default) preserves existing session namespaces;
+    ``all`` resets every session; ``none`` keeps the namespace unchanged.
+    Active KV across async hotload is unaffected.
+    """
     deployment_timeout_s: float = 5400
     reattach_settle_timeout_s: int = 600
     """How long to wait for the serving pod to cycle after a re-attach PATCH

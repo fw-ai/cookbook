@@ -134,6 +134,8 @@ def test_optimizer_step_requests_grad_norm_metrics() -> None:
     captured = {}
 
     class FakePolicy:
+        supports_rdma_weight_sync = False
+
         default_timeout = 3600
 
         def optim_step(self, adam_params, **kwargs):
@@ -310,6 +312,8 @@ def test_main_injects_sampler_and_advantages_and_closes_before_service(
             events.append("hotload")
 
     class FakePolicy:
+        supports_rdma_weight_sync = False
+
         default_timeout = 3600
 
         def save_weights_for_sampler(self, *_args, **_kwargs):
@@ -569,6 +573,8 @@ def test_train_group_runs_server_grpo_on_the_rollout_anchor(monkeypatch) -> None
     calls = []
 
     class FakePolicy:
+        supports_rdma_weight_sync = False
+
         default_timeout = 3600
 
         def submit_forward_backward(self, data, loss_fn, loss_fn_config=None):
@@ -620,6 +626,8 @@ def test_group_preparation_and_submission_leave_event_loop_responsive(monkeypatc
         return original_build(*args)
 
     class Policy:
+        supports_rdma_weight_sync = False
+
         default_timeout = 17
 
         def submit_forward_backward(self, *_args, **_kwargs):

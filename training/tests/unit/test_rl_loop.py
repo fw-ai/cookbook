@@ -48,6 +48,7 @@ def _grpo_result(rows: int) -> SimpleNamespace:
 
 def test_config_excludes_async_and_advanced_sync_scheduling_knobs() -> None:
     cfg = module.Config(log_path="gs://logs")
+    assert cfg.deployment.reset_prompt_cache == "all"
 
     for field_name in (
         "anchor_logp",
@@ -188,6 +189,23 @@ def _build_service_kwargs(monkeypatch, cfg):
 
     assert len(calls) == 1
     return calls[0]
+
+
+@pytest.mark.parametrize("requested_policy", ["all", "new_session", "none"])
+def test_main_uses_all_without_mutating_supplied_deployment(monkeypatch, requested_policy: str) -> None:
+    deployment = module.DeployConfig(
+        tokenizer_model="tokenizer",
+        reset_prompt_cache=requested_policy,
+        hot_load_transition_type="ASYNC",
+    )
+    cfg = module.Config(log_path="/tmp/rl-test", dataset="/tmp/prompts.jsonl", deployment=deployment)
+
+    kwargs = _build_service_kwargs(monkeypatch, cfg)
+
+    assert kwargs["deployment"].reset_prompt_cache == "all"
+    assert kwargs["deployment"].hot_load_transition_type == "ASYNC"
+    assert cfg.deployment is deployment
+    assert deployment.reset_prompt_cache == requested_policy
 
 
 def _lora_creation_kwargs(
@@ -428,6 +446,8 @@ def _run_loop(
 
 
 class _Policy:
+    supports_rdma_weight_sync = False
+
     default_timeout = 3600
     lora_rank = 0
 

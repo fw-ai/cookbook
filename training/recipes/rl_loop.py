@@ -6,7 +6,8 @@ Each iteration has three visible phases:
 1. collect one rollout batch: ``completions_per_prompt`` calls of
    ``rollout_fn(row)`` per row, grouped per row and filtered,
 2. train the complete batch with one GRPO forward/backward and one optimizer step,
-3. hotload the new policy before collecting the next batch.
+3. hotload the new policy with ``reset_prompt_cache="all"`` before collecting
+   the next batch, preventing reuse of the prior policy's prefix namespace.
 
 Rollouts plug in through the same ``rollout_fn_factory(setup)`` seam as
 ``recipes.async_rl_loop``, so one task's code drives either loop. The default,
@@ -31,7 +32,7 @@ import re
 import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from fireworks.training import sdk
@@ -137,7 +138,7 @@ class Config:
     eps_clip_high: float | None = None
 
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
-    deployment: DeployConfig = field(default_factory=DeployConfig)
+    deployment: DeployConfig = field(default_factory=lambda: DeployConfig(reset_prompt_cache="all"))
     dcp_save_interval: int = 0
     weight_sync_timeout: int = 600
     wandb: WandBConfig = field(default_factory=lambda: WandBConfig(project="grpo-tinker"))
@@ -207,7 +208,9 @@ async def main(
     evaluation_interval: int = 1,
 ) -> dict[str, Any]:
     """Collect, optionally prepare, train and publish one complete on-policy batch."""
-    cfg = config
+    # A completed rollout batch must not carry old-policy prefix KV into the
+    # next batch, even when callers supply the shared deployment defaults.
+    cfg = replace(config, deployment=replace(config.deployment, reset_prompt_cache="all"))
     policy_loss = objective.GRPOConfig(eps_clip=cfg.eps_clip, eps_clip_high=cfg.eps_clip_high)
     if rollout_fn_factory is None:
         rollout_fn_factory = single_turn_rollout_fn(cfg.renderer_name)
