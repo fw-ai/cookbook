@@ -7,7 +7,7 @@ optimization (DPO, ORPO), SFT, distillation and embedding fine-tuning on
 ## Quick Start
 
 ```bash
-git clone https://github.com/fw-ai/cookbook.git
+git clone https://github.com/fw-ai-external/cookbook.git
 cd cookbook/training
 uv venv --python 3.12 && source .venv/bin/activate
 uv pip install -e .
@@ -32,21 +32,21 @@ task-specific skills: **research**, **configure**, and **debug**.
 ### Claude Code
 
 ```bash
-claude plugin marketplace add fw-ai/cookbook
+claude plugin marketplace add fw-ai-external/cookbook
 claude plugin install fireworks-training@fw-ai-cookbook
 ```
 
 ### Cursor
 
 ```bash
-npx --yes skills add fw-ai/cookbook -g \
+npx --yes skills add fw-ai-external/cookbook -g \
   -s fireworks-training -s research -s configure -s debug -a cursor -y
 ```
 
 ### Codex
 
 ```bash
-npx --yes skills add fw-ai/cookbook -g \
+npx --yes skills add fw-ai-external/cookbook -g \
   -s fireworks-training -s research -s configure -s debug -a codex -y
 ```
 
@@ -85,4 +85,4 @@ See the [Contribution Guide](./Contribution.md).
 
 - [Documentation](https://fireworks.ai/docs)
 - [Discord](https://discord.gg/9nKGzdCk)
-- [Open an issue](https://github.com/fw-ai/cookbook/issues/new)
+- [Open an issue](https://github.com/fw-ai-external/cookbook/issues/new)
