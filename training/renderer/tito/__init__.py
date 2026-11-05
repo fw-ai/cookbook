@@ -17,6 +17,7 @@ from training.renderer.tito.deepseek_v41 import DeepSeekV41TITORenderer
 from training.renderer.tito.glm52 import GLM52TITORenderer
 from training.renderer.tito.glm53 import GLM53TITORenderer
 from training.renderer.tito.glm53_flash import GLM53FlashTITORenderer
+from training.renderer.tito.kimi_k31 import KimiK31TITORenderer
 from training.renderer.tito.muse_glimmer import MuseGlimmerTITORenderer
 from training.renderer.tito.muse_spark import MuseSparkTITORenderer
 from training.renderer.tito.plugins import (
@@ -43,6 +44,7 @@ __all__ = [
     "GLM52TITORenderer",
     "GLM53TITORenderer",
     "GLM53FlashTITORenderer",
+    "KimiK31TITORenderer",
     "MuseGlimmerTITORenderer",
     "MuseSparkTITORenderer",
     "Qwen35TITORenderer",

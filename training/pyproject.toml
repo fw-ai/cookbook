@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fireworks-training-cookbook"
 # Promotion owns this version; published metadata is synchronized back to staging.
-version = "2026.11.5.1"
+version = "0.1.0"
 description = "Training recipes and utilities for the Fireworks Training API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -139,6 +139,7 @@ packages = [
     "training.renderer.tito",
     "training.renderer.tito._vendored",
     "training.renderer.tito._vendored.deepseek_v4",
+    "training.renderer.tito._vendored.kimi_k31",
     "training.renderer.verifier",
     "training.renderer.verifier.utils",
     "training.tests",
@@ -158,6 +159,7 @@ packages = [
 [tool.setuptools.package-data]
 "training.renderer" = ["LICENSE"]
 "training.renderer.tito._vendored.deepseek_v4" = ["LICENSE", "PROVENANCE.md"]
+"training.renderer.tito._vendored.kimi_k31" = ["LICENSE", "PROVENANCE.md"]
 "training.examples.sft" = ["text2sql_dataset.jsonl", "food_reasoning.jsonl", "data/support_triage_train.jsonl"]
 "training.examples.rl.deepmath" = ["dataset.jsonl"]
 "training.examples.rl.frozen_lake" = ["seeds.jsonl", "assets/img/*.png"]
