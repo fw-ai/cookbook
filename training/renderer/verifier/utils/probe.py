@@ -38,7 +38,11 @@ from training.renderer.base import (
     Renderer,
     TrainOnWhat,
 )
-from training.utils.supervised import build_tool_prefixed_messages, normalize_messages
+from training.utils.supervised import (
+    build_tool_prefixed_messages,
+    normalize_messages,
+    renderer_preserves_tool_argument_literals,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -314,7 +318,9 @@ def _prepare_conversation(
     request_kwargs: dict[str, Any] | None,
 ) -> tuple[list[dict], Any]:
     """Normalize messages and apply an optional whole-request renderer hook."""
-    normalized = normalize_messages(messages)
+    normalized = normalize_messages(
+        messages, preserve_tool_argument_literals=renderer_preserves_tool_argument_literals(renderer)
+    )
     prepare = getattr(renderer, "prepare_conversation", None)
     if callable(prepare):
         conversation = prepare(
@@ -571,7 +577,14 @@ def run_probe(
     # renderer's own definition of "what the assistant turn was", so
     # using it here keeps the round-trip non-circular while not papering
     # over real bugs.
-    parsed_msg, parse_termination = renderer.parse_response(completion_tokens)
+    # Renderers whose request hook can toggle thinking per request expose the
+    # rendered mode, so a truncated completion is attributed to the right channel.
+    thinking_mode_of = getattr(renderer, "thinking_mode_of", None)
+    request_thinking = thinking_mode_of(normalized) if callable(thinking_mode_of) else None
+    if request_thinking is None:
+        parsed_msg, parse_termination = renderer.parse_response(completion_tokens)
+    else:
+        parsed_msg, parse_termination = renderer.parse_response(completion_tokens, thinking=request_thinking)
     if isinstance(parse_termination, ParseTermination):
         parse_ok = parse_termination.is_clean
     else:

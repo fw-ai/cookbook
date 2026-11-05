@@ -1144,9 +1144,18 @@ def _unpickle_renderer(
     tokenizer = get_tokenizer(model_name, renderer_name=renderer_name, base_model=base_model)
     image_processor = None
     if has_image_processor:
-        from training.renderer._image_processing_utils import get_image_processor
+        # A renderer that registered its own image-processor loader is restored
+        # through it, so pickling never switches a renderer onto a different
+        # processor implementation than the one it was built with.
+        from training.renderer.plugins import renderer_image_processor_loader
 
-        image_processor = get_image_processor(model_name, renderer_name=renderer_name, base_model=base_model)
+        loader = renderer_image_processor_loader(renderer_name)
+        if loader is not None:
+            image_processor = loader(model_name)
+        else:
+            from training.renderer._image_processing_utils import get_image_processor
+
+            image_processor = get_image_processor(model_name, renderer_name=renderer_name, base_model=base_model)
     renderer = get_renderer(renderer_name, tokenizer, image_processor, model_name=model_name)
     if base_model is not None:
         renderer._tokenizer_base_model = base_model

@@ -144,6 +144,9 @@ class RendererCase:
 _GEMMA4_TOKENIZER = os.environ.get("GEMMA4_MODEL_PATH", "google/gemma-4-31B-it")
 _KIMI_K3_TOKENIZER = "moonshotai/Kimi-K3"
 _KIMI_K3_TOKENIZER_REVISION = "301be1b88c89c0d3a763da6301352cb8fe399e90"
+_KIMI_K31_TOKENIZER = "moonshotai/Kimi-K3.1-Pro"
+_KIMI_K31_TOKENIZER_REVISION = "6d0a0202956796543364d666ab19c6ad1a494ee1"
+_KIMI_K31_UNSUPPORTED_SCENARIOS = frozenset({"developer_first", "developer_midconversation"})
 _MUSE_GLIMMER_TOKENIZER = "meta-models/Muse-Glimmer-30B"
 _MUSE_GLIMMER_REVISION = "a4e59da52a7bc87ae7251dd5545c0dd437c44b68"
 _QWEN38_UNSUPPORTED_SCENARIOS = frozenset(
@@ -444,6 +447,45 @@ RENDERER_MATRIX: list[RendererCase] = [
         observation_equals_generation=True,
         trailing_hard_append_tokens=1,
         local_fixture_env="KIMI_K3_MODEL_PATH",
+    ),
+    # -- Kimi K3.1 ----------------------------------------------------------
+    # Same XTML protocol and tokenizer class as K3 with the K3.1 encoder
+    # revision. The checkpoint's apply_chat_template defaults thinking_effort to
+    # "max"; the renderer renders no effort message unless one is requested, so
+    # the HF reference is called with an explicit None. Unlike K3's encoder,
+    # the K3.1 encoder rejects the ``developer`` role outright (pinned in
+    # test_kimi_k31_renderer.py), so there is nothing to byte-compare.
+    RendererCase(
+        renderer="kimi_k31",
+        tokenizer_model=_KIMI_K31_TOKENIZER,
+        tokenizer_revision=_KIMI_K31_TOKENIZER_REVISION,
+        tokenizer_trust_remote_code=True,
+        hf_kwargs={"thinking_effort": None},
+        supports_thinking=True,
+        supports_tools=True,
+        has_extension_property=True,
+        has_hf_chat_template=True,
+        supervised_hf_parity=True,
+        observation_equals_generation=True,
+        trailing_hard_append_tokens=1,
+        unsupported_scenarios=_KIMI_K31_UNSUPPORTED_SCENARIOS,
+        local_fixture_env="KIMI_K31_MODEL_PATH",
+    ),
+    RendererCase(
+        renderer="kimi_k31_disable_thinking",
+        tokenizer_model=_KIMI_K31_TOKENIZER,
+        tokenizer_revision=_KIMI_K31_TOKENIZER_REVISION,
+        tokenizer_trust_remote_code=True,
+        hf_kwargs={"thinking": False},
+        supports_thinking=False,
+        supports_tools=True,
+        has_extension_property=True,
+        has_hf_chat_template=True,
+        supervised_hf_parity=True,
+        observation_equals_generation=True,
+        trailing_hard_append_tokens=1,
+        unsupported_scenarios=_KIMI_K31_UNSUPPORTED_SCENARIOS,
+        local_fixture_env="KIMI_K31_MODEL_PATH",
     ),
     # -- MiniMax M2 --------------------------------------------------------
     # Single-turn generation MATCHES the official HF MiniMax-M2 chat template

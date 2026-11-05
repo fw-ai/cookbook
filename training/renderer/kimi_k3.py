@@ -119,6 +119,9 @@ class KimiK3RenderOptions:
     tool_choice: str | None = None
     response_format: Any = None
 
+    # Subclasses for encoder revisions with other tiers override this hook.
+    _normalize_reasoning = staticmethod(_normalize_reasoning)
+
     @classmethod
     def from_api(
         cls,
@@ -145,7 +148,7 @@ class KimiK3RenderOptions:
         else:
             reasoning_value = reasoning_effort
 
-        enabled, effort = _normalize_reasoning(reasoning_value)
+        enabled, effort = cls._normalize_reasoning(reasoning_value)
         return cls(
             thinking=enabled,
             thinking_effort=effort,
@@ -578,6 +581,11 @@ class KimiK3Renderer(Renderer):
     supports_streaming = True
     supports_per_message_rendering = False
     _preserves_explicit_empty_system_with_tools = True
+    # Hooks for encoder revisions of the same XTML protocol (see kimi_k31.py).
+    _options_cls: type[KimiK3RenderOptions] = KimiK3RenderOptions
+    _conversation_cls: type[KimiK3Conversation] = KimiK3Conversation
+    _normalize_tools = staticmethod(_normalize_tools)
+    _native_message = staticmethod(_native_message)
 
     def __init__(
         self,
@@ -588,7 +596,7 @@ class KimiK3Renderer(Renderer):
     ) -> None:
         super().__init__(tokenizer)
         self.image_processor = image_processor
-        self.default_options = options or KimiK3RenderOptions()
+        self.default_options = options or self._options_cls()
 
         tokenizer_module = __import__(type(tokenizer).__module__, fromlist=["*"])
         build_segments = getattr(tokenizer_module, "build_chat_segments", None)
@@ -658,14 +666,14 @@ class KimiK3Renderer(Renderer):
         """Bind API request controls to a whole-conversation render."""
         request_kwargs = request_kwargs or {}
         if "thinking" in request_kwargs:
-            thinking_options = KimiK3RenderOptions.from_api(
+            thinking_options = self._options_cls.from_api(
                 thinking=request_kwargs.get("thinking"),
                 reasoning_effort=request_kwargs.get("reasoning_effort"),
             )
             thinking = thinking_options.thinking
             thinking_effort = thinking_options.thinking_effort
         elif "reasoning_effort" in request_kwargs and self.default_options.thinking:
-            thinking_options = KimiK3RenderOptions.from_api(
+            thinking_options = self._options_cls.from_api(
                 thinking=True,
                 reasoning_effort=request_kwargs["reasoning_effort"],
             )
@@ -685,10 +693,10 @@ class KimiK3Renderer(Renderer):
             if "response_format" in request_kwargs
             else copy.deepcopy(self.default_options.response_format)
         )
-        return KimiK3Conversation(
+        return self._conversation_cls(
             messages,
             tools=tools,
-            options=KimiK3RenderOptions(
+            options=self._options_cls(
                 thinking=thinking,
                 thinking_effort=thinking_effort,
                 tool_choice=tool_choice,
@@ -698,8 +706,9 @@ class KimiK3Renderer(Renderer):
 
     def _unpack_request(self, messages: list[Message]) -> _KimiK3Request:
         if isinstance(messages, KimiK3Conversation):
-            tools = _normalize_tools(messages.tools)
-            options = messages.options
+            tools = self._normalize_tools(messages.tools)
+            # An envelope without explicit options keeps the renderer's defaults.
+            options = messages.options if messages.options is not None else self.default_options
             raw_messages = list(messages)
         else:
             tools = ()
@@ -712,9 +721,9 @@ class KimiK3Renderer(Renderer):
             if message.get("role") == "tool_declare" and _TOOL_MARKER_KEY in message:
                 if marker_tools:
                     raise ValueError("Kimi K3 accepts one tool-declaration prefix")
-                marker_tools = _normalize_tools(message[_TOOL_MARKER_KEY])  # type: ignore[typeddict-item]
+                marker_tools = self._normalize_tools(message[_TOOL_MARKER_KEY])  # type: ignore[typeddict-item]
                 continue
-            native_messages.append(_native_message(message))
+            native_messages.append(self._native_message(message))
 
         if tools and marker_tools:
             raise ValueError("Kimi K3 tools were supplied in both the conversation envelope " "and the tool prefix")
@@ -761,11 +770,12 @@ class KimiK3Renderer(Renderer):
             image_item = {"type": "image", "image": item.open()}
             expected = int(self.image_processor.media_tokens_calculator(image_item))
             prompt = str(self.image_processor.make_image_prompt(item.width, item.height))
-            batch = self.image_processor.preprocess(
-                [image_item],
-                return_tensors="pt",
-            )
-            grid = tuple(int(value) for value in batch["grid_thws"][0].tolist())
+            preprocess = getattr(self.image_processor, "preprocess", None)
+            if callable(preprocess):
+                batch = preprocess([image_item], return_tensors="pt")
+                grid = tuple(int(value) for value in batch["grid_thws"][0].tolist())
+            else:
+                grid = tuple(int(value) for value in self.image_processor.grid_thw(item.width, item.height))
             merge = int(self.image_processor.media_proc_cfg["merge_kernel_size"])
             calculated = grid[0] * (grid[1] // merge) * (grid[2] // merge)
             if expected != calculated:
@@ -1170,7 +1180,7 @@ class KimiK3Renderer(Renderer):
         yield parsed.message
 
     def to_openai_message(self, message: Message) -> dict[str, Any]:
-        return _native_message(message)
+        return self._native_message(message)
 
 
 def _kimi_k3_factory(

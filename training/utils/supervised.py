@@ -173,7 +173,11 @@ def build_tool_prefixed_messages(
     message's content into the prefix's ``system_prompt``. Renderers without
     tool-prefix support drop the field (they do NOT raise), matching production.
     """
-    normalized_messages = list(normalize_messages(messages))
+    normalized_messages = list(
+        normalize_messages(
+            messages, preserve_tool_argument_literals=renderer_preserves_tool_argument_literals(renderer)
+        )
+    )
     if not tools:
         return normalized_messages
     prefix_builder = _tool_prefix_builder(renderer)
@@ -247,6 +251,14 @@ def resolve_renderer_name(
         # on the dedicated renderer rather than inheriting Qwen3 semantics or
         # falling through to the public-HF recommendation table.
         return "qwen2_5"
+    # Kimi K3.1 (``moonshotai/Kimi-K3.1-Pro``, ``kimi-k3p1-pro``, ``kimi_k31``)
+    # ships a newer XTML encoder than K3 (a ``medium`` thinking tier, literal
+    # tool-argument bytes) and no ``tokenizer.json``, so it has its own renderer.
+    if re.search(
+        r"(?:^|[/_.-])kimi[-_]k3(?:\.1|p1|_?1)(?:$|[/_.-])",
+        normalized_model_name,
+    ):
+        return "kimi_k31"
     if re.search(
         r"(?:^|[/_.-])kimi[-_]k3(?:$|[/_.-])",
         normalized_model_name,
@@ -678,6 +690,7 @@ def renderer_supports_images(renderer_name: str) -> bool:
             "kimi_k26",
             "kimi_k27",
             "kimi_k3",
+            "kimi_k31",
             "muse_glimmer",
             "glm53_flash",
             "deepseek_v41",
@@ -701,14 +714,30 @@ def renderer_supports_tool_images(renderer_name: str) -> bool:
         "glm53_flash_preserve_thinking",
         "kimi_k3",
         "kimi_k3_disable_thinking",
+        # K3.1 shares K3's XTML tool-result rendering and release image processor.
+        "kimi_k31",
+        "kimi_k31_disable_thinking",
+        "kimi_k31_low",
+        "kimi_k31_medium",
+        "kimi_k31_high",
+        "kimi_k31_max",
     }
 
 
 logger = logging.getLogger(__name__)
 
 
-def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
-    """Normalize common tool-call shapes into Tinker's structured ToolCall form."""
+def _normalize_tool_calls(tool_calls: Any, *, preserve_literals: bool = False) -> list[ToolCall]:
+    """Normalize common tool-call shapes into Tinker's structured ToolCall form.
+
+    ``preserve_literals`` keeps a JSON-object ``arguments`` string byte-for-byte
+    (and serializes object arguments without ASCII escaping) for renderers whose
+    chat format renders the original argument literals, such as Kimi K3.1.
+    """
+
+    def _dump(value: Mapping[str, Any]) -> str:
+        return json.dumps(dict(value), ensure_ascii=not preserve_literals)
+
     normalized: list[ToolCall] = []
     for index, tool_call in enumerate(tool_calls or []):
         if not isinstance(tool_call, Mapping):
@@ -719,7 +748,7 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
                 ToolCall(
                     function=ToolCall.FunctionBody(
                         name=tool_call["name"],
-                        arguments=json.dumps(dict(tool_call["args"])),
+                        arguments=_dump(tool_call["args"]),
                     ),
                     id=tool_call.get("id"),
                 )
@@ -744,12 +773,15 @@ def _normalize_tool_calls(tool_calls: Any) -> list[ToolCall]:
                     f"tool_calls[{index}].function.arguments must be a JSON object string "
                     f"or object; got {type(raw_args).__name__}."
                 )
+            if preserve_literals and isinstance(raw_args, str) and isinstance(parsed_args, dict):
+                arguments = raw_args
+            elif isinstance(parsed_args, Mapping):
+                arguments = _dump(parsed_args)
+            else:
+                arguments = json.dumps(parsed_args)
             normalized.append(
                 ToolCall(
-                    function=ToolCall.FunctionBody(
-                        name=function["name"],
-                        arguments=json.dumps(parsed_args),
-                    ),
+                    function=ToolCall.FunctionBody(name=function["name"], arguments=arguments),
                     id=tool_call.get("id"),
                 )
             )
@@ -868,8 +900,15 @@ def _resolve_trainable(
     return assistant_default
 
 
+def renderer_preserves_tool_argument_literals(renderer: Any) -> bool:
+    """Whether ``renderer`` renders tool-call argument strings byte-for-byte."""
+    return bool(getattr(renderer, "preserves_tool_argument_literals", False))
+
+
 def normalize_messages(
     messages: Iterable[Mapping[str, Any]],
+    *,
+    preserve_tool_argument_literals: bool = False,
 ) -> list[Message]:
     """Normalize cookbook/eval-style messages into Tinker's message schema.
 
@@ -921,7 +960,9 @@ def normalize_messages(
 
         tool_calls = message.get("tool_calls")
         if tool_calls is not None:
-            normalized_message["tool_calls"] = _normalize_tool_calls(tool_calls)
+            normalized_message["tool_calls"] = _normalize_tool_calls(
+                tool_calls, preserve_literals=preserve_tool_argument_literals
+            )
 
         thinking = message.get("thinking")
         if thinking is not None:
@@ -1475,7 +1516,9 @@ def render_messages_to_datum(
     prevents the cookbook from silently training on assistant turns the
     dataset author explicitly excluded.
     """
-    normalized_messages = normalize_messages(messages)
+    normalized_messages = normalize_messages(
+        messages, preserve_tool_argument_literals=renderer_preserves_tool_argument_literals(renderer)
+    )
     requested_train_on_what = parse_train_on_what(train_on_what)
     effective_train_on_what = requested_train_on_what
     if any("trainable" in m for m in normalized_messages):

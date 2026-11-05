@@ -98,6 +98,11 @@ _EXTRA_TOKENIZERS = {
     "glm53_flash_preserve_thinking": "zai-org/GLM-5.3-Flash",
     "kimi_k25": "moonshotai/Kimi-K2.5",
     "kimi_k27_code": "moonshotai/Kimi-K2.7-Code",
+    # Effort-pinned K3.1 names share the matrix rows' tokenizer and class.
+    "kimi_k31_low": "moonshotai/Kimi-K3.1-Pro",
+    "kimi_k31_medium": "moonshotai/Kimi-K3.1-Pro",
+    "kimi_k31_high": "moonshotai/Kimi-K3.1-Pro",
+    "kimi_k31_max": "moonshotai/Kimi-K3.1-Pro",
     "deepseek_v41": "deepseek-ai/DeepSeek-V4.1-Flash",
 }
 
