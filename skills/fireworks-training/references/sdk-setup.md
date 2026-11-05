@@ -2,8 +2,17 @@
 
 ## Install
 
+For released recipes and utilities, use Python 3.11 or newer and install from PyPI:
+
 ```bash
-git clone https://github.com/fw-ai/cookbook.git
+python -m pip install --upgrade fireworks-training-cookbook
+```
+
+Python imports remain `training.*`. To run or edit examples from a checkout,
+install the source in an isolated environment instead:
+
+```bash
+git clone https://github.com/fw-ai-external/cookbook.git
 cd cookbook/training
 
 # Option A: conda
@@ -62,14 +71,16 @@ python -m pytest tests/
 
 ## Upgrading the SDK
 
-The required SDK version is pinned in `training/pyproject.toml`. To upgrade:
+The required SDK range is declared in `training/pyproject.toml`. For a PyPI
+installation, run `python -m pip install --upgrade fireworks-training-cookbook`.
+For an editable source installation:
 
 ```bash
 cd cookbook/training
 uv pip install --upgrade -e .
 ```
 
-Then verify the installed version satisfies the pin:
+Then verify the installed version satisfies the declared range:
 
 ```bash
 grep 'fireworks-ai' pyproject.toml

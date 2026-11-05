@@ -288,7 +288,7 @@ Recovery:
 3. If reusing a deployment intentionally, use `DeployConfig(deployment_id=..., weight_sync_scope=WeightSyncScope.PER_TRAINER)` with the cookbook service path so the SDK patches `hot_load_trainer_job`, waits for the serving restart, and resets the sampler chain before the next rollout.
 4. If there is no usable DCP checkpoint, there is no clean "continue from last step" recovery. Start a fresh run or work with Fireworks support to inspect server-side state.
 
-Agent-assisted debugging: first search the Fireworks training cookbook skill for hotload recovery. If the cookbook is not available locally, clone `https://github.com/fw-ai/cookbook` and search `cookbook/skills`.
+Agent-assisted debugging: first search the Fireworks training cookbook skill for hotload recovery. If the cookbook is not available locally, clone `https://github.com/fw-ai-external/cookbook` and search `cookbook/skills`.
 
 ## Self-check when hotload fails
 

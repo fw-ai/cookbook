@@ -1,10 +1,10 @@
 # Training API (custom training loops)
 
-*Source of truth: [Training API intro](https://docs.fireworks.ai/fine-tuning/training-api/introduction.md) · [current serverless comparison](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md#serverless-vs-dedicated) · [public cookbook](https://github.com/fw-ai/cookbook/tree/main) — defer to the live docs/repo for current SDK + recipes, then record the checkout commit used by the run.*
+*Source of truth: [Training API intro](https://docs.fireworks.ai/fine-tuning/training-api/introduction.md) · [current serverless comparison](https://docs.fireworks.ai/fine-tuning/training-api/serverless.md#serverless-vs-dedicated) · [public cookbook](https://github.com/fw-ai-external/cookbook/tree/main) — defer to the live docs/repo for current SDK + recipes, then record the checkout commit used by the run.*
 
 Write or fork a Python training loop; Fireworks runs forward/backward on distributed GPUs. The SDK is **Tinker-compatible**, so Tinker code ports over with minimal changes. For standard supported jobs, prefer managed training.
 
-Docs: https://docs.fireworks.ai/fine-tuning/training-api/introduction · Cookbook (start here): https://github.com/fw-ai/cookbook
+Docs: https://docs.fireworks.ai/fine-tuning/training-api/introduction · Cookbook (start here): https://github.com/fw-ai-external/cookbook
 
 > Status: Serverless Training is generally available. Dedicated Training needs access; request it at https://fireworks.ai/contact-training
 
@@ -80,7 +80,7 @@ Whichever RFT route you use, the reward can come from three places:
 
 **Approval gate still applies.** Training API cookbook recipes can create trainers, rollout deployments, checkpoints, promoted models, and paid inference. Before running a recipe or any create/promote/deploy action, show the account, recipe, dataset, full resolved trainer and deployment config, cost drivers, evaluation plan, and teardown plan; get explicit approval for this run. A deployment or materially expanded sweep gets its own approval.
 
-Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw-ai/cookbook`:
+Don't write a loop from scratch — fork a recipe in the `training/` tree of `fw-ai-external/cookbook`:
 - `training/recipes/` — loop scripts (e.g. `async_rl_loop`)
 - `training/recipes/experiment/` — experimental infrastructure variants, including async serverless RL and SAO/PPO
 - `training/examples/` — worked RL / SFT / DPO / ORPO

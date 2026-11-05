@@ -18,7 +18,7 @@ instructions.
 | Debug a failed or stuck run | **debug** |
 
 Install the current skills using the Claude Code, Cursor, or Codex command in the
-[Getting Started guide](https://github.com/fw-ai/cookbook/blob/main/skills/GETTING-STARTED.md).
+[Getting Started guide](https://github.com/fw-ai-external/cookbook/blob/main/skills/GETTING-STARTED.md).
 
 Do not follow workflow steps in this file. This is a **redirect** stub for v2.1.0
 installs that still reference `discover`.

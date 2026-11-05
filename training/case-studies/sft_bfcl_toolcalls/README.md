@@ -169,7 +169,7 @@ Report **Non-Live AST** and **Irrelevance**, separately, always both.
 ## Setup
 
 ```bash
-git clone https://github.com/fw-ai/cookbook && cd cookbook/training
+git clone https://github.com/fw-ai-external/cookbook && cd cookbook/training
 uv venv --python 3.12 && source .venv/bin/activate   # 3.14 breaks eval-protocol's anyio usage
 uv pip install -e .
 uv pip install "bfcl-eval==2025.12.17" datasets openai matplotlib python-dotenv soundfile
@@ -224,7 +224,7 @@ is pinned to commit `f7cf735`, so scores stay comparable to the published board.
   envelope, scored as no-call. It presents as a *data* problem: zero-call rates rise even on
   `parallel`, where abstaining is always wrong, while `irrelevance` barely moves (there, "no
   parseable call" is the right answer, so a broken model scores the same by accident). The cookbook
-  also ships [`verify_logprobs.py`](https://github.com/fw-ai/cookbook/tree/main/training/examples/tools),
+  also ships [`verify_logprobs.py`](https://github.com/fw-ai-external/cookbook/tree/main/training/examples/tools),
   which compares inference-time against training-time logprobs for a checkpoint.
 - **Call `.result()` on every remote training operation.** `forward_backward`, `optim_step`, and the
   checkpoint saves all return futures, and a failure on a future you never joined is a failure you

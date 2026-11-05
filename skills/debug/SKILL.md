@@ -32,7 +32,7 @@ the cost before approval.
 Debug is read-only by default. Do not create jobs, upload data, or spend without
 an explicit handoff to `configure` and a new approved plan.
 
-`training/...` paths are in the fw-ai/cookbook repo; resolve them with
+`training/...` paths are in the fw-ai-external/cookbook repo; resolve them with
 `../fireworks-training/references/cookbook-code.md`.
 
 ## Entry routing

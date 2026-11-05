@@ -37,7 +37,7 @@ friction, and you can run the work yourself through **configure**.
 
 Execution lives in **configure**; failures live in **debug**.
 
-Every `training/...` path is in the fw-ai/cookbook repo, not this skill folder.
+Every `training/...` path is in the fw-ai-external/cookbook repo, not this skill folder.
 Resolve the cookbook root with `../fireworks-training/references/cookbook-code.md`
 before opening or citing code.
 

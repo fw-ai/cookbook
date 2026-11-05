@@ -23,7 +23,7 @@ built-in arithmetic prompts are a small end-to-end check, not a math benchmark.
 Install and run the standalone cookbook:
 
 ```bash
-git clone https://github.com/fw-ai/cookbook.git
+git clone https://github.com/fw-ai-external/cookbook.git
 cd cookbook/training
 uv venv --python 3.12
 uv pip install --python .venv/bin/python -e .

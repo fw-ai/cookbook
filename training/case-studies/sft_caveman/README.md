@@ -10,7 +10,7 @@ Teach concise answers without dropping the facts.
 
 **Method:** Supervised fine-tuning.
 
-[Read the rendered notebook](https://nbviewer.org/github/fw-ai/cookbook/blob/68750d4980cc8798343c67a49ec5c5b92093499f/training/case-studies/sft_caveman/caveman_sft.ipynb) · [Notebook source](caveman_sft.ipynb) · [All case studies](../README.md)
+[Read the rendered notebook](https://nbviewer.org/github/fw-ai-external/cookbook/blob/68750d4980cc8798343c67a49ec5c5b92093499f/training/case-studies/sft_caveman/caveman_sft.ipynb) · [Notebook source](caveman_sft.ipynb) · [All case studies](../README.md)
 
 The rendered link is a fixed snapshot at commit `68750d4`. For the current code and setup, use the notebook source in this checkout.
 
@@ -20,7 +20,7 @@ The frozen v2c release includes training, development and test examples, recorde
 
 ## Start here
 
-Use this folder inside the [Fireworks cookbook](https://github.com/fw-ai/cookbook). Install the dependencies declared in the cookbook’s `training/pyproject.toml`, plus Jupyter for the notebook interface. Open Jupyter from this study folder so relative data paths resolve. Shared training utilities come from the parent cookbook; this folder is not a standalone SDK.
+Use this folder inside the [Fireworks cookbook](https://github.com/fw-ai-external/cookbook). Install the dependencies declared in the cookbook’s `training/pyproject.toml`, plus Jupyter for the notebook interface. Open Jupyter from this study folder so relative data paths resolve. Shared training utilities come from the parent cookbook; this folder is not a standalone SDK.
 
 Read the recorded results before enabling training or evaluation. Cells marked for live inference or training require your own credentials and may incur charges. Keep credentials in your environment, never in a notebook or commit. Recorded results describe the saved experiment, not a guarantee for a new run.
 
