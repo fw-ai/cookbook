@@ -6,6 +6,19 @@ optimization (DPO, ORPO), SFT, distillation and embedding fine-tuning on
 
 ## Quick Start
 
+Use Python 3.11 or newer. Install the released recipes and utilities from PyPI:
+
+```bash
+python -m pip install --upgrade fireworks-training-cookbook
+```
+
+Python imports remain `training.*`. The cookbook uses calendar versions and is
+released separately from the `fireworks-ai` SDK. See the
+[installation and migration guide](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/overview#installation)
+for pinned releases and updating an existing checkout.
+
+To edit recipes or run examples from a source checkout:
+
 ```bash
 git clone https://github.com/fw-ai-external/cookbook.git
 cd cookbook/training
@@ -67,8 +80,16 @@ training/           Training API cookbook (primary surface)
   case-studies/     End-to-end notebooks
 eval/               Reproducible evaluation packages and benchmark adapters
 skills/             Research, configure and debug agent workflows
-archived/           Legacy integrations and earlier cookbook content
+case-studies/       Inference, retrieval and coding-agent applications
 ```
+
+## Application case studies
+
+Inference and agent applications live under [`case-studies/`](./case-studies/README.md):
+[Advisor](./case-studies/advisor/README.md) adds a second-opinion code reviewer,
+and [Voyage AI retrieval](./case-studies/voyage-ai/README.md) combines embeddings
+with vector search and reranking. These applications have their own setup and
+are separate from the training package installed from PyPI.
 
 ## Evaluations
 

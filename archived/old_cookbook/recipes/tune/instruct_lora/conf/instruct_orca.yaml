@@ -1,6 +1,0 @@
-defaults:
-  - base
-  - model: llama2-7b-8k
-  - data: openorca
-
-version: "0.1"

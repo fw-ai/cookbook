@@ -1,3 +1,0 @@
-name: accounts/fireworks/models/llama-v2-7b
-
-client_class: recipes.eval.perplexity_rank.client.FireworksClient

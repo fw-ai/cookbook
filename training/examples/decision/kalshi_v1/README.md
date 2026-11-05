@@ -71,7 +71,7 @@ Face revision and checks their SHA-256 hashes and row counts against the pins in
 Use Python 3.11 or newer. The cookbook installs the published Fireworks SDK.
 
 ```bash
-git clone --depth 1 https://github.com/fw-ai/cookbook.git
+git clone --depth 1 https://github.com/fw-ai-external/cookbook.git
 cd cookbook/training
 python3 -m venv .venv
 source .venv/bin/activate

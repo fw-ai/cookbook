@@ -4,7 +4,7 @@ Full index for **research** — scan all tiers before recommending. Case studies
 are the best end-to-end stories; examples and recipes are valid matches when
 the task shape fits but no case study does.
 
-Cookbook root: `training/`. Live table: [`training/README.md`](https://github.com/fw-ai/cookbook/blob/main/training/README.md).
+Cookbook root: `training/`. Live table: [`training/README.md`](https://github.com/fw-ai-external/cookbook/blob/main/training/README.md).
 
 For greenfield users, offer the preloaded menu in `starter-jobs.md` before
 walking the full catalog interview.

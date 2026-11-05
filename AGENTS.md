@@ -35,8 +35,10 @@ built on the [Fireworks Python SDK](https://github.com/fw-ai-external/python-sdk
 - `skills/`: agent skills, packaged by `.claude-plugin/` and `.codex-plugin/`
   (the plugin version lives in their `plugin.json`).
 - `llms.txt`: canonical doc links for LLM readers.
-- `advisor/`, `eval/`, `partners/`, and `archived/` are not part of the
-  Training API cookbook. Don't extend them or route users to them.
+- `case-studies/`: inference, retrieval, and coding-agent applications with
+  their own prerequisites. These are separate from the installable training
+  package and its `training/case-studies/` notebooks.
+- `eval/`: evaluation packages, separate from the Training API cookbook.
 
 ## Setup and checks
 

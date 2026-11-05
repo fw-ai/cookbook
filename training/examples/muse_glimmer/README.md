@@ -18,7 +18,7 @@ the deadline unless you pass `--allow-paid`.
 ## 0. Setup
 
 ```bash
-git clone --depth 1 https://github.com/fw-ai/cookbook && cd cookbook/training
+git clone --depth 1 https://github.com/fw-ai-external/cookbook && cd cookbook/training
 python3 -m venv .venv && source .venv/bin/activate && pip install -e .   # needs Python 3.11+: check python3 --version, else use python3.12
 read -s FIREWORKS_API_KEY && export FIREWORKS_API_KEY   # never paste it into chat
 python -m examples.sft.muse_glimmer_starter plan        # read-only: account, data, promotion, cost

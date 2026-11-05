@@ -2,7 +2,7 @@
 
 Installed skills contain only Markdown. Every `training/...` path in these
 skills (recipes, examples, case studies, starter scripts) is relative to the
-root of the [fw-ai/cookbook](https://github.com/fw-ai/cookbook) repository, not
+root of the [fw-ai-external/cookbook](https://github.com/fw-ai-external/cookbook) repository, not
 to the skill folder or the user's project.
 
 Resolve an existing cookbook root once per session:
@@ -20,7 +20,7 @@ fi
 ```
 
 For inspection, prefer single-file reads from
-`https://raw.githubusercontent.com/fw-ai/cookbook/main/<path>` when no checkout
+`https://raw.githubusercontent.com/fw-ai-external/cookbook/main/<path>` when no checkout
 exists; do not clone merely to inspect or guess content from a path name. When
 the user asks to execute cookbook code and a checkout is required, disclose the
 target directory and shallow-clone then, recording the commit.

@@ -7,7 +7,7 @@
     "url": "https://fireworks.ai"
   },
   "homepage": "https://docs.fireworks.ai/fine-tuning/agent/use-with-coding-agents",
-  "repository": "https://github.com/fw-ai/cookbook",
+  "repository": "https://github.com/fw-ai-external/cookbook",
   "license": "Apache-2.0",
   "keywords": ["fireworks", "fine-tuning", "training", "sft", "dpo", "orpo", "rft", "rl"],
   "skills": "./skills/",

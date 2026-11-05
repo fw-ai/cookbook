@@ -21,24 +21,29 @@ references. Keep it installed with all three entry skills.
 
 ## Install
 
+Install skills from `fw-ai-external/cookbook`. The Claude Code marketplace name
+remains `fw-ai-cookbook`, so the plugin install identifier below is unchanged.
+The Python recipe package is installed separately; see the
+[cookbook installation guide](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/overview#installation).
+
 Claude Code:
 
 ```bash
-claude plugin marketplace add fw-ai/cookbook
+claude plugin marketplace add fw-ai-external/cookbook
 claude plugin install fireworks-training@fw-ai-cookbook
 ```
 
 Cursor:
 
 ```bash
-npx --yes skills add fw-ai/cookbook -g \
+npx --yes skills add fw-ai-external/cookbook -g \
   -s fireworks-training -s research -s configure -s debug -a cursor -y
 ```
 
 Codex:
 
 ```bash
-npx --yes skills add fw-ai/cookbook -g \
+npx --yes skills add fw-ai-external/cookbook -g \
   -s fireworks-training -s research -s configure -s debug -a codex -y
 ```
 
@@ -72,7 +77,7 @@ deadline the agent resolves live pricing instead.
 To run it yourself, follow the [Muse Glimmer mini cookbook](../training/examples/muse_glimmer/README.md), or in short:
 
 ```bash
-git clone --depth 1 https://github.com/fw-ai/cookbook && cd cookbook/training
+git clone --depth 1 https://github.com/fw-ai-external/cookbook && cd cookbook/training
 python3 -m venv .venv && source .venv/bin/activate && pip install -e .   # needs Python 3.11+: check python3 --version, else use python3.12
 python -m examples.sft.muse_glimmer_starter plan
 RUN=router-$(date +%Y%m%d-%H%M%S)   # fresh ID per run

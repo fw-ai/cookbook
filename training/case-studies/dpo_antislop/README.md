@@ -18,7 +18,7 @@ This is the DPO/Anti-slop experiment documented in this folder. Detector optimiz
 
 ## Start here
 
-Use this folder inside the [Fireworks cookbook](https://github.com/fw-ai/cookbook). Install the dependencies declared in the cookbook’s `training/pyproject.toml`, plus Jupyter for the notebook interface. Open Jupyter from this study folder so relative data paths resolve. Shared training utilities come from the parent cookbook; this folder is not a standalone SDK.
+Use this folder inside the [Fireworks cookbook](https://github.com/fw-ai-external/cookbook). Install the dependencies declared in the cookbook’s `training/pyproject.toml`, plus Jupyter for the notebook interface. Open Jupyter from this study folder so relative data paths resolve. Shared training utilities come from the parent cookbook; this folder is not a standalone SDK.
 
 Read the recorded results before enabling training or evaluation. Cells marked for live inference or training require your own credentials and may incur charges. Keep credentials in your environment, never in a notebook or commit. Recorded results describe the saved experiment, not a guarantee for a new run.
 
@@ -30,7 +30,7 @@ step, on the Fireworks Training API with `accounts/fireworks/models/glm-5p3-flas
 provision, nothing to tear down. This is the preference-tuning notebook in the GLM 5.3 Flash LoRA
 gallery; the method is fixed and the data is pluggable.
 
-It is a port of the `kimi-k3` notebook in [`../dpo_serverless/`](https://github.com/fw-ai/cookbook/tree/main/training/case-studies/dpo_serverless) to the gallery's
+It is a port of the `kimi-k3` notebook in [`../dpo_serverless/`](https://github.com/fw-ai-external/cookbook/tree/main/training/case-studies/dpo_serverless) to the gallery's
 base model and rank. If you have read that one, the differences are listed at the end.
 
 ![Detector score and distinct openers per arm on 20 held-out briefs](figures/antislop_result.png)
@@ -46,7 +46,7 @@ You have a model that is accurate but **does not sound right**, and it is easier
 answers is better* than to write the ideal one. That is preference tuning: brand voice, tone,
 helpfulness, less rambling. And you want to understand the mechanism, not just call an API.
 
-**If you only want to ship**, use managed DPO jobs instead: [`../dpo_style/`](https://github.com/fw-ai/cookbook/tree/main/training/case-studies/dpo_style) does the
+**If you only want to ship**, use managed DPO jobs instead: [`../dpo_style/`](https://github.com/fw-ai-external/cookbook/tree/main/training/case-studies/dpo_style) does the
 same training server-side in four SDK calls. Read that one to *use* DPO; read this one to *understand*
 it, because here every number in the log has a line of code you can point at.
 
@@ -121,8 +121,8 @@ python build_antislop_pack.py all        # or: briefs | drafts | score | pairs
 ```
 
 Readers do not run this; they train on the frozen pack. Regenerating the pack is how the gallery
-refreshes it. If your pairs come from a pass/fail judge rather than a scalar detector, the simpler recipe is the one the
-[`skill_to_weights`](https://github.com/fw-ai/cookbook/tree/main/training/case-studies/skill_to_weights) workshop uses for its rows: per prompt, pair one skill-prompted draw that passed
+refreshes it. If your pairs come from a pass/fail judge rather than a scalar detector, use a simpler pairing recipe:
+per prompt, pair one skill-prompted draw that passed
 the judge with one unprompted draw that failed it. That is the shape this pack's `gated-detector` mode produces once
 the detector ranking is replaced by a verdict. The reward judge (`deepseek-v4p1-flash`) is deliberately a different model from the
 notebook's evaluation judge (`kimi-k3`), so the win-rate is not scored by the model that chose the pairs.

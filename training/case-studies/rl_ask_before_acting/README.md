@@ -18,7 +18,7 @@ The original walkthrough teaches the earlier training experiment. The later v2 e
 
 ## Start here
 
-Use this folder inside the [Fireworks cookbook](https://github.com/fw-ai/cookbook). Install the dependencies declared in the cookbook’s `training/pyproject.toml`, plus Jupyter for the notebook interface. Open Jupyter from this study folder so relative data paths resolve. Shared training utilities come from the parent cookbook; this folder is not a standalone SDK.
+Use this folder inside the [Fireworks cookbook](https://github.com/fw-ai-external/cookbook). Install the dependencies declared in the cookbook’s `training/pyproject.toml`, plus Jupyter for the notebook interface. Open Jupyter from this study folder so relative data paths resolve. Shared training utilities come from the parent cookbook; this folder is not a standalone SDK.
 
 Read the recorded results before enabling training or evaluation. Cells marked for live inference or training require your own credentials and may incur charges. Keep credentials in your environment, never in a notebook or commit. Recorded results describe the saved experiment, not a guarantee for a new run.
 
@@ -39,8 +39,8 @@ finally takes. Nothing to provision, nothing to tear down.
 *Served through the serverless chat API, the adapter solves 62.5% of held-out tasks in all 4 attempts against 50.0% for the base model, with a paired 95% interval of -19 to +44 points; in-session during training it went from 87.5% to 100%. Drawn offline by [`ask_before_acting_walkthrough.ipynb`](ask_before_acting_walkthrough.ipynb).*
 
 This is the multi-turn notebook in the GLM 5.3 Flash LoRA gallery. The loop follows the public
-[`examples/archive/countdown/countdown_rl.py`](https://github.com/fw-ai/cookbook/tree/main/training/examples/archive/countdown) recipe; the episode shape
-follows the tool-calling case study in [`agentic_rl_text2sql`](https://github.com/fw-ai/cookbook/tree/main/training/case-studies/agentic_rl_text2sql).
+[`examples/archive/countdown/countdown_rl.py`](https://github.com/fw-ai-external/cookbook/tree/main/training/examples/archive/countdown) recipe; the episode shape
+follows the tool-calling case study in [`agentic_rl_text2sql`](https://github.com/fw-ai-external/cookbook/tree/main/training/case-studies/agentic_rl_text2sql).
 
 ## Who this is for
 

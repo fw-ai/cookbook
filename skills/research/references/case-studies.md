@@ -14,7 +14,7 @@ Runnable end-to-end notebooks in `training/case-studies/`. Each README has an
 | `multilora_fleet` | LoRA SFT / multi-LoRA serving | Many tenants or locales sharing one base model; per-tenant adapters served from a single deployment | `multilora_fleet.ipynb` | managed SDK |
 | `grpo_countdown` | GRPO / serverless RL | Single-turn graded answers; Countdown task code on the serverless GRPO loop | `countdown_grpo.ipynb` | serverless (+ dedicated config-swap section) |
 
-Cookbook table: [`training/README.md`](https://github.com/fw-ai/cookbook/blob/main/training/README.md#case-studies).
+Cookbook table: [`training/README.md`](https://github.com/fw-ai-external/cookbook/blob/main/training/README.md#case-studies).
 
 ## Implied method per slug
 

@@ -7,11 +7,11 @@ ships the **same task two ways** so you can compare the workflows side by side:
 - [`prompt_router_dedicated.ipynb`](prompt_router_dedicated.ipynb) — **dedicated** path: a managed
   `supervised_fine_tuning_jobs` LoRA job + an on-demand deployment, all through the Fireworks
   **Python SDK** (`fireworks-ai`).
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_dedicated.ipynb)
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai-external/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_dedicated.ipynb)
 - [`prompt_router_serverless.ipynb`](prompt_router_serverless.ipynb) — **serverless** path: a
   Tinker-style loop against a shared pooled trainer via the training SDK
   (`FiretitanServiceClient`), with in-session sampling — nothing to provision or tear down.
-  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_serverless.ipynb)
+  [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/fw-ai-external/cookbook/blob/main/training/case-studies/sft_prompt_router/prompt_router_serverless.ipynb)
 
 **Is this you?** You want to see the end-to-end fine-tuning flow on a concrete, gradeable
 classification task, you want a clean template to point at your own labeled data, or you want to
