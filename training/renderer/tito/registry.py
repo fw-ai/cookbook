@@ -43,6 +43,7 @@ from training.renderer.tito.glm53_flash import (
     GLM53_FLASH_TOKENIZER_FINGERPRINT,
     GLM53FlashTITORenderer,
 )
+from training.renderer.tito.kimi_k31 import kimi_k31_certifications
 from training.renderer.tito.muse_glimmer import (
     MUSE_GLIMMER_RENDERER_NAME,
     MuseGlimmerTITORenderer,
@@ -169,6 +170,7 @@ _TITO_RENDERER_CERTIFICATIONS = (
         ),
         renderer_factory=_build_glm52_tito_renderer,
     ),
+    *kimi_k31_certifications(),
     TITORendererCertification(
         certification_id="muse-glimmer-30b-preserved@a4e59da5-v1",
         renderer_names=frozenset({MUSE_GLIMMER_RENDERER_NAME}),
