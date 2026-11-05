@@ -678,6 +678,8 @@ def test_main_samples_scores_trains_and_hotloads_each_step(monkeypatch) -> None:
     teacher.model = "accounts/test/deployments/teacher"
 
     class _Policy:
+        supports_rdma_weight_sync = False
+
         lora_rank = 0
 
         def save_weights_for_sampler(self, name, checkpoint_type=None):

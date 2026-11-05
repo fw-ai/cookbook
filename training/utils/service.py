@@ -9,28 +9,16 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import fields, replace
+from dataclasses import replace
 from typing import Any
 
 from fireworks.training.sdk import (
     DeploymentCleanupOnClose,
     FireworksClient,
     FiretitanServiceClient,
+    ModelDetailsUnavailableError,
     TrainerJobManager,
 )
-from fireworks.training.sdk.managed import FiretitanProvisioningConfig
-
-try:
-    from fireworks.training.sdk import ModelDetailsUnavailableError
-except ImportError:  # SDK < this change: no typed error, so no last-resort path
-
-    class ModelDetailsUnavailableError(RuntimeError):  # type: ignore[no-redef]
-        """Placeholder never raised by an older SDK, so its RuntimeError
-        propagates unchanged (today's behavior)."""
-
-        status_code = 0
-
-
 from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
 
 logger = logging.getLogger(__name__)
@@ -42,7 +30,7 @@ def make_weight_sync(
     deployment: DeployConfig,
 ) -> Callable[..., Any]:
     """Select publication once, keeping full-parameter BASE exports separate."""
-    if getattr(policy, "supports_rdma_weight_sync", False) is True:
+    if policy.supports_rdma_weight_sync is True:
 
         def publish(name: str, **kwargs: Any) -> Any:
             result = policy.weight_sync()
@@ -186,11 +174,7 @@ def _firetitan_service_kwargs(
         "hotload_timeout_s": hotload_timeout_s,
         "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
-    if base_model_type == "deepseek_v4" and "base_model_type" in {
-        f.name for f in fields(FiretitanProvisioningConfig)
-    }:
-        # Older supported SDKs never opt their get_tokenizer() load into remote
-        # code. Cookbook loaders retain this context independently of the SDK.
+    if base_model_type == "deepseek_v4":
         service_kwargs["base_model_type"] = base_model_type
     # Projection topology is service-scoped. Omit the field entirely for actor
     # services; the SDK also canonicalizes an explicit zero to ``None``.
@@ -202,9 +186,7 @@ def _firetitan_service_kwargs(
         raise ValueError("projection_head_dim must be a non-negative integer when set")
     if projection_head_dim:
         service_kwargs["projection_head_dim"] = projection_head_dim
-    # Keep the default path compatible with the cookbook's declared minimum SDK,
-    # which predates reservation_target. An explicit target requires the newer SDK
-    # surface and is therefore forwarded only when the caller requests it.
+    # Only forward an explicit reservation target.
     if trainer.reservation_target is not None:
         service_kwargs["reservation_target"] = trainer.reservation_target
     if max_lora_rank is not None and max_lora_rank < 0:
@@ -227,6 +209,9 @@ def _firetitan_service_kwargs(
             "replica_count": deployment.replica_count,
             "disable_speculative_decoding": deployment.disable_speculative_decoding,
             "hot_load_transition_type": deployment.hot_load_transition_type,
+            "reset_prompt_cache": deployment.reset_prompt_cache,
+            "weight_sync_transport": deployment.weight_sync_transport,
+            "wait_for_trainer_before_deployment": deployment.wait_for_trainer_before_deployment,
         }
     )
     if (
@@ -241,22 +226,6 @@ def _firetitan_service_kwargs(
             raise ValueError("weight_sync_transport must be 'RDMA' or None")
         if deployment.weight_sync_scope != WeightSyncScope.PER_TRAINER:
             raise ValueError("RDMA weight sync requires PER_TRAINER weight sync")
-    supported = {f.name for f in fields(FiretitanProvisioningConfig)}
-    optional_deploy = {
-        "weight_sync_transport": deployment.weight_sync_transport,
-        "wait_for_trainer_before_deployment": deployment.wait_for_trainer_before_deployment,
-    }
-    for name, value in optional_deploy.items():
-        if not value:
-            continue
-        if name in supported:
-            service_kwargs[name] = value
-            continue
-        raise RuntimeError(
-            f"{name}={value!r} was requested, but the installed fireworks-ai "
-            f"SDK's FiretitanProvisioningConfig has no {name!r} field. "
-            "Upgrade the SDK or drop the option."
-        )
     return service_kwargs
 
 

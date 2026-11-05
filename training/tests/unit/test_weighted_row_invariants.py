@@ -53,6 +53,11 @@ from training.utils.supervised import render_messages_to_datums
 
 # The QA matrix already binds most renderers to their canonical tokenizer.
 _MATRIX_TOKENIZERS = {case.renderer: case.resolved_tokenizer_model() for case in RENDERER_MATRIX}
+# Extra aliases of a matrix tokenizer must use the same certified checkpoint.
+_MATRIX_TOKENIZER_REVISIONS = {
+    case.resolved_tokenizer_model(): case.resolved_tokenizer_revision()
+    for case in RENDERER_MATRIX
+}
 
 # Renderers the QA matrix does not carry a row for yet. The invariant below
 # needs only a tokenizer, not the matrix's capability flags, so bind them here
@@ -175,7 +180,9 @@ def _tokenizer_load_timeout(seconds: int = 30):
 def _load_tokenizer(model_id: str):
     try:
         with _tokenizer_load_timeout():
-            return transformers.AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+            return transformers.AutoTokenizer.from_pretrained(
+                model_id, revision=_MATRIX_TOKENIZER_REVISIONS.get(model_id), trust_remote_code=True
+            )
     except _TokenizerLoadTimeout:
         return None
     except Exception:  # noqa: BLE001 — network / gated repo / config drift
