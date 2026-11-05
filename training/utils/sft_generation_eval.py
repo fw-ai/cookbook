@@ -17,6 +17,7 @@ from training.utils.supervised import (
     build_tool_prefixed_messages,
     normalize_messages,
     parse_train_on_what,
+    renderer_preserves_tool_argument_literals,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,9 @@ def prepare_generation_eval(
 def _generation_eval_example(row, *, renderer, max_seq_len: int, train_on_what: str):
     """Return one ``(prompt, record)`` example, or a skip reason."""
     messages = row.get("messages", [])
-    normalized = normalize_messages(messages)
+    normalized = normalize_messages(
+        messages, preserve_tool_argument_literals=renderer_preserves_tool_argument_literals(renderer)
+    )
     targets = _mode_targets(normalized, parse_train_on_what(train_on_what))
     target = next(
         (

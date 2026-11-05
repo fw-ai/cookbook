@@ -881,6 +881,20 @@ returned by the renderer's ``parse_response``.
 """
 
 
+def _parse_completion(renderer: Any, messages: Any, tokens: List[int]) -> tuple[Any, Any]:
+    """Parse a completion, passing the request's thinking mode when the renderer exposes it.
+
+    A renderer whose ``prepare_conversation`` envelope can toggle thinking per
+    request reports the rendered mode through ``thinking_mode_of``; the parser
+    needs it to attribute a completion truncated before any channel boundary.
+    """
+    thinking_mode_of = getattr(renderer, "thinking_mode_of", None)
+    thinking = thinking_mode_of(messages) if callable(thinking_mode_of) else None
+    if thinking is None:
+        return renderer.parse_response(tokens)
+    return renderer.parse_response(tokens, thinking=thinking)
+
+
 async def single_turn_renderer_rollout(
     row: Any,
     *,
@@ -971,7 +985,7 @@ async def single_turn_renderer_rollout(
             completion_tokens = vision_result.completion_token_ids
             if not completion_tokens:
                 return None
-            parsed_message, parse_success = renderer.parse_response(completion_tokens)
+            parsed_message, parse_success = _parse_completion(renderer, messages, completion_tokens)
             reward = await _maybe_await(
                 reward_fn(row, parsed_message, bool(parse_success))
             )
@@ -1025,7 +1039,7 @@ async def single_turn_renderer_rollout(
             required=False,
         )
 
-        parsed_message, parse_success = renderer.parse_response(out_tokens)
+        parsed_message, parse_success = _parse_completion(renderer, messages, out_tokens)
         reward = await _maybe_await(reward_fn(row, parsed_message, bool(parse_success)))
         if reward is None:
             return None
@@ -1074,7 +1088,7 @@ async def single_turn_renderer_rollout(
         required=False,
     )
 
-    parsed_message, parse_success = renderer.parse_response(out_tokens)
+    parsed_message, parse_success = _parse_completion(renderer, messages, out_tokens)
     reward = await _maybe_await(reward_fn(row, parsed_message, bool(parse_success)))
     if reward is None:
         return None

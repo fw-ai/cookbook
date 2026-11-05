@@ -1342,6 +1342,56 @@ def test_image_processor_failure_restores_remote_code_environment(
     assert "HF_TRUST_REMOTE_CODE" not in os.environ
 
 
+@pytest.mark.parametrize("renderer_name", ["kimi_k31", "kimi_k31_disable_thinking", "kimi_k31_medium"])
+def test_kimi_k31_counts_image_tokens_without_checkpoint_code(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    renderer_name: str,
+) -> None:
+    """K3.1 image token counts come from preprocessor_config.json alone: the
+    remote-code processor loader is never consulted, and an artifact without the
+    config yields a text-only renderer instead of a startup failure. ``kimi_k3``
+    keeps its release-processor path (covered above)."""
+    import json
+
+    from PIL import Image
+
+    from training.renderer.kimi_k31 import KimiK31ImageTokenCounter
+    from training.utils.supervised import _get_image_processor_with_remote_code_default
+
+    monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
+
+    def forbidden_get_image_processor(*_args, **_kwargs):
+        raise AssertionError("The Kimi K3.1 renderer must not load checkpoint processor code")
+
+    monkeypatch.setattr("training.utils.supervised.get_image_processor", forbidden_get_image_processor)
+
+    staged = tmp_path / "tokenizer-opaque"
+    staged.mkdir()
+    (staged / "preprocessor_config.json").write_text(
+        json.dumps(
+            {
+                "media_proc_cfg": {
+                    "in_patch_limit": 65536,
+                    "patch_size": 14,
+                    "merge_kernel_size": 2,
+                    "fixed_output_tokens": None,
+                    "patch_limit_on_one_side": 512,
+                },
+                "auto_map": {"AutoImageProcessor": "kimi_k3_vision_processing.KimiK3VisionProcessor"},
+            }
+        )
+    )
+    counter = _get_image_processor_with_remote_code_default(str(staged), renderer_name=renderer_name)
+    assert isinstance(counter, KimiK31ImageTokenCounter)
+    assert counter.media_tokens_calculator({"type": "image", "image": Image.new("RGB", (640, 480))}) == 23 * 18
+    assert counter.make_image_prompt(640, 480) == "<|media_begin|>image 640x480<|media_content|><|media_pad|><|media_end|>"
+
+    (staged / "preprocessor_config.json").unlink()
+    assert _get_image_processor_with_remote_code_default(str(staged), renderer_name=renderer_name) is None
+    assert "HF_TRUST_REMOTE_CODE" not in os.environ
+
+
 def test_new_image_renderer_inherits_remote_code_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1585,6 +1635,11 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
         ("qwen3_6", True),
         ("qwen3_8", True),
         ("kimi_k25", True),
+        ("kimi_k3", True),
+        ("kimi_k3_disable_thinking", True),
+        ("kimi_k31", True),
+        ("kimi_k31_disable_thinking", True),
+        ("kimi_k31_medium", True),
         ("muse_glimmer", True),
         ("glm53", False),
         ("glm53_interleaved", False),
@@ -1609,6 +1664,9 @@ def test_renderer_supports_images_matches_renderer_capability(
     [
         ("kimi_k3", True),
         ("kimi_k3_disable_thinking", True),
+        ("kimi_k31", True),
+        ("kimi_k31_disable_thinking", True),
+        ("kimi_k31_high", True),
         ("qwen3_vl_instruct", False),
         ("muse_glimmer", False),
         ("glm53", False),
