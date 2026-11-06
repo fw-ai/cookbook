@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fireworks-training-cookbook"
 # Promotion owns this version; published metadata is synchronized back to staging.
-version = "2026.11.5.2"
+version = "2026.11.6.1"
 description = "Training recipes and utilities for the Fireworks Training API"
 readme = "README.md"
 requires-python = ">=3.11"
