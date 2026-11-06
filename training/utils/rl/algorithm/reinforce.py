@@ -2,9 +2,12 @@
 
 Per-token loss for sample *i* at response position *t*::
 
-    L_it = (-A_i * exp(log pi - log q) + kl_beta * (log pi - log pi_ref)) * mask(t)
+    L_it = (-A_i * exp(log pi - log q) + kl_beta * k3(pi, pi_ref)) * mask(t)
+    k3(pi, pi_ref) = exp(log pi_ref - log pi) - (log pi_ref - log pi) - 1
 
-``q`` is the rollout (sampling) distribution. The trainer has no built-in
+``q`` is the rollout (sampling) distribution. The reference penalty is the
+same k3 term client-side GRPO uses, and it is built from the live policy
+logprobs so it contributes a gradient. The trainer has no built-in
 REINFORCE, so this module has no ``LOSS_FN``:
 ``policy.forward_backward_custom(build_datums(batch, config), make_loss_fn(batch, config))``. Pair it with a
 mean-only ``advantage_fn`` for group-centered rewards.
@@ -53,14 +56,19 @@ def make_loss_fn(batch: PolicyBatch, config: ReinforceConfig):
         log_ratio = torch.clamp(ctx.resp_pi - ctx.resp_inf, min=-SAFETY_CLAMP, max=SAFETY_CLAMP)
         ratio = torch.exp(log_ratio)
         per_token_loss = -ratio * ctx.adv
-        if config.kl_beta:
-            per_token_loss = per_token_loss + config.kl_beta * (ctx.pi_detached - ctx.resp_ref)
         active = ctx.resp_mask > 0.5
-        return per_token_loss * ctx.resp_mask, {
+        extra = {
             "resp_len": float(len(ctx.resp_pi)),
             "ratio_mean": ratio.detach()[active].mean().item(),
             "adv_term": (-ctx.adv * ratio.detach() * ctx.resp_mask).sum().item(),
         }
+        if config.kl_beta:
+            # Use ctx.resp_pi (not pi_detached) so the penalty has a gradient.
+            ref_log_ratio = ctx.resp_ref - ctx.resp_pi
+            kl_penalty = config.kl_beta * (torch.exp(ref_log_ratio) - ref_log_ratio - 1.0)
+            per_token_loss = per_token_loss + kl_penalty
+            extra["kl_term"] = (kl_penalty.detach() * ctx.resp_mask).sum().item()
+        return per_token_loss * ctx.resp_mask, extra
 
     def loss_fn(data: List[sdk.Datum], logprobs_list: List[torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
         result = run_loss_loop(batch, data, logprobs_list, "reinforce", policy_fn)
@@ -71,6 +79,8 @@ def make_loss_fn(batch: PolicyBatch, config: ReinforceConfig):
         out["total_resp_tokens"] = total_resp
         out["mask_ratio"] = nt / total_resp if total_resp > 0 else 0.0
         out["mean_adv_loss"] = result.extra_sums.get("adv_term", 0.0) / nt if nt > 0 else 0.0
+        if "kl_term" in result.extra_sums:
+            out["mean_kl_penalty"] = result.extra_sums["kl_term"] / nt if nt > 0 else 0.0
         out["mean_loss"] = result.total_loss.item() / nt if nt > 0 else 0.0
         return result.total_loss, out
 
