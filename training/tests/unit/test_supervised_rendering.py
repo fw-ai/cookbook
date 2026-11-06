@@ -1285,8 +1285,6 @@ def test_build_renderer_uses_tokenizer_remote_code_default_for_image_processor(
         "kimi_k26_preserve_thinking",
         "kimi_k27_code",
         "kimi_k27_code_preserved",
-        "kimi_k3",
-        "kimi_k3_disable_thinking",
     ],
 )
 def test_resolved_image_renderer_trusts_opaque_tokenizer_path(
@@ -1336,22 +1334,24 @@ def test_image_processor_failure_restores_remote_code_environment(
         build_renderer_from_resolved_name(
             tokenizer="tok",
             tokenizer_model="gs://model-bucket/uploads/checkpoint/hf",
-            renderer_name="kimi_k3",
+            renderer_name="kimi_k26",
         )
 
     assert "HF_TRUST_REMOTE_CODE" not in os.environ
 
 
-@pytest.mark.parametrize("renderer_name", ["kimi_k31", "kimi_k31_disable_thinking", "kimi_k31_high"])
-def test_kimi_k31_counts_image_tokens_without_checkpoint_code(
+@pytest.mark.parametrize(
+    "renderer_name",
+    ["kimi_k3", "kimi_k3_disable_thinking", "kimi_k31", "kimi_k31_disable_thinking", "kimi_k31_high"],
+)
+def test_kimi_counts_image_tokens_without_checkpoint_code(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
     renderer_name: str,
 ) -> None:
-    """K3.1 image token counts come from preprocessor_config.json alone: the
+    """K3/K3.1 image token counts come from preprocessor_config.json alone: the
     remote-code processor loader is never consulted, and an artifact without the
-    config yields a text-only renderer instead of a startup failure. ``kimi_k3``
-    keeps its release-processor path (covered above)."""
+    config yields a text-only renderer instead of a startup failure."""
     import json
 
     from PIL import Image
@@ -1362,9 +1362,13 @@ def test_kimi_k31_counts_image_tokens_without_checkpoint_code(
     monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
 
     def forbidden_get_image_processor(*_args, **_kwargs):
-        raise AssertionError("The Kimi K3.1 renderer must not load checkpoint processor code")
+        raise AssertionError("The Kimi K3/K3.1 renderer must not load checkpoint processor code")
 
     monkeypatch.setattr("training.utils.supervised.get_image_processor", forbidden_get_image_processor)
+    monkeypatch.setattr(
+        "training.utils.supervised.get_renderer",
+        lambda _name, _tokenizer, image_processor=None: image_processor,
+    )
 
     staged = tmp_path / "tokenizer-opaque"
     staged.mkdir()
@@ -1382,10 +1386,17 @@ def test_kimi_k31_counts_image_tokens_without_checkpoint_code(
             }
         )
     )
-    counter = _get_image_processor_with_remote_code_default(str(staged), renderer_name=renderer_name)
+    counter = build_renderer_from_resolved_name(
+        tokenizer="tok",
+        tokenizer_model=str(staged),
+        renderer_name=renderer_name,
+    )
     assert isinstance(counter, KimiK31ImageTokenCounter)
     assert counter.media_tokens_calculator({"type": "image", "image": Image.new("RGB", (640, 480))}) == 23 * 18
-    assert counter.make_image_prompt(640, 480) == "<|media_begin|>image 640x480<|media_content|><|media_pad|><|media_end|>"
+    assert (
+        counter.make_image_prompt(640, 480)
+        == "<|media_begin|>image 640x480<|media_content|><|media_pad|><|media_end|>"
+    )
 
     (staged / "preprocessor_config.json").unlink()
     assert _get_image_processor_with_remote_code_default(str(staged), renderer_name=renderer_name) is None

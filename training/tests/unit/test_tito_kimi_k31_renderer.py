@@ -286,6 +286,7 @@ def _request(messages: list[dict], tools: list[dict]) -> TITOChatRequest:
 
 
 def test_certifications_pin_one_contract_per_effort() -> None:
+    assert THINKING_EFFORTS == ("low", "high", "max")
     certifications = kimi_k31_certifications()
     names = sorted(name for certification in certifications for name in certification.renderer_names)
     assert names == sorted([KIMI_K31_RENDERER_NAME, *(f"{KIMI_K31_RENDERER_NAME}_{e}" for e in THINKING_EFFORTS)])

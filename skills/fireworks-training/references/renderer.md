@@ -105,28 +105,34 @@ not be selected by the history-mode enum.
   trajectory; SFT unrolls only at user boundaries.
 - **DeepSeek V3**: `<｜Assistant｜><think>` (thinking) or
   `<｜Assistant｜></think>` (non-thinking) prefilled deterministically.
-- **Kimi K3**: no Jinja string. The release tokenizer's Python
-  `apply_chat_template` delegates XTML construction to `encoding_k3.py`.
+- **Kimi K3**: no Jinja string and no checkpoint Python at runtime.
+  `training.utils.tokenizers.load_tokenizer` converts the hash-pinned raw
+  vocabulary with installed code, or reloads an already-built fast bundle.
+  The SDK's message sampler uses the reviewed, packaged K3 XTML encoder;
+  the Cookbook renderer uses its byte-identical vendored encoder.
   `kimi_k3` preserves reasoning in every assistant history turn;
   `kimi_k3_disable_thinking` removes the thinking channel entirely. Use the
   public `moonshotai/Kimi-K3` tokenizer and pin revision
   `301be1b88c89c0d3a763da6301352cb8fe399e90` for reproducible training.
 - **Kimi K3.1 Pro**: same XTML protocol and tokenizer class as K3 with a newer
   encoder (non-string tool arguments keep their JSON literal bytes; the same
-  `low`/`high`/`max` tiers, with a `medium` request folded into `high`). `kimi_k31` is a thin adaptation of `kimi_k3`: load the
-  `moonshotai/Kimi-K3.1-Pro` checkpoint tokenizer (pin revision
+  `low`/`high`/`max` tiers, with a `medium` request folded into `high`).
+  `kimi_k31` is a thin adaptation of `kimi_k3`: load
+  `moonshotai/Kimi-K3.1-Pro` through the same code-free loader (pin revision
   `d9e99b0792a5e93b78ea9bea62a68167e36ddd9e`) exactly as for K3. Image token
   counts and prompts come from `KimiK31ImageTokenCounter`, which reads only
   `preprocessor_config.json` (as serving's `KimiK3VLTokenizer` does), so the
-  checkpoint's processor Python is never loaded for K3.1 (`kimi_k3` keeps
-  loading the release processor); an artifact without that config starts
+  checkpoint's processor Python is never loaded for either K3 or K3.1;
+  an artifact without that config starts
   text-only and rejects image rows at render time. By default it emits no
   `thinking-effort` message, like serving without `reasoning_effort`;
   `kimi_k31_<low|high|max>` pin a tier and `kimi_k31_disable_thinking`
   drops the think channel. Dataset tool-call `arguments` strings reach the
   encoder byte-for-byte for this renderer. The fast-tokenizer bundle from
-  `training.utils.kimi_k31_tokenizer` serves the TITO renderer only; this
-  renderer rejects it.
+  `training.utils.kimi_k31_tokenizer` works with both the Cookbook renderer
+  and TITO. Saving/reloading a native bundle preserves its K3 or K3.1 chat
+  profile. Both profiles share vocabulary/image special-token IDs, but use
+  distinct pinned chat encoders; do not substitute one encoder for the other.
 
 ### Tool calls
 - **GLM5** uses XML-ish: `<tool_call>{name}<arg_key>{k}</arg_key><arg_value>{v}</arg_value>...</tool_call>`.

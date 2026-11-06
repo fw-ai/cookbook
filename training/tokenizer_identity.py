@@ -1,4 +1,4 @@
-"""Cookbook DeepSeek V4 tokenizer identity (thin public wrapper).
+"""Cookbook reviewed-model tokenizer identity (thin public wrapper).
 
 Delegates to ``fireworks.training.sdk.tokenizer_identity`` when the installed
 SDK carries a matching ``TOKENIZER_IDENTITY_POLICY_CAPABILITY``; otherwise
@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-_POLICY_CAPABILITY = "deepseek-v4-tokenizer-identity/separate-family-and-code-policy"
+_POLICY_CAPABILITY = "deepseek-v4+kimi-k3-k31-tokenizer-identity/saved-native-profiles-v2"
 _SDK_IDENTITY_MODULE = "fireworks.training.sdk.tokenizer_identity"
 
 # Which backend supplied the identity implementation: "sdk" (delegation) or
@@ -57,10 +57,41 @@ DEEPSEEK_V4_REPOSITORIES = _identity.DEEPSEEK_V4_REPOSITORIES
 DEEPSEEK_V4_TOKENIZER_JSON_SHA256 = _identity.DEEPSEEK_V4_TOKENIZER_JSON_SHA256
 DEEPSEEK_V41_MODEL_RE = _identity.DEEPSEEK_V41_MODEL_RE
 
+KIMI_K3_MODEL_TYPE = _identity.KIMI_K3_MODEL_TYPE
+KIMI_K31_MODEL_TYPE = _identity.KIMI_K31_MODEL_TYPE
+KIMI_K3_K31_MODEL_TYPES = _identity.KIMI_K3_K31_MODEL_TYPES
+KIMI_K3_REPOSITORY = _identity.KIMI_K3_REPOSITORY
+KIMI_K31_REPOSITORY = _identity.KIMI_K31_REPOSITORY
+KIMI_K3_K31_REPOSITORIES = _identity.KIMI_K3_K31_REPOSITORIES
+KIMI_K3_K31_TIKTOKEN_MODEL_SHA256 = _identity.KIMI_K3_K31_TIKTOKEN_MODEL_SHA256
+KIMI_K3_K31_TOKENIZER_CONFIG_SHA256 = _identity.KIMI_K3_K31_TOKENIZER_CONFIG_SHA256
+KIMI_K3_MODEL_NAMES = _identity.KIMI_K3_MODEL_NAMES
+KIMI_K31_MODEL_NAMES = _identity.KIMI_K31_MODEL_NAMES
+KIMI_K3_K31_MODEL_NAMES = _identity.KIMI_K3_K31_MODEL_NAMES
+
 
 def is_deepseek_v4_model_name(model_name: str | None) -> bool:
     """Recognize the V4 family in an independently selected model name."""
     return _identity.is_deepseek_v4_model_name(model_name)
+
+
+def is_kimi_k3_k31_model_name(model_name: str | None) -> bool:
+    """Recognize the Kimi K3/K3.1 family in an independently selected model name."""
+    return _identity.is_kimi_k3_k31_model_name(model_name)
+
+
+def is_kimi_k3_k31_tokenizer_source(
+    tokenizer_model: str | None,
+    *,
+    revision: str | None = None,
+    local_files_only: bool = False,
+) -> bool:
+    """Recognize the Kimi K3/K3.1 family without claiming other families."""
+    return _identity.is_kimi_k3_k31_tokenizer_source(
+        tokenizer_model,
+        revision=revision,
+        local_files_only=local_files_only,
+    )
 
 
 def is_deepseek_v4_tokenizer_source(

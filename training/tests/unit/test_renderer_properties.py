@@ -40,6 +40,7 @@ tokenizer silently stops loading.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from functools import cache
 
 import pytest
@@ -50,6 +51,7 @@ import pytest
 import training.renderer  # noqa: F401
 from training.renderer import Renderer, get_renderer
 from training.renderer.tokenizer import Tokenizer, get_tokenizer
+from training.renderer.verifier.utils import hf_parity
 from training.renderer.verifier.utils.hf_parity import (
     compare_renderer_to_hf,
     format_divergence,
@@ -75,6 +77,16 @@ from training.utils.tokenizers import load_tokenizer
 # materialized (offline, gated repo, missing chat_template, or a tokenizer
 # registration issue). These map to a clean skip, not a failure.
 _UNAVAILABLE = (AttributeError, OSError, ValueError, RuntimeError)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _reuse_renderer_instances() -> Iterator[None]:
+    """Reuse vocabulary adapters across scenarios, not the oracle results."""
+    cached_renderer = cache(get_renderer)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(globals(), "get_renderer", cached_renderer)
+        patch.setattr(hf_parity, "get_renderer", cached_renderer)
+        yield
 
 
 def _shard_renderer_cases(cases: list[RendererCase], shard_index: int, shard_count: int) -> list[RendererCase]:

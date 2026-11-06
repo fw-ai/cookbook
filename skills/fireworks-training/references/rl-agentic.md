@@ -115,7 +115,8 @@ tokenizer once with `python -m training.utils.kimi_k31_tokenizer <out-dir>`
 `--tokenizer-model`. Rendering uses the reviewed `encoding_k3.py` shipped in the
 cookbook package and never imports the checkpoint's Python. `kimi_k31` renders
 no thinking-effort message, like a request without `reasoning_effort`;
-`kimi_k31_<low|high|max>` pin one effort. Text and function tools only.
+`kimi_k31_<low|high|max>` pin one effort; a `medium` request folds into `high`.
+Text and function tools only.
 
 V4 tokenizer loads use `trust_remote_code=False`. Recipes forward the selected
 base model separately from tokenizer overrides so changed tokenizer metadata

@@ -28,6 +28,7 @@ import pytest
 from fireworks.training import sdk
 from fireworks.training.sdk.sampling import SampledCompletion
 from PIL import Image
+from transformers import AutoTokenizer
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 from training.renderer import ParseTermination, TrainOnWhat, get_registered_renderer_names, get_renderer
@@ -130,18 +131,42 @@ PARALLEL_TOOL_MESSAGES: list[dict[str, Any]] = [
 
 @pytest.fixture(scope="module")
 def tokenizer():
+    """Test-only oracle: the pinned checkpoint tokenizer's own Python.
+
+    Loading checkpoint remote code is deliberate here and scoped to tests --
+    it certifies that the reviewed code-free path renders identical tokens.
+    Production loading (``native_tokenizer``) never imports checkpoint Python.
+    """
+    load_kwargs: dict[str, Any] = {"local_files_only": True} if _LOCAL_RELEASE_PATH else {"revision": _KIMI_K31_HF_REVISION}
     try:
-        loaded = load_tokenizer(_RELEASE_SOURCE, _RELEASE_REVISION, True)
+        loaded = AutoTokenizer.from_pretrained(_RELEASE_SOURCE, trust_remote_code=True, **load_kwargs)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        pytest.skip(f"Kimi K3.1 HF tokenizer unavailable: {exc}")
+        pytest.skip(f"Kimi K3.1 HF oracle tokenizer unavailable: {exc}")
     assert loaded.chat_template is None
     assert type(loaded).apply_chat_template.__module__.startswith("transformers_modules.")
     return loaded
 
 
 @pytest.fixture(scope="module")
-def renderer(tokenizer) -> KimiK31Renderer:
-    loaded = get_renderer("kimi_k31", tokenizer)
+def native_tokenizer():
+    """The production loading path under test: the code-free native bundle.
+
+    Even with an explicit ``trust_remote_code=True`` request, recognized Kimi
+    K3.1 data resolves to the reviewed fast tokenizer; ``auto_map`` and
+    checkpoint Python stay inert.
+    """
+    try:
+        loaded = load_tokenizer(_RELEASE_SOURCE, _RELEASE_REVISION, True)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        pytest.skip(f"Kimi K3.1 native tokenizer unavailable: {exc}")
+    assert loaded.chat_template is None
+    assert not type(loaded).__module__.startswith("transformers_modules.")
+    return loaded
+
+
+@pytest.fixture(scope="module")
+def renderer(native_tokenizer) -> KimiK31Renderer:
+    loaded = get_renderer("kimi_k31", native_tokenizer)
     assert isinstance(loaded, KimiK31Renderer)
     assert isinstance(loaded, KimiK3Renderer)
     return loaded
@@ -162,8 +187,8 @@ def image_processor():
 
 
 @pytest.fixture(scope="module")
-def vision_renderer(tokenizer, image_processor) -> KimiK31Renderer:
-    return KimiK31Renderer(tokenizer, image_processor=image_processor)
+def vision_renderer(native_tokenizer, image_processor) -> KimiK31Renderer:
+    return KimiK31Renderer(native_tokenizer, image_processor=image_processor)
 
 
 # ---------------------------------------------------------------------------
@@ -332,13 +357,15 @@ def test_renderer_image_capabilities_for_managed_validation(name: str) -> None:
     assert renderer_supports_tool_images(name) is True
 
 
-def test_rejects_tokenizers_without_the_checkpoint_contract() -> None:
+def test_rejects_tokenizers_without_the_encoding_contract() -> None:
     class _FastLike:
         backend_tokenizer = object()
 
         def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
             return [ord(c) for c in text]
 
+    # Neither a serializable fast backend (the native bundle) nor the legacy
+    # checkpoint TikTokenTokenizer: rendering is impossible, so reject.
     with pytest.raises(TypeError, match="TikTokenTokenizer"):
         KimiK31Renderer(_FastLike())
 
@@ -418,8 +445,8 @@ def test_request_controls_match_release_python_oracle(tokenizer, renderer, optio
 
 
 @pytest.mark.parametrize("effort", THINKING_EFFORTS)
-def test_effort_pinned_renderers_match_options(tokenizer, effort) -> None:
-    pinned = get_renderer(f"kimi_k31_{effort}", tokenizer)
+def test_effort_pinned_renderers_match_options(tokenizer, native_tokenizer, effort) -> None:
+    pinned = get_renderer(f"kimi_k31_{effort}", native_tokenizer)
     assert isinstance(pinned, KimiK31Renderer)
     messages = [{"role": "user", "content": "Think it over."}]
     options = KimiK31RenderOptions(thinking=True, thinking_effort=effort)
@@ -430,8 +457,8 @@ def test_effort_pinned_renderers_match_options(tokenizer, effort) -> None:
     assert _ids(pinned.build_generation_prompt(_conversation(messages))) == actual
 
 
-def test_disable_thinking_renderer_matches_disabled_options(tokenizer) -> None:
-    disabled = get_renderer("kimi_k31_disable_thinking", tokenizer)
+def test_disable_thinking_renderer_matches_disabled_options(tokenizer, native_tokenizer) -> None:
+    disabled = get_renderer("kimi_k31_disable_thinking", native_tokenizer)
     messages = [{"role": "user", "content": "Quiet mode"}, {"role": "assistant", "content": "ok"}]
     options = KimiK31RenderOptions(thinking=False, thinking_effort=None)
     actual = _ids(disabled.build_generation_prompt(messages))
@@ -463,11 +490,16 @@ def test_normalize_reasoning(raw, expected) -> None:
 def test_normalize_reasoning_rejects_unknown() -> None:
     with pytest.raises(ValueError, match="reasoning effort"):
         _normalize_reasoning("ultra")
+    with pytest.raises(ValueError, match="reasoning effort"):
+        _normalize_reasoning({"effort": "ultra"})
     with pytest.raises(ValueError, match="thinking_effort"):
         KimiK31RenderOptions(thinking_effort="ultra")
+    # Aliases are normalized at the API boundary, not native encoder options.
+    with pytest.raises(ValueError, match="thinking_effort"):
+        KimiK31RenderOptions(thinking_effort="medium")
 
 
-def test_prepare_conversation_binds_live_request_controls(tokenizer, renderer) -> None:
+def test_prepare_conversation_binds_live_request_controls(tokenizer, native_tokenizer, renderer) -> None:
     response_format = {"type": "json_schema", "json_schema": {"name": "answer", "schema": {"type": "object"}}}
     conversation = renderer.prepare_conversation(
         [{"role": "user", "content": "Use the tool."}],
@@ -484,7 +516,7 @@ def test_prepare_conversation_binds_live_request_controls(tokenizer, renderer) -
     assert medium.options.thinking_effort == "high"
     assert "thinking_effort=high" in tokenizer.decode(_ids(renderer.build_generation_prompt(medium)))
 
-    disabled = get_renderer("kimi_k31_disable_thinking", tokenizer)
+    disabled = get_renderer("kimi_k31_disable_thinking", native_tokenizer)
     quiet = disabled.prepare_conversation([{"role": "user", "content": "Stay quiet."}], request_kwargs={"reasoning_effort": "high"})
     assert quiet.options.thinking is False and quiet.options.thinking_effort is None
     reopened = disabled.prepare_conversation(
@@ -695,14 +727,14 @@ def test_parser_accepts_a_partial_trailing_stop(renderer) -> None:
     assert unfinished.get("tool_calls")
 
 
-def test_parser_follows_the_request_thinking_mode(tokenizer, renderer) -> None:
+def test_parser_follows_the_request_thinking_mode(tokenizer, native_tokenizer, renderer) -> None:
     """A complete turn is recognized from its structure whatever the renderer default."""
     conversation = renderer.prepare_conversation([{"role": "user", "content": "Say hello."}], request_kwargs={"reasoning_effort": "none"})
     assert tokenizer.decode(_ids(renderer.build_generation_prompt(conversation))).endswith(f"{_OPEN}response{_SEP}")
     parsed, termination = renderer.parse_response(_controls(tokenizer, f"Hello{_CLOSE}response{_SEP}{STOP_SEQUENCE}"))
     assert termination == ParseTermination.STOP_SEQUENCE
     assert parsed["content"] == [{"type": "text", "text": "Hello"}]
-    disabled = get_renderer("kimi_k31_disable_thinking", tokenizer)
+    disabled = get_renderer("kimi_k31_disable_thinking", native_tokenizer)
     parsed, termination = disabled.parse_response(
         _controls(tokenizer, f"plan{_CLOSE}think{_SEP}{_OPEN}response{_SEP}Hi{_CLOSE}response{_SEP}{STOP_SEQUENCE}")
     )
@@ -710,7 +742,7 @@ def test_parser_follows_the_request_thinking_mode(tokenizer, renderer) -> None:
     assert parsed["content"] == [{"type": "thinking", "thinking": "plan"}, {"type": "text", "text": "Hi"}]
 
 
-def test_truncated_turn_follows_the_request_mode_when_given(tokenizer, renderer) -> None:
+def test_truncated_turn_follows_the_request_mode_when_given(tokenizer, native_tokenizer, renderer) -> None:
     """A turn cut before any channel boundary is content only if the request disabled thinking."""
     conversation = renderer.prepare_conversation([{"role": "user", "content": "6 * 7?"}], request_kwargs={"reasoning_effort": "none"})
     assert renderer.thinking_mode_of(conversation) is False
@@ -722,7 +754,7 @@ def test_truncated_turn_follows_the_request_mode_when_given(tokenizer, renderer)
     assert parsed["content"] == [{"type": "text", "text": "42"}]
     assert list(renderer.parse_response_streaming(truncated, thinking=False))[-1] == parsed
     assert renderer.parse_response(truncated)[0]["content"] == [{"type": "thinking", "thinking": "42"}]
-    disabled = get_renderer("kimi_k31_disable_thinking", tokenizer)
+    disabled = get_renderer("kimi_k31_disable_thinking", native_tokenizer)
     assert disabled.parse_response(truncated)[0]["content"] == [{"type": "text", "text": "42"}]
     assert disabled.parse_response(truncated, thinking=True)[0]["content"] == [{"type": "thinking", "thinking": "42"}]
 
@@ -1046,10 +1078,10 @@ def test_image_token_counter_matches_release_processor(image_processor, width, h
     assert counter.grid_thw(width, height) == grid
 
 
-def test_counter_backed_renderer_matches_release_processor_renderer(tokenizer, vision_renderer, image_processor) -> None:
+def test_counter_backed_renderer_matches_release_processor_renderer(native_tokenizer, vision_renderer, image_processor) -> None:
     from training.renderer.kimi_k31 import KimiK31ImageTokenCounter
 
-    counted = KimiK31Renderer(tokenizer, image_processor=KimiK31ImageTokenCounter(image_processor.media_proc_cfg))
+    counted = KimiK31Renderer(native_tokenizer, image_processor=KimiK31ImageTokenCounter(image_processor.media_proc_cfg))
     encoded = base64.b64encode(_encoded_image("RGB", "PNG")).decode()
     messages = [
         {"role": "user", "content": [{"type": "image", "image": Image.new("RGBA", (300, 200), (1, 2, 3, 100))}, {"type": "text", "text": "Describe."}]},
@@ -1077,7 +1109,10 @@ def test_staged_pro_artifact_renders_images_without_processor_module(tokenizer, 
 
     staged = _staged_subset(tmp_path, _PRO_ARTIFACT_FILES)
     staged_tokenizer = load_tokenizer(str(staged), None, None)
-    assert type(staged_tokenizer).__name__ == "TikTokenTokenizer"
+    # The staged pinned data resolves to the code-free native bundle; the
+    # checkpoint's remote-code TikTokenTokenizer is never imported.
+    assert type(staged_tokenizer).__name__ == "TokenizersBackend"
+    assert not type(staged_tokenizer).__module__.startswith("transformers_modules.")
     for built in (
         build_renderer(staged_tokenizer, str(staged), "kimi_k31"),
         build_renderer_from_resolved_name(staged_tokenizer, str(staged), "kimi_k31"),

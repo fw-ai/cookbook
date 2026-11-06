@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 import transformers
-from training.tokenizer_identity import is_deepseek_v4_model_name, requires_code_free_tokenizer_loading
+from training.tokenizer_identity import (
+    is_deepseek_v4_model_name,
+    is_kimi_k3_k31_model_name,
+    is_kimi_k3_k31_tokenizer_source,
+    requires_code_free_tokenizer_loading,
+)
 from huggingface_hub import errors as hf_errors
 
 logger = logging.getLogger(__name__)
@@ -327,14 +332,36 @@ def load_tokenizer(
     existing configs keep resolving HuggingFace ``main``. ``None`` preserves
     the legacy remote-code policy (enabled), while a reviewed tokenizer plan
     can explicitly enable or disable it. Recognized official DeepSeek V4 data
-    is the one exception: it ships no remote code, so its policy always
+    is one exception: it ships no remote code, so its policy always
     resolves to ``False`` -- the identical tokenizer class, with any
     checkpoint-staged Python inert, and an explicit ``True`` cannot reopen
     it. An independently selected V4 ``base_model`` also restricts policy
-    when a tokenizer override lacks recognizable metadata.
+    when a tokenizer override lacks recognizable metadata. Recognized
+    reviewed Kimi K3/K3.1 data is the other exception: its checkpoint ships
+    only a tiktoken vocabulary behind a remote-code class, so the load
+    builds the id-identical native fast tokenizer from reviewed installed
+    code and never touches ``AutoTokenizer`` or ``auto_map``.
     ``local_files_only`` supports callers that attempt a cache-only load
     before allowing network access.
     """
+    if is_kimi_k3_k31_model_name(base_model) or is_kimi_k3_k31_tokenizer_source(
+        tokenizer_model,
+        revision=tokenizer_revision or None,
+        local_files_only=local_files_only,
+    ):
+        # Recognized reviewed Kimi K3/K3.1 data: the checkpoint ships only a
+        # tiktoken vocabulary behind a remote-code ``TikTokenTokenizer``, so
+        # the code-free path builds the id-identical fast tokenizer from
+        # reviewed installed code. ``auto_map``/checkpoint Python stays inert
+        # even under an explicit ``trust_remote_code=True``; unknown or
+        # tampered data raises instead of falling back to remote code.
+        from training.utils.kimi_native_tokenizer import load_native_tokenizer
+
+        return load_native_tokenizer(
+            tokenizer_model,
+            revision=tokenizer_revision or None,
+            local_files_only=local_files_only,
+        )
     if is_deepseek_v4_model_name(base_model) or requires_code_free_tokenizer_loading(
         tokenizer_model,
         revision=tokenizer_revision or None,

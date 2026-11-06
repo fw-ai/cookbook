@@ -56,6 +56,7 @@ from training.utils.supervised import (
     resolve_renderer_name,
 )
 from training.utils.tokenizers import load_tokenizer
+from transformers import AutoTokenizer
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
 _KIMI_K3_HF_MODEL = "moonshotai/Kimi-K3"
@@ -144,20 +145,63 @@ PARALLEL_TOOL_MESSAGES: list[dict[str, Any]] = [
 
 @pytest.fixture(scope="module")
 def tokenizer():
+    """Test-only oracle: the pinned checkpoint tokenizer's own Python.
+
+    Loading checkpoint remote code is deliberate here and scoped to tests --
+    it certifies that the reviewed code-free path renders identical tokens.
+    Production loading (``native_tokenizer``) never imports checkpoint Python.
+    """
+    load_kwargs: dict[str, Any] = (
+        {"local_files_only": True} if _LOCAL_RELEASE_PATH else {"revision": _KIMI_K3_HF_REVISION}
+    )
     try:
-        loaded = load_tokenizer(_RELEASE_SOURCE, _RELEASE_REVISION, True)
+        loaded = AutoTokenizer.from_pretrained(_RELEASE_SOURCE, trust_remote_code=True, **load_kwargs)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        pytest.skip(f"Kimi K3 HF tokenizer unavailable: {exc}")
+        pytest.skip(f"Kimi K3 HF oracle tokenizer unavailable: {exc}")
     assert loaded.chat_template is None
     assert type(loaded).apply_chat_template.__module__.startswith("transformers_modules.")
     return loaded
 
 
 @pytest.fixture(scope="module")
-def renderer(tokenizer) -> KimiK3Renderer:
-    loaded = get_renderer("kimi_k3", tokenizer)
+def native_tokenizer():
+    """The production loading path under test: the code-free native bundle.
+
+    Even with an explicit ``trust_remote_code=True`` request, recognized Kimi
+    K3 data resolves to the reviewed fast tokenizer; ``auto_map`` and
+    checkpoint Python stay inert.
+    """
+    try:
+        loaded = load_tokenizer(_RELEASE_SOURCE, _RELEASE_REVISION, True)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        pytest.skip(f"Kimi K3 native tokenizer unavailable: {exc}")
+    assert loaded.chat_template is None
+    assert not type(loaded).__module__.startswith("transformers_modules.")
+    return loaded
+
+
+@pytest.fixture(scope="module")
+def renderer(native_tokenizer) -> KimiK3Renderer:
+    loaded = get_renderer("kimi_k3", native_tokenizer)
     assert isinstance(loaded, KimiK3Renderer)
     return loaded
+
+
+def test_parse_and_stream_reuse_renderer_encoding_adapter(renderer, monkeypatch) -> None:
+    import training.renderer.kimi_k3 as module
+
+    response = renderer._encoding.encode_piece(
+        "answer<|close|>response<|sep|><|close|>message<|sep|>",
+        allow_special_tokens=True,
+    )
+
+    def unexpected_copy(*args, **kwargs):
+        raise AssertionError("parsing must reuse the renderer's adapter, not clone the vocabulary")
+
+    monkeypatch.setattr(module, "KimiEncodingAdapter", unexpected_copy)
+    parsed = renderer.parse_response(response)
+    assert parsed[0]["content"] == [{"type": "text", "text": "answer"}]
+    assert list(renderer.parse_response_streaming(iter(response)))
 
 
 @pytest.fixture(scope="module")
@@ -181,9 +225,26 @@ def image_processor():
     return processor
 
 
+def test_builder_image_counter_matches_release_without_checkpoint_code(image_processor, monkeypatch) -> None:
+    from training.utils.supervised import _get_image_processor_with_remote_code_default
+    from transformers.models.auto.image_processing_auto import AutoImageProcessor
+
+    def checkpoint_code_forbidden(*args, **kwargs):
+        raise AssertionError("K3 renderer builder must not load checkpoint image-processor Python")
+
+    monkeypatch.setattr(AutoImageProcessor, "from_pretrained", checkpoint_code_forbidden)
+    counter = _get_image_processor_with_remote_code_default(_RELEASE_SOURCE, renderer_name="kimi_k3")
+    assert counter is not None
+    for size in ((32, 32), (640, 480), (4096, 256), (1, 1)):
+        image = Image.new("RGB", size)
+        media = {"type": "image", "image": image}
+        assert counter.media_tokens_calculator(media) == image_processor.media_tokens_calculator(media)
+        assert counter.make_image_prompt(*size) == image_processor.make_image_prompt(*size)
+
+
 @pytest.fixture(scope="module")
-def vision_renderer(tokenizer, image_processor) -> KimiK3Renderer:
-    return KimiK3Renderer(tokenizer, image_processor=image_processor)
+def vision_renderer(native_tokenizer, image_processor) -> KimiK3Renderer:
+    return KimiK3Renderer(native_tokenizer, image_processor=image_processor)
 
 
 def _ids(model_input: sdk.ModelInput) -> list[int]:
@@ -585,6 +646,7 @@ def _encoded_image(
 )
 def test_vision_symbolic_token_in_and_expanded_representations(
     tokenizer,
+    native_tokenizer,
     vision_renderer,
     payload,
     expected_mode,
@@ -631,14 +693,14 @@ def test_vision_symbolic_token_in_and_expanded_representations(
     token_in_ids, images = build_multimodal_completions_prompt_token_ids(
         messages,
         trace.model_input,
-        tokenizer,
+        native_tokenizer,
         renderer=vision_renderer,
     )
     assert token_in_ids == list(trace.token_in_ids)
     assert len(images) == 1
 
 
-def test_vision_token_in_rejects_mismatched_model_input(tokenizer, vision_renderer):
+def test_vision_token_in_rejects_mismatched_model_input(native_tokenizer, vision_renderer):
     messages = [
         {
             "role": "user",
@@ -659,10 +721,12 @@ def test_vision_token_in_rejects_mismatched_model_input(tokenizer, vision_render
     ]
     model_input = vision_renderer.build_generation_prompt(other)
     with pytest.raises(ValueError, match="renderer trace"):
-        build_multimodal_completions_prompt_token_ids(messages, model_input, tokenizer, renderer=vision_renderer)
+        build_multimodal_completions_prompt_token_ids(
+            messages, model_input, native_tokenizer, renderer=vision_renderer
+        )
 
 
-def test_vision_token_in_keeps_generation_prefill(tokenizer, vision_renderer):
+def test_vision_token_in_keeps_generation_prefill(native_tokenizer, vision_renderer):
     messages = [
         {
             "role": "user",
@@ -675,7 +739,7 @@ def test_vision_token_in_keeps_generation_prefill(tokenizer, vision_renderer):
     trace = vision_renderer.render_trace(messages, add_generation_prompt=True)
     model_input = vision_renderer.build_generation_prompt(messages, prefill="The image")
     token_in_ids, images = build_multimodal_completions_prompt_token_ids(
-        messages, model_input, tokenizer, renderer=vision_renderer
+        messages, model_input, native_tokenizer, renderer=vision_renderer
     )
     prefill_tokens = list(model_input.chunks[-1].tokens)
     assert prefill_tokens
@@ -685,6 +749,7 @@ def test_vision_token_in_keeps_generation_prefill(tokenizer, vision_renderer):
 
 def test_vision_multiple_images_across_turns_with_tools(
     tokenizer,
+    native_tokenizer,
     vision_renderer,
 ) -> None:
     first = Image.new("RGB", (28, 28), "blue")
@@ -711,7 +776,10 @@ def test_vision_multiple_images_across_turns_with_tools(
         _conversation(messages, tools=TOOLS),
     )
     token_in_ids, images = build_multimodal_completions_prompt_token_ids(
-        _conversation(messages, tools=TOOLS), trace.model_input, tokenizer, renderer=vision_renderer
+        _conversation(messages, tools=TOOLS),
+        trace.model_input,
+        native_tokenizer,
+        renderer=vision_renderer,
     )
     assert token_in_ids == list(trace.token_in_ids)
     assert len(images) == 3
@@ -1107,8 +1175,8 @@ def test_generation_prefill_appends_literal_text(tokenizer, renderer) -> None:
     assert tokenizer.decode(with_prefill[len(base) :]) == "partial draft"
 
 
-def test_disable_thinking_renderer_matches_disabled_options(tokenizer) -> None:
-    disabled = get_renderer("kimi_k3_disable_thinking", tokenizer)
+def test_disable_thinking_renderer_matches_disabled_options(tokenizer, native_tokenizer) -> None:
+    disabled = get_renderer("kimi_k3_disable_thinking", native_tokenizer)
     assert isinstance(disabled, KimiK3Renderer)
     messages = [{"role": "user", "content": "Quiet mode"}]
     actual = _ids(disabled.build_generation_prompt(messages))
@@ -1122,8 +1190,8 @@ def test_disable_thinking_renderer_matches_disabled_options(tokenizer) -> None:
     assert "thinking-effort" not in tokenizer.decode(actual)
 
 
-def test_prepare_conversation_binds_live_request_controls(tokenizer) -> None:
-    renderer = get_renderer("kimi_k3_disable_thinking", tokenizer)
+def test_prepare_conversation_binds_live_request_controls(native_tokenizer) -> None:
+    renderer = get_renderer("kimi_k3_disable_thinking", native_tokenizer)
     response_format = {
         "type": "json_schema",
         "json_schema": {
@@ -1151,8 +1219,8 @@ def test_prepare_conversation_binds_live_request_controls(tokenizer) -> None:
     )
 
 
-def test_disable_thinking_ignores_lone_reasoning_effort(tokenizer) -> None:
-    renderer = get_renderer("kimi_k3_disable_thinking", tokenizer)
+def test_disable_thinking_ignores_lone_reasoning_effort(native_tokenizer) -> None:
+    renderer = get_renderer("kimi_k3_disable_thinking", native_tokenizer)
     conversation = renderer.prepare_conversation(
         [{"role": "user", "content": "Stay quiet."}],
         request_kwargs={"reasoning_effort": "high"},

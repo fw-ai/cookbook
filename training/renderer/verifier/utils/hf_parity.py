@@ -33,7 +33,10 @@ from typing import Any
 from transformers import AutoTokenizer
 from transformers.tokenization_utils_tokenizers import TokenizersBackend
 
-from training.tokenizer_identity import requires_code_free_tokenizer_loading
+from training.tokenizer_identity import (
+    is_kimi_k3_k31_tokenizer_source,
+    requires_code_free_tokenizer_loading,
+)
 
 # Importing the cookbook renderer package registers cookbook-local
 # renderer names (glm5, gemma4, minimax_m2, nemotron) under
@@ -41,6 +44,7 @@ from training.tokenizer_identity import requires_code_free_tokenizer_loading
 import training.renderer  # noqa: F401
 from training.renderer import get_renderer
 from training.renderer.tokenizer import get_tokenizer
+from training.utils.kimi_native_tokenizer import load_native_tokenizer
 from training.utils.supervised import (
     build_tool_prefixed_messages,
     renderer_declares_tools,
@@ -68,6 +72,10 @@ def _load_tokenizer(
         return TokenizersBackend.from_pretrained(
             tokenizer_model, revision=tokenizer_revision, trust_remote_code=False
         )
+    if is_kimi_k3_k31_tokenizer_source(tokenizer_model, revision=tokenizer_revision):
+        # Kimi's raw data has no stock AutoTokenizer implementation. Use the
+        # pinned installed release encoder, never the checkpoint's auto_map.
+        return load_native_tokenizer(tokenizer_model, revision=tokenizer_revision)
     if needs_mistral_regex_fix(tokenizer_model):
         kwargs: dict[str, Any] = {
             "token": os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),

@@ -2,9 +2,11 @@
 
 Kimi K3 does not ship a Jinja chat template. Its tokenizer implements
 ``apply_chat_template`` in ``tokenization_kimi.py`` and delegates the actual
-XTML construction to ``encoding_k3.py``. This renderer deliberately resolves
-and calls those exact Python helpers from the supplied tokenizer; it does not
-carry a second handwritten template.
+XTML construction to ``encoding_k3.py``. This renderer calls those exact
+helpers from the vendored, hash-pinned copy under
+``training.renderer._vendored.kimi_k3`` -- reviewed package source, so
+checkpoint Python is never fetched or executed at runtime; it does not carry
+a second handwritten template.
 
 The implementation keeps three representations distinct for vision inputs:
 
@@ -50,6 +52,8 @@ from training.renderer import (
 )
 from training.renderer.base import RenderedMessage, ToolSpec
 from training.renderer.image_processing import ImageProcessor
+from training.renderer._kimi_native_encoding import KimiEncodingAdapter
+from training.renderer._vendored.kimi_k3 import encoding_k3 as _vendored_encoder
 from training.renderer.reasoning_fields import (
     original_reasoning,
     original_reasoning_content,
@@ -59,6 +63,14 @@ from training.renderer.tokenizer import Tokenizer
 STOP_SEQUENCE = "<|close|>message<|sep|>"
 IMAGE_PLACEHOLDER = "<|kimi_image_placeholder|>"
 MEDIA_PAD_TOKEN = "<|media_pad|>"
+
+# Upstream identity of the vendored encoder (see
+# ``_vendored/kimi_k3/PROVENANCE.md``); a unit test asserts the vendored file
+# still hashes to ``KIMI_K3_ENCODER_SHA256``.
+KIMI_K3_REPOSITORY = "moonshotai/Kimi-K3"
+KIMI_K3_REVISION = "301be1b88c89c0d3a763da6301352cb8fe399e90"
+KIMI_K3_ENCODER_FILE = "encoding_k3.py"
+KIMI_K3_ENCODER_SHA256 = "b9cb7ae100fed34b9337f80dacee5abbf7e261fe9b74bc0e76366701d46f5333"
 
 _OPEN = "<|open|>"
 _CLOSE = "<|close|>"
@@ -407,8 +419,8 @@ def _decode(tokenizer: Any, tokens: list[int]) -> str:
         return str(tokenizer.decode(tokens, skip_special_tokens=False))
 
 
-def _tokenize_control(tokenizer: Any, text: str) -> list[int]:
-    return list(tokenizer._encode_text_piece(text, allow_special_tokens=True))
+def _tokenize_control(encoding: KimiEncodingAdapter, text: str) -> list[int]:
+    return encoding.encode_piece(text, allow_special_tokens=True)
 
 
 def _attribute(tag: str, name: str) -> str | None:
@@ -505,23 +517,23 @@ class _ParsedResponse:
     content: str
 
 
-def _parse_response(tokenizer: Any, response: Iterable[int]) -> _ParsedResponse:
+def _parse_response(tokenizer: Any, response: Iterable[int], encoding: KimiEncodingAdapter) -> _ParsedResponse:
     """Parse only structural token IDs, so literal control-looking text is safe."""
 
     tokens = [int(token) for token in response]
-    stop = _tokenize_control(tokenizer, f"{_CLOSE}message{_SEP}")
+    stop = _tokenize_control(encoding, f"{_CLOSE}message{_SEP}")
     stop_count = _count_subsequence(tokens, stop)
     stop_at = _find_subsequence(tokens, stop)
     termination = ParseTermination.STOP_SEQUENCE if stop_count == 1 else ParseTermination.MALFORMED
     body = tokens[:stop_at] if stop_at >= 0 else tokens
 
     close_think_open_response = _tokenize_control(
-        tokenizer,
+        encoding,
         f"{_CLOSE}think{_SEP}{_OPEN}response{_SEP}",
     )
-    close_response = _tokenize_control(tokenizer, f"{_CLOSE}response{_SEP}")
-    open_tools = _tokenize_control(tokenizer, f"{_OPEN}tools{_SEP}")
-    close_tools = _tokenize_control(tokenizer, f"{_CLOSE}tools{_SEP}")
+    close_response = _tokenize_control(encoding, f"{_CLOSE}response{_SEP}")
+    open_tools = _tokenize_control(encoding, f"{_OPEN}tools{_SEP}")
+    close_tools = _tokenize_control(encoding, f"{_CLOSE}tools{_SEP}")
 
     channel_at = _find_subsequence(body, close_think_open_response)
     if channel_at >= 0:
@@ -584,6 +596,10 @@ class KimiK3Renderer(Renderer):
     # Hooks for encoder revisions of the same XTML protocol (see kimi_k31.py).
     _options_cls: type[KimiK3RenderOptions] = KimiK3RenderOptions
     _conversation_cls: type[KimiK3Conversation] = KimiK3Conversation
+    # The reviewed vendored XTML encoder for this renderer's model. Kimi K3.1
+    # overrides it with its own vendored copy; the two contracts are never
+    # aliased.
+    _encoder_module = _vendored_encoder
     _normalize_tools = staticmethod(_normalize_tools)
     _native_message = staticmethod(_native_message)
 
@@ -598,26 +614,16 @@ class KimiK3Renderer(Renderer):
         self.image_processor = image_processor
         self.default_options = options or self._options_cls()
 
-        tokenizer_module = __import__(type(tokenizer).__module__, fromlist=["*"])
-        build_segments = getattr(tokenizer_module, "build_chat_segments", None)
-        if not callable(build_segments):
-            raise TypeError("Kimi K3 tokenizer must expose encoding_k3.build_chat_segments")
-        self._build_chat_segments = build_segments
-        encoding_module = __import__(build_segments.__module__, fromlist=["*"])
-        normalize_results = getattr(
-            encoding_module,
-            "normalize_xtml_tool_result_messages",
-            None,
-        )
-        if not callable(normalize_results):
-            raise TypeError("Kimi K3 tokenizer must expose normalize_xtml_tool_result_messages")
-        self._normalize_tool_results = normalize_results
+        # The XTML helpers come from the vendored, hash-pinned encoder --
+        # reviewed package source -- never from checkpoint Python resolved
+        # through the tokenizer's module.
+        self._build_chat_segments = self._encoder_module.build_chat_segments
+        self._normalize_tool_results = self._encoder_module.normalize_xtml_tool_result_messages
 
-        media_pad_ids = list(
-            tokenizer._encode_text_piece(
-                MEDIA_PAD_TOKEN,
-                allow_special_tokens=True,
-            )
+        self._encoding = KimiEncodingAdapter(tokenizer)
+        media_pad_ids = self._encoding.encode_piece(
+            MEDIA_PAD_TOKEN,
+            allow_special_tokens=True,
         )
         if len(media_pad_ids) != 1:
             raise ValueError("Kimi K3 tokenizer must encode <|media_pad|> as one special token")
@@ -826,7 +832,7 @@ class KimiK3Renderer(Renderer):
         )
 
     def _encode_segments(self, segments: Iterable[Any]) -> list[int]:
-        return list(self.tokenizer._encode_chat_segments(list(segments)))
+        return self._encoding.encode_chat_segments(list(segments))
 
     @staticmethod
     def _replace_image_segments(
@@ -879,11 +885,9 @@ class KimiK3Renderer(Renderer):
                 base_weight = float(label.split(":", 1)[1])
             is_image = bool(segment.allow_special) and segment.text == IMAGE_PLACEHOLDER
             if not is_image:
-                tokens = list(
-                    self.tokenizer._encode_text_piece(
-                        segment.text,
-                        allow_special_tokens=segment.allow_special,
-                    )
+                tokens = self._encoding.encode_piece(
+                    segment.text,
+                    allow_special_tokens=segment.allow_special,
                 )
                 if tokens:
                     chunks.append(sdk.types.EncodedTextChunk(tokens=tokens))
@@ -897,17 +901,13 @@ class KimiK3Renderer(Renderer):
             item = processed[media_index]
             media_index += 1
             prefix, suffix = self._split_image_prompt(item.image_prompt)
-            prefix_tokens = list(
-                self.tokenizer._encode_text_piece(
-                    prefix,
-                    allow_special_tokens=True,
-                )
+            prefix_tokens = self._encoding.encode_piece(
+                prefix,
+                allow_special_tokens=True,
             )
-            suffix_tokens = list(
-                self.tokenizer._encode_text_piece(
-                    suffix,
-                    allow_special_tokens=True,
-                )
+            suffix_tokens = self._encoding.encode_piece(
+                suffix,
+                allow_special_tokens=True,
             )
             chunks.append(sdk.types.EncodedTextChunk(tokens=prefix_tokens))
             chunks.append(
@@ -940,7 +940,7 @@ class KimiK3Renderer(Renderer):
                 tokens.append(self.image_placeholder_token_id)
             else:
                 tokens.extend(
-                    self.tokenizer._encode_text_piece(
+                    self._encoding.encode_piece(
                         segment.text,
                         allow_special_tokens=segment.allow_special,
                     )
@@ -994,7 +994,7 @@ class KimiK3Renderer(Renderer):
         if prefill:
             model_input = model_input.append(
                 sdk.types.EncodedTextChunk(
-                    tokens=self.tokenizer._encode_text_piece(
+                    tokens=self._encoding.encode_piece(
                         prefill,
                         allow_special_tokens=False,
                     )
@@ -1159,11 +1159,11 @@ class KimiK3Renderer(Renderer):
         self,
         response: list[int],
     ) -> tuple[Message, ParseTermination]:
-        parsed = _parse_response(self.tokenizer, response)
+        parsed = _parse_response(self.tokenizer, response, self._encoding)
         return parsed.message, parsed.termination
 
     def parse_response_streaming(self, response: list[int]) -> Iterator[Any]:
-        parsed = _parse_response(self.tokenizer, response)
+        parsed = _parse_response(self.tokenizer, response, self._encoding)
         yield StreamingMessageHeader(role="assistant")
         content_index = 0
         if parsed.reasoning:
