@@ -36,7 +36,9 @@ answer to `triage_category` (`job_state`, `error_message`, `quality`,
 
 ## Path: Job state
 
-1. Identify resource family: SFT, DPO, or RFT job (or Training API session).
+1. Identify resource family: SFT or DPO job, or Training API session. Managed RFT
+   has been removed, so no managed RFT job can be running; for questions about one,
+   see `../fireworks-training/references/managed-rft-operations.md`.
 2. Read-only `get` through the SDK (`client.supervised_fine_tuning_jobs.get`;
    `pip install fireworks-ai` into a venv if it is missing) or
    `firectl ... get <id> -o json` — note state, timestamps,
@@ -99,8 +101,8 @@ next distinction, request only that smallest item. Keep the diagnosis focused.
    hashes and report overlap. Never invent a result.
 3. **Loss curves.** Read the job's train and eval-loss history and say whether
    it shows overfitting (train falling, eval rising) or underfitting.
-4. Read failures, not just aggregate metrics. For RFT, check evaluator
-   discrimination (identical scores); for RL, check trainer/inference logprob
+4. Read failures, not just aggregate metrics. For RL, check reward
+   discrimination (identical scores) and trainer/inference logprob
    alignment before blaming the platform.
 5. Propose one concrete, evidence-conditioned next iteration. Its cost line is
    either a sourced amount or an explicit unknown with the exact resolution

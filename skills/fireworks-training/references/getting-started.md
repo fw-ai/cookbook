@@ -56,7 +56,7 @@ not decide how the result is served. Always say the full name.
 
 | Name | What it is | Use when | What it creates | Cost |
 | --- | --- | --- | --- | --- |
-| **Managed fine-tuning** | A job you submit (UI, SDK, `firectl`, REST); Fireworks runs the loop. SFT, DPO, ORPO. New Managed RFT creates are paused. | Plain SFT or DPO on a dataset; easiest path | Job + output model | Per training token |
+| **Managed fine-tuning** | A job you submit (UI, SDK, `firectl`, REST); Fireworks runs the loop. SFT, DPO, ORPO. Managed RFT has been removed. | Plain SFT or DPO on a dataset; easiest path | Job + output model | Per training token |
 | **Serverless Training** (Training API) | Your Python loop on a shared, always-on pooled trainer. LoRA SFT, DPO, ORPO, RL, distillation, custom loops. GA. | Your own loop, in-session base-vs-tuned evaluation, RL | A session (closes with your script); a model only if you promote a checkpoint | Per token; in-session sampling is its own line |
 | **Dedicated Training** (Training API) | Your loop on a provisioned trainer, plus provisioned deployments for rollouts or evaluation. [Request access](https://fireworks.ai/contact-training). | Full-parameter, a model not in the serverless pool, sustained runs, explicit resume or deployment control | Trainer job + any deployments; you delete them | Per GPU-hour while running |
 

@@ -1,113 +1,41 @@
-# Managed RFT: launch, monitor, and validate (deprecated)
+# Managed RFT: existing jobs only (removed)
 
-> **Managed RFT is deprecated. Do not route a new run here.** Reinforcement learning
-> has moved to the Training API: read `references/rl-async.md` and
+> **Managed RFT has been removed.** It accepts no new jobs, and existing jobs can't
+> run, resume, cancel, or update. Reinforcement learning runs on the Training API:
+> read `references/rl-async.md` and
 > [Cookbook: Reinforcement Learning](https://docs.fireworks.ai/fine-tuning/training-api/cookbook/rl.md).
-> This reference is retained only for jobs that already exist — monitoring, resuming,
-> and recovering them.
 
-*Source of truth: live [RFT overview](https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md), [Models matrix](https://docs.fireworks.ai/fine-tuning/models.md), [RL parameters](https://docs.fireworks.ai/fine-tuning/rft-parameters-reference.md), and [Eval Protocol](https://evalprotocol.io/introduction). Defer flags and defaults to installed CLI `--help`.*
+Use this reference only to answer questions about managed RFT jobs that already exist.
 
-Use this reference for managed RFT job states, monitoring, and recovery on existing jobs. Training API or cookbook RL belongs in `references/training-api.md` and `references/rl-async.md`.
+## What still works
 
-## Preflight
-
-Before any upload or create:
-
-- Confirm the base model is RFT-compatible in the live Models matrix.
-- Validate JSONL locally. Each row needs a `messages` array; evaluator-specific fields must match the reviewed evaluator contract.
-- Probe the evaluator on at least five rows and require non-identical scores.
-- Check authentication, account, billing readiness, and quota (`firectl quota list` when installed).
-- Use full resource names such as `accounts/fireworks/models/<id>`.
-- Do not run `firectl rftj create`. New creates are rejected. Use get/list/cancel/resume on jobs that already exist.
-
-## Launch surfaces
-
-| Surface | When | Entry |
+| Action | Who | How |
 |---|---|---|
-| Training API | New RL work | `references/training-api.md` and `training/examples/rl/deepmath/` |
-| Python SDK | Existing jobs only | `client.reinforcement_fine_tuning_jobs.get/list/cancel/resume` |
-| `firectl` (user runs it) | Existing jobs only | `firectl rftj get/list/cancel/resume` |
-| Dashboard | Existing jobs only | Fine-Tuning reinforcement tab (create is gone) |
+| List or read a job | The user | `firectl rftj list`, `firectl rftj get <job-id> -o json`, or the dashboard |
+| Delete a job | The user | `firectl rftj delete <job-id>` |
+| Create, resume, cancel, or update | Nobody | Rejected for every account |
 
-### Eval Protocol / create workflow
+The REST API and the Python SDK (`client.reinforcement_fine_tuning_jobs`) reject managed
+RFT calls, so an agent can't read these jobs itself. Ask the user to run the `firectl`
+command or check the dashboard, and to share what they see. Deleting a job is the
+user's decision.
 
-`eval-protocol create rft` and `firectl rftj create` are rejected for new jobs. Do not use them. New RL goes through the Training API.
+## Job states
 
-### Existing jobs
+Every managed RFT job has finished or is being deleted:
 
-The agent uses the SDK; cancel and resume are mutations that need approval:
-
-```python
-client.reinforcement_fine_tuning_jobs.list()
-client.reinforcement_fine_tuning_jobs.get("<job-id>")
-client.reinforcement_fine_tuning_jobs.cancel("<job-id>")
-client.reinforcement_fine_tuning_jobs.resume("<job-id>")
-```
-
-**For a user who runs commands themselves (`firectl`):**
-
-```bash
-firectl rftj list
-firectl rftj get <job-id> -o json
-firectl rftj cancel <job-id>
-firectl rftj resume <job-id>
-```
-
-## Parameter policy
-
-Do not freeze volatile defaults in this skill. Resolve them from `--help`, the dry-run output, and live docs. The important relationships are:
-
-- `epochs`, learning rate, and LoRA rank control optimization.
-- Batch size is a token budget, while chunk size controls prompts per GRPO step.
-- GRPO accepts a KL coefficient; DAPO and GSPO-token use different clipping and reject GRPO-only settings.
-- Candidate count and temperature control rollout diversity.
-- Maximum concurrent rollouts controls throughput, not the objective.
-- Remote server URL selects a remote evaluator or environment.
-
-Method semantics and starting points live in `references/choose-method.md`; exact parameter fields live in the RFT parameter reference.
-
-## Job states and progress
-
-Poll with:
-
-```bash
-firectl rftj get <job-id> -o json
-```
-
-| State | Meaning | Agent action |
-|---|---|---|
-| `PENDING` | Waiting for resources | Continue bounded monitoring |
-| `VALIDATING` | Dataset and evaluator checks | Wait for validation result |
-| `RUNNING` | Active work | Require rollout, step, reward, or W&B movement |
-| `COMPLETED` | Successful run | Evaluate, then separately confirm promotion and deployment |
-| `FAILED` | Hard failure | Classify with `references/error-reference.md` |
-| `CANCELLED` | User stopped the run | Report final state and partial artifacts |
-| `EARLY_STOPPED` | No useful improvement | Inspect evaluator and data signal |
-
-State alone is not progress. Use the approved no-progress timeout and the evidence contract in `references/run-state-and-reporting.md`.
-
-Use the dashboard for rollout inspection, reward curves, logs, job comparison, and human diagnosis. Keep automation on stable resource IDs and `firectl ... get`.
-
-## Secrets in evaluators
-
-Create secrets through the Fireworks secret-management surface and reference them by environment-variable name in evaluator code. Never paste secret values into a manifest, dataset, or chat. For remote environments, also read `references/rft-agent-tracing.md`.
-
-## Common failures
-
-| Symptom | Next action |
+| State | Meaning |
 |---|---|
-| Invalid JSON on line N | Fix that JSONL row locally |
-| Missing `messages` | Add the required conversation array |
-| Evaluator not found | Register or select the reviewed evaluator |
-| Flat reward across probes | Fix evaluator saturation before launch |
-| HTTP 429 | Check quota and back off; do not create replacement IDs |
-| `HF_PEFT_ADDON` rejected as base model | Remove `--base-model` when warm-starting |
+| `COMPLETED` | The run finished. |
+| `FAILED` | The run failed, or it hadn't finished when managed RFT was removed. Those jobs carry a status message saying so. |
+| `CANCELLED` | The user stopped the run. |
+| `EARLY_STOPPED` | The run stopped because it wasn't improving. |
+| `DELETING` | A delete is in progress. |
+
+To keep training on the same task, plan a new Training API run with
+`references/training-api.md`.
 
 ## Related
 
-- Evaluator authoring: `references/preference-data-and-evaluators.md`
-- Remote tracing: `references/rft-agent-tracing.md`
-- Failure triage: `references/error-reference.md`
-- Run manifest and reporting: `references/run-state-and-reporting.md`
-- Cost formulas: [multi-turn cost comparison](https://docs.fireworks.ai/fine-tuning/multi-turn-cost-comparison.md)
+- Reinforcement learning on the Training API: `references/rl-async.md`, `references/rl-agentic.md`
+- Recipes, rewards, and deployment shapes: `references/training-api.md`

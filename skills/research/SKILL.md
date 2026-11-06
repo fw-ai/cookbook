@@ -31,7 +31,7 @@ friction, and you can run the work yourself through **configure**.
   Training API for custom loops and RL, Dedicated Training only when needed.
   Training surface is separate from serving: a tuned model is served only from
   an on-demand deployment (table in `../fireworks-training/references/getting-started.md`).
-- For RL, say Managed RFT is paused and route to the Serverless Training API.
+- For RL, say Managed RFT has been removed and route to the Serverless Training API.
   Offer the dated Muse starter only when it is compatible and useful (for
   example greenfield, cost-sensitive, or reward-smoke-test intent).
 

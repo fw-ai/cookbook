@@ -61,7 +61,7 @@ If the user has prompts but no preference pairs, do not reject the task or silen
 
 Provide three things (not necessarily labeled outputs): a **dataset** of prompts; a **reward** that scores an output 0.0→1.0; and the **agent** being trained. Reward code may read `ground_truth` or any other field it declares. Start with **200–500 diverse prompts**. Docs: https://docs.fireworks.ai/fine-tuning/training-api/cookbook/rl.md. Rollout and scheduling detail: `rl-async.md`; multi-turn agents: `rl-agentic.md`.
 
-Managed RFT (`firectl rftj`, registered evaluators) is deprecated and accepts no new jobs. Route new work to the Training API; use `managed-rft-operations.md` only to monitor or recover a job that already exists.
+Managed RFT (`firectl rftj`, registered evaluators) has been removed. Route RL work to the Training API; `managed-rft-operations.md` answers questions about jobs that already exist.
 
 ## Classification (a common SFT task)
 
@@ -235,4 +235,4 @@ for w in warnings:
     print("WARNING:", w)
 ```
 
-Reminders: JSONL, one object per line, roles in order, min 3 and max 3M examples. DPO is one-turn only (preferred and non-preferred are the single last assistant turn). Managed RFT validates the prompt schema plus whatever its registered evaluator expects. SDK RFT validates only the fields its selected reward reads; `ground_truth` is common, not universal. `firectl dataset create` re-validates on upload, but running this first turns a late platform error into an instant local fix.
+Reminders: JSONL, one object per line, roles in order, min 3 and max 3M examples. DPO is one-turn only (preferred and non-preferred are the single last assistant turn). SDK RFT validates only the fields its selected reward reads; `ground_truth` is common, not universal. `firectl dataset create` re-validates on upload, but running this first turns a late platform error into an instant local fix.

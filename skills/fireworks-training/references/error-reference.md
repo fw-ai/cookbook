@@ -16,7 +16,7 @@ When a job is stuck or failing, use the resource family that created it:
 |---|---|---|
 | SFT | `client.supervised_fine_tuning_jobs.get(<JOB_ID>)`; `firectl sftj get <JOB_ID> -o json` | The job's `metrics.jsonl` (`metrics_file_signed_url`) and linked W&B metrics when enabled. The current CLI has no `sftj export-metrics`. |
 | DPO / ORPO | `client.dpo_jobs.get(<JOB_ID>)`; `firectl dpo-job get <JOB_ID> -o json` | `client.dpo_jobs.get_metrics_file_endpoint(<JOB_ID>)` or `firectl dpo-job export-metrics <JOB_ID>`, and linked W&B metrics when enabled. |
-| Managed RFT | `client.reinforcement_fine_tuning_jobs.get(<JOB_ID>)`; `firectl rftj get <JOB_ID> -o json` | Job, evaluator, and rollout fields plus linked W&B metrics when enabled. The current CLI has no `rftj export-metrics`. |
+| Managed RFT (removed) | The SDK rejects managed RFT calls; the user can run `firectl rftj get <JOB_ID> -o json` | Final state and status message only. No managed RFT job can run; see `managed-rft-operations.md`. |
 
 When using `firectl`, run the selected resource and `get` commands with `--help` before relying on flags. Do not substitute `sftj` commands for a DPO or RFT resource. `State` alone lies: a job can read `RUNNING` before the trainer starts, and a silent crash can leave `RUNNING` with no error. Trust a real step, rollout, checkpoint, or linked W&B signal when one is available.
 
