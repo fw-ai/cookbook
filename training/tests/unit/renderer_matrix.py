@@ -160,6 +160,17 @@ _QWEN38_UNSUPPORTED_SCENARIOS = frozenset(
 
 
 RENDERER_MATRIX: list[RendererCase] = [
+    RendererCase(
+        renderer="beam",
+        tokenizer_model="reflection/Beam-1.0-501B-A23B-NVFP4",
+        tokenizer_revision="f8ecac0e16045babf60156f6ba996a77fcb48cf9",
+        tokenizer_trust_remote_code=False,
+        supports_thinking=True,
+        has_extension_property=True,
+        supervised_hf_parity=True,
+        observation_equals_generation=True,
+        local_fixture_env="BEAM_TOKENIZER_PATH",
+    ),
     # -- Muse Glimmer -------------------------------------------------------
     RendererCase(
         renderer="muse_glimmer",

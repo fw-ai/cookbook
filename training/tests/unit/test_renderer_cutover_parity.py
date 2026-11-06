@@ -31,6 +31,7 @@ class _CharacterTokenizer:
 
 
 _BASELINE_CUSTOM_RENDERERS = (
+    "beam",
     "deepseek_v4",
     "deepseek_v4_disable_thinking",
     "deepseek_v41",

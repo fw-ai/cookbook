@@ -31,6 +31,7 @@ from functools import cache
 from typing import Any
 
 from transformers import AutoTokenizer
+from transformers.tokenization_utils_tokenizers import TokenizersBackend
 
 from training.tokenizer_identity import requires_code_free_tokenizer_loading
 
@@ -61,6 +62,12 @@ def _load_tokenizer(
     tokenizers. Reconstructing remote-code tokenizers for every scenario makes
     the test runtime scale with scenario count instead of renderer count.
     """
+    if renderer_name == "beam":
+        # Beam declares TokenizersBackend. AutoTokenizer unnecessarily parses
+        # its unregistered model config and fails in RoPE validation first.
+        return TokenizersBackend.from_pretrained(
+            tokenizer_model, revision=tokenizer_revision, trust_remote_code=False
+        )
     if needs_mistral_regex_fix(tokenizer_model):
         kwargs: dict[str, Any] = {
             "token": os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
@@ -165,6 +172,7 @@ def _hf_messages_with_normalized_tool_args(messages: list[dict], *, require_mapp
 def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: str) -> list[dict]:
     """Map normalized thinking parts to a tokenizer's native HF input shape."""
     supports_reasoning_parts = renderer_name in {
+        "beam",
         "minimax_m3",
         "kimi_k3",
         "kimi_k3_disable_thinking",
@@ -179,7 +187,7 @@ def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: st
     out: list[dict] = []
     for message in messages:
         content = message.get("content")
-        if message.get("role") != "assistant" or not isinstance(content, list):
+        if (message.get("role") != "assistant" and renderer_name != "beam") or not isinstance(content, list):
             out.append(message)
             continue
         reasoning = "".join(
@@ -190,6 +198,8 @@ def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: st
         normalized = dict(message)
         if "reasoning_content" not in normalized and reasoning:
             normalized["reasoning_content"] = reasoning
+        if renderer_name == "beam":
+            normalized["content"] = "".join(part["text"] for part in content if part.get("type") == "text")
         if renderer_name.startswith("kimi_k3"):
             # K3's Python template consumes reasoning from the top-level field;
             # leaving a ``thinking`` content part behind makes its generic

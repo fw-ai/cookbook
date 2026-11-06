@@ -1,5 +1,27 @@
 # Training renderers
 
+## Beam
+
+`reflection/Beam-1.0-501B-A23B` and its `-NVFP4` variant select the
+registered `beam` renderer. The adapter calls the loaded tokenizer’s HF
+`apply_chat_template`; it does not carry a second chat template. Its default
+reasoning effort is the template’s 512, and it retains reasoning history.
+Generation stops at `<|return|>`; assistant channel headers, reasoning, final
+text, and the terminal token receive loss in assistant-targeted SFT.
+
+The parity tests pin `reflection/Beam-1.0-501B-A23B-NVFP4` at revision
+`f8ecac0e16045babf60156f6ba996a77fcb48cf9`, with `trust_remote_code=False`.
+Use that repository and `tokenizer_revision` for reproducible training; the
+adapter itself uses the tokenizer supplied by the job. A local tokenizer path
+requires the explicit renderer name `beam`.
+
+This adapter supports text/reasoning SFT and RL. Tool declarations, tool-call
+messages, and multimodal content are rejected; generated tool calls are
+reported as malformed. Tool rollouts require schema-aware XML argument parsing
+and are outside this adapter’s current contract. Leading system/developer
+instructions are combined by HF; customized training flags on those messages
+must agree. Later system/developer messages are ignored, matching HF.
+
 ## Muse Glimmer
 
 `meta-models/Muse-Glimmer-30B` uses the registered `muse_glimmer` renderer.

@@ -243,6 +243,12 @@ def resolve_renderer_name(
         return "deepseek_v4"
     normalized_model_name = tokenizer_model.lower()
     if normalized_model_name in {
+        "reflection/beam-1.0-501b-a23b",
+        "reflection/beam-1.0-501b-a23b-nvfp4",
+        "accounts/fireworks/models/beam-1p0-501b-a23b-nvfp4",
+    }:
+        return "beam"
+    if normalized_model_name in {
         "qwen/qwen2.5-32b-instruct",
         "accounts/fireworks/models/qwen2p5-32b-instruct",
     }:
@@ -990,6 +996,13 @@ def normalize_messages(
         # a non-empty ``reasoning_content`` merely because ``reasoning=""``.
         reasoning = message.get("reasoning")
         reasoning_content = message.get("reasoning_content")
+        if thinking == "":
+            # Keep fallback fields for templates (including Beam) that treat
+            # an empty explicit thought as absent, without changing promotion.
+            if isinstance(reasoning, str):
+                normalized_message[ORIGINAL_REASONING] = reasoning
+            if isinstance(reasoning_content, str):
+                normalized_message[ORIGINAL_REASONING_CONTENT] = reasoning_content
         if thinking is None:
             if reasoning is not None and not isinstance(reasoning, str):
                 raise TypeError(f"Unsupported reasoning value type: {type(reasoning)!r}")
