@@ -112,17 +112,17 @@ not be selected by the history-mode enum.
   public `moonshotai/Kimi-K3` tokenizer and pin revision
   `301be1b88c89c0d3a763da6301352cb8fe399e90` for reproducible training.
 - **Kimi K3.1 Pro**: same XTML protocol and tokenizer class as K3 with a newer
-  encoder (a `medium` thinking tier; non-string tool arguments keep their
-  JSON literal bytes). `kimi_k31` is a thin adaptation of `kimi_k3`: load the
+  encoder (non-string tool arguments keep their JSON literal bytes; the same
+  `low`/`high`/`max` tiers, with a `medium` request folded into `high`). `kimi_k31` is a thin adaptation of `kimi_k3`: load the
   `moonshotai/Kimi-K3.1-Pro` checkpoint tokenizer (pin revision
-  `6d0a0202956796543364d666ab19c6ad1a494ee1`) exactly as for K3. Image token
+  `d9e99b0792a5e93b78ea9bea62a68167e36ddd9e`) exactly as for K3. Image token
   counts and prompts come from `KimiK31ImageTokenCounter`, which reads only
   `preprocessor_config.json` (as serving's `KimiK3VLTokenizer` does), so the
   checkpoint's processor Python is never loaded for K3.1 (`kimi_k3` keeps
   loading the release processor); an artifact without that config starts
   text-only and rejects image rows at render time. By default it emits no
   `thinking-effort` message, like serving without `reasoning_effort`;
-  `kimi_k31_<low|medium|high|max>` pin a tier and `kimi_k31_disable_thinking`
+  `kimi_k31_<low|high|max>` pin a tier and `kimi_k31_disable_thinking`
   drops the think channel. Dataset tool-call `arguments` strings reach the
   encoder byte-for-byte for this renderer. The fast-tokenizer bundle from
   `training.utils.kimi_k31_tokenizer` serves the TITO renderer only; this

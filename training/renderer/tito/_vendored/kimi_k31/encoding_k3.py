@@ -18,7 +18,7 @@ SEP_TOKEN = "<|sep|>"
 END_OF_MSG_TOKEN = "<|end_of_msg|>"
 IMAGE_PLACEHOLDER = "<|kimi_image_placeholder|>"
 
-_VALID_THINKING_EFFORTS = {"low", "medium", "high", "max"}
+_VALID_THINKING_EFFORTS = {"low", "high", "max"}
 
 
 @dataclass(frozen=True)

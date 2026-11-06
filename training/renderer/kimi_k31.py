@@ -12,10 +12,11 @@ only and is rejected here.
 
 What differs from ``kimi_k3``:
 
-* **Thinking tiers.** The K3.1 encoder accepts ``medium``; the K3 renderer
-  folded it into ``high``. A request without a reasoning effort renders no
+* **Thinking tiers.** The pinned K3.1 encoder accepts ``low``, ``high`` and
+  ``max`` (upstream dropped ``medium``); a ``medium`` request folds into
+  ``high`` as in ``kimi_k3``. A request without a reasoning effort renders no
   ``thinking-effort`` system message, matching Fireworks serving;
-  ``kimi_k31_<low|medium|high|max>`` pin a tier and
+  ``kimi_k31_<low|high|max>`` pin a tier and
   ``kimi_k31_disable_thinking`` drops the think channel.
 * **Tool arguments.** The K3.1 encoder renders non-string arguments from their
   JSON literal bytes (``1e2`` stays ``1e2``). Dataset normalization hands
@@ -68,7 +69,9 @@ from training.renderer.kimi_k3 import _native_message as _k3_native_message
 from training.renderer.plugins import register_renderer_image_capability
 from training.renderer.tokenizer import Tokenizer
 
-THINKING_EFFORTS = ("low", "medium", "high", "max")
+THINKING_EFFORTS = ("low", "high", "max")
+# API efforts the encoder has no tier for, folded the way ``kimi_k3`` does.
+_EFFORT_ALIASES = {"medium": "high", "xhigh": "max"}
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +92,9 @@ def _normalize_reasoning(value: Any) -> tuple[bool, str | None]:
     """Map an API ``reasoning_effort`` to ``(thinking, thinking_effort)``.
 
     ``None`` keeps thinking on without a ``thinking-effort`` message, which is
-    what Fireworks serving renders for a request that omits the field. ``xhigh``
-    is the one alias (to ``max``); every other value must be a K3.1 tier.
+    what Fireworks serving renders for a request that omits the field.
+    ``medium`` folds into ``high`` and ``xhigh`` into ``max``; every other value
+    must be a K3.1 tier.
     """
     if isinstance(value, Mapping):
         value = value.get("effort", value.get("reasoning_effort"))
@@ -98,8 +102,7 @@ def _normalize_reasoning(value: Any) -> tuple[bool, str | None]:
         return False, None
     if value is None or value is True:
         return True, None
-    if value == "xhigh":
-        value = "max"
+    value = _EFFORT_ALIASES.get(value, value)
     if value not in THINKING_EFFORTS:
         raise ValueError(f"Unsupported Kimi K3.1 reasoning effort: {value!r}")
     return True, value
@@ -562,10 +565,12 @@ class KimiK31Renderer(KimiK3Renderer):
             )
         super().__init__(tokenizer, image_processor=image_processor, options=options or KimiK31RenderOptions())
         encoder = __import__(self._build_chat_segments.__module__, fromlist=["*"])
-        if "medium" not in getattr(encoder, "_VALID_THINKING_EFFORTS", ()):
+        # Both encoders now share the same effort tiers; only K3.1's renders
+        # tool arguments from their JSON literal bytes.
+        if not callable(getattr(encoder, "_parse_arguments_object", None)):
             raise TypeError(
-                "This tokenizer ships the Kimi K3 encoder (no medium thinking tier); use the "
-                "kimi_k3 renderer for it, or load the Kimi K3.1 checkpoint tokenizer"
+                "This tokenizer ships the Kimi K3 encoder (no literal tool-argument rendering); "
+                "use the kimi_k3 renderer for it, or load the Kimi K3.1 checkpoint tokenizer"
             )
         self._parser = _ResponseParser(tokenizer, thinking=self.default_options.thinking)
 

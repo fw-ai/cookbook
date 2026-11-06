@@ -55,7 +55,7 @@ from training.utils.supervised import (
 from training.utils.tokenizers import load_tokenizer
 
 _KIMI_K31_HF_MODEL = "moonshotai/Kimi-K3.1-Pro"
-_KIMI_K31_HF_REVISION = "6d0a0202956796543364d666ab19c6ad1a494ee1"
+_KIMI_K31_HF_REVISION = "d9e99b0792a5e93b78ea9bea62a68167e36ddd9e"
 _LOCAL_RELEASE_PATH = os.environ.get("KIMI_K31_MODEL_PATH")
 _RELEASE_SOURCE = _LOCAL_RELEASE_PATH or _KIMI_K31_HF_MODEL
 _RELEASE_REVISION = None if _LOCAL_RELEASE_PATH else _KIMI_K31_HF_REVISION
@@ -447,11 +447,11 @@ def test_disable_thinking_renderer_matches_disabled_options(tokenizer) -> None:
         (None, (True, None)),
         (True, (True, None)),
         ("low", (True, "low")),
-        ("medium", (True, "medium")),
+        ("medium", (True, "high")),
         ("high", (True, "high")),
         ("max", (True, "max")),
         ("xhigh", (True, "max")),
-        ({"effort": "medium"}, (True, "medium")),
+        ({"effort": "medium"}, (True, "high")),
         ("none", (False, None)),
         (False, (False, None)),
     ],
@@ -480,8 +480,9 @@ def test_prepare_conversation_binds_live_request_controls(tokenizer, renderer) -
         thinking=True, thinking_effort="max", tool_choice="required", response_format=response_format
     )
     medium = renderer.prepare_conversation([{"role": "user", "content": "Think a bit."}], request_kwargs={"reasoning_effort": "medium"})
-    assert medium.options.thinking_effort == "medium"
-    assert "thinking_effort=medium" in tokenizer.decode(_ids(renderer.build_generation_prompt(medium)))
+    # The pinned encoder has no medium tier; it folds into high as in kimi_k3.
+    assert medium.options.thinking_effort == "high"
+    assert "thinking_effort=high" in tokenizer.decode(_ids(renderer.build_generation_prompt(medium)))
 
     disabled = get_renderer("kimi_k31_disable_thinking", tokenizer)
     quiet = disabled.prepare_conversation([{"role": "user", "content": "Stay quiet."}], request_kwargs={"reasoning_effort": "high"})

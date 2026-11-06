@@ -63,14 +63,14 @@ from training.renderer.tito.shared import (
 )
 
 KIMI_K31_RENDERER_NAME = "kimi_k31"
-THINKING_EFFORTS = ("low", "medium", "high", "max")
+THINKING_EFFORTS = ("low", "high", "max")
 
 KIMI_K31_REPOSITORY = "moonshotai/Kimi-K3.1-Pro"
-KIMI_K31_REVISION = "6d0a0202956796543364d666ab19c6ad1a494ee1"
+KIMI_K31_REVISION = "d9e99b0792a5e93b78ea9bea62a68167e36ddd9e"
 # Upstream path and digest of the encoder vendored under ``_vendored/kimi_k31``;
 # the digest is asserted against the vendored file by unit tests.
 KIMI_K31_ENCODER_FILE = "encoding_k3.py"
-KIMI_K31_ENCODER_SHA256 = "e52c0427af2c2f263b56b3a94683acae3a1f634f96e516e473370b563b175bf1"
+KIMI_K31_ENCODER_SHA256 = "367f0a7ab8800f78f7e09dc31e58544ee7fc46eea992ea05b32d53506a921cc5"
 # The checkpoint ships tiktoken files, not ``tokenizer.json``. This is the
 # fingerprint of the fast tokenizer written by
 #   python -m training.utils.kimi_k31_tokenizer <out-dir>

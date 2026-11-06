@@ -1342,7 +1342,7 @@ def test_image_processor_failure_restores_remote_code_environment(
     assert "HF_TRUST_REMOTE_CODE" not in os.environ
 
 
-@pytest.mark.parametrize("renderer_name", ["kimi_k31", "kimi_k31_disable_thinking", "kimi_k31_medium"])
+@pytest.mark.parametrize("renderer_name", ["kimi_k31", "kimi_k31_disable_thinking", "kimi_k31_high"])
 def test_kimi_k31_counts_image_tokens_without_checkpoint_code(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -1639,7 +1639,7 @@ def test_resolve_renderer_name_prefers_glm5_variants_for_glm_5_family() -> None:
         ("kimi_k3_disable_thinking", True),
         ("kimi_k31", True),
         ("kimi_k31_disable_thinking", True),
-        ("kimi_k31_medium", True),
+        ("kimi_k31_high", True),
         ("muse_glimmer", True),
         ("glm53", False),
         ("glm53_interleaved", False),

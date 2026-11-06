@@ -171,7 +171,6 @@ def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: st
         "kimi_k31",
         "kimi_k31_disable_thinking",
         "kimi_k31_low",
-        "kimi_k31_medium",
         "kimi_k31_high",
         "kimi_k31_max",
     }

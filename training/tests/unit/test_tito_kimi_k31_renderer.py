@@ -301,6 +301,12 @@ def test_vendored_encoder_matches_certification_sha256() -> None:
     assert hashlib.sha256(_VENDORED_PATH.read_bytes()).hexdigest() == KIMI_K31_ENCODER_SHA256
 
 
+def test_effort_tiers_match_the_vendored_encoder() -> None:
+    from training.renderer.tito._vendored.kimi_k31 import encoding_k3
+
+    assert set(THINKING_EFFORTS) == encoding_k3._VALID_THINKING_EFFORTS
+
+
 def test_vendored_encoder_imports_only_stdlib_and_runs_nothing() -> None:
     tree = ast.parse(_VENDORED_PATH.read_text(encoding="utf-8"))
     imported: set[str] = set()

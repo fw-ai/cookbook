@@ -86,7 +86,7 @@ The following additional text/function-tool pairs also use `full_history`:
 | `deepseek-v4-pro-0813` | `deepseek_v4_pro_0813` | `deepseek-ai/DeepSeek-V4-Pro-0813@72e1d3230f6c080a530b0a1d46f8eb4602340597` |
 | `deepseek-v4p1-flash` | `deepseek_v41_flash` | `deepseek-ai/DeepSeek-V4.1-Flash@2cba9e42aa026125f3ed06c6d98c1db82f7ca027` |
 | `glm-5p3-flash` | `glm53_flash_preserve_thinking` | `zai-org/GLM-5.3-Flash@690b705278a3a58e538fcb37c2ca8b5f9511213c` |
-| `kimi-k3p1-pro` | `kimi_k31` | `moonshotai/Kimi-K3.1-Pro@6d0a0202956796543364d666ab19c6ad1a494ee1` |
+| `kimi-k3p1-pro` | `kimi_k31` | `moonshotai/Kimi-K3.1-Pro@d9e99b0792a5e93b78ea9bea62a68167e36ddd9e` |
 
 Qwen3.6-35B-A3B has a candidate `qwen3_6_preserved` renderer pinned to
 `Qwen/Qwen3.6-35B-A3B@995ad96eacd98c81ed38be0c5b274b04031597b0`.
@@ -115,7 +115,7 @@ tokenizer once with `python -m training.utils.kimi_k31_tokenizer <out-dir>`
 `--tokenizer-model`. Rendering uses the reviewed `encoding_k3.py` shipped in the
 cookbook package and never imports the checkpoint's Python. `kimi_k31` renders
 no thinking-effort message, like a request without `reasoning_effort`;
-`kimi_k31_<low|medium|high|max>` pin one effort. Text and function tools only.
+`kimi_k31_<low|high|max>` pin one effort. Text and function tools only.
 
 V4 tokenizer loads use `trust_remote_code=False`. Recipes forward the selected
 base model separately from tokenizer overrides so changed tokenizer metadata
