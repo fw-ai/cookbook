@@ -6,8 +6,9 @@ import json
 
 import pytest
 
-from fireworks.training.sdk import TITOChatRequest, TITOError
+from fireworks.training.sdk import TITOChatRequest, TITOError, TITOParseError
 from training.renderer.tito import (
+    Qwen36TITORenderer,
     Qwen38TITORenderer,
     TITORendererCertification,
     build_sidecar_tito_renderer,
@@ -170,6 +171,88 @@ def test_parse_probe_tool_call_completion() -> None:
     assert function["name"] == "execute_python"
     assert json.loads(function["arguments"]) == {"code": "print(2 + 2)"}
     assert message["tool_calls"][0]["id"].startswith("call_")
+
+
+@pytest.mark.parametrize("renderer_class", [Qwen36TITORenderer, Qwen38TITORenderer])
+@pytest.mark.parametrize(
+    "header",
+    [
+        'code": "fmt.Errorf(\\"want>=1\\")"}',
+        "code': 'value >= 1'}",
+    ],
+)
+def test_parse_rejects_malformed_parameter_header(
+    renderer_class: type[Qwen38TITORenderer], header: str
+) -> None:
+    tokenizer = _QwenTokenizer()
+    renderer = renderer_class(tokenizer, certification=_certification())
+    # A missing header terminator must not be borrowed from the argument value.
+    text = (
+        "reason\n</think>\n<tool_call>\n<function=execute_python>\n"
+        f"<parameter={header}>value</parameter>\n</function>\n</tool_call>"
+    )
+    with pytest.raises(TITOParseError) as failure:
+        renderer.parse_assistant(_request(), tokenizer.encode(text), text, "stop")
+    assert failure.value.reason_code == "tool_unparsed_content"
+
+
+@pytest.mark.parametrize("renderer_class", [Qwen36TITORenderer, Qwen38TITORenderer])
+def test_parse_preserves_markup_and_comparisons_inside_parameter_value(
+    renderer_class: type[Qwen38TITORenderer],
+) -> None:
+    tokenizer = _QwenTokenizer()
+    renderer = renderer_class(tokenizer, certification=_certification())
+    value = 'assert count >= 1\nprint("<div>x > y</div>")\n# literal <parameter=other>'
+    text = (
+        "reason\n</think>\n<tool_call>\n<function=execute_python>\n"
+        f"<parameter=code>{value}</parameter>\n</function>\n</tool_call>"
+    )
+    parsed = renderer.parse_assistant(_request(), tokenizer.encode(text), text, "stop")
+    assert json.loads(parsed.message["tool_calls"][0]["function"]["arguments"]) == {"code": value}
+
+
+@pytest.mark.parametrize("renderer_class", [Qwen36TITORenderer, Qwen38TITORenderer])
+@pytest.mark.parametrize("key", ["customer's_name", 'customer"name', 'result": alias'])
+@pytest.mark.parametrize("schema_kind", ["properties", "additionalProperties", "patternProperties"])
+def test_parse_preserves_valid_arbitrary_parameter_names(
+    renderer_class: type[Qwen38TITORenderer], key: str, schema_kind: str
+) -> None:
+    tokenizer = _QwenTokenizer()
+    renderer = renderer_class(tokenizer, certification=_certification())
+    parameters = {"type": "object", "required": ["code"], "properties": {"code": {"type": "string"}}}
+    if schema_kind == "properties":
+        parameters["properties"][key] = {"type": "string"}
+    elif schema_kind == "additionalProperties":
+        parameters["additionalProperties"] = {"type": "string"}
+    else:
+        parameters["patternProperties"] = {".*": {"type": "string"}}
+    tools = _tools()
+    tools[0]["function"]["parameters"] = parameters
+    text = (
+        "reason\n</think>\n<tool_call>\n<function=execute_python>\n"
+        f"<parameter={key}>Ada</parameter>\n"
+        "<parameter=code>print(1)</parameter>\n</function>\n</tool_call>"
+    )
+    parsed = renderer.parse_assistant(_request(tools=tools), tokenizer.encode(text), text, "stop")
+    assert json.loads(parsed.message["tool_calls"][0]["function"]["arguments"]) == {key: "Ada", "code": "print(1)"}
+
+
+@pytest.mark.parametrize("renderer_class", [Qwen36TITORenderer, Qwen38TITORenderer])
+@pytest.mark.parametrize("key", ["ordinary_unknown_key", 'declared": key'])
+def test_parse_leaves_ordinary_argument_validation_to_the_tool(
+    renderer_class: type[Qwen38TITORenderer], key: str
+) -> None:
+    tokenizer = _QwenTokenizer()
+    renderer = renderer_class(tokenizer, certification=_certification())
+    tools = _tools()
+    if key.startswith("declared"):
+        tools[0]["function"]["parameters"]["properties"][key] = {"type": "string"}
+    text = (
+        "reason\n</think>\n<tool_call>\n<function=execute_python>\n"
+        f"<parameter={key}>value</parameter>\n</function>\n</tool_call>"
+    )
+    parsed = renderer.parse_assistant(_request(tools=tools), tokenizer.encode(text), text, "stop")
+    assert json.loads(parsed.message["tool_calls"][0]["function"]["arguments"]) == {key: "value"}
 
 
 def test_parse_completion_without_stop_token_retries_cleanly() -> None:

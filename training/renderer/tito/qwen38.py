@@ -33,6 +33,7 @@ _QWEN_TOOL_ARG_RE = re.compile(
     r"<parameter=(.*?)>\n?(.*?)\n?</parameter>",
     re.DOTALL,
 )
+_JSON_PARAMETER_HEADER_RE = re.compile(r"[\"']\s*:")
 
 
 class Qwen38TITORenderer:
@@ -213,6 +214,28 @@ class Qwen38TITORenderer:
                     f"unparsed {self._label} tool-call content: {residue!r}",
                     reason_code="tool_unparsed_content",
                 )
+            parameters = next(
+                (
+                    (tool.get("function") or {}).get("parameters")
+                    for tool in request.tools
+                    if (tool.get("function") or {}).get("name") == name
+                ),
+                None,
+            )
+            if isinstance(parameters, Mapping):
+                properties = parameters.get("properties") or {}
+                missing_required = any(key not in arguments for key in parameters.get("required", ()))
+                # A malformed JSON fragment can borrow a `>` from its code
+                # value. Preserve valid arbitrary schema keys while rejecting
+                # that interpretation when required arguments are missing.
+                if missing_required and any(
+                    key not in properties and _JSON_PARAMETER_HEADER_RE.search(key)
+                    for key in arguments
+                ):
+                    raise renderer_parse_error(
+                        f"malformed {self._label} tool parameter header",
+                        reason_code="tool_unparsed_content",
+                    )
             calls.append(
                 {
                     "type": "function",
