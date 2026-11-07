@@ -27,6 +27,7 @@ from training.renderer.tito.deepseek_v41 import (
     DEEPSEEK_V41_RENDERER_NAME,
     DEEPSEEK_V41_REPOSITORY,
     DEEPSEEK_V41_REVISION,
+    DEEPSEEK_V41_ENCODER_SHA256,
 )
 
 TOOL = {
@@ -338,46 +339,12 @@ def test_rejects_dynamic_template_overrides(native: tuple[Any, DeepSeekV4TITORen
         )
 
 
-def test_native_bundle_loads_offline_and_rejects_missing_or_modified_encoder(
-    native: tuple[Any, DeepSeekV4TITORenderer], tmp_path: Path
-) -> None:
-    tokenizer, renderer = native
-    name = renderer.renderer_id
-    if name != DEEPSEEK_V41_RENDERER_NAME:
-        pytest.skip("V4 ships its encoder as vendored package source; see the V4 bundle test")
-    setup = SimpleNamespace(
-        tokenizer=tokenizer,
-        tokenizer_id=tokenizer.name_or_path,
-        model="policy",
-    )
-    bundle = build_sidecar_bundle(setup, tmp_path / "bundles", renderer_name=name)
-    assert build_sidecar_bundle(setup, tmp_path / "bundles", renderer_name=name).digest == bundle.digest
-    with zipfile.ZipFile(bundle.path) as archive:
-        archive.extractall(tmp_path / "runtime")
-    root = tmp_path / "runtime/tokenizer"
-    loaded = load_sidecar_tokenizer(root, renderer_name=name)
-    build_sidecar_tito_renderer(loaded, name)
-    if not tokenizer.chat_template:
-        with pytest.raises(ValueError, match="no bundled chat template"):
-            load_sidecar_tokenizer(root)
-    encoder = root / renderer.encoder_file
-    original = encoder.read_bytes()
-    encoder.write_bytes(original + b"\n# changed\n")
-    with pytest.raises(ValueError, match="does not match certification"):
-        load_sidecar_tokenizer(root, renderer_name=name)
-    encoder.unlink()
-    with pytest.raises(ValueError, match="missing a certified renderer artifact"):
-        load_sidecar_tokenizer(root, renderer_name=name)
-
-
 def test_vendored_v4_bundle_ships_no_checkpoint_python_and_renders_offline(
     native: tuple[Any, DeepSeekV4TITORenderer], tmp_path: Path
 ) -> None:
-    """Migrated V4 bundles carry the encoder as package source, never as data."""
+    """Migrated V4/V4.1 bundles carry the encoder as package source, never as data."""
     tokenizer, renderer = native
     name = renderer.renderer_id
-    if name == DEEPSEEK_V41_RENDERER_NAME:
-        pytest.skip("V4.1 keeps the hash-pinned artifact path")
     setup = SimpleNamespace(
         tokenizer=tokenizer,
         tokenizer_id=tokenizer.name_or_path,
@@ -393,9 +360,17 @@ def test_vendored_v4_bundle_ships_no_checkpoint_python_and_renders_offline(
         assert not [entry for entry in tokenizer_entries if entry.endswith(".py")]
         assert f"tokenizer/{renderer.encoder_file}" not in names
         # The vendored encoder rides inside the copied cookbook source tree.
-        vendored_entry = "cookbook/training/renderer/tito/_vendored/deepseek_v4/encoding_dsv4.py"
+        is_v41 = name == DEEPSEEK_V41_RENDERER_NAME
+        vendored_entry = "cookbook/training/renderer/tito/_vendored/" + (
+            "deepseek_v41/encoding.py" if is_v41 else "deepseek_v4/encoding_dsv4.py"
+        )
         assert vendored_entry in names
-        assert hashlib.sha256(archive.read(vendored_entry)).hexdigest() == DEEPSEEK_V4_ENCODER_SHA256
+        payload = archive.read(vendored_entry)
+        if is_v41:
+            payload = payload.split(b"\n", 7)[7]
+        assert hashlib.sha256(payload).hexdigest() == (
+            DEEPSEEK_V41_ENCODER_SHA256 if is_v41 else DEEPSEEK_V4_ENCODER_SHA256
+        )
         archive.extractall(tmp_path / "runtime")
     root = tmp_path / "runtime/tokenizer"
     loaded = load_sidecar_tokenizer(root, renderer_name=name)

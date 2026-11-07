@@ -31,8 +31,13 @@ from functools import cache
 from typing import Any
 
 from transformers import AutoTokenizer
+from transformers.tokenization_utils_tokenizers import TokenizersBackend
 
-from training.tokenizer_identity import requires_code_free_tokenizer_loading
+from training.tokenizer_identity import (
+    is_code_free_model_name,
+    is_kimi_k3_k31_tokenizer_source,
+    requires_code_free_tokenizer_loading,
+)
 
 # Importing the cookbook renderer package registers cookbook-local
 # renderer names (glm5, gemma4, minimax_m2, nemotron) under
@@ -40,6 +45,7 @@ from training.tokenizer_identity import requires_code_free_tokenizer_loading
 import training.renderer  # noqa: F401
 from training.renderer import get_renderer
 from training.renderer.tokenizer import get_tokenizer
+from training.utils.kimi_native_tokenizer import load_native_tokenizer
 from training.utils.supervised import (
     build_tool_prefixed_messages,
     renderer_declares_tools,
@@ -61,12 +67,22 @@ def _load_tokenizer(
     tokenizers. Reconstructing remote-code tokenizers for every scenario makes
     the test runtime scale with scenario count instead of renderer count.
     """
+    if renderer_name == "beam":
+        # Beam declares TokenizersBackend. AutoTokenizer unnecessarily parses
+        # its unregistered model config and fails in RoPE validation first.
+        return TokenizersBackend.from_pretrained(
+            tokenizer_model, revision=tokenizer_revision, trust_remote_code=False
+        )
+    if is_kimi_k3_k31_tokenizer_source(tokenizer_model, revision=tokenizer_revision):
+        # Kimi's raw data has no stock AutoTokenizer implementation. Use the
+        # pinned installed release encoder, never the checkpoint's auto_map.
+        return load_native_tokenizer(tokenizer_model, revision=tokenizer_revision)
     if needs_mistral_regex_fix(tokenizer_model):
         kwargs: dict[str, Any] = {
             "token": os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
             "trust_remote_code": (
                 False
-                if renderer_name == "deepseek_v4"
+                if is_code_free_model_name(renderer_name)
                 or requires_code_free_tokenizer_loading(tokenizer_model, revision=tokenizer_revision)
                 else (tokenizer_trust_remote_code if tokenizer_trust_remote_code is not None else True)
             ),
@@ -82,12 +98,12 @@ def _load_tokenizer(
             # Registered thinking-history renderers pass their reviewed
             # policy explicitly. Keep the historical verifier default for
             # unrelated pinned cases that predate the capability registry.
-            # Recognized official DeepSeek V4 data ships no remote code, so
+            # Reviewed DeepSeek V4/V4.1 data ships no remote code, so
             # it is always code-free: False resolves the identical class and
             # an explicit True cannot reopen checkpoint-staged Python.
             trust_remote_code=(
                 False
-                if renderer_name == "deepseek_v4"
+                if is_code_free_model_name(renderer_name)
                 or requires_code_free_tokenizer_loading(
                     tokenizer_model,
                     revision=tokenizer_revision,
@@ -165,13 +181,13 @@ def _hf_messages_with_normalized_tool_args(messages: list[dict], *, require_mapp
 def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: str) -> list[dict]:
     """Map normalized thinking parts to a tokenizer's native HF input shape."""
     supports_reasoning_parts = renderer_name in {
+        "beam",
         "minimax_m3",
         "kimi_k3",
         "kimi_k3_disable_thinking",
         "kimi_k31",
         "kimi_k31_disable_thinking",
         "kimi_k31_low",
-        "kimi_k31_medium",
         "kimi_k31_high",
         "kimi_k31_max",
     }
@@ -180,7 +196,7 @@ def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: st
     out: list[dict] = []
     for message in messages:
         content = message.get("content")
-        if message.get("role") != "assistant" or not isinstance(content, list):
+        if (message.get("role") != "assistant" and renderer_name != "beam") or not isinstance(content, list):
             out.append(message)
             continue
         reasoning = "".join(
@@ -191,6 +207,8 @@ def _hf_messages_with_reasoning_parts(messages: list[dict], *, renderer_name: st
         normalized = dict(message)
         if "reasoning_content" not in normalized and reasoning:
             normalized["reasoning_content"] = reasoning
+        if renderer_name == "beam":
+            normalized["content"] = "".join(part["text"] for part in content if part.get("type") == "text")
         if renderer_name.startswith("kimi_k3"):
             # K3's Python template consumes reasoning from the top-level field;
             # leaving a ``thinking`` content part behind makes its generic

@@ -41,35 +41,15 @@ is fully agent-drivable.
 - **Dedicated:** fork `training.recipes.rl_loop` / `async_rl_loop`; the recipe provisions a
   trainer plus a rollout deployment from `TrainerConfig` / `DeployConfig`.
 
-**Managed RFT (`firectl reinforcement-fine-tuning-job create --evaluator <id>`) is deprecated**
-and accepts no new jobs. The evaluator material below applies only to jobs that already exist.
-
-### Managed RFT: authoring the eval3 evaluator (deprecated)
-
-`firectl reinforcement-fine-tuning-job create` needs an **eval3 evaluator with an `entry_point`** — legacy evaluators are rejected (`InvalidArgument: managed RFT requires an eval3 evaluator`), and `firectl evaluator create` is deprecated. The code-first way to make one is **eval-protocol** (no UI). Check current evaluator authorization in the live docs and handle the observed role gate below:
-
-```bash
-pip install eval-protocol          # provides @reward / EvaluationRow (needs Python 3.10+)
-```
-```python
-from eval_protocol import reward, EvaluationRow          # write the reward as code
-@reward
-def category_match(row: EvaluationRow) -> float:
-    return 1.0 if parse(row.output).get("category") == row.ground_truth else 0.0
-```
-Running the eval-protocol `pytest` flow **auto-registers** the reward as an eval3 evaluator + the dataset with Fireworks. Treat that command as protected registration and run it only after approval; offline tests should import and call the reward directly without authentication. Do **not** follow it with `firectl rftj create` — managed RFT create is rejected. Use the Training API rollout/reward path above for new work. If you are only inspecting an existing evaluator on an existing job, keep using its resource ID.
-
-**Observed authorization behavior on 2026-07-15:** eval3 creation is a multi-RPC flow (`CreateEvaluatorV2` → `GetEvaluatorUploadEndpoint` → upload → `ValidateEvaluatorUpload` → e2b build). An admin-role identity authored the evaluator with a plain `fw_` API key, while a user-role identity received **`403: admin role required to call CreateEvaluatorV2`**. Treat live docs and current API behavior as authoritative because scoped permissions may change. Do not broaden credentials or work around a 403. Ask an admin to register the evaluator once, then launch managed RFT with its resource ID.
-
-> **But the run is capacity-gated.** RFT provisions a trainer + a rollout deployment; on capacity-constrained accounts this readiness-times-out or fails (0/6 success observed on the shared account). RFT reliability is a **platform** matter, not a skill one — see `references/deploy-and-troubleshoot.md`.
+Managed RFT (`firectl reinforcement-fine-tuning-job create`) has been removed. For questions
+about jobs that already exist, see `managed-rft-operations.md`.
 
 ## Ways to supply the reward
 
-Whichever RFT route you use, the reward can come from three places:
+The reward can come from two places:
 
-1. **An existing evaluator ID** (`accounts/<acct>/evaluators/<id>`) — reuse a registered eval3 evaluator. Managed route.
-2. **An inline `reward_fn`** — write the reward as Python in the forked recipe. The agent-drivable default; no evaluator resource, any key.
-3. **An LLM-judge rubric** — when correctness isn't a clean 0/1 (tone, quality, open-ended), score completions with a judge model against a rubric. Implement it inside `reward_fn` (call a judge model, map its verdict to a float), or register it as an evaluator. If the user gives no evaluator and no rubric, infer a data-grounded rubric from the training samples and confirm it with them before spending.
+1. **An inline `reward_fn`** — write the reward as Python in the forked recipe. The agent-drivable default; no evaluator resource, any key.
+2. **An LLM-judge rubric** — when correctness isn't a clean 0/1 (tone, quality, open-ended), score completions with a judge model against a rubric. Implement it inside `reward_fn` (call a judge model, map its verdict to a float). If the user gives no evaluator and no rubric, infer a data-grounded rubric from the training samples and confirm it with them before spending.
 
 ## Default workflow: fork a cookbook recipe
 
@@ -251,7 +231,7 @@ def reward_fn(completion: str, row: dict) -> float:   # fork this
     truth = extract_answer(str(row.get("ground_truth", "")))
     return 1.0 if predicted == truth else 0.0
 ```
-The dataset is JSONL of prompts (`messages`) plus exactly the fields the selected reward reads. `ground_truth` is common for exact-match rewards, but it is not universal. Declare and validate the reward's required fields before launch. The recipe samples rollouts, scores each with `reward_fn`, and trains with the trainer's built-in GRPO loss, clipped against the rollout logprobs, with no reference KL. Key knobs: `completions_per_prompt`, `prompt_groups_per_step`, `eps_clip`/`eps_clip_high`, and `max_head_offpolicy_versions` (async; 0 = strict on-policy). To change the objective, fork the loop's train step (`rl-custom-loss.md`). On Dedicated, the recipe provisions the trainer + rollout deployment and tears them down on close; on Serverless, the serverless examples sample from session snapshots instead. **No registered evaluator needed on this path.**
+The dataset is JSONL of prompts (`messages`) plus exactly the fields the selected reward reads. `ground_truth` is common for exact-match rewards, but it is not universal. Declare and validate the reward's required fields before launch. The recipe samples rollouts, scores each with `reward_fn`, and trains with the trainer's built-in GRPO loss, clipped against the rollout logprobs, with no reference KL. Key knobs: `completions_per_prompt`, `prompt_groups_per_step`, `eps_clip`/`eps_clip_high`, and `max_head_offpolicy_versions` (async; 0 = strict on-policy). To change the objective, fork the loop's train step (`rl-custom-loss.md`). On Dedicated, the recipe provisions the trainer + rollout deployment and tears them down on close; on Serverless, the serverless examples sample from session snapshots instead.
 
 ## Numerics alignment & MoE Router Replay (R3)
 

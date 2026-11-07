@@ -8,10 +8,10 @@ fetches or executes checkpoint Python at runtime.
 |---|---|
 | Upstream file | `encoding_k3.py` |
 | Source repository | `moonshotai/Kimi-K3.1-Pro` |
-| Source revision | `6d0a0202956796543364d666ab19c6ad1a494ee1` |
-| sha256 | `e52c0427af2c2f263b56b3a94683acae3a1f634f96e516e473370b563b175bf1` |
+| Source revision | `d9e99b0792a5e93b78ea9bea62a68167e36ddd9e` |
+| sha256 | `367f0a7ab8800f78f7e09dc31e58544ee7fc46eea992ea05b32d53506a921cc5` |
 | License | Kimi K3.1-Pro License (see `LICENSE`, copyright 2026 Moonshot AI) |
-| Retrieved | 2026-11-04 |
+| Retrieved | 2026-11-05 |
 
 The sha256 above is identical to the TITO constant `KIMI_K31_ENCODER_SHA256`
 in `training/renderer/tito/kimi_k31.py`; a unit test asserts the vendored file

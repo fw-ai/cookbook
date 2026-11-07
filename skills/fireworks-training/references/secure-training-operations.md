@@ -70,8 +70,8 @@ For proprietary prompts or rewards:
 
 1. Keep dataset access least-privileged through BYOB when supported.
 2. Keep evaluator or environment credentials in the secret-management surface.
-3. Use a managed remote environment or Training API path appropriate to the reviewed workflow.
-4. Follow `references/rft-agent-tracing.md` for redacted managed tracing or `references/rl-agentic.md` for custom Training API trajectories.
+3. Use the Training API path appropriate to the reviewed workflow.
+4. Follow `references/rl-agentic.md` for custom Training API trajectories.
 5. Revoke temporary storage access and tear down billable resources after the run.
 
 ## Non-negotiables
@@ -83,7 +83,6 @@ For proprietary prompts or rewards:
 
 ## Related
 
-- Managed RFT: `managed-rft-operations.md`
-- Managed remote tracing: `rft-agent-tracing.md`
+- Existing managed RFT jobs: `managed-rft-operations.md`
 - Training API agent trajectories: `rl-agentic.md`
 - Failure handling: `error-reference.md`

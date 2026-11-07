@@ -28,7 +28,8 @@ class _StopAfterLoad(Exception):
         (V4_ALIAS, "kimi_k3", False),
         (RENAMED_ALIAS, "deepseek_v4", False),
         (NON_V4_MODEL, "kimi_k3", True),
-        (V41_ALIAS, "kimi_k3", True),
+        (V41_ALIAS, "kimi_k3", False),
+        (RENAMED_ALIAS, "deepseek_v41", False),
     ],
 )
 def test_example_context(
@@ -104,7 +105,7 @@ def test_example_context(
             )
     assert seen["context"] == base_model
     # Only distillation also has a selected renderer at this load boundary.
-    restricted = base_model == V4_ALIAS or (entrypoint == "distillation" and not executes)
+    restricted = base_model in {V4_ALIAS, V41_ALIAS} or (entrypoint == "distillation" and not executes)
     assert marker.exists() is (not restricted)
     if restricted:
         assert_stock_tokenizer(seen["tokenizer"], directory)

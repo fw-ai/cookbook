@@ -218,7 +218,7 @@ For Training API SFT and RL, pass `emit_grad_norm_metrics=True` to each
 | Installation and authentication | `../fireworks-training/references/getting-started.md` |
 | Method and data selection | `../fireworks-training/references/choose-method.md` |
 | Preference data and evaluators | `../fireworks-training/references/preference-data-and-evaluators.md` |
-| Managed RFT (deprecated; existing jobs only) | `../fireworks-training/references/managed-rft-operations.md`, `../fireworks-training/references/rft-agent-tracing.md` |
+| Managed RFT (removed; existing jobs only) | `../fireworks-training/references/managed-rft-operations.md` |
 | Training API and losses | `../fireworks-training/references/training-api.md`, `../fireworks-training/references/training-api-losses.md` |
 | Secure training | `../fireworks-training/references/secure-training-operations.md` |
 | Models and shapes | `../fireworks-training/references/models-shapes-and-cost.md` |

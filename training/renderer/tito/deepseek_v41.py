@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from collections.abc import Sequence
 from typing import Any
@@ -10,7 +9,8 @@ from typing import Any
 from fireworks.training.sdk import TITOChatRequest, TITOError
 
 from training.renderer.tito.deepseek_v4 import DeepSeekV4TITORenderer
-from training.renderer.tito.shared import TITORendererCertification, renderer_artifacts
+from training.renderer.tito._vendored.deepseek_v41 import encoding as _vendored_encoder
+from training.renderer.tito.shared import TITORendererCertification
 
 DEEPSEEK_V41_RENDERER_NAME = "deepseek_v41_flash"
 DEEPSEEK_V41_REPOSITORY = "deepseek-ai/DeepSeek-V4.1-Flash"
@@ -28,18 +28,9 @@ class DeepSeekV41TITORenderer(DeepSeekV4TITORenderer):
     reasoning_effort = "high"
 
     def _load_encoder(self, tokenizer: Any, certification: TITORendererCertification) -> Any:
-        """Load V4.1's own certification-hashed encoder artifact, unchanged.
-
-        V4.1's encoder (``DEEPSEEK_V41_ENCODER_SHA256``) differs from the V4
-        vendored encoder and stays on the hash-pinned artifact path.
-        """
-        path = renderer_artifacts(tokenizer, certification)[self.encoder_file]
-        spec = importlib.util.spec_from_file_location("tito_pinned_dsv4_encoder", path)
-        if spec is None or spec.loader is None:
-            raise ValueError("could not load certified DeepSeek V4 encoder")
-        encoder = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(encoder)
-        return encoder
+        """Use V4.1's reviewed publisher parser, never checkpoint Python."""
+        del tokenizer, certification
+        return _vendored_encoder
 
     def _template_messages(self, request: TITOChatRequest) -> list[dict[str, Any]]:
         wire = request.wire_value()

@@ -20,6 +20,7 @@ from training.renderer.errors import RendererError as RendererError
 from training.renderer.image_fetcher import set_image_fetcher as set_image_fetcher
 from training.renderer._registry import *  # noqa: F403
 
+from training.renderer import beam as _beam  # noqa: F401 (registers "beam")
 from training.renderer import deepseek_v4 as _deepseek_v4  # noqa: F401  (registers "deepseek_v4")
 from training.renderer import deepseek_v41 as _deepseek_v41  # noqa: F401  (registers "deepseek_v41")
 from training.renderer import gemma4 as _gemma4  # noqa: F401  (registers "gemma4")

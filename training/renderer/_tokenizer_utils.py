@@ -12,7 +12,12 @@ from collections.abc import Callable
 from functools import cache
 from typing import TYPE_CHECKING, Any, TypeAlias
 
-from training.tokenizer_identity import is_deepseek_v4_model_name, requires_code_free_tokenizer_loading
+from training.tokenizer_identity import (
+    is_code_free_model_name,
+    is_kimi_k3_k31_model_name,
+    is_kimi_k3_k31_tokenizer_source,
+    requires_code_free_tokenizer_loading,
+)
 
 if TYPE_CHECKING:
     # this import takes a few seconds, so avoid it on the module import when possible
@@ -95,10 +100,13 @@ def get_tokenizer(model_name: str, *, renderer_name: str | None = None, base_mod
 
     Checks the custom registry first (see :func:`register_tokenizer`),
     then falls back to HuggingFace ``AutoTokenizer``. HuggingFace
-    tokenizers are cached after first load. A known ``deepseek_v4``
-    renderer or independently selected V4 ``base_model`` constrains the HF
+    tokenizers are cached after first load. A known V4/V4.1
+    renderer or independently selected ``base_model`` constrains the HF
     load to repository-installed code even if mutable artifact metadata no
-    longer identifies the family.
+    longer identifies the family. Recognized reviewed Kimi K3/K3.1 data
+    never reaches ``AutoTokenizer`` at all: the checkpoint ships only a
+    tiktoken vocabulary behind a remote-code class, so the load builds the
+    id-identical native fast tokenizer from reviewed installed code.
 
     Args:
         model_name (str): HuggingFace model identifier (e.g.
@@ -138,14 +146,21 @@ def _get_hf_tokenizer(
 
     model_name = model_name.split(":")[0]
 
-    # The selected V4 renderer or base model is independent of mutable artifact
+    # The selected V4/V4.1 renderer or base model is independent of mutable artifact
     # identity. All signals constrain loading to installed code; none enables code.
     if os.path.isdir(model_name):
+        if is_kimi_k3_k31_model_name(base_model) or is_kimi_k3_k31_tokenizer_source(model_name):
+            # Recognized reviewed Kimi K3/K3.1 data: build the native fast
+            # tokenizer from reviewed installed code; checkpoint Python
+            # stays inert even under an explicit remote-code request.
+            from training.utils.kimi_native_tokenizer import load_native_tokenizer
+
+            return load_native_tokenizer(model_name)
         return AutoTokenizer.from_pretrained(
             model_name,
             trust_remote_code=(
-                renderer_name != "deepseek_v4"
-                and not is_deepseek_v4_model_name(base_model)
+                not is_code_free_model_name(renderer_name)
+                and not is_code_free_model_name(base_model)
                 and not requires_code_free_tokenizer_loading(model_name)
             ),
         )
@@ -167,9 +182,17 @@ def _get_hf_tokenizer(
     # Load the custom class directly so the result is correct regardless of the
     # installed transformers version.
     revision = _KIMI_TOKENIZER_REVISIONS.get(model_name)
+    if is_kimi_k3_k31_model_name(base_model) or is_kimi_k3_k31_tokenizer_source(model_name, revision=revision):
+        # Recognized reviewed Kimi K3/K3.1 hub data: the code-free path
+        # builds the id-identical fast tokenizer from the pinned data files
+        # and never touches ``auto_map``/checkpoint Python, even under the
+        # ambient env opt-in above.
+        from training.utils.kimi_native_tokenizer import load_native_tokenizer
+
+        return load_native_tokenizer(model_name, revision=revision)
     code_free = (
-        renderer_name == "deepseek_v4"
-        or is_deepseek_v4_model_name(base_model)
+        is_code_free_model_name(renderer_name)
+        or is_code_free_model_name(base_model)
         or requires_code_free_tokenizer_loading(model_name, revision=revision)
     )
     if not code_free and model_name.startswith("moonshotai/Kimi-K2"):
@@ -179,8 +202,8 @@ def _get_hf_tokenizer(
         return cls.from_pretrained(model_name, revision=revision)
 
     if code_free:
-        # Recognized official DeepSeek V4 data ships no remote code, and an
-        # independently selected V4 renderer or base model supplies the same
+        # Reviewed DeepSeek V4/V4.1 data ships no remote code, and an
+        # independently selected renderer or base model supplies the same
         # family context: the ambient env opt-in must not re-enable
         # checkpoint-staged Python for it.
         kwargs["trust_remote_code"] = False

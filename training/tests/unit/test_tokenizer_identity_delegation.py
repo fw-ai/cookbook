@@ -15,6 +15,8 @@ _PUBLIC = (
     "DEEPSEEK_V4_REPOSITORIES",
     "DEEPSEEK_V4_TOKENIZER_JSON_SHA256",
     "DEEPSEEK_V41_MODEL_RE",
+    "DEEPSEEK_V41_TOKENIZER_JSON_SHA256",
+    "is_code_free_model_name",
     "is_deepseek_v4_model_name",
     "is_deepseek_v4_tokenizer_source",
     "requires_code_free_tokenizer_loading",
@@ -27,12 +29,12 @@ def test_selected_backend_and_public_surface() -> None:
     assert module is identity._identity
     for name in _PUBLIC:
         assert getattr(identity, name) is not None
-    for name in _PUBLIC[4:]:
+    for name in _PUBLIC[5:]:
         assert getattr(identity, name).__module__ == "training.tokenizer_identity"
     if backend == "sdk":
         assert module is importlib.import_module(_SDK_MODULE)
         assert module.TOKENIZER_IDENTITY_POLICY_CAPABILITY == identity._POLICY_CAPABILITY
-        for name in _PUBLIC[:4]:
+        for name in _PUBLIC[:5]:
             assert getattr(identity, name) is getattr(module, name)
 
 
@@ -84,8 +86,10 @@ def test_capability_selects_only_matching_sdk(monkeypatch: pytest.MonkeyPatch, c
 def test_wrappers_forward_source_and_download_options(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = Mock()
     monkeypatch.setattr(identity, "_identity", backend)
-    assert identity.is_deepseek_v4_model_name("model") is backend.is_deepseek_v4_model_name.return_value
-    backend.is_deepseek_v4_model_name.assert_called_once_with("model")
+    for name in ("is_deepseek_v4_model_name", "is_code_free_model_name"):
+        method = getattr(backend, name)
+        assert getattr(identity, name)("model") is method.return_value
+        method.assert_called_once_with("model")
     for name in ("is_deepseek_v4_tokenizer_source", "requires_code_free_tokenizer_loading"):
         method = getattr(backend, name)
         kwargs = dict(revision="pinned", local_files_only=True)

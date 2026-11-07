@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from training.tokenizer_identity import requires_code_free_tokenizer_loading
+from training.tokenizer_identity import is_code_free_model_name, requires_code_free_tokenizer_loading
 
 
 def load_tokenizer(model_id: str, *, renderer_name: str | None = None) -> Any:
@@ -26,9 +26,11 @@ def load_tokenizer(model_id: str, *, renderer_name: str | None = None) -> Any:
 
     hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
     kwargs: dict[str, Any] = {
-        # Recognized official DeepSeek V4 data ships no remote code; an
+        # Reviewed DeepSeek V4/V4.1 data ships no remote code; an
         # explicit False resolves the identical tokenizer class.
-        "trust_remote_code": (renderer_name != "deepseek_v4" and not requires_code_free_tokenizer_loading(model_id)),
+        "trust_remote_code": (
+            not is_code_free_model_name(renderer_name) and not requires_code_free_tokenizer_loading(model_id)
+        ),
         "token": hf_token,
     }
     if needs_mistral_regex_fix(model_id):
@@ -61,7 +63,9 @@ def load_image_processor(model_id: str, *, renderer_name: str | None = None) -> 
     try:
         return AutoImageProcessor.from_pretrained(
             model_id,
-            trust_remote_code=(renderer_name != "deepseek_v4" and not requires_code_free_tokenizer_loading(model_id)),
+            trust_remote_code=(
+                not is_code_free_model_name(renderer_name) and not requires_code_free_tokenizer_loading(model_id)
+            ),
             token=hf_token,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:

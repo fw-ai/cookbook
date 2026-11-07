@@ -4,18 +4,22 @@ Kimi K3.1 speaks the same XTML protocol as Kimi K3 and ships the same
 tokenizer class, vision processor and segment contract, so this renderer is a
 thin adaptation of :class:`training.renderer.kimi_k3.KimiK3Renderer`: whole
 conversation rendering, image handling and loss-mask assignment are inherited,
-and the XTML segments come from the ``encoding_k3.py`` that the checkpoint's
-``TikTokenTokenizer`` delegates to. Load the K3.1 checkpoint tokenizer
-(``moonshotai/Kimi-K3.1-Pro``, pinned revision) the way ``kimi_k3`` loads K3's;
-the fast-tokenizer bundle from ``training.utils.kimi_k31_tokenizer`` serves TITO
-only and is rejected here.
+and the XTML segments come from the vendored, hash-pinned K3.1
+``encoding_k3.py`` under ``training.renderer.tito._vendored.kimi_k31`` --
+reviewed package source, so checkpoint Python is never fetched or executed.
+Load the tokenizer through ``training.utils.tokenizers.load_tokenizer``
+(``moonshotai/Kimi-K3.1-Pro``, pinned revision): recognized K3.1 data resolves
+to the code-free native fast bundle, which this renderer encodes through the
+same reviewed primitives TITO certifies; a legacy checkpoint tokenizer still
+works through its own encode methods.
 
 What differs from ``kimi_k3``:
 
-* **Thinking tiers.** The K3.1 encoder accepts ``medium``; the K3 renderer
-  folded it into ``high``. A request without a reasoning effort renders no
+* **Thinking tiers.** The pinned K3.1 encoder accepts ``low``, ``high`` and
+  ``max`` (upstream dropped ``medium``); a ``medium`` request folds into
+  ``high`` as in ``kimi_k3``. A request without a reasoning effort renders no
   ``thinking-effort`` system message, matching Fireworks serving;
-  ``kimi_k31_<low|medium|high|max>`` pin a tier and
+  ``kimi_k31_<low|high|max>`` pin a tier and
   ``kimi_k31_disable_thinking`` drops the think channel.
 * **Tool arguments.** The K3.1 encoder renders non-string arguments from their
   JSON literal bytes (``1e2`` stays ``1e2``). Dataset normalization hands
@@ -56,6 +60,7 @@ from training.renderer import (
     register_renderer,
 )
 from training.renderer.image_processing import ImageProcessor
+from training.renderer._kimi_native_encoding import KimiEncodingAdapter
 from training.renderer.kimi_k3 import (
     STOP_SEQUENCE,
     KimiK3Conversation,
@@ -67,8 +72,13 @@ from training.renderer.kimi_k3 import (
 from training.renderer.kimi_k3 import _native_message as _k3_native_message
 from training.renderer.plugins import register_renderer_image_capability
 from training.renderer.tokenizer import Tokenizer
+from training.renderer.tito._vendored.kimi_k31 import (
+    encoding_k3 as _vendored_encoder_k31,
+)
 
-THINKING_EFFORTS = ("low", "medium", "high", "max")
+THINKING_EFFORTS = ("low", "high", "max")
+# API efforts the encoder has no tier for, folded the way ``kimi_k3`` does.
+_EFFORT_ALIASES = {"medium": "high", "xhigh": "max"}
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +99,9 @@ def _normalize_reasoning(value: Any) -> tuple[bool, str | None]:
     """Map an API ``reasoning_effort`` to ``(thinking, thinking_effort)``.
 
     ``None`` keeps thinking on without a ``thinking-effort`` message, which is
-    what Fireworks serving renders for a request that omits the field. ``xhigh``
-    is the one alias (to ``max``); every other value must be a K3.1 tier.
+    what Fireworks serving renders for a request that omits the field.
+    ``medium`` folds into ``high`` and ``xhigh`` into ``max``; every other value
+    must be a K3.1 tier.
     """
     if isinstance(value, Mapping):
         value = value.get("effort", value.get("reasoning_effort"))
@@ -98,8 +109,7 @@ def _normalize_reasoning(value: Any) -> tuple[bool, str | None]:
         return False, None
     if value is None or value is True:
         return True, None
-    if value == "xhigh":
-        value = "max"
+    value = _EFFORT_ALIASES.get(value, value)
     if value not in THINKING_EFFORTS:
         raise ValueError(f"Unsupported Kimi K3.1 reasoning effort: {value!r}")
     return True, value
@@ -183,8 +193,8 @@ class KimiK31ImageTokenCounter:
     arithmetic the way Fireworks serving (``KimiK3VLTokenizer``) and FireTitan's
     pixel pipeline do. FireTitan owns pixel preprocessing; the renderer only
     needs the exact pad count declared on each wire ``ImageChunk`` and the
-    ``<|media_begin|>`` prompt. ``kimi_k3`` keeps loading the release
-    processor; only the K3.1 renderer is routed here.
+    ``<|media_begin|>`` prompt. Both reviewed K3 and K3.1 renderers use
+    this data-only arithmetic; neither needs checkpoint processor Python.
     """
 
     _REQUIRED = ("patch_size", "merge_kernel_size", "in_patch_limit", "patch_limit_on_one_side")
@@ -267,7 +277,7 @@ class KimiK31ImageTokenCounter:
 
 
 def load_image_token_counter(tokenizer_model: str) -> KimiK31ImageTokenCounter | None:
-    """The image processor every K3.1 construction path uses (builders and pickle restore).
+    """Data-only counter for K3/K3.1 builders and pickle restore.
 
     Text rendering needs no processor at all: an artifact without a readable
     ``preprocessor_config.json`` starts text-only, and image rows then fail at
@@ -278,7 +288,7 @@ def load_image_token_counter(tokenizer_model: str) -> KimiK31ImageTokenCounter |
         return KimiK31ImageTokenCounter.from_pretrained(tokenizer_model)
     except (OSError, ValueError, KeyError) as exc:
         logger.warning(
-            "Kimi K3.1 image token counter unavailable for %s: %s. "
+            "Kimi K3/K3.1 image token counter unavailable for %s: %s. "
             "Rendering text-only; image rows will fail at render time.",
             tokenizer_model,
             exc,
@@ -309,10 +319,11 @@ class _ParsedResponse:
 
 
 class _ResponseParser:
-    """Parse sampled K3.1 turns on token ids using the checkpoint tokenizer."""
+    """Parse sampled K3.1 turns on token ids using the reviewed encoding path."""
 
     def __init__(self, tokenizer: Any, *, thinking: bool) -> None:
         self._tokenizer = tokenizer
+        self._encoding = KimiEncodingAdapter(tokenizer)
         self._thinking = thinking
         self.open_id = self._single_control(_OPEN)
         self.close_id = self._single_control(_CLOSE)
@@ -326,7 +337,7 @@ class _ResponseParser:
         self._close_tools = self._encode(f"{_CLOSE}tools{_SEP}")
 
     def _encode(self, text: str) -> list[int]:
-        return [int(token) for token in self._tokenizer._encode_text_piece(text, allow_special_tokens=True)]
+        return self._encoding.encode_piece(text, allow_special_tokens=True)
 
     def _decode(self, tokens: Sequence[int]) -> str:
         return str(self._tokenizer.decode([int(token) for token in tokens]))
@@ -541,6 +552,8 @@ class KimiK31Renderer(KimiK3Renderer):
     _conversation_cls = KimiK31Conversation
     _normalize_tools = staticmethod(_normalize_tools)
     _native_message = staticmethod(_native_message)
+    # K3.1 preserves literal tool-argument bytes; never alias it with K3's encoder.
+    _encoder_module = _vendored_encoder_k31
     # The encoder renders non-string tool arguments from their JSON literal bytes,
     # so dataset normalization must hand argument strings over unchanged.
     preserves_tool_argument_literals = True
@@ -552,20 +565,10 @@ class KimiK31Renderer(KimiK3Renderer):
         *,
         options: KimiK31RenderOptions | None = None,
     ) -> None:
-        if not callable(getattr(tokenizer, "_encode_text_piece", None)) or not hasattr(
-            type(tokenizer), "apply_chat_template"
-        ):
-            raise TypeError(
-                "Kimi K3.1 needs the checkpoint's TikTokenTokenizer (load the K3.1 checkpoint "
-                "tokenizer with remote code, as for kimi_k3); the fast-tokenizer bundle from "
-                "training.utils.kimi_k31_tokenizer only serves TITO"
-            )
         super().__init__(tokenizer, image_processor=image_processor, options=options or KimiK31RenderOptions())
-        encoder = __import__(self._build_chat_segments.__module__, fromlist=["*"])
-        if "medium" not in getattr(encoder, "_VALID_THINKING_EFFORTS", ()):
+        if set(THINKING_EFFORTS) != self._encoder_module._VALID_THINKING_EFFORTS:
             raise TypeError(
-                "This tokenizer ships the Kimi K3 encoder (no medium thinking tier); use the "
-                "kimi_k3 renderer for it, or load the Kimi K3.1 checkpoint tokenizer"
+                "The kimi_k31 renderer's thinking tiers must match its packaged release encoder"
             )
         self._parser = _ResponseParser(tokenizer, thinking=self.default_options.thinking)
 
@@ -621,7 +624,13 @@ for _effort in THINKING_EFFORTS:
 
 # One image-processor route for every way a K3.1 renderer is constructed: the
 # supervised builders consult this loader first, and so does pickle restore.
-for _name in ("kimi_k31", "kimi_k31_disable_thinking", *(f"kimi_k31_{effort}" for effort in THINKING_EFFORTS)):
+for _name in (
+    "kimi_k3",
+    "kimi_k3_disable_thinking",
+    "kimi_k31",
+    "kimi_k31_disable_thinking",
+    *(f"kimi_k31_{effort}" for effort in THINKING_EFFORTS),
+):
     register_renderer_image_capability(
         _name,
         load_image_token_counter,

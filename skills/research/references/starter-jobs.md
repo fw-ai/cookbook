@@ -157,6 +157,6 @@ match_confidence: high | medium
 - Treat receipt extraction as a vision run. Validate image chunks and visual
   token counts before final approval; do not estimate post-promotion vision SFT
   cost without model-specific visual token accounting.
-- Managed RFT is paused. Route RL starters to the Serverless Training API.
+- Managed RFT has been removed. Route RL starters to the Serverless Training API.
 - If the selected starter's path is unavailable for the account, say so and
   offer the next supported starter or `explore_custom`.

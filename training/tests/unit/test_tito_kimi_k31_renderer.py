@@ -286,6 +286,7 @@ def _request(messages: list[dict], tools: list[dict]) -> TITOChatRequest:
 
 
 def test_certifications_pin_one_contract_per_effort() -> None:
+    assert THINKING_EFFORTS == ("low", "high", "max")
     certifications = kimi_k31_certifications()
     names = sorted(name for certification in certifications for name in certification.renderer_names)
     assert names == sorted([KIMI_K31_RENDERER_NAME, *(f"{KIMI_K31_RENDERER_NAME}_{e}" for e in THINKING_EFFORTS)])
@@ -299,6 +300,12 @@ def test_certifications_pin_one_contract_per_effort() -> None:
 
 def test_vendored_encoder_matches_certification_sha256() -> None:
     assert hashlib.sha256(_VENDORED_PATH.read_bytes()).hexdigest() == KIMI_K31_ENCODER_SHA256
+
+
+def test_effort_tiers_match_the_vendored_encoder() -> None:
+    from training.renderer.tito._vendored.kimi_k31 import encoding_k3
+
+    assert set(THINKING_EFFORTS) == encoding_k3._VALID_THINKING_EFFORTS
 
 
 def test_vendored_encoder_imports_only_stdlib_and_runs_nothing() -> None:

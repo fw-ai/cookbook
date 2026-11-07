@@ -10,6 +10,12 @@ Only data files are read. The checkpoint's Python (``tokenization_kimi.py``) is
 hash-checked, because the token pattern and reserved-token naming below are
 copied from it, but never imported.
 
+The conversion itself lives in the reviewed shared implementation behind
+``training.utils.kimi_native_tokenizer`` (SDK-first with a generated snapshot
+fallback), which covers the byte-identical Kimi K3 vocabulary as well; this
+module keeps the K3.1 profile pins, the CLI, and the certified bundle
+fingerprint.
+
 Usage::
 
     python -m training.utils.kimi_k31_tokenizer <out-dir> [--source <checkpoint-dir>]
@@ -22,43 +28,21 @@ the tokenizer fingerprint that ``KIMI_K31_TOKENIZER_FINGERPRINT`` pins.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from training.renderer.tito.kimi_k31 import KIMI_K31_REPOSITORY, KIMI_K31_REVISION
+from training.utils import kimi_native_tokenizer as _native
 
 # Tokenizer source files at ``KIMI_K31_REPOSITORY@KIMI_K31_REVISION``.
-KIMI_K31_SOURCE_SHA256 = {
-    "tiktoken.model": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103",
-    "tokenizer_config.json": "9fc322181b8ec44236e148916aea4b6c2467b66ded7bfaff0efe623ad750b852",
-    "tokenization_kimi.py": "204ee39fbf13a6d6608b0d3ca1b4b04a14ac5f0a062a7fdee02e61f5d936f9c6",
-}
+KIMI_K31_SOURCE_SHA256 = _native.KIMI_K31_SOURCE_SHA256
 
 # ``TikTokenTokenizer.pat_str`` and ``num_reserved_special_tokens`` from the
-# pinned ``tokenization_kimi.py``.
-KIMI_K31_PAT_STR = "|".join(
-    [
-        r"""[\p{Han}]+""",
-        r"""[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?""",
-        r"""[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]+[\p{Ll}\p{Lm}\p{Lo}\p{M}&&[^\p{Han}]]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?""",
-        r"""\p{N}{1,3}""",
-        r""" ?[^\s\p{L}\p{N}]+[\r\n]*""",
-        r"""\s*[\r\n]+""",
-        r"""\s+(?!\S)""",
-        r"""\s+""",
-    ]
-)
-KIMI_K31_NUM_RESERVED_SPECIAL_TOKENS = 256
-KIMI_K31_BASE_VOCAB_SIZE = 163_584
-
-_BOS, _EOS, _UNK, _PAD = "[BOS]", "[EOS]", "[UNK]", "[PAD]"
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+# pinned ``tokenization_kimi.py`` (identical for Kimi K3).
+KIMI_K31_PAT_STR = _native.KIMI_K3_K31_PAT_STR
+KIMI_K31_NUM_RESERVED_SPECIAL_TOKENS = _native.KIMI_NUM_RESERVED_SPECIAL_TOKENS
+KIMI_K31_BASE_VOCAB_SIZE = _native.KIMI_BASE_VOCAB_SIZE
 
 
 def download_source() -> Path:
@@ -78,31 +62,13 @@ def download_source() -> Path:
 def verify_source_dir(source_dir: str | Path) -> Path:
     """Fail closed unless every pinned source file is present and unchanged."""
     root = Path(source_dir)
-    mismatched = []
-    for filename, expected in sorted(KIMI_K31_SOURCE_SHA256.items()):
-        path = root / filename
-        if not path.is_file():
-            mismatched.append(f"{filename}: missing")
-        elif _sha256(path) != expected:
-            mismatched.append(f"{filename}: sha256 {_sha256(path)} != {expected}")
-    if mismatched:
-        raise ValueError(
-            f"Kimi K3.1 tokenizer sources do not match {KIMI_K31_REPOSITORY}@{KIMI_K31_REVISION}:\n  "
-            + "\n  ".join(mismatched)
-        )
+    _native.verify_source_dir(root, profile=_native.KIMI_K31_PROFILE)
     return root
 
 
 def special_tokens(source_dir: str | Path) -> list[tuple[str, int]]:
     """Every special token in id order, named exactly as ``TikTokenTokenizer`` names them."""
-    root = Path(source_dir)
-    config = json.loads((root / "tokenizer_config.json").read_text(encoding="utf-8"))
-    named = {int(token_id): entry["content"] for token_id, entry in config.get("added_tokens_decoder", {}).items()}
-    first = KIMI_K31_BASE_VOCAB_SIZE
-    return [
-        (named.get(token_id, f"<|reserved_token_{token_id}|>"), token_id)
-        for token_id in range(first, first + KIMI_K31_NUM_RESERVED_SPECIAL_TOKENS)
-    ]
+    return _native.special_tokens(verify_source_dir(source_dir))
 
 
 def build_fast_tokenizer(source_dir: str | Path) -> Any:
@@ -112,34 +78,7 @@ def build_fast_tokenizer(source_dir: str | Path) -> Any:
     the order given, so every one of the 256 reserved ids is added explicitly in
     id order; passing only the named tokens would shift their ids.
     """
-    # lazy: conversion needs the optional tokenizers/transformers stack.
-    from tokenizers import AddedToken
-    from transformers.convert_slow_tokenizer import TikTokenConverter
-    from transformers.tokenization_utils_tokenizers import TokenizersBackend
-
-    root = verify_source_dir(source_dir)
-    backend = TikTokenConverter(
-        vocab_file=str(root / "tiktoken.model"),
-        pattern=KIMI_K31_PAT_STR,
-        additional_special_tokens=[],
-    ).converted()
-    if backend.get_vocab_size() != KIMI_K31_BASE_VOCAB_SIZE:
-        raise ValueError(
-            f"Kimi K3.1 base vocabulary has {backend.get_vocab_size()} tokens, expected {KIMI_K31_BASE_VOCAB_SIZE}"
-        )
-    ordered = special_tokens(root)
-    backend.add_special_tokens([AddedToken(name, special=True, normalized=False) for name, _ in ordered])
-    for name, token_id in ordered:
-        if backend.token_to_id(name) != token_id:
-            raise ValueError(f"special token {name!r} landed at {backend.token_to_id(name)}, expected {token_id}")
-    return TokenizersBackend(
-        tokenizer_object=backend,
-        bos_token=_BOS,
-        eos_token=_EOS,
-        unk_token=_UNK,
-        pad_token=_PAD,
-        clean_up_tokenization_spaces=False,
-    )
+    return _native.build_fast_tokenizer(verify_source_dir(source_dir), profile=_native.KIMI_K31_PROFILE)
 
 
 def write_bundle(out_dir: str | Path, *, source_dir: str | Path | None = None) -> str:

@@ -772,10 +772,10 @@ def test_renderer_pickle_roundtrip_preserves_base_context_under_env_optin(
     assert getattr(rebuilt, "_tokenizer_base_model", None) == "accounts/fireworks/models/deepseek-v4-flash-0731"
 
 
-def test_render_worker_processor_non_v4_and_v41_policies_unchanged(
+def test_render_worker_processor_v41_restricts_without_changing_unknown_policy(
     official_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Non-V4 base and V4.1-named base keep the legacy scoped-permissive path."""
+    """Unknown families stay permissive; migrated V4.1 context restricts."""
     monkeypatch.delenv("HF_TRUST_REMOTE_CODE", raising=False)
     _state, _t1, proc_marker_nonv4 = _populate(
         official_dir, tmp_path, "acme-vision-nonv4", "accounts/acme/models/custom-x"
@@ -784,7 +784,7 @@ def test_render_worker_processor_non_v4_and_v41_policies_unchanged(
     _state2, _t2, proc_marker_v41 = _populate(
         official_dir, tmp_path, "acme-vision-v41", "accounts/fireworks/models/deepseek-v4.1-flash"
     )
-    assert proc_marker_v41.exists(), "V4.1 names must stay outside the V4 context"
+    assert not proc_marker_v41.exists(), "V4.1 context must restrict its processor load"
 
 
 def test_processor_default_known_v4_renderer_opaque_source_env_optin(

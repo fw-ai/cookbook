@@ -22,17 +22,13 @@ from training.renderer.tito.deepseek_v4 import (
     DeepSeekV4TITORenderer,
 )
 from training.renderer.tito.deepseek_v41 import (
-    DEEPSEEK_V41_ENCODER_FILE,
+    DEEPSEEK_V41_ENCODER_SHA256,
     DeepSeekV41TITORenderer,
 )
+from training.renderer.tito._vendored.deepseek_v41 import encoding as encoding_dsv41
 
 VENDORED_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "renderer"
-    / "tito"
-    / "_vendored"
-    / "deepseek_v4"
-    / "encoding_dsv4.py"
+    Path(__file__).resolve().parents[2] / "renderer" / "tito" / "_vendored" / "deepseek_v4" / "encoding_dsv4.py"
 )
 OLDER_ORACLE_PATH = Path(__file__).resolve().parents[1] / "_encoding_dsv4_oracle.py"
 
@@ -80,26 +76,28 @@ def test_renderer_load_encoder_returns_the_vendored_module() -> None:
     assert renderer._load_encoder(None, None) is encoding_dsv4  # type: ignore[arg-type]
 
 
-def test_v41_load_encoder_stays_on_the_artifact_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """V4.1 keeps loading its own different encoder via renderer_artifacts."""
-    calls: list[tuple[Any, Any]] = []
-    fake_artifact = tmp_path / "encoding.py"
-    fake_artifact.write_text('eos_token = "<eos-test>"\n', encoding="utf-8")
-
-    def fake_renderer_artifacts(tokenizer: Any, certification: Any) -> dict[str, Path]:
-        calls.append((tokenizer, certification))
-        return {DEEPSEEK_V41_ENCODER_FILE: fake_artifact}
-
-    monkeypatch.setattr(
-        "training.renderer.tito.deepseek_v41.renderer_artifacts",
-        fake_renderer_artifacts,
-    )
+def test_v41_load_encoder_uses_its_own_reviewed_package() -> None:
     renderer = DeepSeekV41TITORenderer.__new__(DeepSeekV41TITORenderer)
-    encoder = renderer._load_encoder("tokenizer-sentinel", "certification-sentinel")
-    assert calls == [("tokenizer-sentinel", "certification-sentinel")]
-    assert encoder.eos_token == "<eos-test>"
+    assert renderer._load_encoder(None, None) is encoding_dsv41  # type: ignore[arg-type]
+    payload = Path(encoding_dsv41.__file__).read_bytes().split(b"\n", 7)[7]
+    assert hashlib.sha256(payload).hexdigest() == DEEPSEEK_V41_ENCODER_SHA256
+    tree = ast.parse(payload)
+    imports = {
+        name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        for name in [alias.name]
+    }
+    assert imports == {"copy", "json", "re"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            assert node.func.id not in {"exec", "eval", "compile", "input", "__import__"}
+            if node.func.id == "open":
+                helper = next(
+                    item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == "load_cases"
+                )
+                assert helper.lineno <= node.lineno <= helper.end_lineno
 
 
 def _certified_contract_battery() -> list[list[dict[str, Any]]]:
@@ -170,9 +168,7 @@ def _certified_contract_battery() -> list[list[dict[str, Any]]]:
 
 
 @pytest.mark.parametrize("messages", _certified_contract_battery())
-def test_certified_contract_matches_older_oracle(
-    older_oracle: Any, messages: list[dict[str, Any]]
-) -> None:
+def test_certified_contract_matches_older_oracle(older_oracle: Any, messages: list[dict[str, Any]]) -> None:
     """Byte-identical prompt text on the certified V4 rendering contract.
 
     The pinned V4-Flash-0731 revision is newer than the repo's oracle (the

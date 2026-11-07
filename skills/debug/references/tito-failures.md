@@ -138,6 +138,8 @@ the only entry point; legacy artifact `parser_fallback` fields remain readable.
 For DeepSeek V4.1, use the recipe tokenizer loader with the certification's
 pinned revision. Its declared BOS/EOS post-processor is part of the fingerprint;
 loading the raw backend without those settings produces a different contract.
+The parser is reviewed cookbook package source, not checkpoint `encoding.py`;
+copying Python into tokenizer data does not repair a contract mismatch.
 The recipe loader's Transformers tokenizer class and model type can affect
 that contract, but the hash covers only serialized backend, template and
 special-token map, not class/model-type identity. After a Transformers bump,

@@ -131,7 +131,7 @@ def main(cfg: Config) -> dict[str, Any]:
 
     tokenizer = load_tokenizer(
         cfg.tokenizer_model,
-        trust_remote_code=False if cfg.renderer_name == "deepseek_v4" else None,
+        trust_remote_code=False if cfg.renderer_name in {"deepseek_v4", "deepseek_v41"} else None,
         base_model=cfg.base_model,
     )
     renderer = get_renderer(cfg.renderer_name, tokenizer)

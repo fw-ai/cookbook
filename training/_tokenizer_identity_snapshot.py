@@ -3,12 +3,22 @@
 # training.tokenizer_identity only as the fallback when the installed SDK
 # predates TOKENIZER_IDENTITY_POLICY_CAPABILITY. Regenerate with
 # python training/tests/_tokenizer_identity_snapshot_generator.py.
-"""Restrict-only signals for code-free DeepSeek V4 tokenizer loading.
+"""Restrict-only signals for code-free tokenizer loading of reviewed models.
 
-An exact reviewed canonical V4 identifier or recognized config/tokenizer
+An exact reviewed canonical identifier or recognized config/tokenizer
 data forces loaders through installed code. These signals never establish
 artifact provenance or authorize Python execution. Without one, failed data
 reads leave the caller's existing policy unchanged.
+
+Currently covered families:
+
+* DeepSeek V4 (``deepseek_v4``), recognized by ``tokenizer.json`` digests;
+* DeepSeek V4.1, restricted separately without selecting a V4 renderer;
+* Kimi K3 / K3.1 (``kimi_k3`` / ``kimi_k31``), recognized by the shared
+  tiktoken vocabulary digest plus a pinned ``tokenizer_config.json`` digest.
+  The two models ship byte-identical ``tiktoken.model`` vocabularies and
+  equivalent tokenization; their ``encoding_k3.py`` chat encoders are
+  distinct reviewed contracts and are never aliased.
 """
 
 from __future__ import annotations
@@ -29,7 +39,9 @@ DEEPSEEK_V4_REPOSITORIES = frozenset({"deepseek-ai/DeepSeek-V4-Flash-0731", "dee
 # module only when the constant is present with this exact value, so an
 # intermediate SDK carrying the module with an older policy revision falls
 # back to the pinned snapshot instead of inheriting the older behavior.
-TOKENIZER_IDENTITY_POLICY_CAPABILITY = "deepseek-v4-tokenizer-identity/separate-family-and-code-policy"
+# Capability history: "deepseek-v4-tokenizer-identity/separate-family-and-code-policy"
+# covered DeepSeek V4 only; the current value also covers V4.1 and saved Kimi profiles.
+TOKENIZER_IDENTITY_POLICY_CAPABILITY = "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/saved-native-profiles-v3"
 
 # Official DeepSeek V4 ``tokenizer.json`` content digests:
 # 1. The hub snapshot form (identical for DeepSeek-V4-Flash-0731 and
@@ -49,6 +61,26 @@ DEEPSEEK_V4_TOKENIZER_JSON_SHA256 = frozenset(
 
 
 DEEPSEEK_V41_MODEL_RE = re.compile(r"(?:^|[/_.-])deepseek[-_]?v?4(?:[._-]?1|p1)(?=$|[/_.-])")
+DEEPSEEK_V41_MODEL_TYPE = "deepseek_v41"
+DEEPSEEK_V41_MODEL_TYPES = frozenset({"deepseek_v41", "deepseek_v41_text", "deepseek_v4.1", "deepseek_v4.1_text"})
+DEEPSEEK_V41_REPOSITORIES = frozenset({"deepseek-ai/DeepSeek-V4.1-Flash"})
+# Real upstream, AutoTokenizer-saved, and declared-postprocessor cookbook forms.
+# These restrict loading only; they must never select the V4 renderer.
+DEEPSEEK_V41_TOKENIZER_JSON_SHA256 = frozenset(
+    {
+        "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b",
+        "23136b659802e7e16fc849c551ac4a05a85e708732adeed010610b11dce85290",
+        "f8c19e2bc45ba524379b42c29ea07e83c9f856c15c2f7ebb69e36ddcfa1cf650",
+    }
+)
+_DEEPSEEK_V41_TOKENIZER_JSON_SIZES = frozenset({6_367_257, 10_071_774, 10_072_050})
+_DEEPSEEK_V41_TOKENIZER_JSON_GIT_BLOB_SHA1 = frozenset(
+    {
+        "6a15814dd25c934028034531da744c689f87ff21",
+        "2345dbdaeeaaf36cb6b01e0a2b282befd18d08ec",
+        "48ae10170e965f3508778b75842eb08d1244ffdf",
+    }
+)
 
 # Byte profiles of the three official ``tokenizer.json`` forms, used only by
 # the Hub metadata prefilter: exact byte sizes, and git blob sha1 digests as
@@ -90,6 +122,55 @@ DEEPSEEK_V4_MODEL_NAMES = frozenset(
     }
 )
 
+# ---------------------------------------------------------------------------
+# Kimi K3 / K3.1 (Moonshot AI)
+# ---------------------------------------------------------------------------
+#
+# Both checkpoints ship a tiktoken vocabulary (``tiktoken.model``) behind a
+# remote-code ``TikTokenTokenizer`` (``auto_map`` on ``tokenizer_config.json``)
+# and no ``tokenizer.json``, so the DeepSeek V4 digest file does not apply.
+# The recognition data signal is the shared vocabulary digest plus a pinned
+# ``tokenizer_config.json`` digest. The checkpoint Python
+# (``tokenization_kimi.py``) is never read for identity and never imported on
+# any path.
+KIMI_K3_MODEL_TYPE = "kimi_k3"
+KIMI_K31_MODEL_TYPE = "kimi_k31"
+KIMI_K3_K31_MODEL_TYPES = frozenset({KIMI_K3_MODEL_TYPE, KIMI_K31_MODEL_TYPE})
+
+# Digest-reviewed Hugging Face repositories, recognized without a read.
+KIMI_K3_REPOSITORY = "moonshotai/Kimi-K3"
+KIMI_K31_REPOSITORY = "moonshotai/Kimi-K3.1-Pro"
+KIMI_K3_K31_REPOSITORIES = frozenset({KIMI_K3_REPOSITORY, KIMI_K31_REPOSITORY})
+
+# Byte-identical in ``moonshotai/Kimi-K3@301be1b8`` and
+# ``moonshotai/Kimi-K3.1-Pro@6d0a0202``: one shared BPE vocabulary.
+KIMI_K3_K31_TIKTOKEN_MODEL_SHA256 = "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103"
+
+# The reviewed ``tokenizer_config.json`` of each model. Both declare
+# ``TikTokenTokenizer`` with an ``auto_map`` entry, which is exactly the
+# remote-code surface code-free loading bypasses.
+KIMI_K3_TOKENIZER_CONFIG_SHA256 = "5d0803c94db9cd78763499e0956c95fd5a225c14a727e5a6cf5db3f96f010a6e"
+KIMI_K31_TOKENIZER_CONFIG_SHA256 = "9fc322181b8ec44236e148916aea4b6c2467b66ded7bfaff0efe623ad750b852"
+KIMI_K3_K31_TOKENIZER_CONFIG_SHA256 = frozenset({KIMI_K3_TOKENIZER_CONFIG_SHA256, KIMI_K31_TOKENIZER_CONFIG_SHA256})
+
+# Reviewed canonical Kimi K3/K3.1 identifiers (normalized lowercase form):
+# the digest-pinned Hugging Face repositories and the Fireworks resource IDs
+# onboarded in the renderer capability registry. Exact membership only, like
+# the DeepSeek V4 names.
+KIMI_K3_MODEL_NAMES = frozenset(
+    {
+        "moonshotai/kimi-k3",
+        "accounts/fireworks/models/kimi-k3",
+    }
+)
+KIMI_K31_MODEL_NAMES = frozenset(
+    {
+        "moonshotai/kimi-k3.1-pro",
+        "accounts/fireworks/models/kimi-k3p1-pro",
+    }
+)
+KIMI_K3_K31_MODEL_NAMES = KIMI_K3_MODEL_NAMES | KIMI_K31_MODEL_NAMES
+
 
 def is_deepseek_v4_model_name(model_name: str | None) -> bool:
     """Whether ``model_name`` is reviewed DeepSeek V4 context.
@@ -114,6 +195,37 @@ def is_deepseek_v4_model_name(model_name: str | None) -> bool:
         return False
     normalized = model_name.strip().rstrip("/").lower()
     return normalized == DEEPSEEK_V4_MODEL_TYPE or normalized in DEEPSEEK_V4_MODEL_NAMES
+
+
+def is_kimi_k3_k31_model_name(model_name: str | None) -> bool:
+    """Whether ``model_name`` is reviewed Kimi K3/K3.1 context.
+
+    Same contract as :func:`is_deepseek_v4_model_name`: the exact
+    ``model_type`` architecture strings (``kimi_k3`` / ``kimi_k31``) as
+    independently selected control-plane context, or exact membership in
+    the reviewed canonical IDs (``KIMI_K3_K31_MODEL_NAMES``). Basenames,
+    ancestors and substrings never contribute identity. This signal can
+    only restrict code loading; it never authorizes execution.
+    """
+    if not model_name:
+        return False
+    normalized = model_name.strip().rstrip("/").lower()
+    return normalized in KIMI_K3_K31_MODEL_TYPES or normalized in KIMI_K3_K31_MODEL_NAMES
+
+
+def is_code_free_model_name(model_name: str | None) -> bool:
+    """Restrictive selected context, never semantic renderer identity."""
+    if is_deepseek_v4_model_name(model_name):
+        return True
+    if not model_name:
+        return False
+    return model_name.strip().rstrip("/").lower() in DEEPSEEK_V41_MODEL_TYPES | {
+        "deepseek_v41_flash",
+        "deepseek-ai/deepseek-v4.1-flash",
+        "accounts/fireworks/models/deepseek-v41-flash",
+        "accounts/fireworks/models/deepseek-v4.1-flash",
+        "accounts/fireworks/models/deepseek-v4p1-flash",
+    }
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -196,7 +308,7 @@ def _head_tokenizer_json_metadata(model: str, revision: str | None) -> Any:
         return None
 
 
-def _metadata_decision(size: Any, etag: Any) -> bool | None:
+def _metadata_decision(size: Any, etag: Any, *, include_v41: bool = False) -> bool | None:
     """Prefilter decision from HEAD metadata: True/False, or None for bytes.
 
     ``False`` is returned only when byte inequality is proven by a supported
@@ -215,14 +327,21 @@ def _metadata_decision(size: Any, etag: Any) -> bool | None:
         # A missing etag header is a missing capability: full byte reads.
         return None
     etag = etag.lower()
-    size_matches = (size in _DEEPSEEK_V4_TOKENIZER_JSON_SIZES) if size is not None else None
+    sizes = _DEEPSEEK_V4_TOKENIZER_JSON_SIZES
+    digests = DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+    blobs = _DEEPSEEK_V4_TOKENIZER_JSON_GIT_BLOB_SHA1
+    if include_v41:
+        sizes = sizes | _DEEPSEEK_V41_TOKENIZER_JSON_SIZES
+        digests = digests | DEEPSEEK_V41_TOKENIZER_JSON_SHA256
+        blobs = blobs | _DEEPSEEK_V41_TOKENIZER_JSON_GIT_BLOB_SHA1
+    size_matches = (size in sizes) if size is not None else None
     if len(etag) == 64 and _HEX_RE.match(etag):
-        if etag in DEEPSEEK_V4_TOKENIZER_JSON_SHA256:
+        if etag in digests:
             # Two proven signals contradicting each other: let bytes decide.
             return None if size_matches is False else True
         return False
     if len(etag) == 40 and _HEX_RE.match(etag):
-        if etag in _DEEPSEEK_V4_TOKENIZER_JSON_GIT_BLOB_SHA1:
+        if etag in blobs:
             # A candidate even when the size contradicts it: bytes decide.
             return None
         # The blob sha1 alone proves inequality; size agreement is irrelevant.
@@ -254,14 +373,21 @@ def _hub_offline() -> bool:
     return bool(getattr(constants, "HF_HUB_OFFLINE", False))
 
 
-def _download_tokenizer_json_matches(model: str, *, revision: str | None, local_files_only: bool) -> bool:
+def _download_tokenizer_json_matches(
+    model: str, *, revision: str | None, local_files_only: bool, include_v41: bool = False
+) -> bool:
     path = _hub_download(model, "tokenizer.json", revision=revision, local_files_only=local_files_only)
     if path is None:
         return False
-    return _sha256(path) in DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+    digests = DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+    if include_v41:
+        digests = digests | DEEPSEEK_V41_TOKENIZER_JSON_SHA256
+    return _sha256(path) in digests
 
 
-def _hub_tokenizer_json_matches(model: str, *, revision: str | None, local_files_only: bool) -> bool:
+def _hub_tokenizer_json_matches(
+    model: str, *, revision: str | None, local_files_only: bool, include_v41: bool = False
+) -> bool:
     """Whether the Hub ``tokenizer.json`` is a pinned official form.
 
     Online against the official endpoint, one HEAD request answers from
@@ -273,7 +399,9 @@ def _hub_tokenizer_json_matches(model: str, *, revision: str | None, local_files
     the HEAD observed so the two reads are coherent. No result is cached.
     """
     if local_files_only or _hub_offline() or not _official_hub_endpoint():
-        return _download_tokenizer_json_matches(model, revision=revision, local_files_only=local_files_only)
+        return _download_tokenizer_json_matches(
+            model, revision=revision, local_files_only=local_files_only, include_v41=include_v41
+        )
     metadata = _head_tokenizer_json_metadata(model, revision)
     if metadata is _HEAD_ABSENT:
         return False
@@ -281,13 +409,17 @@ def _hub_tokenizer_json_matches(model: str, *, revision: str | None, local_files
     if metadata is not None:
         pinned = _pinned_commit(metadata)
         if pinned is not None:
-            decision = _metadata_decision(getattr(metadata, "size", None), getattr(metadata, "etag", None))
+            decision = _metadata_decision(
+                getattr(metadata, "size", None), getattr(metadata, "etag", None), include_v41=include_v41
+            )
             if decision is not None:
                 return decision
             revision_for_download = pinned
         # Without a valid commit pin the metadata answer is unusable: no
         # metadata negative, full byte reads at the caller's revision.
-    return _download_tokenizer_json_matches(model, revision=revision_for_download, local_files_only=False)
+    return _download_tokenizer_json_matches(
+        model, revision=revision_for_download, local_files_only=False, include_v41=include_v41
+    )
 
 
 def is_deepseek_v4_tokenizer_source(
@@ -336,15 +468,45 @@ def is_deepseek_v4_tokenizer_source(
     )
 
 
+def is_kimi_k3_k31_tokenizer_source(
+    tokenizer_model: str | None,
+    *,
+    revision: str | None = None,
+    local_files_only: bool = False,
+) -> bool:
+    """Whether a Kimi K3/K3.1 signal restricts ``tokenizer_model`` to installed code.
+
+    Same data-first contract as :func:`is_deepseek_v4_tokenizer_source`,
+    with the Kimi data signal: a local artifact directory or hub source is
+    recognized through ``config.json`` ``model_type`` in
+    ``KIMI_K3_K31_MODEL_TYPES`` (read as JSON; never an ``AutoConfig`` load,
+    never code execution), or through the shared ``tiktoken.model``
+    vocabulary digest combined with a pinned ``tokenizer_config.json``
+    digest. An explicit different model family takes precedence over shared
+    tokenizer bytes for family recognition; missing/empty model types and
+    the generic ``"model"`` saved-tokenizer marker permit the digest
+    fallback. Directory basenames and ancestors never contribute identity.
+
+    This is semantic family recognition, not permission to load code, and
+    never establishes provenance. Any read or transport failure returns
+    ``False`` (not recognized), leaving the caller's current family
+    decision unchanged.
+    """
+    return _kimi_k3_k31_source_matches(
+        tokenizer_model, revision=revision, local_files_only=local_files_only, explicit_family_wins=True
+    )
+
+
 def requires_code_free_tokenizer_loading(
     tokenizer_model: str | None,
     *,
     revision: str | None = None,
     local_files_only: bool = False,
 ) -> bool:
-    """Restrict recognized V4 data to installed tokenizer/processor code.
+    """Restrict recognized reviewed data to installed tokenizer/processor code.
 
-    A shared reviewed tokenizer digest is restrictive even when mutable
+    Covers DeepSeek V4/V4.1 and Kimi K3/K3.1. A shared reviewed tokenizer digest
+    is restrictive even when mutable
     ``model_type`` names another family. Unlike semantic family recognition,
     this must not select a renderer or encoder: it only keeps checkpoint
     Python inert. Unknown data retains the caller's existing policy.
@@ -352,7 +514,83 @@ def requires_code_free_tokenizer_loading(
     """
     return _tokenizer_source_matches(
         tokenizer_model, revision=revision, local_files_only=local_files_only, explicit_family_wins=False
+    ) or _kimi_k3_k31_source_matches(
+        tokenizer_model, revision=revision, local_files_only=local_files_only, explicit_family_wins=False
     )
+
+
+def _local_kimi_k3_k31_data_matches(root: Path) -> bool:
+    """Raw pinned data or a saved native profile; neither authorizes code."""
+    config = _read_json(root / "tokenizer_config.json") or {}
+    profile = config.get("kimi_native_profile")
+    if isinstance(profile, str) and profile in KIMI_K3_K31_MODEL_TYPES and (root / "tokenizer.json").is_file():
+        return True
+    return (
+        _sha256(root / "tiktoken.model") == KIMI_K3_K31_TIKTOKEN_MODEL_SHA256
+        and _sha256(root / "tokenizer_config.json") in KIMI_K3_K31_TOKENIZER_CONFIG_SHA256
+    )
+
+
+def _hub_kimi_k3_k31_data_matches(model: str, *, revision: str | None, local_files_only: bool) -> bool:
+    """Byte-digest recognition of the reviewed Kimi data on the Hub.
+
+    No metadata prefilter: ``tiktoken.model`` is not LFS-pinned by digest on
+    every mirror, and the file is small enough (2.8 MB) that a cached byte
+    read is the reliable signal. Both reads are data-only downloads.
+    """
+    config_path = _hub_download(model, "tokenizer_config.json", revision=revision, local_files_only=local_files_only)
+    config = _read_json(config_path) if config_path is not None else None
+    profile = config.get("kimi_native_profile") if config else None
+    if isinstance(profile, str) and profile in KIMI_K3_K31_MODEL_TYPES:
+        return _hub_download(model, "tokenizer.json", revision=revision, local_files_only=local_files_only) is not None
+    vocab_path = _hub_download(model, "tiktoken.model", revision=revision, local_files_only=local_files_only)
+    if vocab_path is None or _sha256(vocab_path) != KIMI_K3_K31_TIKTOKEN_MODEL_SHA256:
+        return False
+    config_path = _hub_download(model, "tokenizer_config.json", revision=revision, local_files_only=local_files_only)
+    return config_path is not None and _sha256(config_path) in KIMI_K3_K31_TOKENIZER_CONFIG_SHA256
+
+
+def _kimi_k3_k31_source_matches(
+    tokenizer_model: str | None,
+    *,
+    revision: str | None,
+    local_files_only: bool,
+    explicit_family_wins: bool,
+) -> bool:
+    """Kimi K3/K3.1 leg of source matching; see the public wrappers."""
+    if not tokenizer_model:
+        return False
+    model = tokenizer_model
+    local_dir = Path(model)
+    if local_dir.is_dir():
+        config = _read_json(local_dir / "config.json")
+        model_type = config.get("model_type") if config is not None else None
+        if isinstance(model_type, str) and model_type not in {"", "model"}:
+            if model_type in KIMI_K3_K31_MODEL_TYPES:
+                return True
+            if explicit_family_wins:
+                return False
+        return _local_kimi_k3_k31_data_matches(local_dir)
+    # Only the digest-reviewed pair skips the advisory read; reviewed
+    # Fireworks aliases are selected-context identities
+    # (is_kimi_k3_k31_model_name), not no-read source shortcuts.
+    if model in KIMI_K3_K31_REPOSITORIES:
+        return True
+    config_path = _hub_download(
+        model,
+        "config.json",
+        revision=revision,
+        local_files_only=local_files_only,
+    )
+    if config_path is not None:
+        config = _read_json(config_path)
+        model_type = config.get("model_type") if config is not None else None
+        if isinstance(model_type, str) and model_type not in {"", "model"}:
+            if model_type in KIMI_K3_K31_MODEL_TYPES:
+                return True
+            if explicit_family_wins:
+                return False
+    return _hub_kimi_k3_k31_data_matches(model, revision=revision, local_files_only=local_files_only)
 
 
 def _tokenizer_source_matches(
@@ -366,20 +604,27 @@ def _tokenizer_source_matches(
     if not tokenizer_model:
         return False
     model = tokenizer_model
+    model_types = {DEEPSEEK_V4_MODEL_TYPE}
+    digests = DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+    repositories = DEEPSEEK_V4_REPOSITORIES
+    if not explicit_family_wins:
+        model_types.update(DEEPSEEK_V41_MODEL_TYPES)
+        digests = digests | DEEPSEEK_V41_TOKENIZER_JSON_SHA256
+        repositories = repositories | DEEPSEEK_V41_REPOSITORIES
     local_dir = Path(model)
     if local_dir.is_dir():
         config = _read_json(local_dir / "config.json")
         model_type = config.get("model_type") if config is not None else None
         if isinstance(model_type, str) and model_type not in {"", "model"}:
-            if model_type == DEEPSEEK_V4_MODEL_TYPE:
+            if model_type in model_types:
                 return True
             if explicit_family_wins:
                 return False
-        return _sha256(local_dir / "tokenizer.json") in DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+        return _sha256(local_dir / "tokenizer.json") in digests
     # Only the digest-reviewed pair skips the advisory read; reviewed
     # mirror/Fireworks aliases are selected-context identities
     # (is_deepseek_v4_model_name), not no-read source shortcuts.
-    if model in DEEPSEEK_V4_REPOSITORIES:
+    if model in repositories:
         return True
     config_path = _hub_download(
         model,
@@ -391,8 +636,10 @@ def _tokenizer_source_matches(
         config = _read_json(config_path)
         model_type = config.get("model_type") if config is not None else None
         if isinstance(model_type, str) and model_type not in {"", "model"}:
-            if model_type == DEEPSEEK_V4_MODEL_TYPE:
+            if model_type in model_types:
                 return True
             if explicit_family_wins:
                 return False
-    return _hub_tokenizer_json_matches(model, revision=revision, local_files_only=local_files_only)
+    return _hub_tokenizer_json_matches(
+        model, revision=revision, local_files_only=local_files_only, include_v41=not explicit_family_wins
+    )

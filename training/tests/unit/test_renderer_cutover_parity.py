@@ -31,6 +31,7 @@ class _CharacterTokenizer:
 
 
 _BASELINE_CUSTOM_RENDERERS = (
+    "beam",
     "deepseek_v4",
     "deepseek_v4_disable_thinking",
     "deepseek_v41",
@@ -58,7 +59,6 @@ _BASELINE_CUSTOM_RENDERERS = (
     "kimi_k31",
     "kimi_k31_disable_thinking",
     "kimi_k31_low",
-    "kimi_k31_medium",
     "kimi_k31_high",
     "kimi_k31_max",
     "minimax_m2",

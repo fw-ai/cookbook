@@ -141,7 +141,7 @@ When asked to resume:
    | Dataset | `client.datasets.get(<DATASET_ID>)` | `firectl dataset get <DATASET_ID> -o json` |
    | SFT | `client.supervised_fine_tuning_jobs.get(<JOB_ID>)` | `firectl sftj get <JOB_ID> -o json` |
    | DPO / ORPO | `client.dpo_jobs.get(<JOB_ID>)` | `firectl dpo-job get <JOB_ID> -o json` |
-   | Managed RFT | `client.reinforcement_fine_tuning_jobs.get(<JOB_ID>)` | `firectl rftj get <JOB_ID> -o json` |
+   | Managed RFT (removed, read only) | — | `firectl rftj get <JOB_ID> -o json` |
    | Dedicated trainer checkpoints | `FireworksClient(api_key).list_checkpoints(<TRAINER_JOB_ID>)` | `firectl rlor-trainer-job list-checkpoints <TRAINER_JOB_ID>` |
    | Dedicated trainer job | — | `firectl rlor-trainer-job get <TRAINER_JOB_ID> -o json` |
    | Deployment | `client.deployments.get(<DEPLOYMENT_ID>)` | `firectl deployment get <DEPLOYMENT_ID> -o json` |
@@ -188,7 +188,7 @@ Normalize the strongest method-specific signal into a concise progress update:
 
 ```text
 Phase: job_running
-Method: managed-rft
+Method: training-api-rl
 State: RUNNING
 Elapsed: 18m
 Progress: rollout batch 4 completed at 23:42 UTC

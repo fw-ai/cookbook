@@ -87,23 +87,6 @@ Dependencies and network/credential requirements:
 
 Show the spec to the user and resolve ambiguity before implementing the evaluator.
 
-### Managed RFT evaluator (deprecated)
-
-Managed RFT is deprecated and accepts no new jobs; for new work write a reward inside a Training API rollout function instead (see `rl-async.md`). The rest of this section applies only to evaluators already registered against an existing job. Managed RFT uses a registered evaluator with a reviewed entry point. Use Eval Protocol's current code-first flow, read `managed-rft-operations.md`, and defer exact APIs to the live [RFT overview](https://docs.fireworks.ai/fine-tuning/reinforcement-fine-tuning-models.md).
-
-1. Write the Eval Protocol reward in the workspace.
-2. Add deterministic unit examples for full credit, partial credit, zero, malformed output, and edge cases.
-3. Run **offline-only** tests by importing and calling the reward function directly with local fixtures. Do not run Eval Protocol's registration-enabled `pytest` flow, authenticate, upload, or call Fireworks before approval.
-4. Check that scores vary. All-identical scores make RFT a no-op.
-5. Compute and record a SHA-256 hash of the reviewed evaluator source. Choose a stable evaluator display name when the current API supports one.
-6. Show the evaluator code, dependencies, offline sample scores, source hash, planned name, and exact registration action.
-7. Register only after approval. Eval Protocol's `pytest` flow may register both the evaluator and dataset, so treat invoking that flow as the protected registration action, not as a local test.
-8. Preserve the full evaluator resource name, display name, source hash, and registration output in the run manifest.
-
-Evaluator creation may be restricted by account role. Check the current docs and attempt no workaround. If `CreateEvaluatorV2` returns `403`, an admin authors or registers the evaluator once; the scoped agent can then launch managed RFT with that evaluator ID.
-
-If registration returns ambiguously or the response is lost, do not run it again. Use the Eval Protocol output, account UI, or current evaluator API to locate a resource matching the account, planned display name, source hash, and narrow UTC upload window. If it cannot be identified unambiguously, ask an admin or support to reconcile it before retrying.
-
 ### Training API inline reward
 
 For custom rollouts, multi-turn trajectories, or reward logic that should remain in code, fork the cookbook `rl_loop` or `async_rl_loop` recipe and implement `reward_fn`. No registered evaluator is required.
@@ -114,7 +97,7 @@ Use `references/training-api.md` for recipe, rollout, deployment-shape, and nume
 
 ### SFT or DPO candidate evaluator
 
-An evaluator used to select a sweep winner does not need to be a managed RFT evaluator. It can be:
+An evaluator used to select a sweep winner can be:
 
 - deterministic exact match or structured validation;
 - per-label accuracy and confusion summaries;
