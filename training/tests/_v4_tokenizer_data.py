@@ -20,11 +20,18 @@ TOKEN_BATTERY = ["Hello world", "unicode: café 漢字 ☃", "<think>reasoning</
 def v4_files() -> dict[str, Path]:
     # lazy: HF is optional outside tokenizer integration tests.
     from huggingface_hub import hf_hub_download
+    from huggingface_hub import constants
+    from huggingface_hub.errors import LocalEntryNotFoundError
 
-    return {
-        name: Path(hf_hub_download(V4_REPO, name, revision=V4_REVISION))
-        for name in ("config.json", "tokenizer.json", "tokenizer_config.json")
-    }
+    try:
+        return {
+            name: Path(hf_hub_download(V4_REPO, name, revision=V4_REVISION))
+            for name in ("config.json", "tokenizer.json", "tokenizer_config.json")
+        }
+    except LocalEntryNotFoundError:
+        if not constants.HF_HUB_OFFLINE:
+            raise
+        pytest.skip("Pinned V4 tokenizer data is absent from the offline Hub cache; run online once to populate it.")
 
 
 @pytest.fixture(scope="module")

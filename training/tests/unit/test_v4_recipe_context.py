@@ -95,12 +95,12 @@ def test_recipe_threads_context_to_real_loader(
         else:
             module.main(cfg)
     assert seen["context"] == base_model
-    assert marker.exists() is (base_model != V4_ALIAS)
-    if base_model == V4_ALIAS:
+    assert marker.exists() is (base_model == NON_V4_MODEL)
+    if base_model != NON_V4_MODEL:
         assert_stock_tokenizer(seen["tokenizer"], directory)
 
 
-@pytest.mark.parametrize("base_model", [V4_ALIAS, NON_V4_MODEL])
+@pytest.mark.parametrize("base_model", [V4_ALIAS, NON_V4_MODEL, V41_ALIAS])
 @pytest.mark.parametrize("with_config", [False, True])
 def test_verify_logprobs_real_load(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, v4_files: dict[str, Path], base_model: str, with_config: bool
@@ -138,7 +138,7 @@ def test_verify_logprobs_real_load(
     monkeypatch.setattr(module.ReconnectableClient, "from_training_client", Mock())
     with pytest.raises(_StopAfterLoad):
         module.main()
-    assert marker.exists() is (not with_config and base_model != V4_ALIAS)
+    assert marker.exists() is (not with_config and base_model == NON_V4_MODEL)
     if not marker.exists():
         assert_stock_tokenizer(service.create_sampling_client().deployment_sampler.tokenizer, directory)
 
@@ -166,6 +166,6 @@ def test_shared_loader_context_policy(
             tokenizer_model=str(directory), tokenizer_revision=None, tokenizer_trust_remote_code=trust
         )
         tokenizer = load_deployment_tokenizer(deployment, base_model=base_model)
-    assert marker.exists() is (base_model != V4_ALIAS)
-    if base_model == V4_ALIAS:
+    assert marker.exists() is (base_model not in {V4_ALIAS, V41_ALIAS})
+    if base_model in {V4_ALIAS, V41_ALIAS}:
         assert_stock_tokenizer(tokenizer, directory)

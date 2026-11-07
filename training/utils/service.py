@@ -20,6 +20,7 @@ from fireworks.training.sdk import (
     TrainerJobManager,
 )
 from training.utils.config import DeployConfig, TrainerConfig, WeightSyncScope
+from training.tokenizer_identity import is_code_free_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +47,7 @@ def make_weight_sync(
 
     def publish(name: str, **kwargs: Any) -> Any:
         # Resume can export a BASE at a step whose DELTA is already published.
-        sampler_name = (
-            f"{name}-base"
-            if lora_rank == 0 and kwargs.get("checkpoint_type") == "base"
-            else name
-        )
+        sampler_name = f"{name}-base" if lora_rank == 0 and kwargs.get("checkpoint_type") == "base" else name
         saved = policy.save_weights_for_sampler(sampler_name, **kwargs)
         result = service.hotload_sampler_snapshot(saved.path)
         logger.info("Weight sync completed: FILE")
@@ -174,7 +171,7 @@ def _firetitan_service_kwargs(
         "hotload_timeout_s": hotload_timeout_s,
         "cleanup_deployment_on_close": cleanup_deployment_on_close,
     }
-    if base_model_type == "deepseek_v4":
+    if is_code_free_model_name(base_model_type):
         service_kwargs["base_model_type"] = base_model_type
     # Projection topology is service-scoped. Omit the field entirely for actor
     # services; the SDK also canonicalizes an explicit zero to ``None``.
@@ -214,13 +211,8 @@ def _firetitan_service_kwargs(
             "wait_for_trainer_before_deployment": deployment.wait_for_trainer_before_deployment,
         }
     )
-    if (
-        deployment.wait_for_trainer_before_deployment
-        and deployment.weight_sync_scope != WeightSyncScope.PER_TRAINER
-    ):
-        raise ValueError(
-            "wait_for_trainer_before_deployment requires PER_TRAINER weight sync"
-        )
+    if deployment.wait_for_trainer_before_deployment and deployment.weight_sync_scope != WeightSyncScope.PER_TRAINER:
+        raise ValueError("wait_for_trainer_before_deployment requires PER_TRAINER weight sync")
     if deployment.weight_sync_transport is not None:
         if deployment.weight_sync_transport != "RDMA":
             raise ValueError("weight_sync_transport must be 'RDMA' or None")
@@ -415,9 +407,7 @@ _exit_wait_registered = False
 
 def _start_late_trainer_watch(manager: TrainerJobManager, job_id: str) -> None:
     global _exit_wait_registered
-    watch = threading.Thread(
-        target=_delete_when_created, args=(manager, job_id), name=f"delete-{job_id}", daemon=True
-    )
+    watch = threading.Thread(target=_delete_when_created, args=(manager, job_id), name=f"delete-{job_id}", daemon=True)
     _LATE_TRAINER_WATCHES.append(watch)
     if not _exit_wait_registered:
         atexit.register(_wait_for_late_trainer_watches)

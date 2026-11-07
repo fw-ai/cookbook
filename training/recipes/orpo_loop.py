@@ -366,7 +366,7 @@ def main(
         tokenizer = load_tokenizer(
             cfg.tokenizer_model,
             cfg.tokenizer_revision,
-            False if resolved_renderer_name == "deepseek_v4" else cfg.tokenizer_trust_remote_code,
+            False if resolved_renderer_name in {"deepseek_v4", "deepseek_v41"} else cfg.tokenizer_trust_remote_code,
             base_model=tokenizer_base_model,
         )
         renderer = build_renderer_from_resolved_name(

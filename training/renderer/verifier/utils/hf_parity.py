@@ -34,6 +34,7 @@ from transformers import AutoTokenizer
 from transformers.tokenization_utils_tokenizers import TokenizersBackend
 
 from training.tokenizer_identity import (
+    is_code_free_model_name,
     is_kimi_k3_k31_tokenizer_source,
     requires_code_free_tokenizer_loading,
 )
@@ -81,7 +82,7 @@ def _load_tokenizer(
             "token": os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
             "trust_remote_code": (
                 False
-                if renderer_name == "deepseek_v4"
+                if is_code_free_model_name(renderer_name)
                 or requires_code_free_tokenizer_loading(tokenizer_model, revision=tokenizer_revision)
                 else (tokenizer_trust_remote_code if tokenizer_trust_remote_code is not None else True)
             ),
@@ -97,12 +98,12 @@ def _load_tokenizer(
             # Registered thinking-history renderers pass their reviewed
             # policy explicitly. Keep the historical verifier default for
             # unrelated pinned cases that predate the capability registry.
-            # Recognized official DeepSeek V4 data ships no remote code, so
+            # Reviewed DeepSeek V4/V4.1 data ships no remote code, so
             # it is always code-free: False resolves the identical class and
             # an explicit True cannot reopen checkpoint-staged Python.
             trust_remote_code=(
                 False
-                if renderer_name == "deepseek_v4"
+                if is_code_free_model_name(renderer_name)
                 or requires_code_free_tokenizer_loading(
                     tokenizer_model,
                     revision=tokenizer_revision,

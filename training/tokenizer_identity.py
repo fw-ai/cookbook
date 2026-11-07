@@ -12,7 +12,7 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
-_POLICY_CAPABILITY = "deepseek-v4+kimi-k3-k31-tokenizer-identity/saved-native-profiles-v2"
+_POLICY_CAPABILITY = "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/saved-native-profiles-v3"
 _SDK_IDENTITY_MODULE = "fireworks.training.sdk.tokenizer_identity"
 
 # Which backend supplied the identity implementation: "sdk" (delegation) or
@@ -56,6 +56,12 @@ DEEPSEEK_V4_MODEL_TYPE = _identity.DEEPSEEK_V4_MODEL_TYPE
 DEEPSEEK_V4_REPOSITORIES = _identity.DEEPSEEK_V4_REPOSITORIES
 DEEPSEEK_V4_TOKENIZER_JSON_SHA256 = _identity.DEEPSEEK_V4_TOKENIZER_JSON_SHA256
 DEEPSEEK_V41_MODEL_RE = _identity.DEEPSEEK_V41_MODEL_RE
+DEEPSEEK_V41_TOKENIZER_JSON_SHA256 = _identity.DEEPSEEK_V41_TOKENIZER_JSON_SHA256
+
+
+def is_code_free_model_name(model_name: str | None) -> bool:
+    """Recognize restrictive V4/V4.1 context without selecting a renderer."""
+    return _identity.is_code_free_model_name(model_name)
 
 KIMI_K3_MODEL_TYPE = _identity.KIMI_K3_MODEL_TYPE
 KIMI_K31_MODEL_TYPE = _identity.KIMI_K31_MODEL_TYPE

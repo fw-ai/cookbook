@@ -59,7 +59,7 @@ class _MergingTokenizer(_Tokenizer):
 
 
 def _publisher_encoder():
-    path = Path(__file__).resolve().parents[1] / "_encoding_dsv41_oracle.py"
+    path = Path(__file__).resolve().parents[2] / "renderer/tito/_vendored/deepseek_v41/encoding.py"
     spec = importlib.util.spec_from_file_location("deepseek_v41_oracle", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

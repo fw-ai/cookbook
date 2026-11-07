@@ -13,6 +13,7 @@ reads leave the caller's existing policy unchanged.
 Currently covered families:
 
 * DeepSeek V4 (``deepseek_v4``), recognized by ``tokenizer.json`` digests;
+* DeepSeek V4.1, restricted separately without selecting a V4 renderer;
 * Kimi K3 / K3.1 (``kimi_k3`` / ``kimi_k31``), recognized by the shared
   tiktoken vocabulary digest plus a pinned ``tokenizer_config.json`` digest.
   The two models ship byte-identical ``tiktoken.model`` vocabularies and
@@ -39,8 +40,8 @@ DEEPSEEK_V4_REPOSITORIES = frozenset({"deepseek-ai/DeepSeek-V4-Flash-0731", "dee
 # intermediate SDK carrying the module with an older policy revision falls
 # back to the pinned snapshot instead of inheriting the older behavior.
 # Capability history: "deepseek-v4-tokenizer-identity/separate-family-and-code-policy"
-# covered DeepSeek V4 only; the current value adds the Kimi K3/K3.1 family.
-TOKENIZER_IDENTITY_POLICY_CAPABILITY = "deepseek-v4+kimi-k3-k31-tokenizer-identity/saved-native-profiles-v2"
+# covered DeepSeek V4 only; the current value also covers V4.1 and saved Kimi profiles.
+TOKENIZER_IDENTITY_POLICY_CAPABILITY = "deepseek-v4-v41+kimi-k3-k31-tokenizer-identity/saved-native-profiles-v3"
 
 # Official DeepSeek V4 ``tokenizer.json`` content digests:
 # 1. The hub snapshot form (identical for DeepSeek-V4-Flash-0731 and
@@ -60,6 +61,26 @@ DEEPSEEK_V4_TOKENIZER_JSON_SHA256 = frozenset(
 
 
 DEEPSEEK_V41_MODEL_RE = re.compile(r"(?:^|[/_.-])deepseek[-_]?v?4(?:[._-]?1|p1)(?=$|[/_.-])")
+DEEPSEEK_V41_MODEL_TYPE = "deepseek_v41"
+DEEPSEEK_V41_MODEL_TYPES = frozenset({"deepseek_v41", "deepseek_v41_text", "deepseek_v4.1", "deepseek_v4.1_text"})
+DEEPSEEK_V41_REPOSITORIES = frozenset({"deepseek-ai/DeepSeek-V4.1-Flash"})
+# Real upstream, AutoTokenizer-saved, and declared-postprocessor cookbook forms.
+# These restrict loading only; they must never select the V4 renderer.
+DEEPSEEK_V41_TOKENIZER_JSON_SHA256 = frozenset(
+    {
+        "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b",
+        "23136b659802e7e16fc849c551ac4a05a85e708732adeed010610b11dce85290",
+        "f8c19e2bc45ba524379b42c29ea07e83c9f856c15c2f7ebb69e36ddcfa1cf650",
+    }
+)
+_DEEPSEEK_V41_TOKENIZER_JSON_SIZES = frozenset({6_367_257, 10_071_774, 10_072_050})
+_DEEPSEEK_V41_TOKENIZER_JSON_GIT_BLOB_SHA1 = frozenset(
+    {
+        "6a15814dd25c934028034531da744c689f87ff21",
+        "2345dbdaeeaaf36cb6b01e0a2b282befd18d08ec",
+        "48ae10170e965f3508778b75842eb08d1244ffdf",
+    }
+)
 
 # Byte profiles of the three official ``tokenizer.json`` forms, used only by
 # the Hub metadata prefilter: exact byte sizes, and git blob sha1 digests as
@@ -192,6 +213,21 @@ def is_kimi_k3_k31_model_name(model_name: str | None) -> bool:
     return normalized in KIMI_K3_K31_MODEL_TYPES or normalized in KIMI_K3_K31_MODEL_NAMES
 
 
+def is_code_free_model_name(model_name: str | None) -> bool:
+    """Restrictive selected context, never semantic renderer identity."""
+    if is_deepseek_v4_model_name(model_name):
+        return True
+    if not model_name:
+        return False
+    return model_name.strip().rstrip("/").lower() in DEEPSEEK_V41_MODEL_TYPES | {
+        "deepseek_v41_flash",
+        "deepseek-ai/deepseek-v4.1-flash",
+        "accounts/fireworks/models/deepseek-v41-flash",
+        "accounts/fireworks/models/deepseek-v4.1-flash",
+        "accounts/fireworks/models/deepseek-v4p1-flash",
+    }
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
@@ -272,7 +308,7 @@ def _head_tokenizer_json_metadata(model: str, revision: str | None) -> Any:
         return None
 
 
-def _metadata_decision(size: Any, etag: Any) -> bool | None:
+def _metadata_decision(size: Any, etag: Any, *, include_v41: bool = False) -> bool | None:
     """Prefilter decision from HEAD metadata: True/False, or None for bytes.
 
     ``False`` is returned only when byte inequality is proven by a supported
@@ -291,14 +327,21 @@ def _metadata_decision(size: Any, etag: Any) -> bool | None:
         # A missing etag header is a missing capability: full byte reads.
         return None
     etag = etag.lower()
-    size_matches = (size in _DEEPSEEK_V4_TOKENIZER_JSON_SIZES) if size is not None else None
+    sizes = _DEEPSEEK_V4_TOKENIZER_JSON_SIZES
+    digests = DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+    blobs = _DEEPSEEK_V4_TOKENIZER_JSON_GIT_BLOB_SHA1
+    if include_v41:
+        sizes = sizes | _DEEPSEEK_V41_TOKENIZER_JSON_SIZES
+        digests = digests | DEEPSEEK_V41_TOKENIZER_JSON_SHA256
+        blobs = blobs | _DEEPSEEK_V41_TOKENIZER_JSON_GIT_BLOB_SHA1
+    size_matches = (size in sizes) if size is not None else None
     if len(etag) == 64 and _HEX_RE.match(etag):
-        if etag in DEEPSEEK_V4_TOKENIZER_JSON_SHA256:
+        if etag in digests:
             # Two proven signals contradicting each other: let bytes decide.
             return None if size_matches is False else True
         return False
     if len(etag) == 40 and _HEX_RE.match(etag):
-        if etag in _DEEPSEEK_V4_TOKENIZER_JSON_GIT_BLOB_SHA1:
+        if etag in blobs:
             # A candidate even when the size contradicts it: bytes decide.
             return None
         # The blob sha1 alone proves inequality; size agreement is irrelevant.
@@ -330,14 +373,21 @@ def _hub_offline() -> bool:
     return bool(getattr(constants, "HF_HUB_OFFLINE", False))
 
 
-def _download_tokenizer_json_matches(model: str, *, revision: str | None, local_files_only: bool) -> bool:
+def _download_tokenizer_json_matches(
+    model: str, *, revision: str | None, local_files_only: bool, include_v41: bool = False
+) -> bool:
     path = _hub_download(model, "tokenizer.json", revision=revision, local_files_only=local_files_only)
     if path is None:
         return False
-    return _sha256(path) in DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+    digests = DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+    if include_v41:
+        digests = digests | DEEPSEEK_V41_TOKENIZER_JSON_SHA256
+    return _sha256(path) in digests
 
 
-def _hub_tokenizer_json_matches(model: str, *, revision: str | None, local_files_only: bool) -> bool:
+def _hub_tokenizer_json_matches(
+    model: str, *, revision: str | None, local_files_only: bool, include_v41: bool = False
+) -> bool:
     """Whether the Hub ``tokenizer.json`` is a pinned official form.
 
     Online against the official endpoint, one HEAD request answers from
@@ -349,7 +399,9 @@ def _hub_tokenizer_json_matches(model: str, *, revision: str | None, local_files
     the HEAD observed so the two reads are coherent. No result is cached.
     """
     if local_files_only or _hub_offline() or not _official_hub_endpoint():
-        return _download_tokenizer_json_matches(model, revision=revision, local_files_only=local_files_only)
+        return _download_tokenizer_json_matches(
+            model, revision=revision, local_files_only=local_files_only, include_v41=include_v41
+        )
     metadata = _head_tokenizer_json_metadata(model, revision)
     if metadata is _HEAD_ABSENT:
         return False
@@ -357,13 +409,17 @@ def _hub_tokenizer_json_matches(model: str, *, revision: str | None, local_files
     if metadata is not None:
         pinned = _pinned_commit(metadata)
         if pinned is not None:
-            decision = _metadata_decision(getattr(metadata, "size", None), getattr(metadata, "etag", None))
+            decision = _metadata_decision(
+                getattr(metadata, "size", None), getattr(metadata, "etag", None), include_v41=include_v41
+            )
             if decision is not None:
                 return decision
             revision_for_download = pinned
         # Without a valid commit pin the metadata answer is unusable: no
         # metadata negative, full byte reads at the caller's revision.
-    return _download_tokenizer_json_matches(model, revision=revision_for_download, local_files_only=False)
+    return _download_tokenizer_json_matches(
+        model, revision=revision_for_download, local_files_only=False, include_v41=include_v41
+    )
 
 
 def is_deepseek_v4_tokenizer_source(
@@ -449,7 +505,7 @@ def requires_code_free_tokenizer_loading(
 ) -> bool:
     """Restrict recognized reviewed data to installed tokenizer/processor code.
 
-    Covers DeepSeek V4 and Kimi K3/K3.1. A shared reviewed tokenizer digest
+    Covers DeepSeek V4/V4.1 and Kimi K3/K3.1. A shared reviewed tokenizer digest
     is restrictive even when mutable
     ``model_type`` names another family. Unlike semantic family recognition,
     this must not select a renderer or encoder: it only keeps checkpoint
@@ -548,20 +604,27 @@ def _tokenizer_source_matches(
     if not tokenizer_model:
         return False
     model = tokenizer_model
+    model_types = {DEEPSEEK_V4_MODEL_TYPE}
+    digests = DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+    repositories = DEEPSEEK_V4_REPOSITORIES
+    if not explicit_family_wins:
+        model_types.update(DEEPSEEK_V41_MODEL_TYPES)
+        digests = digests | DEEPSEEK_V41_TOKENIZER_JSON_SHA256
+        repositories = repositories | DEEPSEEK_V41_REPOSITORIES
     local_dir = Path(model)
     if local_dir.is_dir():
         config = _read_json(local_dir / "config.json")
         model_type = config.get("model_type") if config is not None else None
         if isinstance(model_type, str) and model_type not in {"", "model"}:
-            if model_type == DEEPSEEK_V4_MODEL_TYPE:
+            if model_type in model_types:
                 return True
             if explicit_family_wins:
                 return False
-        return _sha256(local_dir / "tokenizer.json") in DEEPSEEK_V4_TOKENIZER_JSON_SHA256
+        return _sha256(local_dir / "tokenizer.json") in digests
     # Only the digest-reviewed pair skips the advisory read; reviewed
     # mirror/Fireworks aliases are selected-context identities
     # (is_deepseek_v4_model_name), not no-read source shortcuts.
-    if model in DEEPSEEK_V4_REPOSITORIES:
+    if model in repositories:
         return True
     config_path = _hub_download(
         model,
@@ -573,8 +636,10 @@ def _tokenizer_source_matches(
         config = _read_json(config_path)
         model_type = config.get("model_type") if config is not None else None
         if isinstance(model_type, str) and model_type not in {"", "model"}:
-            if model_type == DEEPSEEK_V4_MODEL_TYPE:
+            if model_type in model_types:
                 return True
             if explicit_family_wins:
                 return False
-    return _hub_tokenizer_json_matches(model, revision=revision, local_files_only=local_files_only)
+    return _hub_tokenizer_json_matches(
+        model, revision=revision, local_files_only=local_files_only, include_v41=not explicit_family_wins
+    )

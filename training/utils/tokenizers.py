@@ -12,7 +12,7 @@ from typing import Any
 
 import transformers
 from training.tokenizer_identity import (
-    is_deepseek_v4_model_name,
+    is_code_free_model_name,
     is_kimi_k3_k31_model_name,
     is_kimi_k3_k31_tokenizer_source,
     requires_code_free_tokenizer_loading,
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 def resolve_tokenizer_base_model(base_model: str, base_model_type: str = "") -> str:
     """Keep independently known V4 context without replacing the model identity."""
-    return "deepseek_v4" if base_model_type == "deepseek_v4" else base_model
+    return base_model_type if is_code_free_model_name(base_model_type) else base_model
 
 
 _HTTP_STATUS_PATTERN = re.compile(r"\b([45]\d\d)\b")
@@ -331,11 +331,11 @@ def load_tokenizer(
     ``tokenizer_revision`` is optional; empty strings are treated as unset so
     existing configs keep resolving HuggingFace ``main``. ``None`` preserves
     the legacy remote-code policy (enabled), while a reviewed tokenizer plan
-    can explicitly enable or disable it. Recognized official DeepSeek V4 data
+    can explicitly enable or disable it. Recognized official DeepSeek V4/V4.1 data
     is one exception: it ships no remote code, so its policy always
     resolves to ``False`` -- the identical tokenizer class, with any
     checkpoint-staged Python inert, and an explicit ``True`` cannot reopen
-    it. An independently selected V4 ``base_model`` also restricts policy
+    it. An independently selected V4/V4.1 ``base_model`` also restricts policy
     when a tokenizer override lacks recognizable metadata. Recognized
     reviewed Kimi K3/K3.1 data is the other exception: its checkpoint ships
     only a tiktoken vocabulary behind a remote-code class, so the load
@@ -362,7 +362,7 @@ def load_tokenizer(
             revision=tokenizer_revision or None,
             local_files_only=local_files_only,
         )
-    if is_deepseek_v4_model_name(base_model) or requires_code_free_tokenizer_loading(
+    if is_code_free_model_name(base_model) or requires_code_free_tokenizer_loading(
         tokenizer_model,
         revision=tokenizer_revision or None,
         local_files_only=local_files_only,

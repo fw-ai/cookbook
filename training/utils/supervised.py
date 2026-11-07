@@ -26,6 +26,7 @@ import torch
 from fireworks.training import sdk
 from training.tokenizer_identity import (
     DEEPSEEK_V41_MODEL_RE as _DEEPSEEK_V41_MODEL_RE,
+    is_code_free_model_name,
     is_deepseek_v4_model_name,
     is_deepseek_v4_tokenizer_source,
     requires_code_free_tokenizer_loading,
@@ -590,14 +591,14 @@ def populate_render_worker_state(
     ``extras`` (e.g. ``train_on_what`` for SFT). A ``None`` remote-code policy
     preserves the legacy permissive load; reviewed plans pass an explicit value.
     """
-    # A selected V4 renderer supplies family context independently of mutable
+    # A selected V4/V4.1 renderer supplies context independently of mutable
     # tokenizer metadata, including configless staged/save_pretrained layouts.
-    # An independently selected V4 base model does the same when the renderer
+    # An independently selected V4/V4.1 base model does the same when the renderer
     # is a direct override of another family.
     tokenizer = load_tokenizer(
         tokenizer_model,
         tokenizer_revision,
-        False if renderer_name == "deepseek_v4" else tokenizer_trust_remote_code,
+        False if is_code_free_model_name(renderer_name) else tokenizer_trust_remote_code,
         base_model=base_model,
     )
     renderer = (
@@ -658,9 +659,9 @@ def _get_image_processor_with_remote_code_default(
     if "HF_TRUST_REMOTE_CODE" in os.environ:
         return get_image_processor(tokenizer_model, renderer_name=renderer_name, base_model=base_model)
 
-    if is_deepseek_v4_model_name(base_model) or requires_code_free_tokenizer_loading(tokenizer_model):
-        # Recognized official DeepSeek V4 data is always code-free, and an
-        # independently selected V4 base model supplies the same family context
+    if is_code_free_model_name(base_model) or requires_code_free_tokenizer_loading(tokenizer_model):
+        # Reviewed DeepSeek V4/V4.1 data is always code-free, and an
+        # independently selected base model supplies the same restrictive context
         # for an opaque tokenizer source; do not scope the permissive env
         # default onto either.
         return get_image_processor(tokenizer_model, renderer_name=renderer_name, base_model=base_model)

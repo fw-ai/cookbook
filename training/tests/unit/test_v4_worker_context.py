@@ -22,13 +22,22 @@ from training.utils.supervised import build_renderer_from_resolved_name, render_
 
 _FOREIGN_RENDERER = "qwen3"
 _MESSAGES = [{"role": "user", "content": "Name one prime above 10."}, {"role": "assistant", "content": "11 is prime."}]
+_V41_CANONICAL = "accounts/fireworks/models/deepseek-v41-flash"
 
 
 class _StopAfterSetup(Exception):
     pass
 
 
-@pytest.fixture(params=[(V4_ALIAS, "", V4_ALIAS), (RENAMED_ALIAS, "deepseek_v4", "deepseek_v4")])
+@pytest.fixture(
+    params=[
+        (V4_ALIAS, "", V4_ALIAS),
+        (RENAMED_ALIAS, "deepseek_v4", "deepseek_v4"),
+        (_V41_CANONICAL, "", _V41_CANONICAL),
+        (RENAMED_ALIAS, "deepseek_v41", "deepseek_v41"),
+        (RENAMED_ALIAS, "deepseek_v41_text", "deepseek_v41_text"),
+    ]
+)
 def v4_model_context(request: pytest.FixtureRequest) -> tuple[str, str, str]:
     return request.param
 
@@ -125,7 +134,7 @@ def test_parent_and_spawn_callback_context(
         (V4_ALIAS, "", V4_ALIAS, False),
         (RENAMED_ALIAS, "deepseek_v4", "deepseek_v4", False),
         (NON_V4_MODEL, "", NON_V4_MODEL, True),
-        (V41_ALIAS, "", V41_ALIAS, True),
+        (V41_ALIAS, "", V41_ALIAS, False),
     ],
 )
 def test_orpo_context_and_datum_parity(

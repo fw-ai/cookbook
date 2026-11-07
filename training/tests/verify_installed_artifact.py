@@ -45,6 +45,8 @@ def main() -> None:
         "training.renderer.tito._vendored.kimi_k31.encoding_k3",
         "training.renderer._kimi_native_encoding",
         "training.utils.kimi_native_tokenizer",
+        "training.renderer.tito.deepseek_v41",
+        "training.renderer.tito._vendored.deepseek_v41.encoding",
     ]
     for package_name in ("dataset_utils", "recipes", "utils"):
         modules.extend(_checkout_modules(CHECKOUT_PACKAGE / package_name))
@@ -67,11 +69,13 @@ def main() -> None:
         "examples/distillation/serverless_k3_privileged/data/gsm8k_200.jsonl",
         "examples/archive/countdown/data/countdown_train.jsonl",
         "examples/archive/eval_protocol_chat/train.jsonl",
-        "tests/_encoding_dsv41_oracle.LICENSE",
         "renderer/_vendored/kimi_k3/LICENSE",
         "renderer/_vendored/kimi_k3/PROVENANCE.md",
         "renderer/tito/_vendored/kimi_k31/LICENSE",
         "renderer/tito/_vendored/kimi_k31/PROVENANCE.md",
+        "renderer/tito/_vendored/deepseek_v41/LICENSE",
+        "renderer/tito/_vendored/deepseek_v41/PROVENANCE.md",
+        "renderer/tito/_vendored/deepseek_v41/encoding.py",
     ]
     # Rendering names these assets directly. A glob would silently omit an
     # asset missing from the checkout and let an incomplete wheel pass.

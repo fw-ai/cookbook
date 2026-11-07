@@ -11,7 +11,7 @@ import os
 from functools import cache
 from typing import TYPE_CHECKING, Any, TypeAlias
 
-from training.tokenizer_identity import is_deepseek_v4_model_name, requires_code_free_tokenizer_loading
+from training.tokenizer_identity import is_code_free_model_name, requires_code_free_tokenizer_loading
 from PIL import Image
 
 if TYPE_CHECKING:
@@ -47,12 +47,12 @@ def get_image_processor(
         kwargs["revision"] = "b5aabbfb20227ed42becbf5541dbffd213942c58"
 
     if (
-        renderer_name == "deepseek_v4"
-        or is_deepseek_v4_model_name(base_model)
+        is_code_free_model_name(renderer_name)
+        or is_code_free_model_name(base_model)
         or requires_code_free_tokenizer_loading(model_name, revision=kwargs.get("revision"))
     ):
-        # Recognized official DeepSeek V4 data ships no remote code, and an
-        # independently selected V4 renderer or base model supplies the same
+        # Reviewed DeepSeek V4/V4.1 data ships no remote code, and an
+        # independently selected renderer or base model supplies the same
         # family context: explicit False at the boundary, and the ambient env
         # opt-in must not re-enable checkpoint-staged Python for it. The
         # context is part of this cached loader's key, so a permissive entry

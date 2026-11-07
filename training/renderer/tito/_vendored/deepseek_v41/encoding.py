@@ -3,7 +3,7 @@
 # VENDORED — DO NOT EDIT
 # Public publisher reference: https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/2cba9e42aa026125f3ed06c6d98c1db82f7ca027/encoding/encoding.py
 # SHA256: 502bdaec8a3fd88ebc24c4721a7038fbe42f2063c664638127056107920035c1
-# License: MIT (see _encoding_dsv41_oracle.LICENSE).
+# License: MIT (see LICENSE).
 
 """
 DeepSeek-V4.1 Text and Vision Encoding

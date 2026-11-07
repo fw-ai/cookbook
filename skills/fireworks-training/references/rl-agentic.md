@@ -118,9 +118,14 @@ no thinking-effort message, like a request without `reasoning_effort`;
 `kimi_k31_<low|high|max>` pin one effort; a `medium` request folds into `high`.
 Text and function tools only.
 
-V4 tokenizer loads use `trust_remote_code=False`. Recipes forward the selected
+V4.1 retains its own pinned Jinja prompt and high-effort (75), text/function-tool
+contract. Its publisher parser now ships in the cookbook package too; neither
+host nor sidecar imports `encoding.py` from a model artifact. This does not add
+image or namespace support to TITO.
+
+V4/V4.1 tokenizer loads use `trust_remote_code=False`. Recipes forward the selected
 base model separately from tokenizer overrides so changed tokenizer metadata
-cannot reopen code loading for a known V4 model. Callers of the shared tokenizer
+cannot reopen code loading for a known migrated model. Callers of the shared tokenizer
 helpers should pass `base_model` when available. Tokenizer revisions, renderer
 selection and tokenization backends retain their existing behavior; arbitrary
 renamed models without family metadata are not identified by this name signal.
@@ -129,7 +134,7 @@ bytes still force installed tokenizer/processor code when mutable metadata names
 another family. This does not select a V4 renderer or change another family's
 encoder; neither data match grants authenticity or permission to execute Python.
 Managed runs also retain the model record's `base_model_type` independently of
-its resource name, staged tokenizer files, and renderer choice. For V4 this
+its resource name, staged tokenizer files, and renderer choice. For V4/V4.1 this
 metadata is restrict-only: it keeps tokenizer/processor loads code-free without
 changing the selected model or renderer. Direct cookbook configs leave it unset
 by default. Cookbook loaders retain this context even with the supported minimum

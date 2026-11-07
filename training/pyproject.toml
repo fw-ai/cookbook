@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "fireworks-training-cookbook"
 # Promotion owns this version; published metadata is synchronized back to staging.
-version = "2026.11.6.1"
+version = "2026.11.5.2"
 description = "Training recipes and utilities for the Fireworks Training API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -141,6 +141,7 @@ packages = [
     "training.renderer.tito",
     "training.renderer.tito._vendored",
     "training.renderer.tito._vendored.deepseek_v4",
+    "training.renderer.tito._vendored.deepseek_v41",
     "training.renderer.tito._vendored.kimi_k31",
     "training.renderer.verifier",
     "training.renderer.verifier.utils",
@@ -162,6 +163,7 @@ packages = [
 "training.renderer" = ["LICENSE"]
 "training.renderer._vendored.kimi_k3" = ["LICENSE", "PROVENANCE.md"]
 "training.renderer.tito._vendored.deepseek_v4" = ["LICENSE", "PROVENANCE.md"]
+"training.renderer.tito._vendored.deepseek_v41" = ["LICENSE", "PROVENANCE.md"]
 "training.renderer.tito._vendored.kimi_k31" = ["LICENSE", "PROVENANCE.md"]
 "training.examples.sft" = ["text2sql_dataset.jsonl", "food_reasoning.jsonl", "data/support_triage_train.jsonl"]
 "training.examples.rl.deepmath" = ["dataset.jsonl"]
@@ -171,7 +173,7 @@ packages = [
 "training.examples.distillation.serverless_k3_privileged" = ["data/gsm8k_privileged.jsonl", "data/gsm8k_200.jsonl"]
 "training.examples.archive.countdown" = ["data/countdown_train.jsonl"]
 "training.examples.archive.eval_protocol_chat" = ["train.jsonl"]
-"training.tests" = ["_encoding_dsv41_oracle.LICENSE", "fixtures/tito_qwen35_complete_length.json"]
+"training.tests" = ["fixtures/tito_qwen35_complete_length.json"]
 
 [tool.uv]
 

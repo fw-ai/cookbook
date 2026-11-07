@@ -30,7 +30,10 @@ def test_service_forwards_prompt_cache_policy(policy: str) -> None:
     assert mapped["reset_prompt_cache"] == policy
 
 
-@pytest.mark.parametrize("model_type", ["", "deepseek_v4", "deepseek_v41", "qwen3"])
+@pytest.mark.parametrize(
+    "model_type",
+    ["", "deepseek_v4", "deepseek_v41", "deepseek_v41_text", "deepseek_v4.1", "deepseek_v4.1_text", "qwen3"],
+)
 def test_model_family_context_is_restrict_only_and_optional(model_type: str) -> None:
     kwargs = dict(
         base_model="accounts/customer/models/production-model",
@@ -44,7 +47,7 @@ def test_model_family_context_is_restrict_only_and_optional(model_type: str) -> 
     mapped = service._firetitan_service_kwargs(**kwargs)
     assert mapped["base_model"] == kwargs["base_model"]
     assert mapped["tokenizer_model"] == kwargs["tokenizer_model"]
-    if model_type == "deepseek_v4":
+    if service.is_code_free_model_name(model_type):
         assert mapped["base_model_type"] == model_type
     else:
         assert "base_model_type" not in mapped
@@ -99,9 +102,7 @@ def test_resumed_full_parameter_base_preserves_published_delta(tmp_path: Path) -
         current = Path(path).read_text()
         assert cached_formats.setdefault(path, current) == current
 
-    policy = SimpleNamespace(
-        supports_rdma_weight_sync=False, lora_rank=0, save_weights_for_sampler=save
-    )
+    policy = SimpleNamespace(supports_rdma_weight_sync=False, lora_rank=0, save_weights_for_sampler=save)
     publish = service.make_weight_sync(
         policy,
         SimpleNamespace(hotload_sampler_snapshot=hotload),
@@ -128,16 +129,12 @@ def test_initial_base_preserves_legacy_and_lora_names(lora_rank: int | None) -> 
         DeployConfig(),
     )
     publish("step-19", checkpoint_type="base")
-    policy.save_weights_for_sampler.assert_called_once_with(
-        "step-19", checkpoint_type="base"
-    )
+    policy.save_weights_for_sampler.assert_called_once_with("step-19", checkpoint_type="base")
 
 
 def test_full_parameter_base_keeps_sdk_rdma_publication() -> None:
     result = SimpleNamespace(optimizer_version=19)
-    policy = SimpleNamespace(
-        supports_rdma_weight_sync=True, lora_rank=0, weight_sync=Mock(return_value=result)
-    )
+    policy = SimpleNamespace(supports_rdma_weight_sync=True, lora_rank=0, weight_sync=Mock(return_value=result))
     publish = service.make_weight_sync(policy, None, DeployConfig())
     assert publish("step-19", checkpoint_type="base") is result
     policy.weight_sync.assert_called_once_with()
@@ -252,9 +249,7 @@ def test_router_replay_follows_model_architecture(monkeypatch, is_moe):
 
 
 @pytest.mark.parametrize("advertised", [False, True])
-def test_router_replay_uses_trainer_capability_without_model_lookup(
-    monkeypatch, advertised
-):
+def test_router_replay_uses_trainer_capability_without_model_lookup(monkeypatch, advertised):
     # Trainer-authoritative: no GET model at all, so a private early-access
     # base model (GET model -> 403) no longer breaks the R3 decision.
     monkeypatch.setattr(
@@ -305,9 +300,7 @@ def test_router_replay_not_requested_ignores_trainer_capability(monkeypatch):
         SimpleNamespace(supports_router_replay=None),  # older trainer: unknown
     ],
 )
-def test_router_replay_falls_back_to_model_probe_when_capability_unknown(
-    monkeypatch, training_client
-):
+def test_router_replay_falls_back_to_model_probe_when_capability_unknown(monkeypatch, training_client):
     class FakeClient:
         def __init__(self, **_kwargs):
             pass
@@ -355,9 +348,7 @@ def _probe_raising(exc):
 
 
 @pytest.mark.parametrize("status", [403, 404])
-def test_router_replay_last_resort_honors_user_flag_when_model_not_visible(
-    monkeypatch, caplog, status
-):
+def test_router_replay_last_resort_honors_user_flag_when_model_not_visible(monkeypatch, caplog, status):
     # Last resort: trainer did not report and the model record is not visible
     # to this caller (private early-access base model). Honor the user's
     # router_replay=True, with a warning, instead of crashing the recipe.
@@ -365,9 +356,7 @@ def test_router_replay_last_resort_honors_user_flag_when_model_not_visible(
         service,
         "FireworksClient",
         _probe_raising(
-            service.ModelDetailsUnavailableError(
-                f"Failed to fetch model details (HTTP {status})", status_code=status
-            )
+            service.ModelDetailsUnavailableError(f"Failed to fetch model details (HTTP {status})", status_code=status)
         ),
     )
 
@@ -419,9 +408,7 @@ def test_router_replay_last_resort_still_off_when_user_disabled(monkeypatch):
 )
 def test_router_replay_real_probe_failures_still_raise(monkeypatch, exc):
     err = (
-        service.ModelDetailsUnavailableError(
-            "Failed to fetch model details (HTTP 500)", status_code=500
-        )
+        service.ModelDetailsUnavailableError("Failed to fetch model details (HTTP 500)", status_code=500)
         if exc == "server-error"
         else ValueError("Base model is missing baseModelDetails.moe")
     )
@@ -581,9 +568,7 @@ def test_build_service_client_treats_zero_projection_head_dim_as_unset(monkeypat
     calls: list[dict] = []
 
     class FakeServiceClient:
-        from_firetitan_config = staticmethod(
-            lambda **kwargs: calls.append(kwargs) or "service-sentinel"
-        )
+        from_firetitan_config = staticmethod(lambda **kwargs: calls.append(kwargs) or "service-sentinel")
 
     monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
 
@@ -607,9 +592,7 @@ def test_build_service_client_forwards_service_projection_head_dim(monkeypatch):
     calls: list[dict] = []
 
     class FakeServiceClient:
-        from_firetitan_config = staticmethod(
-            lambda **kwargs: calls.append(kwargs) or "service-sentinel"
-        )
+        from_firetitan_config = staticmethod(lambda **kwargs: calls.append(kwargs) or "service-sentinel")
 
     monkeypatch.setattr(service, "FiretitanServiceClient", FakeServiceClient)
 
@@ -876,8 +859,7 @@ def test_trainer_config_rejects_removed_accelerator_fields(field_name, value):
     with pytest.raises(
         TypeError,
         match=(
-            rf"TrainerConfig no longer supports `{field_name}`.*"
-            r"select a training shape with `training_shape_id`"
+            rf"TrainerConfig no longer supports `{field_name}`.*" r"select a training shape with `training_shape_id`"
         ),
     ):
         TrainerConfig(**{field_name: value})
@@ -1221,8 +1203,7 @@ def test_process_exit_waits_for_an_in_flight_trainer_create(tmp_path):
     from pathlib import Path
 
     deleted_file = tmp_path / "deleted.txt"
-    script = textwrap.dedent(
-        f"""
+    script = textwrap.dedent(f"""
         import sys, time
         from training.utils import service
 
@@ -1242,8 +1223,7 @@ def test_process_exit_waits_for_an_in_flight_trainer_create(tmp_path):
         open({str(deleted_file)!r}, "w").close()
         service._start_late_trainer_watch(Manager(), "training-api-service-12345678")
         sys.exit(0)
-        """
-    )
+        """)
     repo_root = Path(__file__).resolve().parents[3]
     subprocess.run([sys.executable, "-c", script], check=True, cwd=repo_root, timeout=60)
 
